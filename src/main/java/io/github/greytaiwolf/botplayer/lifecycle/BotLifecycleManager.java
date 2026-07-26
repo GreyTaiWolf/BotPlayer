@@ -219,10 +219,22 @@ public final class BotLifecycleManager {
             return;
         }
         stopping = true;
-        for (RuntimeEntry runtime : new ArrayList<>(runtimes.values())) {
-            disconnect(runtime, Component.literal("Server stopping"));
+        try {
+            for (RuntimeEntry runtime : new ArrayList<>(runtimes.values())) {
+                try {
+                    disconnect(runtime, Component.literal("Server stopping"));
+                } catch (RuntimeException exception) {
+                    BotPlayer.LOGGER.error(
+                            "Failed to cleanly unload BotPlayer {} ({}) during server stop",
+                            runtime.handle.name(),
+                            runtime.handle.botId(),
+                            exception);
+                    closeFailedShutdownRuntime(runtime);
+                }
+            }
+        } finally {
+            runtimes.clear();
         }
-        runtimes.clear();
     }
 
     private void disconnect(RuntimeEntry runtime, Component reason) {
@@ -244,6 +256,31 @@ public final class BotLifecycleManager {
         connection.markClosed();
         runtime.handle.detach(player);
         runtimes.remove(runtime.handle.botId());
+    }
+
+    private void closeFailedShutdownRuntime(RuntimeEntry runtime) {
+        BotServerPlayer player = runtime.handle.player().orElse(null);
+        if (player == null) {
+            return;
+        }
+        try {
+            if (server.getPlayerList().getPlayer(player.getUUID()) == player
+                    || player.serverLevel().getPlayerByUUID(player.getUUID()) == player) {
+                server.getPlayerList().remove(player);
+            }
+        } catch (RuntimeException fallbackFailure) {
+            BotPlayer.LOGGER.error(
+                    "Fallback removal also failed for BotPlayer {} ({})",
+                    runtime.handle.name(),
+                    runtime.handle.botId(),
+                    fallbackFailure);
+        } finally {
+            if (player.connection != null
+                    && player.connection.getConnection() instanceof BotConnection botConnection) {
+                botConnection.markClosed();
+            }
+            runtime.handle.detach(player);
+        }
     }
 
     @Nullable

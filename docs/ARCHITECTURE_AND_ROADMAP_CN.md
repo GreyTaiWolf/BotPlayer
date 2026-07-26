@@ -320,12 +320,18 @@ CompletionStage<SpawnResult> spawn(BotSpawnRequest request) {
 - 防止 keepalive、断开和客户端缺席造成异常；
 - 提供版本适配点，不把具体映射泄露到核心包。
 
-### 4.6 两个且仅两个 PlayerList 行为注入点
+### 4.6 两个 PlayerList 构造注入点与一个死亡完成观察点
 
-第一版允许两个针对 1.21.1 的窄 `PlayerList` 行为注入点。另有一个
+第一版允许两个针对 1.21.1 的窄 `PlayerList` 构造注入点。另有一个
 `ConnectionAccessor` 只负责给虚拟连接设置私有 `channel` 字段，不改变方法行为，不计入这
-两个行为注入点。若后续确实需要第三个行为注入点，必须新增 ADR，说明无法通过事件、子类
-或访问转换解决的原因。
+两个构造注入点。
+
+死亡确认使用第三个窄观察点：在 `ServerPlayer.die` 的最终 `TAIL` 仅识别
+`BotServerPlayer`。NeoForge 的死亡取消发生在早退路径，不会到达该 `TAIL`；这避免
+`LivingDeathEvent` 同优先级监听器顺序造成“死亡已取消但 bot 被标记 DEAD”的竞态。该
+Mixin 不修改死亡结果，只在原版死亡完整结束后通知生命周期管理器。
+
+若后续确实需要新的行为注入点，必须新增 ADR，说明无法通过事件、子类或访问转换解决的原因。
 
 #### Mixin A：登录监听器替换
 
@@ -2649,6 +2655,7 @@ GameTest：
 - ADR-0008：模组兼容采用 C0–C3；
 - ADR-0009：第一版不内嵌 LGPL 寻路源码；
 - ADR-0010：P0–P2 通过前不接 DeepSeek。
+- ADR-0011：以 `ServerPlayer.die` TAIL 观察确认死亡，消除可取消事件的同优先级竞态。
 
 新增或变更 ADR 时包含：
 
