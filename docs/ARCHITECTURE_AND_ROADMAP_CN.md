@@ -1,6 +1,6 @@
 # BotPlayer：NeoForge 1.21.1 完整架构、编码规范与 P0–P10 路线图
 
-> 文档状态：架构基线 v1.0
+> 文档状态：架构基线 v1.1
 > 更新日期：2026-07-26
 > 目标仓库：`GreyTaiWolf/BotPlayer`
 > 第一目标平台：Minecraft Java 1.21.1、NeoForge 21.1.244、Java 21
@@ -11,6 +11,33 @@
 本文档是 BotPlayer 的编码依据、阶段验收依据和后续版本迁移依据。实现与本文档发生冲突时，必须先记录架构决策（ADR）并更新本文档，不能让实际代码在没有说明的情况下偏离设计。
 
 BotPlayer 的最终目标是让一个由 AI 控制的服务端玩家，按照普通玩家受到的规则，在 Minecraft 世界里长期生活、交流、工作、学习和协作。它不是“会回答问题的 NPC”，也不是只会执行几个命令的假人；但“玩家会的它都会”是一个持续扩大的能力覆盖目标，不是一次开发就能诚实完成的口号。本路线先把真实玩家生命周期和可靠动作打稳，再逐步覆盖生存、战斗、建造、模组玩法和长期自主行为。
+
+本文描述的是**目标架构和验收门槛**，不是当前功能清单。当前代码事实以
+[IMPLEMENTATION_STATUS_CN.md](IMPLEMENTATION_STATUS_CN.md) 为准；原版玩法逐项覆盖以
+[VANILLA_CAPABILITY_MATRIX_CN.md](VANILLA_CAPABILITY_MATRIX_CN.md) 为准。
+
+---
+
+## 文档导航
+
+- 产品与总闭环：[1. 产品定义](#1-产品定义)、[2. 架构原则](#2-架构原则与强制不变量)、
+  [3. 总体架构](#3-总体架构与控制闭环)
+- 玩家身体：[4. ServerPlayer 内核](#4-真实-serverplayer-内核)、
+  [5. 动作系统](#5-动作系统让-bot-按玩家规则操作)、
+  [6. 背包 GUI](#6-空手右键打开-bot-背包)
+- 智能闭环：[7. 感知与世界模型](#7-感知系统语义事件与世界模型)、
+  [8. 目标与规划](#8-目标大脑与任务规划)、[9. 技能](#9-技能系统)、
+  [10. 导航/安全/战斗/建造](#10-导航安全战斗和建造子系统)
+- AI 与长期能力：[11. DeepSeek](#11-deepseek-接入)、
+  [12. 记忆](#12-分层记忆与持久化)、[13. 模组适配](#13-模组内容理解与适配)、
+  [14. 多 bot](#14-多-bot-协作)
+- 工程约束：[15. 线程与预算](#15-线程模型与-tick-预算)、
+  [16. 包结构](#16-推荐包结构与类职责)、[17. 配置/权限/命令](#17-配置权限命令与网络)、
+  [18. 数据与诊断](#18-数据布局迁移和诊断)
+- 交付门槛：[19. P0–P10](#19-p0p10-实施路线)、[20. 测试](#20-测试架构与矩阵)、
+  [21. 安全](#21-安全滥用与隐私威胁模型)、[22. 许可证](#22-许可证与参考边界)、
+  [23. Definition of Done](#23-代码审查与-definition-of-done)、
+  [24. ADR](#24-关键架构决策记录)、[25. 当前执行基线](#25-开发顺序与当前执行基线)
 
 ---
 
@@ -55,6 +82,10 @@ Minecraft 内部所有玩家也属于实体继承体系，因此“不做新实�
 | 模组玩法 | 注册表认识、通用交互、声明式流程、专用适配器和版本重新验证 |
 
 每个能力都必须落到“输入、前置条件、执行状态、成功验证、失败恢复、测试场景”六项，不能只存在于提示词。
+
+更细的移动、生存、容器、工作站、生产、交易、运输、战斗、Boss、建筑和红石能力编号及
+`1.0.0` 门槛见 [原版能力矩阵](VANILLA_CAPABILITY_MATRIX_CN.md)。通过“空手到铁工具”
+闭环只能证明基础生存能力，不能单独代表已经“完整会玩 Minecraft”。
 
 ### 1.4 第一版明确不做
 
@@ -172,13 +203,22 @@ DeepSeek 响应期间，L0–L2 继续运行。模型永远不处于服务器 Ti
 
 ### 4.1 包与核心类
 
+下面按当前已落地命名展示 Player Kernel，并列出后续会加入的职责。当前 P1 没有为了目录
+外观提前创建空类；实际源码结构见 [DEVELOPMENT_CN.md](DEVELOPMENT_CN.md#当前源码结构)。
+
 ```text
-player/
+kernel/
   BotServerPlayer.java
   BotConnection.java
   BotGamePacketListener.java
+lifecycle/
   BotLifecycleManager.java
-  BotInstanceHandle.java
+  BotRuntimeHandle.java
+  BotLifecycleState.java
+  BotPlayerManagers.java
+identity/
+  BotIdentityIds.java
+future/player-profile/
   BotIdentity.java
   BotProfile.java
   BotProfileStore.java
@@ -196,11 +236,22 @@ player/
 | `BotConnection` | 提供有效虚拟 `Connection`；安全消费只发给 bot 客户端的包 |
 | `BotGamePacketListener` | 保持服务器连接不变量、同步程序化移动、拒绝无意义客户端依赖 |
 | `BotLifecycleManager` | 唯一创建、卸载、重生、恢复 bot 的入口 |
-| `BotInstanceHandle` | 通过 botId 间接解析当前权威实例，避免缓存旧玩家对象 |
+| `BotRuntimeHandle` | 通过 botId 间接解析当前权威实例；后续加入 generation |
 | `BotIdentity` | 不可变 botId、UUID、当前名字、创建时间 |
 | `BotProfile` | owner、皮肤策略、默认维度、行为配置引用 |
 | `BotProfileStore` | 身份和生命周期元数据的持久化 |
 | `BotRuntimeBindings` | 把控制器、感知、任务与当前玩家实例原子重绑 |
+
+当前 P1 名称到目标职责的映射：
+
+| 当前代码 | 当前职责 | 后续目标 |
+|---|---|---|
+| `BotPlayer` | 模组入口 | 保留当前类名 |
+| `BotPlayerConfig` | 已实现的 server 配置 | 后续按 server/client/AI schema 拆分 |
+| `BotRuntimeHandle` | 跨重生持有当前实例 | 加入 generation 后完整承担间接实例职责 |
+| `BotIdentityIds` | 临时名字派生 UUID | roster 落地后迁移到 `BotIdentity` |
+| `BotLifecycleManager` | 在线实例和生命周期 | 加入 profile store、autoload、诊断和完整事务 |
+| `kernel/`、`identity/`、`lifecycle/` | 当前 P1 分包 | 是否合并到 `player/` 由后续 ADR 决定 |
 
 ### 4.2 身份设计
 
@@ -221,7 +272,21 @@ record BotIdentity(
 - 创建前检查离线档案、白名单/封禁名单、当前在线玩家和已有 bot；
 - 名称必须符合 1.21.1 玩家名规则，并支持配置统一前缀。
 
+> **当前 P1 过渡状态**
+>
+> 当前代码暂时使用
+> `botId == playerUuid == UUID(namespace, lowercase(name))`，没有独立 roster，也没有改名迁移。
+> 相同小写形式的名字（包括只改变字母大小写）会得到同一临时 UUID；其他改名会得到新
+> 身份。当前没有重命名约束或迁移工具，任何改名都不是受支持操作。P1 下一批必须建立
+> 随机且不可变的 `botId`、独立 `playerUuid`、旧名字派生档案迁移与冲突回滚，然后才能
+> 允许改名。
+
 ### 4.3 生命周期状态机
+
+下图是 roster 和完整运行时合并后的**目标状态机**。当前内存中的
+`BotLifecycleState` 只包含 `SPAWNING / ACTIVE / DEAD / RESPAWNING / DESPAWNING`：
+`DEAD` 对应下图死亡等待区间；`OFFLINE` 和 `FAILED` 将属于未来持久 profile/诊断，
+不属于当前 `RuntimeEntry`。
 
 ```mermaid
 stateDiagram-v2
@@ -229,8 +294,8 @@ stateDiagram-v2
     OFFLINE --> SPAWNING: spawn
     SPAWNING --> ACTIVE: login complete
     SPAWNING --> FAILED: rollback
-    ACTIVE --> DYING: death
-    DYING --> RESPAWNING: delay elapsed
+    ACTIVE --> DEAD: completed death
+    DEAD --> RESPAWNING: delay elapsed
     RESPAWNING --> ACTIVE: rebind
     ACTIVE --> DESPAWNING: remove or shutdown
     DESPAWNING --> OFFLINE: save complete
@@ -244,7 +309,7 @@ stateDiagram-v2
 | `OFFLINE` | 排队可选 | 否 | 否 | 已保存 |
 | `SPAWNING` | 否 | 否 | 否 | 否 |
 | `ACTIVE` | 是 | 是 | 是 | 检查点 |
-| `DYING` | 否 | 仅死亡流程 | 强制关闭 | 是 |
+| `DEAD` | 否 | 仅等待重生 | 强制关闭 | 是 |
 | `RESPAWNING` | 否 | 否 | 否 | 是 |
 | `DESPAWNING` | 否 | 停止 | 强制关闭 | 是 |
 | `FAILED` | 否 | 否 | 否 | 诊断 |
@@ -312,6 +377,10 @@ CompletionStage<SpawnResult> spawn(BotSpawnRequest request) {
 - 暴露极少量诊断指标：已丢弃包数、最后包类型、关闭原因；
 - 对服务端广播给其他真人客户端的 bot 实体同步没有影响。
 
+当前 P1 首版只完成合法 `EmbeddedChannel`、登录路径、幂等关闭和丢弃 bot 专属出站包；
+还没有正确完成带 `PacketSendListener` 的发送回调、keepalive 回环、teleport acknowledge
+和连接诊断指标。因此虚拟连接在这些项目及连续在线测试通过前只能标记为“部分完成”。
+
 `BotGamePacketListener` 不承担 AI 动作。它只用于：
 
 - 满足在线玩家连接字段和服务器内部调用；
@@ -359,14 +428,17 @@ Mixin 不修改死亡结果，只在原版死亡完整结束后通知生命周�
 - 设置严格版本 descriptor 与 `require = 1`；
 - GameTest 必须断言重生后运行时类型、连接类型和 manager 绑定。
 
-Mixin 类只可放在：
+当前 1.21.1 实际 Mixin 布局：
 
 ```text
-platform/neoforge/mixin/PlayerListLoginMixin.java
-platform/neoforge/mixin/PlayerListRespawnMixin.java
+mixin/ConnectionAccessor.java
+mixin/PlayerListMixin.java
+mixin/ServerPlayerDeathMixin.java
 ```
 
-禁止业务系统直接依赖 Mixin 类。
+`PlayerListMixin` 内含两个精确构造包装；`ServerPlayerDeathMixin` 只观察成功完成的
+`die` TAIL；`ConnectionAccessor` 只写入连接 channel。以后迁移到
+`platform/neoforge/mixin/` 可以单独重构，但禁止业务系统直接依赖 Mixin 类。
 
 ### 4.7 死亡与重生
 
@@ -386,7 +458,7 @@ platform/neoforge/mixin/PlayerListRespawnMixin.java
 业务组件持有：
 
 ```java
-interface BotInstanceHandle {
+interface BotRuntimeHandle {
     UUID botId();
     Optional<BotServerPlayer> resolveActive();
     long generation(); // 每次重生/重新登录递增
@@ -425,6 +497,14 @@ interface BotInstanceHandle {
 - 未加载区块的信息不能被当成当前观察事实；
 - 可配置最大在线 bot 数、每 bot 感知半径和每 Tick 路径预算；
 - TPS 降低时先降低感知、规划与路径重算频率，不降低 L0 安全反射。
+
+区块验收必须区分“普通在线玩家 ticket”和“永久强加载”：
+
+- 真人离开后，活动 bot 附近区块仍达到普通玩家应有的 ticking 状态；
+- 方块实体和实体 Tick 在 simulation distance 内继续；
+- bot 跨区块后旧 ticket 被释放；
+- 死亡、卸载、换维度和停服后没有 ticket 泄漏；
+- 不把离线 bot 或远方任务区域永久 force-load。
 
 ### 4.10 玩家内核验收不变量
 
@@ -465,7 +545,7 @@ Goal / Skill
 
 ```java
 interface BotActionExecutor {
-    ActionTicket submit(BotInstanceHandle bot, ActionRequest request);
+    ActionTicket submit(BotRuntimeHandle bot, ActionRequest request);
     ActionStatus tick(ActionTicket ticket, ServerTickContext tick);
     void cancel(ActionTicket ticket, CancelReason reason);
 }
@@ -639,7 +719,7 @@ bot + 打开容器 + carried stack + 合法消耗/产出
 
 ### 6.2 槽位布局
 
-权威槽位：
+权威库存是 `BotServerPlayer#getInventory()` 的 41 格，不复制到临时容器：
 
 - bot 主背包和快捷栏 36 格；
 - bot 盔甲 4 格；
@@ -647,15 +727,40 @@ bot + 打开容器 + carried stack + 合法消耗/产出
 - viewer 自己背包和快捷栏 36 格；
 - bot 当前选中的快捷栏槽只读高亮，不额外复制槽位。
 
+推荐的 77 个 menu slot ID 与原版 `Inventory` 映射：
+
+| Menu slot | 数量 | 所有者 | 映射 |
+|---:|---:|---|---|
+| `0..3` | 4 | bot 盔甲 | 头、胸、腿、脚 → unified inventory `39,38,37,36` |
+| `4` | 1 | bot 副手 | unified inventory `40` |
+| `5..31` | 27 | bot 主背包 | inventory `9..35` |
+| `32..40` | 9 | bot 快捷栏 | inventory `0..8` |
+| `41..67` | 27 | viewer 主背包 | inventory `9..35` |
+| `68..76` | 9 | viewer 快捷栏 | inventory `0..8` |
+
+盔甲 menu 顺序按界面从头到脚展示，但原版统一 inventory 的盔甲索引方向相反，不能简单
+使用连续正序。服务端构造器绑定真实 bot/player inventory；客户端 41 格占位容器只负责
+创建相同槽位结构，权威内容仍由原版 menu 同步。
+
+`quickMoveStack` 区间：
+
+- bot `0..40` → viewer `[41,77)`；
+- viewer `41..76` 先尝试空且合法的 bot 装备槽，再进入 bot `[5,41)`；
+- 不自动把普通物品塞入副手；
+- 移动前后必须比较原栈、更新 slot、验证总数量守恒；
+- 任何部分移动、拒绝或 menu 状态变化都不能重复执行。
+
 要求：
 
 - Shift 快速移动方向正确；
-- 盔甲槽遵守装备类型；
-- 绑定诅咒遵守原版限制；
+- 盔甲槽通过原版装备槽判定和 NeoForge 可装备钩子；
+- 非创造模式 viewer 不能取下受绑定诅咒约束的装备；
 - 不允许不合法堆叠；
 - `stillValid` 每 Tick 检查距离、维度、生命周期和会话 token；
 - viewer 断线时释放写锁；
 - 服务端重载或 bot 重生时旧 token 立即失效。
+- menu 关闭时，viewer 的 carried stack 通过原版归还/掉落语义处理，不能写进 bot 库存；
+- P2 用测试替身调用 `forceClose(DANGER)`；真正的 L0 危险触发在 P4 做集成验收。
 
 ### 6.3 相关类
 
@@ -1087,6 +1192,9 @@ skill/builtin/
 data/<namespace>/botplayer/skills/<skill>.json
 ```
 
+这里的“外部”只表示技能定义位于 BotPlayer JAR 外，由服务器管理员本地安装和审核；它
+不是远程在线技能市场，也不允许 bot 或 LLM 在运行时联网下载技能。
+
 只允许声明式 DAG 组合已注册技能。禁止：
 
 - 任意 Java/JS/Python；
@@ -1305,6 +1413,10 @@ interface AiProvider {
 9. 输出 JSON Schema 与工具约束；
 10. token、时间和成本预算。
 
+P6 首次接入时，记忆接口使用有界内存对话窗口和可选的空 `MemoryRetriever`；只有 P7
+长期存储通过后，才允许向上下文加入跨重启检索结果。P6 不能提前依赖尚未验收的 SQLite
+长期记忆。
+
 不发送：
 
 - API Key；
@@ -1351,11 +1463,24 @@ interface AiProvider {
 1. 环境变量；
 2. Docker/Kubernetes secret；
 3. 操作系统或部署平台密钥管理；
-4. 后期可选：服务端 AES-GCM 密文，主密钥仍必须来自外部 secret。
 
-配置只保存 `credentialId`，状态界面只显示 provider、可用性和指纹/末四位。禁止：
+每个 bot 只保存不含 secret 的 AI 引用：
 
-- `/bot apikey sk-...`；
+```java
+record AiProfileRef(
+    String providerId,
+    String credentialId,
+    String modelPolicyId
+) {}
+```
+
+解析顺序为“每 bot 明确引用 → 服务器默认引用 → 无 AI provider”。`credentialId` 只能
+指向服务端部署环境中的 secret；模型无权选择或修改它。管理员通过停服配置、部署平台或
+未来受保护的管理控制面绑定引用，不能通过普通聊天传入 Key。
+
+状态界面只显示 provider、可用性和不可逆指纹/末四位。禁止：
+
+- `/botplayer apikey sk-...`；
 - 客户端配置；
 - 网络 payload；
 - 世界 NBT/SavedData；
@@ -1398,7 +1523,7 @@ Bot 应向玩家诚实报告“AI 服务暂时不可用，但我会先保证安�
 ### 12.2 存储分工
 
 - `DataAttachment`：少量玩家运行标记，不存大日志；
-- Overworld `SavedData`：bot 身份索引、owner、生命周期状态、当前计划指针、数据库 schema 版本；
+- Overworld `SavedData`：bot 身份、player UUID、owner、autoload 和生命周期索引的权威源；
 - SQLite WAL：语义事件、情景、事实、空间索引、对话摘要、技能统计；
 - SQLite FTS5/BM25：第一版文本检索；
 - 可选 `EmbeddingProvider`：以后接本地或独立服务，不与 DeepSeek 强耦合。
@@ -1415,6 +1540,13 @@ Bot 应向玩家诚实报告“AI 服务暂时不可用，但我会先保证安�
 ```
 
 不得把数据库放入模组 JAR 或客户端目录。服务器复制世界备份时应包含该目录。
+
+阶段职责：
+
+- P1 建立最小 roster `SavedData`，负责身份、owner、autoload、版本和 playerdata 关联；
+- P7 扩展计划/承诺/记忆指针，并加入 SQLite 与迁移；
+- SQLite `bots` 行只是查询和外键副本，不是身份权威源；
+- SavedData 与 SQLite 不一致时禁止自动覆盖，先进入诊断/迁移流程。
 
 ### 12.3 核心表
 
@@ -1471,7 +1603,9 @@ dialogue_summaries(...);
 locations(...);
 ```
 
-具体 SQL 由 migration 管理，业务代码使用 repository 接口，不拼接 SQL。
+SQLite 中的 `bots` 必须记录与 SavedData 对应的 `profile_revision`；不能单独通过数据库
+修改 UUID、owner 或 autoload。具体 SQL 由 migration 管理，业务代码使用 repository
+接口，不拼接 SQL。
 
 ### 12.4 写入模型
 
@@ -1722,9 +1856,12 @@ interface ServerCommand<T> {
 
 ## 16. 推荐包结构与类职责
 
+本节是概念职责分组，不要求 P0/P1 先创建空包。具体文件名以当前代码和 4.1 映射为准；
+新增包时保持依赖方向即可，是否移动已有类必须单独重构并更新文档。
+
 ```text
 src/main/java/io/github/greytaiwolf/botplayer/
-  BotPlayerMod.java
+  BotPlayer.java
   api/
     action/
     skill/
@@ -1738,7 +1875,9 @@ src/main/java/io/github/greytaiwolf/botplayer/
     network/
     registry/
     bridge/
-  player/
+  kernel/
+  identity/
+  lifecycle/
   action/
   inventory/
   navigation/
@@ -1779,14 +1918,14 @@ docs/
 
 | 包 | 类 | 职责 |
 |---|---|---|
-| root | `BotPlayerMod` | 模组入口，仅完成装配 |
-| config | `BotPlayerServerConfig` | 服务端行为与上限 |
+| root | `BotPlayer` | 模组入口，仅完成装配 |
+| config | `BotPlayerConfig` | 当前服务端行为与上限；后续可分 schema |
 | config | `BotPlayerClientConfig` | 仅客户端显示偏好 |
 | player | `BotLifecycleManager` | 生命周期唯一入口 |
 | player | `BotServerPlayer` | ServerPlayer 子类标记 |
 | player | `BotConnection` | 虚拟连接 |
 | player | `BotGamePacketListener` | bot listener |
-| player | `BotInstanceHandle` | 当前实例间接引用 |
+| lifecycle | `BotRuntimeHandle` | 当前实例间接引用与未来 generation |
 | action | `BotActionExecutor` | 动作队列与 Tick |
 | action | `ActionValidatorChain` | Guard 编排 |
 | action | `ActionLedger` | 幂等与结果 |
@@ -1820,7 +1959,7 @@ docs/
 | coordination | `SharedTaskBoard` | 多 bot 任务 |
 | integration | `BotIntegrationRegistry` | 模组适配器 |
 | diagnostics | `BotDiagnosticsService` | 状态、指标、诊断导出 |
-| command | `BotPlayerCommands` | `/bot` 命令树 |
+| command | `BotPlayerCommands` | `/botplayer` 命令树 |
 
 ### 16.2 平台桥
 
@@ -1833,17 +1972,26 @@ interface PlayerActionBridge {
     InteractionResult interact(BotServerPlayer player, Entity target, InteractionHand hand);
     void applyInput(BotServerPlayer player, PlayerInputState input);
     void syncProgrammaticMovement(BotServerPlayer player);
+}
+
+interface PlayerLifecycleBridge {
     BotServerPlayer respawnViaPlayerList(BotServerPlayer oldPlayer);
 }
 ```
 
-核心技能只看到 `BotActionExecutor`，甚至不直接看到该 bridge。
+核心技能只看到 `BotActionExecutor`，不直接看到任何 bridge。
+`PlayerLifecycleBridge` 只允许 `BotLifecycleManager` 调用；动作或技能层无权主动绕过死亡
+状态机请求重生。
 
 ---
 
 ## 17. 配置、权限、命令与网络
 
 ### 17.1 配置分层
+
+**当前实现**只有 NeoForge `SERVER` 配置，准确键、默认值和文件位置见
+[CONFIGURATION_CN.md](CONFIGURATION_CN.md)。下面三个文件与 TOML 示例是 P1–P10
+逐步实现的**目标 schema**，当前加入这些键不会生效。
 
 建议文件：
 
@@ -1927,27 +2075,38 @@ botplayer.debug
 
 ### 17.3 命令设计
 
+当前代码只有：
+
 ```text
-/bot create <name> [owner]
-/bot spawn <bot>
-/bot despawn <bot>
-/bot remove <bot> confirm
-/bot list
-/bot status <bot>
-/bot stop <bot>
-/bot follow <bot> <player>
-/bot task <bot> <text...>
-/bot cancel <bot> [task]
-/bot owner <bot> set <player>
-/bot trust <bot> add|remove <player>
-/bot ai status [bot]
-/bot ai test [bot]
-/bot memory inspect <bot> [query]
-/bot memory forget <bot> <scope> confirm
-/bot skills list [bot]
-/bot skills inspect <skill>
-/bot diagnostics <bot>
-/bot reload
+/botplayer spawn <name>
+/botplayer list
+/botplayer remove <name>
+```
+
+`/botplayer` 是永久 canonical root；`remove` 只卸载在线 bot，不删除 playerdata。
+下面是在同一 root 上逐阶段扩展的目标接口，当前不可用的子命令不能提前宣传：
+
+```text
+/botplayer create <name> [owner]
+/botplayer spawn <bot>
+/botplayer despawn <bot>
+/botplayer remove <bot> confirm
+/botplayer list
+/botplayer status <bot>
+/botplayer stop <bot>
+/botplayer follow <bot> <player>
+/botplayer task <bot> <text...>
+/botplayer cancel <bot> [task]
+/botplayer owner <bot> set <player>
+/botplayer trust <bot> add|remove <player>
+/botplayer ai status [bot]
+/botplayer ai test [bot]
+/botplayer memory inspect <bot> [query]
+/botplayer memory forget <bot> <scope> confirm
+/botplayer skills list [bot]
+/botplayer skills inspect <skill>
+/botplayer diagnostics <bot>
+/botplayer reload
 ```
 
 危险命令要求明确确认 token。API Key 不提供聊天命令输入。
@@ -2037,7 +2196,7 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 - 默认情况下的私聊原文；
 - 无必要的玩家真实标识。
 
-`/bot diagnostics` 导出经过脱敏的状态、最近失败码、版本和环境指纹，不导出 secret。
+`/botplayer diagnostics` 导出经过脱敏的状态、最近失败码、版本和环境指纹，不导出 secret。
 
 ---
 
@@ -2052,6 +2211,9 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 - 前一阶段验收不回归；
 - 合并前 CI 全绿。
 
+复选框表示对应代码或文档是否进入当前分支，不等于整个阶段验收通过。“部分已编码但尚未
+自动验证”的项目会拆成已完成的首版入口和未完成的测试/硬化项。
+
 ### P0：工程基线
 
 **目标**：得到可构建、可启动、可测试、可持续开发的 NeoForge 1.21.1 工程。
@@ -2061,15 +2223,19 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 - [x] 初始化 Gradle、NeoForge 1.21.1、Java 21 toolchain；
 - [x] 固定可复现的 NeoForge 与插件版本；
 - [x] 设置模组 ID、包名、版本和 MIT license；
-- [ ] 建立本文档规定的包骨架；
-- [ ] 建立 common/client/server 配置注册；
-- [ ] 建立日志与脱敏工具；
+- [x] 建立 P0/P1 当前所需包；
+- [ ] 加入包依赖方向的自动检查；后续阶段按需创建目标职责包；
+- [x] 建立当前 server 配置注册；
+- [ ] 建立后续 common/client 配置和配置迁移；
+- [x] 建立基础日志；
+- [ ] 建立统一脱敏工具；
 - [ ] 建立 `src/test` 和 `src/gametest`；
 - [ ] 添加最小启动 GameTest；
 - [ ] 添加 dedicated server 启动 smoke test；
-- [ ] 建立 GitHub Actions：编译与构件已落地，单测和 GameTest 待加入；
+- [x] 建立 GitHub Actions 编译与构件上传；
+- [ ] 把单元测试和 GameTest 加入 CI；
 - [ ] 建立代码格式、静态检查和依赖锁；
-- [x] 添加 `THIRD_PARTY_NOTICES.md` 空基线；
+- [x] 添加 `THIRD_PARTY_NOTICES.md` 研究与发布审查基线；
 - [x] 添加架构决策目录 `docs/adr/`；
 - [x] 记录开发命令和 Java 21 要求。
 
@@ -2083,7 +2249,7 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 - 产出 JAR 能被 NeoForge 识别；
 - 日志中无 secret 和开发绝对路径泄漏。
 
-退出产物：`0.0.1-dev` 工程基线。
+退出产物：P0 可启动、可测试的工程基线；当前开发版本号不作为验收依据。
 
 ### P1：真实服务端玩家内核
 
@@ -2091,22 +2257,32 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 
 任务清单：
 
-- [ ] 实现 `BotIdentity`、稳定 UUID 和 profile store；
-- [ ] 实现名字/UUID/真人冲突检查；
+- [x] 实现临时名字派生 UUID；
+- [ ] 实现独立 `BotIdentity`、稳定 UUID、roster 和 profile store；
+- [x] 实现在线名字/UUID/真人冲突检查；
+- [ ] 实现离线 roster、playerdata、白名单/封禁 profile 冲突检查；
 - [x] 实现 `BotServerPlayer` 首版内核；
-- [x] 实现 `BotConnection`；
-- [x] 实现 `BotGamePacketListener`；
-- [ ] 实现 `BotLifecycleManager` 和事务回滚；
-- [ ] 实现 `BotInstanceHandle`：当前稳定 handle 已完成，generation 尚待加入；
+- [x] 实现 `BotConnection` 和 `BotGamePacketListener` 首版；
+- [ ] 完成发送回调、keepalive、teleport ack 和连接指标；
+- [x] 实现 `BotLifecycleManager` 与首版生成失败回滚；
+- [ ] 完成所有故障点的事务回滚、残留诊断和故障注入测试；
+- [x] 实现跨重生 `BotRuntimeHandle`；
+- [ ] 加入 generation 和旧实例引用失效检测；
 - [x] 完成登录监听器窄 Mixin；
 - [x] 完成重生实例窄 Mixin；
-- [ ] 走标准 playerdata 读取和保存；
-- [ ] 实现 `/bot create|spawn|despawn|list|status`；
-- [ ] 实现关服顺序保存；
+- [x] 完成正常死亡 TAIL 观察 Mixin；
+- [x] 接入标准 playerdata 登录/断开路径并保留既有保存位置；
+- [ ] 完成 playerdata 保存/恢复 GameTest；
+- [x] 实现 `/botplayer spawn|remove|list`；
+- [ ] 实现 roster 后的 create/despawn/status/永久删除确认命令；
+- [x] 实现关服幂等卸载、逐 bot 异常隔离和 manager 清理；
+- [ ] 完成关服保存、异常和重启恢复测试；
 - [ ] 实现自动恢复和每 Tick 生成限流；
 - [x] 实现死亡延迟重生；任务暂停占位待动作运行时；
-- [ ] 实现主世界/下界/末地切换：内核路径已写，GameTest 尚未验收；
-- [ ] 实现区块跟踪同步和残留检测：同步已写，残留诊断待完成；
+- [x] 写入主世界/下界/末地切换首版内核路径；
+- [ ] 完成三维度 GameTest；
+- [x] 写入连接位置与区块跟踪刷新；
+- [ ] 完成普通玩家 ticket、方块实体 Tick、旧 ticket 释放和残留诊断；
 - [ ] 添加 lifecycle 诊断。
 
 GameTest：
@@ -2152,6 +2328,7 @@ GameTest：
 - [ ] ACL、一人写锁、距离和生命周期校验；
 - [ ] GUI 打开时 `InventoryMutationGate`；
 - [ ] 危险/死亡/维度切换强制关闭；
+- [ ] 提供可由 P4 调用的 `forceClose(DANGER)`；P2 使用测试触发器验收；
 - [ ] 物品守恒诊断。
 
 GameTest：
@@ -2173,7 +2350,7 @@ GameTest：
 
 验收：所有基础世界变化都可以追溯到动作结果；压力测试无物品复制。
 
-退出产物：`0.1.0-alpha`。
+退出产物：`0.1.0-alpha.N` 系列达到 P2 完成门槛；当前 `alpha.1` 尚未达到。
 
 ### P3：感知、事件和玩家活动理解
 
@@ -2201,7 +2378,7 @@ GameTest：
 - [ ] 方块/容器改变使旧事实 stale；
 - [ ] 挖矿、建造、战斗、农耕活动场景；
 - [ ] 低置信度使用不确定表达；
-- [ ] TPS 压力下降频但 L0 不停；
+- [ ] TPS 压力下降低非关键感知频率；L0 不受影响的集成验收放到 P4；
 - [ ] 同一回放产生确定活动推断。
 
 验收：bot 可引用事件证据回答“刚才发生了什么/我在做什么”，且不会声称知道未感知事件。
@@ -2239,9 +2416,12 @@ GameTest：
 - [ ] 无路可走时诚实返回 `NO_PATH`；
 - [ ] API 完全断开时仍会避险。
 
-### P5：技能系统与第一条完整生存闭环
+### P5：技能系统与原版能力扩展
 
-**目标**：用可组合、可恢复、可验证的技能完成从空手到铁工具的生存流程。
+**目标**：先完成可组合、可恢复、可验证的技能运行时和第一条生存闭环，再沿 P5B–P5D
+扩展原版玩法。P10 只硬化已经存在的能力，不能第一次实现核心玩法。
+
+#### P5A：技能运行时与第一条生存闭环
 
 任务清单：
 
@@ -2275,6 +2455,47 @@ GameTest：
 
 退出产物：`0.2.0-alpha` 的本地智能执行基础。
 
+#### P5B：生产、工作站与日常生活
+
+任务与验收：
+
+- [ ] 2×2/3×3 制作、熔炉、高炉、烟熏炉；
+- [ ] 切石、锻造、铁砧、砂轮、附魔、酿造、织布和制图；
+- [ ] 作物、树苗、甘蔗、竹子、仙人掌等种植与补种；
+- [ ] 驯服、喂养、繁殖、剪毛、挤奶、蜂蜜、拴绳和圈养；
+- [ ] 钓鱼、狩猎、食物与工具维护；
+- [ ] 村民和流浪商人交易；
+- [ ] 水桶/流体、打火石、告示牌和书等普通物品交互；
+- [ ] 所有工作站通过真实菜单、经验、燃料、时间和物品守恒验证。
+
+#### P5C：运输、探索、进程与高级战斗
+
+任务与验收：
+
+- [ ] 船、矿车、坐骑和鞘翅；
+- [ ] 地图、指南针、磁石、末影珍珠和其他移动物品；
+- [ ] 下界交通、要塞、末地进入与返回；
+- [ ] 盾、弓、弩、三叉戟、药水和团队战斗；
+- [ ] 袭击、试炼密室、考古和主要 Boss；
+- [ ] 经验、配方书、统计和进度的保存与验收；
+- [ ] 资源准备、失败撤退、死亡恢复和安全返程。
+
+#### P5D：建筑与红石
+
+任务与验收：
+
+- [ ] 小型蓝图、选址、材料预算和分层施工；
+- [ ] 方块旋转、镜像、连接、含水和其他 BlockState；
+- [ ] 脚手架、拆除、世界差异检测、中断和重启恢复；
+- [ ] 杠杆、按钮、压力板及红石组件状态理解；
+- [ ] 按已验证蓝图构建基础电路并做功能测试；
+- [ ] 大型模块化建筑、种子和修复流程；
+- [ ] 真人修改施工区时暂停并重新确认，不覆盖玩家作品。
+
+P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并行推进，但所有
+[原版能力矩阵](VANILLA_CAPABILITY_MATRIX_CN.md) 中的 REQUIRED ID 必须在进入 P10
+发布硬化前已经实现并有自动测试。
+
 ### P6：DeepSeek、聊天和工具防火墙
 
 **目标**：中文自然语言委托能安全转成已注册技能计划，API 故障不影响服务器 Tick。
@@ -2286,6 +2507,7 @@ GameTest：
 - [ ] 配置化模型策略；
 - [ ] request scheduler、并发、取消和 deadline；
 - [ ] context assembler 和 token budget；
+- [ ] 有界内存对话窗口与可选空 `MemoryRetriever`；P7 后再启用长期检索；
 - [ ] ToolCallCodec 与严格 schema；
 - [ ] ToolFirewall；
 - [ ] prompt injection 防线；
@@ -2317,7 +2539,7 @@ GameTest：
 
 任务清单：
 
-- [ ] SavedData 索引与 schema；
+- [ ] 扩展 P1 roster SavedData：加入计划、承诺、记忆指针与迁移；
 - [ ] SQLite WAL、migration、repository；
 - [ ] DB writer/reader 线程；
 - [ ] 工作、情景、语义、空间、社交和技能记忆；
@@ -2405,7 +2627,8 @@ GameTest：
 
 ### P10：硬化、性能与发布
 
-**目标**：达到可公开测试和长期运行的质量。
+**目标**：验证和硬化已经实现的能力，达到可公开测试和长期运行的质量。P10 不接受把
+尚未开发的 REQUIRED 原版玩法临时塞入发布范围。
 
 任务清单：
 
@@ -2424,6 +2647,8 @@ GameTest：
 - [ ] 完整 `THIRD_PARTY_NOTICES.md`；
 - [ ] 发布 JAR、校验和、已知限制；
 - [ ] 1.0 迁移策略和支持矩阵。
+- [ ] 原版能力矩阵所有 REQUIRED ID 达到 `VERIFIED`；
+- [ ] OUT_OF_SCOPE/POST_1_0 项目在发布说明中逐项列明。
 
 正式发布门槛：
 
@@ -2432,6 +2657,7 @@ GameTest：
 - API 故障不阻塞 Tick；
 - 性能达到配置目标；
 - P0–P9 回归全部通过；
+- P5A–P5D 与所有 REQUIRED 原版能力回归通过；
 - 第三方许可证与 notice 审核完成；
 - 文档不承诺尚未实现的能力。
 
@@ -2439,14 +2665,16 @@ GameTest：
 
 ### 19.1 版本节点
 
-| 版本 | 阶段 | 用户可见含义 |
+版本号表示开发序列，不单独证明能力已完成；具体成熟度必须同时查看实现状态、能力矩阵、
+测试和对应 Release 说明。当前 `0.1.0-alpha.1` 是 P0/P1 内核快照，不代表 P2 已完成。
+
+| 版本序列 | 阶段目标 | 用户可见含义 |
 |---|---|---|
-| `0.0.1-dev` | P0 | 工程能启动和测试 |
-| `0.1.0-alpha` | P1–P2 | 稳定真实玩家 + 基础动作 + 背包 |
+| `0.1.0-alpha.N`（当前） | P0–P2 开发 | 从内核快照逐步达到稳定真实玩家、基础动作和背包 |
 | `0.2.0-alpha` | P3–P5 | 感知、导航、第一条生存闭环 |
 | `0.3.0-beta` | P6–P8 | DeepSeek、记忆、模组适配 |
 | `0.4.0-beta` | P9 | 多 bot 协作 |
-| `1.0.0` | P10 | 硬化发布 |
+| `1.0.0` | P10 + 原版能力矩阵 | 所有 REQUIRED ID 已验证；仅明确 OUT_OF_SCOPE 可排除 |
 
 ---
 
@@ -2466,6 +2694,8 @@ GameTest：
 
 ### 20.2 生命周期矩阵
 
+下表中的 `✓` 表示**必须覆盖的测试组合**，不表示当前已经通过。当前分支尚无 GameTest。
+
 | 用例 | 单人集成服 | 专用服 | 零真人 | 多 bot |
 |---|---:|---:|---:|---:|
 | 生成/卸载 | ✓ | ✓ | ✓ | ✓ |
@@ -2476,6 +2706,8 @@ GameTest：
 | 冲突/回滚 | ✓ | ✓ | ✓ | ✓ |
 
 ### 20.3 动作与物品矩阵
+
+下表同样是必测矩阵，不是当前结果：
 
 | 场景 | 正常 | 保护拒绝 | 世界中途改变 | 重复请求 | 取消 |
 |---|---:|---:|---:|---:|---:|
@@ -2580,18 +2812,23 @@ GameTest：
 
 本仓库使用 MIT License，但 MIT 许可证不自动允许直接合并任何许可证的代码。研究相似项目时执行以下边界：
 
-| 项目/类型 | 可借鉴 | 代码处理 |
-|---|---|---|
-| 用户旧 `FakeAiPlayer` | 空手右键背包的产品思路、一人写锁和会话规则 | 不复制其他 AI 架构；如复制具体代码必须核实作者和许可证 |
-| Fabric Carpet | `ServerPlayer` + 虚拟连接 + ActionPack 思路 | 可研究设计；复制 MIT 代码须保留版权与 notice，并重新适配 1.21.1 |
-| SiliconeDolls | NeoForge 假玩家生命周期思路 | 研究公开架构；不默认复制 |
-| Mineflayer | 能力分类、插件/技能边界 | 外部 Node 客户端代码不并入核心 |
-| Baritone | 分层寻路、成本、动态重算 | LGPL-3.0；不得把其源码直接并入 MIT 核心，优先独立重写算法思想 |
-| Voyager | 技能库、环境反馈、自验证 | 不执行模型生成脚本；代码复用需保留其许可 |
-| Mindcraft | 多模型、对话、循环检测 | 不采用任意代码执行；复用前核对许可 |
-| CraftAssist | Dialogue/Task/Memory 分层 | 重新以 Java 和当前 API 实现 |
-| Malmo/MineDojo | 观察—动作—成功条件和测试场景 | 用作测试设计，不作为运行时 |
-| 无明确许可证仓库 | 产品思想和公开行为观察 | 不复制代码、资源、文本或数据 |
+| 项目/类型 | 固定 commit 或参考入口 | 可借鉴 | 代码处理 |
+|---|---|---|---|
+| [用户旧 FakeAiPlayer](https://github.com/GreyTaiWolf/FakeAiPlayer) | `b1a0597a21a26f054784b5d1284343aae28c59f9` | 仅空手右键背包的产品思路 | 不参考其他架构；未复制代码 |
+| [Fabric Carpet](https://github.com/gnembon/fabric-carpet) | `6f607be9f353f0244e1c0f2053f319b99affada6` | `ServerPlayer`、虚拟连接、ActionPack 思路 | 仅研究；复制前重新做许可证审查 |
+| [SiliconeDolls](https://github.com/Anvil-Dev/SiliconeDolls) | `439d9aae7665df99bfd4a742afc928d72aff0ae0` | NeoForge 假玩家生命周期思路 | 研究公开架构；未复制代码 |
+| [Mineflayer](https://github.com/PrismarineJS/mineflayer) | 2026-07-26 访问默认分支 | 能力分类、插件/技能边界 | 外部 Node 客户端代码不并入核心 |
+| [Baritone](https://github.com/cabaletta/baritone) | 2026-07-26 访问默认分支 | 分层寻路、成本、动态重算 | 不把源码直接并入 MIT 核心，优先独立实现 |
+| [Voyager](https://github.com/MineDojo/Voyager) | 2026-07-26 访问论文与公开仓库 | 技能库、环境反馈、自验证 | 不执行模型生成脚本；复用前核对许可 |
+| [Mindcraft](https://github.com/mindcraft-bots/mindcraft) | 2026-07-26 访问默认分支 | 多模型、对话、循环检测 | 不采用任意代码执行；复用前核对许可 |
+| [CraftAssist](https://github.com/facebookresearch/craftassist) | 2026-07-26 访问默认分支 | Dialogue/Task/Memory 分层 | 以 Java 独立实现 |
+| [Project Malmo](https://github.com/microsoft/malmo) / [MineDojo](https://github.com/MineDojo/MineDojo) | 2026-07-26 访问论文与公开仓库 | 观察—动作—成功条件和测试场景 | 用作测试设计，不作为运行时 |
+| 无明确许可证仓库 | 固定 URL/commit | 产品思想和公开行为观察 | 不复制代码、资源、文本或数据 |
+
+工程基线来自
+[NeoForge 1.21.1 ModDevGradle MDK commit `3e2e23d`](https://github.com/NeoForgeMDKs/MDK-1.21.1-ModDevGradle/commit/3e2e23df8e18c7e39c0bcb007fae8b3f423246e1)，
+随后固定到本仓库声明的 NeoForge 21.1.244。MDK 模板与研究项目不是同一类来源，均须在
+发布前按其许可证和实际复制范围复核。
 
 发布前必须：
 
@@ -2647,7 +2884,7 @@ GameTest：
 
 - ADR-0001：bot 主体使用 `BotServerPlayer extends ServerPlayer`；
 - ADR-0002：AI 只做高层决策，世界操作由确定性技能执行；
-- ADR-0003：1.21.1 允许两个窄 PlayerList Mixin；
+- ADR-0003：1.21.1 允许两个窄 PlayerList 构造注入点及经 ADR 审核的观察点；
 - ADR-0004：客户端参与仅用于 UI，AI 和 secret 只在服务端；
 - ADR-0005：长期记忆使用 SavedData 索引 + SQLite WAL/FTS；
 - ADR-0006：外部技能只允许声明式 DAG；
@@ -2670,7 +2907,7 @@ GameTest：
 
 ## 25. 开发顺序与当前执行基线
 
-严格顺序：
+发布验收采用严格顺序：
 
 ```text
 P0 工程
@@ -2678,7 +2915,7 @@ P0 工程
 → P2 动作与背包
 → P3 感知
 → P4 导航安全
-→ P5 生存技能
+→ P5A 技能运行时与基础生存
 → P6 DeepSeek
 → P7 记忆目标
 → P8 模组适配
@@ -2686,11 +2923,22 @@ P0 工程
 → P10 硬化
 ```
 
-可以提前定义后续阶段的接口和测试夹具，但不能为了展示 AI 聊天而跳过玩家生命周期、动作校验或结果验证。
+研发可以在前一阶段验收未完成时提前实现下一阶段的独立内核、接口和测试夹具；但不能把
+后一阶段演示当作前一阶段通过，也不能为了展示 AI 聊天而跳过玩家生命周期、动作校验或
+结果验证。当前正是“P0 构建基线已通过、P0 GameTest 尚缺，同时提前实现 P1 内核”的状态。
+
+P5B–P5D 是横向原版能力扩展轨：在各自依赖完成后可与 P6–P9 并行，但所有 REQUIRED
+能力必须在 P10 前完成，P10 不能承担首次功能开发。
 
 第一轮实施只做 P0 与 P1。完成标准不是“bot 出现在世界里”，而是它可以反复生成、保存、卸载、死亡、重生、跨维度和重启恢复，且始终保持真实 `BotServerPlayer`、有效虚拟连接、唯一实例和干净的区块/运行时引用。
 
-第二轮 P2 完成后，项目才拥有可以信任的“身体”。P3–P5 让它具备本地感知和游戏技能。P6 才把 DeepSeek 接到已经受控的身体上。P7–P10 再逐步建立长期玩家行为。
+第二轮 P2 完成后，项目才拥有可以信任的“身体”。P3–P5A 让它具备本地感知和第一条
+游戏技能闭环。P6 才把 DeepSeek 接到已经受控的身体上；P5B–P5D 与 P7–P9 扩展完整
+原版、长期记忆、模组和多 bot 能力，最后由 P10 统一硬化。
+
+当前完成度和下一批任务始终以
+[IMPLEMENTATION_STATUS_CN.md](IMPLEMENTATION_STATUS_CN.md) 为准；原版玩法广度以
+[VANILLA_CAPABILITY_MATRIX_CN.md](VANILLA_CAPABILITY_MATRIX_CN.md) 为准。
 
 ---
 

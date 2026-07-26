@@ -1,52 +1,124 @@
 # BotPlayer
 
-面向 Minecraft Java 的真实服务端玩家 AI 框架。
+[![Build](https://github.com/GreyTaiWolf/BotPlayer/actions/workflows/build.yml/badge.svg?branch=agent%2Fp0-p1-server-player-kernel)](https://github.com/GreyTaiWolf/BotPlayer/actions/workflows/build.yml)
 
-当前目标平台：
+BotPlayer 是面向 Minecraft Java 的真实服务端玩家 AI 框架。项目首先支持
+Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 
-- Minecraft 1.21.1
-- NeoForge 21.1.244
-- Java 21
-- 当前开发版本 `0.1.0-alpha.1`
+> **当前状态：早期开发内核，不是可用于重要存档的正式版本。**
+>
+> 现在已经可以生成、列出和移除一个真实的 `BotServerPlayer`，但它还没有移动、采集、
+> 聊天、DeepSeek、记忆和背包 GUI 等完整能力。请以
+> [当前实现状态](docs/IMPLEMENTATION_STATUS_CN.md) 为准，不要把路线图中的目标当成已完成。
 
-BotPlayer 的主体直接继承 `ServerPlayer`，进入原版 `PlayerList`、玩家 NBT、死亡/重生、
-维度、计分板、统计、进度和区块跟踪流程。它不是自定义生物，也不继承 NeoForge
-`FakePlayer`。DeepSeek 只负责对话、理解和高层规划；所有世界动作最终由受权限约束、
-可验证、可中断的 Java 技能执行。
+## 设计目标
 
-## 当前进度
+BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮生物或只会执行命令的 NPC：
 
-仓库已进入 P0/P1：
+- 主体直接继承原版 `ServerPlayer`，不注册自定义玩家实体；
+- 使用原版玩家背包、装备、生命、饥饿、经验、死亡、重生、维度和 playerdata；
+- 真人客户端看到标准玩家模型、动作、装备和名称；
+- DeepSeek 负责聊天、意图理解和高层规划；
+- Java 动作与技能系统负责真正移动、挖掘、放置、战斗、制作和验证结果；
+- 通过感知、世界模型和记忆理解玩家正在做什么、附近发生了什么、以前发生过什么；
+- 通过内部 Java 技能和受审核的外部声明式技能包逐步理解原版及模组玩法；
+- 所有动作服从服务器权限、保护事件、安全策略和资源预算。
 
-- NeoForge 1.21.1 MDK 工程基线；
-- 真实 `BotServerPlayer`、虚拟连接与本地 packet listener；
-- `placeNewPlayer` 和 `respawn` 两个窄 Mixin；
+完整定义见
+[架构、编码规范与 P0–P10 路线图](docs/ARCHITECTURE_AND_ROADMAP_CN.md)。
+
+## 当前技术基线
+
+| 项目 | 当前值 |
+|---|---|
+| Minecraft | `1.21.1` |
+| NeoForge | `21.1.244` |
+| Java | `21` |
+| ModDevGradle | `2.0.142` |
+| Gradle Wrapper | `9.2.1` |
+| 模组 ID | `botplayer` |
+| 开发版本 | `0.1.0-alpha.1` |
+| 发布状态 | 尚未发布，仅开发构件 |
+
+版本号是开发标识，不代表 P1/P2 已全部验收。
+
+## 已经实现
+
+- `BotServerPlayer extends ServerPlayer`；
+- 本地 `EmbeddedChannel` 虚拟连接；
+- bot 专用 `BotGamePacketListener`；
+- 登录时替换 packet listener 的窄 Mixin；
+- 重生时保持 `BotServerPlayer` 类型的窄 Mixin；
+- 只在原版死亡真正完成后进入重生流程；
+- 临时、确定性的名字派生 UUID；
+- 既有 playerdata 检测与保存位置保留；
 - 服务器线程生命周期管理；
-- 原版死亡后延迟重生；
+- 自动重生、维度切换基础路径和区块跟踪刷新；
+- 生成失败回滚、幂等断开和停服异常隔离清理；
 - `/botplayer spawn|remove|list`；
-- GitHub Actions 构建基线；
-- 完整 P0–P10 架构与任务文档。
+- NeoForge server 配置；
+- GitHub Actions Java 21 完整构建。
 
-当前代码是开发内核，不应直接用于重要存档。持久 roster、完整生命周期 GameTest、
-背包 GUI、动作、感知、技能、DeepSeek 和记忆将按路线图依次实现。
+## 尚未实现
 
-## 文档
+- 稳定 roster、owner/ACL、自动恢复与数据迁移；
+- 生命周期 GameTest；
+- 空手主手右键打开 bot 背包；
+- 玩家输入、移动、挖掘、放置、攻击和容器动作；
+- 感知、世界事件、玩家活动理解和世界模型；
+- 寻路、安全反射、战斗、建造和生存技能；
+- DeepSeek API、聊天、工具防火墙和预算；
+- 分层长期记忆、目标恢复和模组适配；
+- 多 bot 协作与正式发布级性能验证。
 
-- [完整架构、代码职责与 P0–P10 路线图](docs/ARCHITECTURE_AND_ROADMAP_CN.md)
-- [当前实现状态](docs/IMPLEMENTATION_STATUS_CN.md)
-- [架构决策](docs/adr/README.md)
+## 快速开发验证
 
-## 开发
+### 前置条件
+
+- 64 位 JDK 21；
+- Git；
+- 能下载 Gradle、NeoForge 和 Maven 依赖的网络环境。
+
+### 构建
 
 ```bash
-./gradlew build
-./gradlew runServer
-./gradlew runClient
+git clone https://github.com/GreyTaiWolf/BotPlayer.git
+cd BotPlayer
+git switch agent/p0-p1-server-player-kernel
+./gradlew --no-daemon clean build
 ```
 
-需要 JDK 21。开发和 CI 必须使用仓库内 Gradle Wrapper。
+Windows PowerShell/CMD 使用：
 
-进入测试世界后，拥有配置权限等级的玩家可使用：
+```bat
+gradlew.bat --no-daemon clean build
+```
+
+构件位于 `build/libs/`。在当前开发阶段，规定的测试拓扑是客户端、服务端安装同一 JAR；
+客户端与专用服务器行为尚无自动验收，纯服务端安装也尚未验证。未来 P2 背包 screen
+需要客户端代码。
+
+当前实现仍在上述 `agent/p0-p1-server-player-kernel` 审查分支；该 PR 合并后，获取源码
+应改用仓库默认 `main`，无需再切换此临时分支。
+
+### 开发运行
+
+```bash
+./gradlew runClient
+./gradlew runServer
+```
+
+`runGameTestServer` 已配置，但仓库还没有首批 GameTest；加入测试前不把它视为有效验收。
+
+更完整的步骤见：
+
+- [安装与当前用法](docs/INSTALLATION_AND_USAGE_CN.md)
+- [开发指南](docs/DEVELOPMENT_CN.md)
+- [配置说明](docs/CONFIGURATION_CN.md)
+
+## 当前命令
+
+执行者需要达到 `permissions.commandPermissionLevel` 配置的原版权限等级，默认是 `2`。
 
 ```text
 /botplayer spawn <name>
@@ -54,14 +126,59 @@ BotPlayer 的主体直接继承 `ServerPlayer`，进入原版 `PlayerList`、玩
 /botplayer remove <name>
 ```
 
-## 安全边界
+名称必须是 1–16 位 ASCII 字母、数字或下划线。现阶段 UUID 由名称的小写形式派生：只改
+字母大小写仍得到同一临时 UUID，其他改名会得到新身份；当前没有重命名约束或迁移工具，
+因此不要把改名当作受支持操作。
 
-- API Key 只允许来自服务端环境变量或外部 secret，不进入世界、客户端、聊天或日志；
+## 文档导航
+
+- [文档总目录与维护规则](docs/README_CN.md)
+- [当前实现状态](docs/IMPLEMENTATION_STATUS_CN.md)
+- [完整架构与 P0–P10 路线图](docs/ARCHITECTURE_AND_ROADMAP_CN.md)
+- [原版玩法能力矩阵与发布门槛](docs/VANILLA_CAPABILITY_MATRIX_CN.md)
+- [安装与当前用法](docs/INSTALLATION_AND_USAGE_CN.md)
+- [当前配置](docs/CONFIGURATION_CN.md)
+- [开发与测试](docs/DEVELOPMENT_CN.md)
+- [架构决策记录](docs/adr/README.md)
+- [参与开发](CONTRIBUTING.md)
+- [安全策略](SECURITY.md)
+- [更新日志](CHANGELOG.md)
+- [第三方研究与许可证边界](THIRD_PARTY_NOTICES.md)
+
+## AI 与安全边界
+
+DeepSeek 尚未接入。后续接入必须满足：
+
+- API Key 只来自服务端环境变量或外部 secret；
+- 不通过聊天命令、客户端配置、世界 NBT、网络包或普通日志保存密钥；
 - LLM 不逐 Tick 控制，不直接运行代码、命令、脚本或任意 HTTP；
-- Bot 的挖掘、放置、交互和物品变化必须经过玩家动作入口及结果验证；
-- 未知模组玩法先询问或拒绝，不能用直接改 NBT/方块来伪装成功。
+- 模型只能提出结构化计划，不能直接改变方块、物品或玩家状态；
+- 每个有副作用的动作都要经过权限、风险、范围、幂等和结果验证；
+- 未知模组玩法先询问、适配或拒绝，不能用直接改数据来伪装成功。
+
+发现密钥泄漏或安全问题时请先阅读 [SECURITY.md](SECURITY.md)。
+
+## 开发路线
+
+```text
+P0 工程基线
+→ P1 真实服务端玩家内核
+→ P2 原子动作与背包 GUI
+→ P3 感知与玩家活动理解
+→ P4 导航与安全反射
+→ P5 生存技能闭环
+→ P6 DeepSeek 与聊天
+→ P7 长期记忆与目标
+→ P8 模组适配
+→ P9 多 bot 协作
+→ P10 硬化与发布
+```
+
+当前正在完成 P0/P1，下一批先补齐虚拟连接协议闭环，再实现 roster `SavedData`、自动恢复
+和生命周期 GameTest。
 
 ## License
 
-BotPlayer 使用 [MIT License](LICENSE)。参考项目只用于理解公开结构与行为；任何实际引入
-的依赖或代码都必须单独通过许可证审查。
+BotPlayer 自有代码使用 [MIT License](LICENSE)。参考项目只用于理解公开结构和行为；
+任何实际引入的依赖、代码、资源或提示模板都必须经过单独的许可证审查，详见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
