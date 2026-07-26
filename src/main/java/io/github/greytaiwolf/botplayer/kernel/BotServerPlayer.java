@@ -30,7 +30,6 @@ public final class BotServerPlayer extends ServerPlayer {
             BotRuntimeHandle runtimeHandle) {
         super(server, level, profile, clientInformation);
         this.runtimeHandle = runtimeHandle;
-        runtimeHandle.attach(this);
     }
 
     public static BotServerPlayer recreateForRespawn(

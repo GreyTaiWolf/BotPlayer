@@ -101,7 +101,12 @@ public final class BotLifecycleManager {
                         rotation.y,
                         rotation.x);
             }
-            runtime.state = BotLifecycleState.ACTIVE;
+            handle.attach(player);
+            if (player.isDeadOrDying()) {
+                onDeath(player);
+            } else {
+                runtime.state = BotLifecycleState.ACTIVE;
+            }
             BotPlayer.LOGGER.info(
                     "Spawned BotPlayer {} ({}) in {}", requestedName, botId, level.dimension().location());
             return player;
@@ -185,6 +190,12 @@ public final class BotLifecycleManager {
 
         int currentTick = server.getTickCount();
         for (RuntimeEntry runtime : List.copyOf(runtimes.values())) {
+            if (runtime.state == BotLifecycleState.DEAD
+                    && runtime.respawnAtTick < 0
+                    && BotPlayerConfig.AUTO_RESPAWN.get()) {
+                runtime.respawnAtTick =
+                        currentTick + BotPlayerConfig.RESPAWN_DELAY_TICKS.get();
+            }
             if (runtime.state != BotLifecycleState.DEAD
                     || runtime.respawnAtTick < 0
                     || currentTick < runtime.respawnAtTick) {

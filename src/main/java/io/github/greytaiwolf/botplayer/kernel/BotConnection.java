@@ -15,7 +15,7 @@ import org.jetbrains.annotations.NotNull;
 public final class BotConnection extends Connection {
     public BotConnection() {
         super(PacketFlow.SERVERBOUND);
-        ((ConnectionAccessor) this).botplayer$setChannel(new EmbeddedChannel());
+        ((ConnectionAccessor) (Object) this).botplayer$setChannel(new EmbeddedChannel());
     }
 
     @Override

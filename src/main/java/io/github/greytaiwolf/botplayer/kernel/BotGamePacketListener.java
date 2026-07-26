@@ -50,11 +50,16 @@ public final class BotGamePacketListener extends ServerGamePacketListenerImpl {
 
     @Override
     public void disconnect(@NotNull Component reason) {
-        disconnect(new DisconnectionDetails(reason));
+        onDisconnect(new DisconnectionDetails(reason));
     }
 
     @Override
     public void disconnect(@NotNull DisconnectionDetails details) {
+        onDisconnect(details);
+    }
+
+    @Override
+    public void onDisconnect(@NotNull DisconnectionDetails details) {
         if (closed.get()) {
             return;
         }
