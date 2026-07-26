@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "io.github.greytaiwolf.botplayer.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "ConnectionAccessor",
+    "PlayerListMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
