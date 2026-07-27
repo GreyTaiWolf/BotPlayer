@@ -71,7 +71,7 @@ build/libs/
 
 ## 当前命令
 
-`spawn`、`list` 和 `remove` 默认要求原版权限等级 `2`；`credentials` 改为精确 owner
+`spawn`、`list` 和 `remove` 默认要求原版权限等级 `2`；`settings` 改为精确 owner
 校验，不要求 OP。
 
 ### 生成
@@ -129,7 +129,7 @@ profile 不会自动删除。
 ### 配置客户端凭据
 
 ```text
-/botplayer credentials <name>
+/botplayer settings <name>
 ```
 
 规则与步骤：
@@ -241,7 +241,7 @@ keepalive、传送确认、跨维度和连接超时尚无自动化保证。请�
 - bot 必须当前在线；
 - 只有首次创建 profile 时持久记录的 owner 可以打开；
 - 控制台或命令方块首次创建的无 owner bot 当前不能认领；
-- `/botplayer credentials` 不接受 Key，只负责服务端 owner 校验和打开本地 Screen；
+- `/botplayer settings` 不接受 Key，只负责服务端 owner 校验和打开本地 Screen；
 - 本地凭据文件损坏时客户端会拒绝覆盖，并显示错误。
 
 ### 为什么不能打开背包

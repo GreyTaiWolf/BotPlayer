@@ -34,9 +34,9 @@ public final class BotPlayerCommands {
                                 .executes(context -> remove(
                                         context.getSource(),
                                         StringArgumentType.getString(context, "name")))))
-                .then(literal("credentials")
+                .then(literal("settings")
                         .then(argument("name", StringArgumentType.word())
-                                .executes(context -> credentials(
+                                .executes(context -> settings(
                                         context.getSource(),
                                         StringArgumentType.getString(context, "name")))))
                 .then(literal("list")
@@ -85,7 +85,7 @@ public final class BotPlayerCommands {
         return bots.size();
     }
 
-    private static int credentials(CommandSourceStack source, String name) {
+    private static int settings(CommandSourceStack source, String name) {
         if (!(source.getEntity() instanceof ServerPlayer requester)) {
             source.sendFailure(Component.literal(
                     "Only a real player can configure BotPlayer credentials"));

@@ -89,7 +89,7 @@ Tick 可以重新安排重生，但动态配置更改还没有专门 GameTest。
 | 4 | 最高管理权限 |
 
 生产服务器不要为了方便将它设为 `0`。当前一个权限值控制 `spawn`、`list` 和 `remove`。
-`/botplayer credentials <name>` 不读取这个值：它只允许真实玩家，并精确比较 roster 中
+`/botplayer settings <name>` 不读取这个值：它只允许真实玩家，并精确比较 roster 中
 持久 owner；提高 OP 等级或降低该配置都不能打开别人的凭据界面。trusted/observer ACL
 尚未实现。
 

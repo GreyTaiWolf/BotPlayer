@@ -123,7 +123,7 @@ src/main/templates/
 - 每个 binding 的 agentId 唯一且稳定，不能被另一个 bot 同时占用；
 - 严格字段/schema 校验、临时文件优先原子替换（不支持时同目录覆盖）、POSIX 权限尽力设置；
 - 读取损坏文件时拒绝加载和覆盖，错误与 `toString()` 不输出 secret；
-- `/botplayer credentials <name>` 只对活动 bot 的精确持久 owner 成功；OP 无绕过；
+- `/botplayer settings <name>` 只对活动 bot 的精确持久 owner 成功；OP 无绕过；
 - payload 只包含 serverInstanceId、botId、botName、agentId 和状态，不包含 Key、profile ID
   或 Key 派生信息；
 - owner 退出、bot 卸载和停服清除服务端运行时 agent binding。

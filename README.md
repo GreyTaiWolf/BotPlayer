@@ -54,7 +54,7 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - 临时、确定性的名字派生 UUID；
 - schema v1 持久 roster、规范名字、稳定 bot/player UUID、owner 和服务器实例 ID；
 - 只有持久 owner 可进入客户端凭据配置；
-- `/botplayer credentials <name>` 打开客户端本地 API Key GUI；
+- `/botplayer settings <name>` 打开客户端本地 API Key 设置界面；
 - 客户端可创建/替换凭据 profile、绑定/解绑 bot；每 bot 使用独立 agentId，profile 删除
   尚未实现；
 - 既有 playerdata 检测与保存位置保留；
@@ -123,14 +123,14 @@ gradlew.bat --no-daemon clean build
 ## 当前命令
 
 `spawn`、`list` 和 `remove` 需要达到 `permissions.commandPermissionLevel`，默认是 `2`。
-`credentials` 不要求 OP 等级，但只能由 roster 中记录的精确 owner 对活动 bot 执行；OP
+`settings` 不要求 OP 等级，但只能由 roster 中记录的精确 owner 对活动 bot 执行；OP
 也不能配置别人的 bot。
 
 ```text
 /botplayer spawn <name>
 /botplayer list
 /botplayer remove <name>
-/botplayer credentials <name>
+/botplayer settings <name>
 ```
 
 名称必须是 1–16 位 ASCII 字母、数字或下划线。现阶段 UUID 由名称的小写形式派生：只改

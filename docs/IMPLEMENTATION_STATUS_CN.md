@@ -63,7 +63,7 @@
 | `/botplayer spawn <name>` | 已完成 | 新 bot 出现在执行者位置；既有 playerdata 使用保存位置 |
 | `/botplayer list` | 已完成 | 列出本次服务器运行期内的 bot 和生命周期状态 |
 | `/botplayer remove <name>` | 已完成 | 从在线运行时卸载，不删除 playerdata |
-| `/botplayer credentials <name>` | 已完成 | 只允许活动 bot 的持久 owner；不要求 OP，OP 也不能绕过 owner |
+| `/botplayer settings <name>` | 已完成 | 只允许活动 bot 的持久 owner；不要求 OP，OP 也不能绕过 owner |
 | 服务端配置 | 已完成 | 最大数量、Tab、自动重生、重生延迟、区块刷新、命令权限 |
 | 客户端 API Key 管理 | 已完成 | owner 可在本地 GUI 创建/替换 credential profile、绑定/解绑 bot；profile 删除未实现 |
 | 多 bot 共用一个 Key | 已完成 | 多个 bot 可引用同一 credential profile，但每个 bot 使用独立 agentId；当前没有模型状态 |

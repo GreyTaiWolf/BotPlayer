@@ -9,7 +9,7 @@
 
 - 新增 schema v1 持久 bot roster，保存规范名字、稳定 bot/player UUID、owner 和
   `serverInstanceId`；
-- 新增 `/botplayer credentials <name>`：只有 roster 中精确 owner 可以打开本地界面，OP
+- 新增 `/botplayer settings <name>`：只有 roster 中精确 owner 可以打开本地界面，OP
   也不能越过 owner 检查；
 - 新增客户端本地 API Key 管理界面，可创建/替换 credential profile、绑定/解绑 bot；当前
   不提供 profile 删除；

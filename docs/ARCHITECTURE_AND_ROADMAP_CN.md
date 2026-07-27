@@ -2104,11 +2104,11 @@ botplayer.debug
 /botplayer spawn <name>
 /botplayer list
 /botplayer remove <name>
-/botplayer credentials <name>
+/botplayer settings <name>
 ```
 
 `/botplayer` 是永久 canonical root；`remove` 只卸载在线 bot，不删除 playerdata。
-`spawn/list/remove` 使用配置的原版权限等级；`credentials` 不接受 Key、不要求 OP，只允许
+`spawn/list/remove` 使用配置的原版权限等级；`settings` 不接受 Key、不要求 OP，只允许
 活动 bot 的精确持久 owner，OP 也不能绕过。
 下面是在同一 root 上逐阶段扩展的目标接口，当前不可用的子命令不能提前宣传：
 
