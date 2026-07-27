@@ -1,7 +1,7 @@
 # BotPlayer：NeoForge 1.21.1 完整架构、编码规范与 P0–P10 路线图
 
-> 文档状态：架构基线 v1.1
-> 更新日期：2026-07-26
+> 文档状态：架构基线 v1.2
+> 更新日期：2026-07-27
 > 目标仓库：`GreyTaiWolf/BotPlayer`
 > 第一目标平台：Minecraft Java 1.21.1、NeoForge 21.1.244、Java 21
 > 模组 ID：`botplayer`
@@ -94,7 +94,8 @@ Minecraft 内部所有玩家也属于实体继承体系，因此“不做新实�
 - 不把截图视觉模型作为基础感知手段；
 - 不扫描并发送整个世界给外部 API；
 - 不承诺自动理解任何未知模组的自定义 GUI 和隐藏机制；
-- 不把 API Key 放进聊天、客户端配置、网络包、世界 NBT 或普通日志；
+- 不把 API Key 放进聊天/命令参数、普通客户端配置、Minecraft payload、服务端、世界
+  NBT 或普通日志；Key 只进入 owner 客户端的独立本地凭据存储；
 - 不为了“看起来聪明”绕过原版规则直接修改世界；
 - P0–P2 不实现 DeepSeek、复杂寻路和长期自治。
 
@@ -112,7 +113,8 @@ Minecraft 内部所有玩家也属于实体继承体系，因此“不做新实�
 6. **可中断可恢复**：技能必须支持取消；长任务必须保存检查点。
 7. **能力渐进**：未知玩法宁可询问或拒绝，也不能编造会做。
 8. **线程隔离**：Minecraft 对象只在服务器主线程访问。
-9. **密钥隔离**：凭据与世界存档、客户端、对话和日志彻底分开。
+9. **密钥隔离**：凭据只存在于 owner 客户端的独立本地 store，与服务端、世界存档、
+   Minecraft payload、对话和日志分开。
 10. **版本隔离**：1.21.1 的 NMS/Mixin 细节集中在平台层，核心逻辑不散落版本判断。
 11. **兼容优先**：世界变化走普通玩家入口，让保护和事件模组有机会拦截。
 12. **可观测性**：每个目标、计划、技能和动作都有 ID、状态、原因和审计事件。
@@ -120,6 +122,8 @@ Minecraft 内部所有玩家也属于实体继承体系，因此“不做新实�
 ### 2.2 运行时强制不变量
 
 - 一个 `botId` 在任意时刻最多对应一个权威在线实例；
+- 每个世界/服务器拥有持久且不可由客户端指定的 `serverInstanceId`，客户端绑定必须与
+  `(serverInstanceId, ownerUuid, botId)` 同时匹配；
 - 一个 bot 的 UUID 创建后不能因改名改变；
 - `BotServerPlayer.connection` 在 `ACTIVE` 期间永不为 `null`；
 - 所有活动 bot 都由 `BotLifecycleManager` 持有，业务代码不能自行构造；
@@ -132,7 +136,8 @@ Minecraft 内部所有玩家也属于实体继承体系，因此“不做新实�
 - 背包被真人打开写入时，bot 的背包写动作必须暂停；
 - LLM 无权更改调用它的 bot 身份、owner、ACL、风险上限和工具白名单；
 - 未知工具、未知字段、超范围参数和过期快照一律拒绝；
-- API Key 永远不进入 `SavedData`、SQLite、玩家聊天、网络 payload 或 crash context。
+- API Key 永远不进入服务器内存中的凭据对象、`SavedData`、SQLite、playerdata、玩家聊天、
+  Minecraft payload、SERVER 配置、日志或 crash context。
 
 ---
 
@@ -156,7 +161,7 @@ flowchart TD
 | Action Runtime | 原子玩家动作、校验、幂等、动作结果 | 自然语言 |
 | Perception & World Model | 局部观察、事件、事实、活动推断、快照 | 直接改世界 |
 | Goal & Skill Runtime | 目标、承诺、DAG、技能状态、恢复 | 网络凭据 |
-| AI Gateway | DeepSeek 请求、工具编解码、预算、熔断 | 直接持有 Minecraft 对象 |
+| AI Gateway | 客户端赞助的 Provider 请求；服务端工具编解码、预算、熔断与复核 | 让客户端或模型成为世界权威 |
 | Persistence & Integration | 存档、迁移、模组适配、公开 API | 决定玩家意图 |
 
 依赖方向必须保持：
@@ -167,7 +172,9 @@ player             ├─> action/perception ─> skill/goal ─> brain/ai
 integration       ─┘                     └─> memory
 ```
 
-`ai` 可以依赖稳定的 API DTO，但不能依赖 `ServerPlayer`。`skill` 可以调用 `action`，但不能直接调用 NMS 改世界。`client` 只负责画面和输入，不得包含 AI 密钥或权威逻辑。
+`ai` 可以依赖稳定的 API DTO，但不能依赖 `ServerPlayer`。`skill` 可以调用 `action`，但不能
+直接调用 NMS 改世界。`client` 负责画面、输入、本地凭据和未来 Provider 传输，但不拥有
+owner/ACL、计划接受或世界动作权威。
 
 ### 3.2 五层控制频率
 
@@ -211,16 +218,19 @@ kernel/
   BotServerPlayer.java
   BotConnection.java
   BotGamePacketListener.java
+  BotRuntimeHandle.java
 lifecycle/
   BotLifecycleManager.java
-  BotRuntimeHandle.java
   BotLifecycleState.java
   BotPlayerManagers.java
 identity/
   BotIdentityIds.java
+persistence/
+  BotRosterSavedData.java
+profile/
+  BotProfile.java
 future/player-profile/
   BotIdentity.java
-  BotProfile.java
   BotProfileStore.java
   BotRuntimeBindings.java
   BotSpawnRequest.java
@@ -238,7 +248,7 @@ future/player-profile/
 | `BotLifecycleManager` | 唯一创建、卸载、重生、恢复 bot 的入口 |
 | `BotRuntimeHandle` | 通过 botId 间接解析当前权威实例；后续加入 generation |
 | `BotIdentity` | 不可变 botId、UUID、当前名字、创建时间 |
-| `BotProfile` | owner、皮肤策略、默认维度、行为配置引用 |
+| `BotProfile` | 当前持久 botId、规范名字与可选 owner；未来扩展皮肤、默认维度和行为引用 |
 | `BotProfileStore` | 身份和生命周期元数据的持久化 |
 | `BotRuntimeBindings` | 把控制器、感知、任务与当前玩家实例原子重绑 |
 
@@ -249,8 +259,9 @@ future/player-profile/
 | `BotPlayer` | 模组入口 | 保留当前类名 |
 | `BotPlayerConfig` | 已实现的 server 配置 | 后续按 server/client/AI schema 拆分 |
 | `BotRuntimeHandle` | 跨重生持有当前实例 | 加入 generation 后完整承担间接实例职责 |
-| `BotIdentityIds` | 临时名字派生 UUID | roster 落地后迁移到 `BotIdentity` |
-| `BotLifecycleManager` | 在线实例和生命周期 | 加入 profile store、autoload、诊断和完整事务 |
+| `BotIdentityIds` | 创建/兼容阶段的身份 ID 生成 | roster 已成为持久权威；后续补迁移与重命名 |
+| `BotRosterSavedData` | 持久 `serverInstanceId`、bot/player 身份和 owner | 加入迁移、autoload、自动恢复和诊断 |
+| `BotLifecycleManager` | 在线实例、生命周期和 roster 解析 | 加入 autoload、诊断和完整事务 |
 | `kernel/`、`identity/`、`lifecycle/` | 当前 P1 分包 | 是否合并到 `player/` 由后续 ADR 决定 |
 
 ### 4.2 身份设计
@@ -272,14 +283,12 @@ record BotIdentity(
 - 创建前检查离线档案、白名单/封禁名单、当前在线玩家和已有 bot；
 - 名称必须符合 1.21.1 玩家名规则，并支持配置统一前缀。
 
-> **当前 P1 过渡状态**
+> **当前 P1 状态**
 >
-> 当前代码暂时使用
-> `botId == playerUuid == UUID(namespace, lowercase(name))`，没有独立 roster，也没有改名迁移。
-> 相同小写形式的名字（包括只改变字母大小写）会得到同一临时 UUID；其他改名会得到新
-> 身份。当前没有重命名约束或迁移工具，任何改名都不是受支持操作。P1 下一批必须建立
-> 随机且不可变的 `botId`、独立 `playerUuid`、旧名字派生档案迁移与冲突回滚，然后才能
-> 允许改名。
+> 当前代码已经使用 roster SavedData 持久保存 `serverInstanceId`、botId、player UUID、
+> 当前名字与 owner。名字派生 ID 只保留为创建/兼容阶段的输入；条目创建后
+> 以 roster 记录为权威，客户端不能通过名字或本地绑定改写身份与 owner。自动恢复、正式
+> 重命名命令、旧档迁移故障注入和完整冲突回滚仍未完成，因此任何手工改名仍不受支持。
 
 ### 4.3 生命周期状态机
 
@@ -1349,12 +1358,11 @@ L0 只能调用白名单安全技能，并有冷却和循环检测，防止反�
 ### 11.1 Provider 抽象
 
 ```text
-ai/
+ai/                         # 服务端稳定 DTO、校验、预算与熔断
   AiProvider.java
   AiCapabilities.java
   AiRequest.java
   AiResponse.java
-  DeepSeekProvider.java
   ModelPolicy.java
   RequestScheduler.java
   AiCircuitBreaker.java
@@ -1365,6 +1373,9 @@ ai/
   RedactionFilter.java
   ScriptedAiProvider.java
   ChaosAiProvider.java
+client/ai/                  # P6：使用本地凭据的客户端 Provider 传输
+  DeepSeekProvider.java
+client/credential/          # 已实现基础：本地 profile、binding 与 agentId
 ```
 
 ```java
@@ -1375,7 +1386,9 @@ interface AiProvider {
 }
 ```
 
-模型名和能力必须配置化。不能把某个模型别名永久写死进业务代码；服务端启动时探测配置可用性，并把 thinking、工具调用、JSON 输出和上下文上限记录为能力。
+模型名和能力必须配置化。不能把某个模型别名永久写死进业务代码；P6 建立授权客户端会话后
+由客户端探测 Provider 能力，只把不含 secret 的 thinking、工具调用、JSON 输出和上下文
+上限返回服务端策略层。当前凭据基础设施没有 `AiProvider`、capability probe 或 HTTP。
 
 ### 11.2 DeepSeek 的职责
 
@@ -1429,16 +1442,19 @@ P6 首次接入时，记忆接口使用有界内存对话窗口和可选的空 `
 ### 11.4 异步请求生命周期
 
 1. 服务器线程创建 `ObservationSnapshot`；
-2. `RequestScheduler` 在 AI executor 发起 Java 21 `HttpClient.sendAsync`；
-3. SSE/JSON 在异步线程解析为受限 DTO；
-4. `ToolCallCodec` 做语法与 schema 验证；
-5. 结果排回服务器线程；
-6. 重新解析 bot generation、目标 revision 和 world revision；
-7. `PlanValidator` 做权限、风险与能力校验；
-8. 过期结果标记 `STALE`，必要时重规划；
-9. 只把合法 `ProposedPlan` 交给计划系统。
+2. 服务端 `RequestScheduler` 绑定 owner、botId、agentId、nonce、deadline 和 revision，并把
+   最小化、不含 secret 的请求 DTO 发送给已授权 owner 客户端；
+3. 客户端从本地 credential profile 解析 Key，在客户端 AI executor 使用 Java 21
+   `HttpClient.sendAsync`；
+4. SSE/JSON 在客户端异步线程解析为受限 DTO，原始 Key 不进入 Minecraft payload；
+5. 客户端回传模型结果以及不可伪造为权限的会话关联字段；
+6. 服务端 `ToolCallCodec` 做语法与 schema 验证；
+7. 重新解析持久 owner、bot generation、目标 revision 和 world revision；
+8. `PlanValidator` 做权限、风险与能力校验；
+9. 过期、重放或 owner 已离线的结果标记 `STALE`/拒绝；
+10. 只把合法 `ProposedPlan` 交给计划系统。
 
-任何异步回调都不得直接调用 `ServerPlayer`。
+任何客户端或异步回调都不得直接调用 `ServerPlayer`。当前阶段尚未实现上述网络请求流。
 
 ### 11.5 Tool Firewall
 
@@ -1458,37 +1474,26 @@ P6 首次接入时，记忆接口使用有界内存对话窗口和可选的空 `
 
 ### 11.6 API Key
 
-允许来源，按优先级：
+凭据模式采用 [ADR-0012](adr/0012-client-sponsored-ai-credentials.md)：
 
-1. 环境变量；
-2. Docker/Kubernetes secret；
-3. 操作系统或部署平台密钥管理；
+- Key 只在持久 owner 客户端的独立本地凭据文件中保存；
+- 当前本地文件是明文，优先原子替换（不支持时同目录覆盖）并尽力收紧权限，不宣称加密
+  或系统 keychain；
+- Key 只从客户端 Screen 输入，不提供 `/botplayer apikey <key>`；
+- Key 和可还原值不进入聊天/命令参数、Minecraft payload、服务端、SERVER 配置、世界、
+  SQLite、日志、crash report 或模型上下文；
+- 一个 `credentialProfileId` 可供多个 bot 使用，但
+  `(serverInstanceId, ownerUuid, botId)` 各自绑定独立 `agentId` 和状态；
+- 只有服务端 roster 的持久 owner 可以配置或建立未来 AI 会话；
+- owner 离线时，使用这个 Key 的 client-sponsored LLM 不可用；
+- 未来 Provider HTTP 在客户端运行，服务端把响应当作不可信计划重新校验。
 
-每个 bot 只保存不含 secret 的 AI 引用：
+当前实现只包含本地 credential profile、binding 与 agentId 基础，不探测能力、不验证
+Key、不请求 DeepSeek。ADR-0010 继续禁止 P0–P2 提前接入 Provider。
 
-```java
-record AiProfileRef(
-    String providerId,
-    String credentialId,
-    String modelPolicyId
-) {}
-```
-
-解析顺序为“每 bot 明确引用 → 服务器默认引用 → 无 AI provider”。`credentialId` 只能
-指向服务端部署环境中的 secret；模型无权选择或修改它。管理员通过停服配置、部署平台或
-未来受保护的管理控制面绑定引用，不能通过普通聊天传入 Key。
-
-状态界面只显示 provider、可用性和不可逆指纹/末四位。禁止：
-
-- `/botplayer apikey sk-...`；
-- 客户端配置；
-- 网络 payload；
-- 世界 NBT/SavedData；
-- SQLite 记忆库；
-- 普通日志和 crash report；
-- 模型上下文。
-
-`RedactionFilter` 对日志和异常进行二次脱敏，包括 Authorization header、`sk-` 模式和配置值。
+`RedactionFilter` 必须在客户端 Provider、Minecraft payload 编解码边界和服务端日志再次
+脱敏，包括 Authorization header、常见 Key 模式和任何凭据字段。状态界面只显示用户设置的
+profile 名称与不含 secret 的可用状态；不需要把 Key 指纹或末四位发送给服务端。
 
 ### 11.7 故障和降级
 
@@ -1523,7 +1528,8 @@ Bot 应向玩家诚实报告“AI 服务暂时不可用，但我会先保证安�
 ### 12.2 存储分工
 
 - `DataAttachment`：少量玩家运行标记，不存大日志；
-- Overworld `SavedData`：bot 身份、player UUID、owner、autoload 和生命周期索引的权威源；
+- Overworld `SavedData`：`serverInstanceId`、bot 身份、player UUID、owner 和生命周期
+  索引的权威源；autoload 是后续扩展；
 - SQLite WAL：语义事件、情景、事实、空间索引、对话摘要、技能统计；
 - SQLite FTS5/BM25：第一版文本检索；
 - 可选 `EmbeddingProvider`：以后接本地或独立服务，不与 DeepSeek 强耦合。
@@ -1543,10 +1549,14 @@ Bot 应向玩家诚实报告“AI 服务暂时不可用，但我会先保证安�
 
 阶段职责：
 
-- P1 建立最小 roster `SavedData`，负责身份、owner、autoload、版本和 playerdata 关联；
+- P1 已建立最小 roster `SavedData`，负责服务器实例、身份、owner、版本和 playerdata
+  关联；autoload、自动恢复和迁移硬化仍待完成；
 - P7 扩展计划/承诺/记忆指针，并加入 SQLite 与迁移；
 - SQLite `bots` 行只是查询和外键副本，不是身份权威源；
 - SavedData 与 SQLite 不一致时禁止自动覆盖，先进入诊断/迁移流程。
+
+客户端 credential profile 与 agent binding 不属于世界记忆，也不能写进 SQLite。它们留在
+owner 客户端，并通过 `serverInstanceId` 与服务端世界命名空间隔离。
 
 ### 12.3 核心表
 
@@ -1753,7 +1763,9 @@ data/<namespace>/botplayer/knowledge/
 
 ## 14. 多 Bot 协作
 
-每个 bot 仍有独立身份、背包、目标和记忆。协作通过服务器内部共享任务板，不通过公共聊天循环对话。
+每个 bot 仍有独立 botId、agentId、背包、目标和记忆。多个 bot 可以引用 owner 客户端的
+同一 credential profile，但不能因此合并对话或运行状态。协作通过服务器内部共享任务板，
+不通过公共聊天循环对话。
 
 ```text
 coordination/
@@ -1801,7 +1813,7 @@ coordination/
 | Server main thread | Minecraft 对象、动作、快照、状态提交 | HTTP、阻塞 DB、长路径搜索 |
 | Planning executor | DTO 上计划、DAG、重排 | 访问 Level/Entity/ItemStack |
 | Navigation executor | 不可变局部网格上的路径搜索 | 读当前世界对象 |
-| AI HTTP executor | 请求、SSE/JSON、重试 | 执行动作 |
+| Client AI HTTP executor | 使用本地凭据请求、SSE/JSON、重试 | 访问 Minecraft 活动对象或执行动作 |
 | DB writer | SQLite 批量写入 | 回调操作世界 |
 | DB reader | FTS/事实检索 | 返回活动 Minecraft 对象 |
 
@@ -1877,6 +1889,8 @@ src/main/java/io/github/greytaiwolf/botplayer/
     bridge/
   kernel/
   identity/
+  profile/
+  persistence/
   lifecycle/
   action/
   inventory/
@@ -1893,7 +1907,6 @@ src/main/java/io/github/greytaiwolf/botplayer/
     sqlite/
     migration/
   ai/
-    deepseek/
     mock/
   permission/
   coordination/
@@ -1902,6 +1915,10 @@ src/main/java/io/github/greytaiwolf/botplayer/
   config/
   diagnostics/
   client/
+    credential/
+    screen/
+    ai/
+      deepseek/
 
 src/main/resources/
   META-INF/neoforge.mods.toml
@@ -1921,6 +1938,10 @@ docs/
 | root | `BotPlayer` | 模组入口，仅完成装配 |
 | config | `BotPlayerConfig` | 当前服务端行为与上限；后续可分 schema |
 | config | `BotPlayerClientConfig` | 仅客户端显示偏好 |
+| profile | `BotProfile` | roster 中 botId、规范名字和持久 owner 的记录 |
+| persistence | `BotRosterSavedData` | `serverInstanceId`、身份与 owner 的权威索引 |
+| client credential | `ClientCredentialStore` | 本地明文 credential profile、binding、schema 与原子保存 |
+| client screen | `BotCredentialScreen` | 只在客户端输入/替换 Key并绑定/解绑；profile 删除未实现 |
 | player | `BotLifecycleManager` | 生命周期唯一入口 |
 | player | `BotServerPlayer` | ServerPlayer 子类标记 |
 | player | `BotConnection` | 虚拟连接 |
@@ -1950,7 +1971,7 @@ docs/
 | brain | `PlanValidator` | 模型计划验证 |
 | ai | `RequestScheduler` | AI 并发、预算、取消 |
 | ai | `ToolFirewall` | 模型工具安全边界 |
-| ai deepseek | `DeepSeekProvider` | HTTP/SSE 实现 |
+| client ai deepseek | `DeepSeekProvider` | P6 客户端 HTTP/SSE 实现；当前未实现 |
 | memory | `MemoryService` | 分层记忆门面 |
 | memory sqlite | `SqliteMemoryStore` | 数据库生命周期 |
 | memory migration | `MigrationRunner` | schema 迁移 |
@@ -1989,9 +2010,10 @@ interface PlayerLifecycleBridge {
 
 ### 17.1 配置分层
 
-**当前实现**只有 NeoForge `SERVER` 配置，准确键、默认值和文件位置见
-[CONFIGURATION_CN.md](CONFIGURATION_CN.md)。下面三个文件与 TOML 示例是 P1–P10
-逐步实现的**目标 schema**，当前加入这些键不会生效。
+**当前实现**有 NeoForge `SERVER` 配置，以及不属于 TOML 的客户端本地 credential
+profile/binding store；准确字段和边界见 [CONFIGURATION_CN.md](CONFIGURATION_CN.md)。
+下面的 common/client 配置与大部分 TOML 示例仍是 P1–P10 逐步实现的**目标 schema**，
+当前加入这些键不会生效。
 
 建议文件：
 
@@ -1999,6 +2021,8 @@ interface PlayerLifecycleBridge {
 config/botplayer-common.toml
 <world>/serverconfig/botplayer-server.toml
 config/botplayer-client.toml
+<client-game-dir>/config/botplayer/credentials-v1.json
+<client-game-dir>/config/botplayer/bindings-v1.json
 ```
 
 服务端配置大类：
@@ -2028,10 +2052,7 @@ open_distance = 8.0
 owner_only_write = true
 
 [ai]
-provider = "deepseek"
-credential_id = "BOTPLAYER_DEEPSEEK"
-fast_model = "<configured-model>"
-reasoning_model = "<configured-model>"
+client_sponsored_enabled = false
 request_timeout_seconds = 60
 monthly_budget = 0
 
@@ -2045,13 +2066,15 @@ degrade_mspt = 45.0
 pause_autonomy_mspt = 50.0
 ```
 
-任何模型名、限额和默认值都应在配置 schema 中有说明和范围校验。
+未来客户端非 secret AI 偏好可以选择 provider/model policy，但 Key 始终留在独立
+credential store，不进入 TOML。任何模型名、限额和默认值都应在配置 schema 中有说明和
+范围校验。
 
 ### 17.2 权限模型
 
 角色：
 
-- owner：创建者或管理员指定主人；
+- owner：创建者或管理员指定主人；当前已持久化并用于凭据配置授权；
 - trusted：可聊天、下普通任务、按 ACL 查看/编辑背包；
 - observer：只看状态；
 - operator：服务器管理员；
@@ -2081,9 +2104,12 @@ botplayer.debug
 /botplayer spawn <name>
 /botplayer list
 /botplayer remove <name>
+/botplayer settings <name>
 ```
 
 `/botplayer` 是永久 canonical root；`remove` 只卸载在线 bot，不删除 playerdata。
+`spawn/list/remove` 使用配置的原版权限等级；`settings` 不接受 Key、不要求 OP，只允许
+活动 bot 的精确持久 owner，OP 也不能绕过。
 下面是在同一 root 上逐阶段扩展的目标接口，当前不可用的子命令不能提前宣传：
 
 ```text
@@ -2120,10 +2146,12 @@ botplayer.debug
 
 ### 17.4 网络 payload
 
-第一版客户端 payload 仅用于：
+当前与第一版客户端 payload 仅用于：
 
 - 显示 bot 状态/进度；
 - 协议版本协商。
+- 为当前 owner 提供不含 secret 的 `serverInstanceId`、botId、显示名和授权状态，以打开
+  本地凭据 Screen；
 
 背包 `MenuType` 的打开、槽位和点击同步使用原版 menu 协议，不另造 payload。后期若状态
 Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生命周期和参数验证。
@@ -2133,7 +2161,8 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 - 服务端重新校验每个 payload；
 - 有长度、频率和枚举限制；
 - 不信任客户端传来的 botId、槽位和权限；
-- 不同步 API Key、完整记忆、内部提示词；
+- 不同步 API Key、Key 指纹/末四位、完整记忆、内部提示词或本地 credential profile；
+- 本地 `(serverInstanceId, ownerUuid, botId)` binding 不能代替服务端 roster owner 校验；
 - 客户端缺失或协议不兼容时给出清楚断开原因。
 
 ---
@@ -2145,7 +2174,7 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 ```text
 <world>/
   playerdata/<bot-player-uuid>.dat
-  data/botplayer_index.dat
+  data/botplayer_roster.dat
   botplayer/
     botplayer.db
     migrations.lock
@@ -2153,10 +2182,13 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 ```
 
 - 普通玩家属性和背包继续使用原版 playerdata；
-- BotPlayer 业务身份和任务指针由 SavedData 管理；
+- BotPlayer roster SavedData 是 `serverInstanceId`、bot/player 身份与 owner 的权威源；
 - 长期记忆进 SQLite；
 - 不重复保存同一权威背包；
 - 删除 bot 时 playerdata、业务身份、记忆是否删除必须分别确认。
+
+客户端 credential profile、binding 与 Key 位于 owner 客户端，不属于世界文件，也不能被
+服务端备份或 diagnostics 导出。
 
 ### 18.2 迁移规则
 
@@ -2166,6 +2198,7 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 - 迁移失败进入只读/禁用 bot 状态，不继续半迁移运行；
 - 计划和技能检查点带 `schemaVersion` 与技能版本；
 - 无法恢复的旧检查点转为 `BLOCKED`，保留原始数据供诊断。
+- 客户端凭据 schema 独立版本化；未知版本或损坏文件安全失败，不向服务端请求恢复 Key。
 
 ### 18.3 可观测性
 
@@ -2192,6 +2225,7 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 
 - API Key；
 - Authorization；
+- 本地 credential profile 内容、Key 指纹和末四位；
 - 完整模型上下文；
 - 默认情况下的私聊原文；
 - 无必要的玩家真实标识。
@@ -2227,13 +2261,16 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 - [ ] 加入包依赖方向的自动检查；后续阶段按需创建目标职责包；
 - [x] 建立当前 server 配置注册；
 - [ ] 建立后续 common/client 配置和配置迁移；
+- [x] 建立客户端本地 credential profile、bot binding、agentId 与 GUI 基础；不含 Provider；
 - [x] 建立基础日志；
 - [ ] 建立统一脱敏工具；
-- [ ] 建立 `src/test` 和 `src/gametest`；
+- [x] 建立 `src/test` 与首批客户端凭据单元测试；
+- [ ] 建立 `src/gametest`；
 - [ ] 添加最小启动 GameTest；
 - [ ] 添加 dedicated server 启动 smoke test；
 - [x] 建立 GitHub Actions 编译与构件上传；
-- [ ] 把单元测试和 GameTest 加入 CI；
+- [x] 单元测试随 `clean build` 进入 CI；
+- [ ] 把 GameTest 加入 CI；
 - [ ] 建立代码格式、静态检查和依赖锁；
 - [x] 添加 `THIRD_PARTY_NOTICES.md` 研究与发布审查基线；
 - [x] 添加架构决策目录 `docs/adr/`；
@@ -2258,7 +2295,8 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 任务清单：
 
 - [x] 实现临时名字派生 UUID；
-- [ ] 实现独立 `BotIdentity`、稳定 UUID、roster 和 profile store；
+- [x] 实现最小 roster SavedData，持久 bot/player 身份、owner 与 `serverInstanceId`；
+- [ ] 实现独立 `BotIdentity`、正式 profile store、旧身份迁移与重命名；
 - [x] 实现在线名字/UUID/真人冲突检查；
 - [ ] 实现离线 roster、playerdata、白名单/封禁 profile 冲突检查；
 - [x] 实现 `BotServerPlayer` 首版内核；
@@ -2514,7 +2552,8 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 - [ ] snapshot/revision 迟到复核；
 - [ ] 401/429/5xx/超时/非法 JSON 故障策略；
 - [ ] 熔断、退避、可选模型降级；
-- [ ] API Key 外部 secret；
+- [x] 建立 ADR-0012 客户端本地凭据与每 bot 独立 agent binding 基础；无 Provider/HTTP；
+- [ ] 把 client-sponsored credential 接入客户端 Provider 请求生命周期；
 - [ ] 全链路日志脱敏；
 - [ ] `ScriptedAiProvider`；
 - [ ] `ChaosAiProvider`；
@@ -2530,7 +2569,8 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 - [ ] 未知工具、错类型、超长参数全部拒绝；
 - [ ] 迟到响应不在旧世界状态执行；
 - [ ] API 断开时 MSPT 不被阻塞；
-- [ ] API Key 不出现在日志、包、世界、数据库和 crash report；
+- [ ] API Key 不出现在命令、聊天、Minecraft payload、服务端、日志、世界、数据库和
+  crash report；
 - [ ] 模型声称完成但世界未变时任务不成功。
 
 ### P7：长期记忆、目标与主动性
@@ -2733,7 +2773,11 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 | 同一 action 重试 | 只执行一次 |
 | 模型虚报成功 | verifier 判失败 |
 | 401/429/5xx | 熔断或退避，不卡 Tick |
-| 输出带 API Key | 脱敏并阻止持久化 |
+| 客户端试图在 payload 中发送 API Key | 编解码边界拒绝、脱敏且不进入服务端 |
+| 非 owner/伪造本地 bot binding | 服务端 roster owner 复核并拒绝 |
+| `serverInstanceId` 不匹配 | 不读取或使用其他服务器的 binding |
+| owner 在请求期间离线 | 取消 client-sponsored 请求并丢弃迟到结果 |
+| 模型输出疑似 secret | 脱敏并阻止持久化 |
 
 ### 20.5 必须提供的 Mock
 
@@ -2786,7 +2830,9 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 | 告示牌/书本提示注入 | 世界文本一律不可信，Tool Firewall 不可覆盖 |
 | 模型越权破坏 | 风险上限、数量上限、保护事件、二次确认 |
 | 模型执行任意代码 | 仅声明式技能，禁止脚本/命令/文件/HTTP |
-| API Key 泄漏 | 外部 secret、脱敏、永不网络同步/持久化 |
+| 服务端或服主取得 API Key | Key 只在 owner 客户端本地 store；永不进入 Minecraft payload/服务端/世界 |
+| 客户端本地 Key 泄漏 | 明文风险提示、最小权限、原子文件、支持包排除，并在 provider 端立即撤销；profile 删除待实现 |
+| 篡改本地 binding 冒充 owner | roster 持久 owner 与 `serverInstanceId` 服务端复核 |
 | 重试导致重复副作用 | action 幂等 ledger |
 | 迟到规划破坏新世界状态 | snapshot/world/plan revision |
 | 背包 GUI 复制物品 | 一人写锁、mutation gate、stateId、守恒验证 |
@@ -2860,7 +2906,8 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 - 对公共 API 或持久化的变更有迁移/兼容说明；
 - 没有新增绕过 `BotActionExecutor` 的普通世界写入；
 - 没有在异步线程访问 Minecraft 活动对象；
-- 没有将 secret 引入客户端或存档；
+- API Key 只进入 owner 客户端专用凭据 store，没有进入命令、聊天、Minecraft payload、
+  服务端、存档、日志或诊断；
 - 相关文档和阶段清单同步更新。
 
 代码审查特别检查：
@@ -2885,7 +2932,7 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 - ADR-0001：bot 主体使用 `BotServerPlayer extends ServerPlayer`；
 - ADR-0002：AI 只做高层决策，世界操作由确定性技能执行；
 - ADR-0003：1.21.1 允许两个窄 PlayerList 构造注入点及经 ADR 审核的观察点；
-- ADR-0004：客户端参与仅用于 UI，AI 和 secret 只在服务端；
+- ADR-0004：客户端参与仅用于 UI，AI 和 secret 只在服务端；已由 ADR-0012 取代，保留为历史；
 - ADR-0005：长期记忆使用 SavedData 索引 + SQLite WAL/FTS；
 - ADR-0006：外部技能只允许声明式 DAG；
 - ADR-0007：世界知识默认遵循有限感知；
@@ -2893,6 +2940,8 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 - ADR-0009：第一版不内嵌 LGPL 寻路源码；
 - ADR-0010：P0–P2 通过前不接 DeepSeek。
 - ADR-0011：以 `ServerPlayer.die` TAIL 观察确认死亡，消除可取消事件的同优先级竞态。
+- ADR-0012：API Key 只在 owner 客户端本地保存；credential profile 可共享，但每 bot
+  agentId 独立；服务端继续权威校验。ADR-0010 仍有效。
 
 新增或变更 ADR 时包含：
 

@@ -20,12 +20,11 @@
 ```bash
 git clone https://github.com/GreyTaiWolf/BotPlayer.git
 cd BotPlayer
-git switch agent/p0-p1-server-player-kernel
 ./gradlew --no-daemon clean build
 ```
 
-当前完整实现仍在该审查分支。PR 合并前，以它作为贡献基线；合并后改为仓库默认
-`main`，不要继续从过期的审查分支派生提交。
+当前贡献基线是仓库默认 `main`。新功能分支从最新 `main` 创建，不要继续从已经合并的
+P0/P1 审查分支派生。
 
 Windows：
 
@@ -58,8 +57,17 @@ src/main/java/io/github/greytaiwolf/botplayer/
   config/                        当前 server 配置 schema
   event/                         NeoForge 生命周期事件入口
   identity/                      临时名字派生 UUID
+  profile/                       持久 BotProfile DTO 与 NBT 编解码
+  persistence/                   schema v1 roster、owner 与 serverInstanceId
   kernel/                        ServerPlayer、连接、listener、runtime handle
   lifecycle/                     在线实例状态机和管理器
+  network/                       界面打开与 agentId 绑定 payload；永不传 Key
+  client/
+    BotPlayerClient.java         CLIENT 物理端装配本地 store 与 payload 实现
+    ClientPayloadHandlers.java   common-safe facade，不引用 net.minecraft.client
+    PhysicalClientPayloadHandler.java 真实客户端 Screen/payload 处理
+    credential/                  profile、binding、严格 JSON 与原子保存
+    screen/                      Key 输入/掩码、保存、绑定与解绑 GUI
   mixin/                         三个最小版本接入类
 
 src/main/resources/
@@ -84,9 +92,41 @@ src/main/templates/
 5. 重生后不能继续持有旧 `BotServerPlayer`；
 6. 世界副作用最终必须经过动作层和结果验证；
 7. 模型输出不是权限、事实或成功证据；
-8. API Key 不进入客户端、世界、网络包、聊天或日志；
+8. API Key 只进入 owner 客户端的独立本地凭据 store，不进入命令、聊天、Minecraft
+   payload、服务端、世界或日志；
 9. 异常生成和卸载不能在 PlayerList、Level 或 manager 留残余；
-10. 版本相关 NMS/Mixin 代码集中在平台接入边界。
+10. 版本相关 NMS/Mixin 代码集中在平台接入边界；
+11. roster 是 bot 身份、持久 owner 和 `serverInstanceId` 的服务端权威源；
+12. 共用 credential profile 不得合并不同 bot 的 agentId 或状态；
+13. 客户端凭据落盘当前是明文与尽力文件权限，不得描述成加密或 keychain；
+14. 没有 Provider/HTTP 时不得把凭据 UI 描述成 DeepSeek 已接入。
+
+## Roster 与客户端凭据检查
+
+当前 roster SavedData 名是 `botplayer_roster`，schema v1 保存随机持久
+`serverInstanceId`，以及每个 profile 的 botId、规范名字和可选 owner。修改它时必须保证：
+
+- 首次由真实玩家创建才分配 owner；控制台、命令方块和 bot 创建得到无 owner profile；
+- 同名大小写归一命中既有 profile，后续 spawn 不覆盖 owner；
+- 不支持的 schema、重复 botId/名字和缺失 serverInstanceId 安全失败；
+- roster 不保存 Key、credential profile ID、agentId 或客户端 binding；
+- autoload、owner claim/transfer、永久删除和正式重命名当前仍未实现。
+
+客户端文件位于当前游戏目录的 `config/botplayer/credentials-v1.json` 和
+`bindings-v1.json`（默认启动目录通常是 `.minecraft`）。`ClientCredentialStore` 必须
+继续保持：
+
+- credential JSON 与 binding JSON 分离，后者使用
+  `(serverInstanceId, ownerUuid, botId)`；
+- profile 可创建/替换，bot 可绑定/解绑；当前没有 profile 删除；
+- 相同 profile ID 替换 Key 时，共享它的其他 bot binding 不丢失；
+- 每个 binding 的 agentId 唯一且稳定，不能被另一个 bot 同时占用；
+- 严格字段/schema 校验、临时文件优先原子替换（不支持时同目录覆盖）、POSIX 权限尽力设置；
+- 读取损坏文件时拒绝加载和覆盖，错误与 `toString()` 不输出 secret；
+- `/botplayer settings <name>` 只对活动 bot 的精确持久 owner 成功；OP 无绕过；
+- payload 只包含 serverInstanceId、botId、botName、agentId 和状态，不包含 Key、profile ID
+  或 Key 派生信息；
+- owner 退出、bot 卸载和停服清除服务端运行时 agent binding。
 
 ## 当前三个 Mixin
 
@@ -154,6 +194,7 @@ P2 后所有普通世界变化都应经过：
 | 纯 Java 单元测试 | schema、状态机、权限、DAG、失败码、路径成本 |
 | NeoForge GameTest | 玩家生命周期、动作、方块、实体、菜单、维度 |
 | 集成测试 | HTTP mock、SQLite、配置和适配器 fixture |
+| 客户端凭据单元测试 | `ClientCredentialStoreTest`：round-trip、共享 profile、agent 隔离、替换/解绑、损坏拒绝与脱敏 |
 | 回放测试 | 感知事件、活动理解、目标和记忆 |
 | Chaos/Fuzz | 非法 AI 输出、迟到、重复、超限、取消 |
 | 手工客户端 | 玩家外观、Tab、动画、背包 Screen |
@@ -185,8 +226,7 @@ git diff --check
 
 ## 提交与 PR
 
-- 从当前完整实现所在的最新基线创建 `agent/<简短主题>`：本 PR 合并前是
-  `agent/p0-p1-server-player-kernel`，合并后是 `main`；
+- 从最新默认 `main` 创建 `agent/<简短主题>`；
 - 一次提交只覆盖一个可解释范围；
 - 推荐提交摘要：`类型: 中文说明`；
 - PR 正文写清变化、原因、用户影响、风险和验证；
@@ -203,6 +243,8 @@ git diff --check
 - 命令和权限；
 - 配置键、默认值和位置；
 - 当前可用能力；
+- roster schema、owner 和 `serverInstanceId`；
+- 客户端 credential profile、agent binding、文件路径和明文风险；
 - 生命周期或 Mixin；
 - 持久化 schema；
 - AI provider、工具和 API Key；

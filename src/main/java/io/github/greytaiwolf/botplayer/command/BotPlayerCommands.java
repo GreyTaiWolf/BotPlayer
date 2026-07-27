@@ -11,6 +11,7 @@ import io.github.greytaiwolf.botplayer.lifecycle.BotSnapshot;
 import java.util.List;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerPlayer;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 
 public final class BotPlayerCommands {
@@ -19,18 +20,29 @@ public final class BotPlayerCommands {
     public static void register(RegisterCommandsEvent event) {
         CommandDispatcher<CommandSourceStack> dispatcher = event.getDispatcher();
         dispatcher.register(literal("botplayer")
-                .requires(source -> source.hasPermission(BotPlayerConfig.COMMAND_PERMISSION_LEVEL.get()))
                 .then(literal("spawn")
+                        .requires(source -> source.hasPermission(
+                                BotPlayerConfig.COMMAND_PERMISSION_LEVEL.get()))
                         .then(argument("name", StringArgumentType.word())
                                 .executes(context -> spawn(
                                         context.getSource(),
                                         StringArgumentType.getString(context, "name")))))
                 .then(literal("remove")
+                        .requires(source -> source.hasPermission(
+                                BotPlayerConfig.COMMAND_PERMISSION_LEVEL.get()))
                         .then(argument("name", StringArgumentType.word())
                                 .executes(context -> remove(
                                         context.getSource(),
                                         StringArgumentType.getString(context, "name")))))
-                .then(literal("list").executes(context -> list(context.getSource()))));
+                .then(literal("settings")
+                        .then(argument("name", StringArgumentType.word())
+                                .executes(context -> settings(
+                                        context.getSource(),
+                                        StringArgumentType.getString(context, "name")))))
+                .then(literal("list")
+                        .requires(source -> source.hasPermission(
+                                BotPlayerConfig.COMMAND_PERMISSION_LEVEL.get()))
+                        .executes(context -> list(context.getSource()))));
     }
 
     private static int spawn(CommandSourceStack source, String name) {
@@ -71,5 +83,25 @@ public final class BotPlayerCommands {
         source.sendSuccess(
                 () -> Component.literal("BotPlayers (" + bots.size() + "): " + summary), false);
         return bots.size();
+    }
+
+    private static int settings(CommandSourceStack source, String name) {
+        if (!(source.getEntity() instanceof ServerPlayer requester)) {
+            source.sendFailure(Component.literal(
+                    "Only a real player can configure BotPlayer credentials"));
+            return 0;
+        }
+
+        try {
+            BotPlayerManagers.get(source.getServer()).openCredentialScreen(requester, name);
+            source.sendSuccess(
+                    () -> Component.literal(
+                            "Opened local credential settings for BotPlayer " + name),
+                    false);
+            return 1;
+        } catch (IllegalArgumentException | IllegalStateException exception) {
+            source.sendFailure(Component.literal(exception.getMessage()));
+            return 0;
+        }
     }
 }

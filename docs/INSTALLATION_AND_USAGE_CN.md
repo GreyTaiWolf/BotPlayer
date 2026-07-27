@@ -19,7 +19,8 @@
 - 客户端与专用服务器行为尚无自动验收；
 - 不能把当前构件宣传成已经验证的“纯服务端模组”。
 
-未来 P2 背包界面明确需要客户端 screen；AI、密钥、世界判断和动作权威逻辑始终只在服务端。
+未来 P2 背包界面明确需要客户端 screen。API Key 只在 owner 客户端本地保存，未来使用它的
+Provider HTTP 也在该客户端执行；世界判断、owner/ACL、计划接受和动作权威始终在服务端。
 
 ## 获取开发构件
 
@@ -28,12 +29,11 @@
 ```bash
 git clone https://github.com/GreyTaiWolf/BotPlayer.git
 cd BotPlayer
-git switch agent/p0-p1-server-player-kernel
 ./gradlew --no-daemon clean build
 ```
 
-当前实现仍在该审查分支；对应 PR 合并后应直接使用仓库默认 `main`，不再切换这个临时
-分支。
+开发基线是仓库默认 `main`。功能分支从最新 `main` 创建，不再使用已经合并的 P0/P1
+审查分支。
 
 Windows：
 
@@ -71,7 +71,8 @@ build/libs/
 
 ## 当前命令
 
-默认要求原版权限等级 `2`。
+`spawn`、`list` 和 `remove` 默认要求原版权限等级 `2`；`settings` 改为精确 owner
+校验，不要求 OP。
 
 ### 生成
 
@@ -85,7 +86,11 @@ build/libs/
 - 在线玩家和 bot 名称冲突时拒绝，不区分大小写；
 - 首次生成的新身份出现在命令执行者的位置和维度；
 - 如果同一名字派生的 UUID 已有原版 playerdata，则保留其中保存的位置；
-- 当前还没有 roster，服务器重启后需要再次执行同名 `spawn`；
+- 首次由真实玩家生成时，该玩家 UUID 持久记录为 owner；控制台、命令方块或 bot 自己生成
+  的 profile 没有 owner；
+- 同名 profile 以后重新生成时复用规范名字和原 owner，不会被新的命令执行者夺取；
+- roster 会持久保存 bot/player 身份、owner 和服务器实例 ID；
+- 当前还没有 autoload，服务器重启后需要再次执行同名 `spawn`；
 - 控制台生成的位置语义尚未作为正式场景验收，优先在游戏中由玩家执行。
 
 “真实服务端玩家”表示实例和生命周期使用 `ServerPlayer`，不表示它登录了一个真实
@@ -103,7 +108,7 @@ Microsoft/Mojang 账号，也不存在远程游戏客户端。
 name [spawning|active|dead|respawning|despawning]
 ```
 
-它不会搜索离线 playerdata，也不会列出尚未实现的持久 roster。
+它不会把离线 roster 条目加入在线列表。
 
 ### 移除
 
@@ -115,8 +120,48 @@ name [spawning|active|dead|respawning|despawning]
 
 - 调用原版断开/移除路径，预期由原版保存 playerdata，但尚无 GameTest 验证；
 - 不删除原版 `playerdata/<uuid>.dat`；
-- 不删除未来的记忆或业务数据；
+- 不删除 roster 身份、owner、客户端本地绑定或未来记忆；
 - 目前没有永久删除 bot 的命令。
+
+移除活动 bot 时，服务端当前 agent binding 会清除；客户端本地 binding 和 credential
+profile 不会自动删除。
+
+### 配置客户端凭据
+
+```text
+/botplayer settings <name>
+```
+
+规则与步骤：
+
+1. 目标 bot 必须当前在线；
+2. 执行者必须是真实玩家，并且 UUID 精确等于 roster 中持久 owner；OP 也不能配置别人的
+   bot，无 owner bot 当前不能认领；
+3. 服务端只发送 `serverInstanceId`、botId、规范名字和可选 active agentId，随后打开本地
+   Screen；payload 不包含 Key、profile ID 或 Key 派生信息；
+4. profile ID 默认是 `default`，可使用 1–64 位允许字符创建其他本地 profile；
+5. 输入 8–512 位、无空白的 Key 后选择“保存并绑定”；Key 输入框显示掩码，打开界面时不会
+   从文件回填；
+6. 已有 profile 的 Key 输入留空会复用它；输入新 Key 会替换该共享 profile，所有引用它的
+   本地 bot 都会使用新值；
+7. “解绑”会删除当前 bot 的本地 binding 并请求服务器清除运行时 agentId，但不会删除
+   credential profile 或 Key。当前没有 profile 删除功能。
+
+本地文件（`<client-game-dir>` 是当前客户端游戏目录，默认启动目录通常是 `.minecraft`）：
+
+```text
+<client-game-dir>/config/botplayer/credentials-v1.json  # 明文 Key
+<client-game-dir>/config/botplayer/bindings-v1.json     # 非 secret 绑定
+```
+
+一个 profile 可以供多个 bot 使用，但每个 bot 都有独立 agentId。绑定键包含
+`serverInstanceId`、owner UUID 和 botId，避免不同服务器/owner 串用。owner 退出、bot 卸载
+或停服后，服务端 active binding 会清除；本地 binding 保留，下次 bot 在线后重新打开界面
+并保存/绑定即可。
+
+这两个文件采用严格 schema，优先原子替换（不支持时退化为同目录覆盖）并尽力收紧文件
+权限，但仍是本机明文。不要把它们上传到 Issue、支持包、云盘或 Git。文件损坏或 schema
+不支持时，客户端会拒绝加载和覆盖。
 
 ## 当前能观察到的行为
 
@@ -125,6 +170,9 @@ name [spawning|active|dead|respawning|despawning]
 - bot 死亡后默认等待 20 Tick，再请求原版重生；
 - bot 没有物理客户端，服务端发给它的客户端包会被专用 listener 丢弃；
 - 在线时会刷新原版玩家区块跟踪。
+- roster 保存稳定身份、持久 owner 和服务器实例 ID；
+- owner 客户端可以在本地 GUI 创建/替换 credential profile，并为自己的多个 bot
+  绑定/解绑；每个 bot 使用独立 agentId。
 
 这些是开发内核行为，还没有完整 GameTest。当前只适合短时内核测试；长时间在线、
 keepalive、传送确认、跨维度和连接超时尚无自动化保证。请不要据此假定保护模组、所有
@@ -136,8 +184,8 @@ keepalive、传送确认、跨维度和连接超时尚无自动化保证。请�
 
 - 自主走路、跟随、寻路或加载远方任务路线；
 - 挖矿、砍树、放置、制作、战斗或建造；
-- 聊天或连接 DeepSeek；
-- 接收、测试或保存 API Key；
+- 聊天、连接 DeepSeek 或发起任何模型 HTTP 请求；
+- 测试 Key 是否有效，或使用已保存 Key 进行规划；
 - 空手右键打开背包；
 - 感知附近事件、理解玩家活动；
 - 保存长期目标、记忆或技能；
@@ -155,6 +203,8 @@ keepalive、传送确认、跨维度和连接超时尚无自动化保证。请�
 4. 再移除 JAR。
 
 不要手工删除未知 UUID 的 playerdata。当前还没有安全的 bot 永久删除和身份迁移工具。
+世界备份不包含客户端凭据文件；如需保留本地 binding，应单独、私密地备份客户端游戏目录
+下的 `config/botplayer/`，并理解其中 `credentials-v1.json` 是明文。
 
 ## 常见问题
 
@@ -180,10 +230,19 @@ keepalive、传送确认、跨维度和连接超时尚无自动化保证。请�
 默认最多同时在线 8 个 bot。修改
 `server_player.maxBots` 后，在服务器停止状态下重新启动测试。
 
-### 为什么不能配置 DeepSeek Key
+### 为什么保存 Key 后 bot 仍然不会聊天或工作
 
-DeepSeek 计划在 P6 接入。当前代码完全没有 provider、Key 输入或聊天功能；任何声称当前
-可以通过命令设置 Key 的说明都是错误的。
+当前只实现客户端本地 credential profile 和 bot binding。没有 DeepSeek Provider、HTTP、
+对话、规划、Tool Firewall 或动作身体。凭据基础不代表 P6 完成，也不能验证 Key 是否有效。
+原始 Key 不能通过 `/botplayer` 命令或聊天输入。
+
+### 为什么无法打开凭据界面
+
+- bot 必须当前在线；
+- 只有首次创建 profile 时持久记录的 owner 可以打开；
+- 控制台或命令方块首次创建的无 owner bot 当前不能认领；
+- `/botplayer settings` 不接受 Key，只负责服务端 owner 校验和打开本地 Screen；
+- 本地凭据文件损坏时客户端会拒绝覆盖，并显示错误。
 
 ### 为什么不能打开背包
 
@@ -192,10 +251,9 @@ DeepSeek 计划在 P6 接入。当前代码完全没有 provider、Key 输入或
 
 ### 为什么重启后 bot 没有自动回来
 
-当前没有 roster 和 autoload。用相同名称重新执行 `spawn` 可以得到相同的临时名字派生
-UUID，并尝试读取对应原版 playerdata。UUID 使用名称的小写形式派生，所以只改变字母
-大小写仍指向同一临时身份，其他改名会产生不同身份。当前没有重命名约束或迁移工具，
-不要把任何改名方式当作受支持的管理操作。
+当前已有持久 roster，但没有 autoload。服务器重启后仍需再次执行 `spawn`，管理器会解析
+已有 roster 身份并继续使用对应 playerdata。当前没有正式重命名命令和完整迁移测试，
+不要通过换名字尝试迁移身份。
 
 ## 反馈问题时提供
 
