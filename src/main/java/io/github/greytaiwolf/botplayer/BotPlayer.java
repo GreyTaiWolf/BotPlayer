@@ -2,6 +2,7 @@ package io.github.greytaiwolf.botplayer;
 
 import com.mojang.logging.LogUtils;
 import io.github.greytaiwolf.botplayer.config.BotPlayerConfig;
+import io.github.greytaiwolf.botplayer.network.BotPlayerNetwork;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
@@ -15,5 +16,6 @@ public final class BotPlayer {
 
     public BotPlayer(IEventBus modBus, ModContainer modContainer) {
         modContainer.registerConfig(ModConfig.Type.SERVER, BotPlayerConfig.SPEC);
+        modBus.addListener(BotPlayerNetwork::register);
     }
 }

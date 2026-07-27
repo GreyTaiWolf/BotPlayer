@@ -6,7 +6,7 @@ BotPlayer 当前没有正式稳定版本。
 
 | 版本 | 安全更新 | 用途 |
 |---|---|---|
-| 当前 P0/P1 审查分支；合并后的 `main` | 尽力修复 | 仅开发测试 |
+| 默认 `main` 与当前功能分支 | 尽力修复 | 仅开发测试 |
 | `0.1.0-alpha.1` | 尽力修复开发中的严重问题 | 尚未正式发布；不用于重要存档或公网生产服 |
 | 未来正式 Release | 发布时说明 | 以对应发布说明为准 |
 
@@ -46,16 +46,31 @@ BotPlayer 当前没有正式稳定版本。
 4. 检查调用记录和异常费用；
 5. 报告泄漏路径，以便修复脱敏和输入边界。
 
-当前代码尚未接入 DeepSeek，也没有合法的 Key 输入命令。不要把 Key 写进仓库或世界配置。
-仓库的 `.gitignore` 会排除常见 `.env` 文件，但忽略规则不是 secret 管理，也不能撤销已
-提交或已泄漏的凭据；正式部署仍必须使用环境变量或外部 secret 服务。
+当前代码尚未接入 DeepSeek，也没有合法的 Key 命令参数。合法入口是客户端本地凭据
+Screen；Key 只写入客户端游戏目录的 `config/botplayer/credentials-v1.json`（默认启动目录
+通常是 `.minecraft`）。bot/agent 绑定写入同目录的 `bindings-v1.json`，后者不包含 Key。
+凭据文件当前是明文存储，写入时优先原子替换（文件系统不支持时退化为同目录覆盖）并
+尽力收紧文件权限；它不是加密或操作系统密钥库。不要将这两个文件加入支持包、云同步、
+截图、仓库或世界配置。
+
+服务器、服主和其他玩家不会通过 BotPlayer payload 得到 Key，但本机恶意软件、同一系统
+账户、错误备份或主动分享本地文件仍可能造成泄漏。`.gitignore` 不是 secret 管理，也不能
+撤销已经泄漏的凭据。
 
 ## 永久安全边界
 
 后续 AI 功能必须遵守：
 
-- Key 只来自服务端环境变量或外部 secret；
-- Key 不进入客户端、网络 payload、世界 NBT、SavedData、playerdata、记忆库或普通日志；
+- Key 只在持久 owner 客户端的独立本地凭据存储中输入、读取、创建或替换；当前界面支持
+  bot 绑定/解绑，但不支持删除 credential profile；
+- Key 不进入聊天或命令参数、Minecraft payload、服务端、世界 NBT、SavedData、playerdata、
+  记忆库、普通日志或诊断；
+- 普通客户端 TOML 只保存非 secret 偏好；不得把明文本地文件宣传为加密；
+- 一个 credential profile 可以由多个 bot 引用，但每个 bot 使用独立 agentId 和状态；
+- 本地绑定不授予权限，只有服务端 roster 的持久 owner 可以配置或建立未来 AI 会话；
+- 未来使用该 Key 的 Provider HTTP 在客户端执行；服务端把返回结果视为不可信并重新校验；
+- owner 离线时 client-sponsored LLM 不可用；
+- 服务端 active agent binding 在 owner 退出、bot 卸载或停服时清除；
 - LLM 只能提出受 schema 限制的高层计划；
 - LLM 不能运行代码、脚本、服务器命令、文件访问或任意 HTTP；
 - bot 身份、owner、ACL、风险上限和工具白名单由服务器绑定；
@@ -69,10 +84,12 @@ BotPlayer 当前没有正式稳定版本。
 
 ## 当前已知安全缺口
 
-- 没有持久 owner/ACL；
-- 一个原版权限等级控制全部当前命令；
+- 已有持久 owner，但 trusted/observer ACL 尚未实现；
+- 一个原版权限等级仍控制基础管理命令；凭据配置额外要求持久 owner；
 - 没有保护模组兼容矩阵；
 - 没有动作 Tool Firewall，因为动作和 AI 尚未实现；
+- 客户端凭据文件没有加密或系统 keychain 保护；
+- 没有 DeepSeek Provider 或 HTTP 请求，尚无端到端模型响应安全验证；
 - 没有生命周期故障注入 GameTest；
 - 没有正式依赖漏洞扫描和发布签名；
 - 没有生产环境支持承诺。

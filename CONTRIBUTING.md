@@ -5,7 +5,7 @@
 
 ## 开始之前
 
-1. 阅读 [README](README.md) 和
+1. 阅读根目录 [AGENTS.md](AGENTS.md)、[README](README.md) 和
    [当前实现状态](docs/IMPLEMENTATION_STATUS_CN.md)；
 2. 涉及核心设计时阅读
    [架构路线图](docs/ARCHITECTURE_AND_ROADMAP_CN.md) 与
@@ -29,14 +29,14 @@
 - 为了展示效果直接改方块、NBT 或凭空改物品；
 - 在 Tick 主线程同步调用 HTTP、数据库或长计算；
 - 执行 LLM 生成的代码、脚本、命令或任意 URL；
-- 把 API Key 放入聊天命令、客户端或世界文件；
+- 把 API Key 放入聊天/命令参数、Minecraft payload、服务端、世界文件、日志或仓库；
+- 绕过客户端本地凭据存储，或把明文文件宣传成已加密；
 - 未说明来源的复制代码、模型、材质或提示模板；
 - 没有上限、取消和失败恢复的自动化。
 
 ## 分支与提交
 
-- 从当前完整实现的最新基线创建 `agent/<主题>`；P0/P1 审查 PR 合并前以
-  `agent/p0-p1-server-player-kernel` 为基线，合并后统一以 `main` 为基线；
+- 从最新默认 `main` 创建 `agent/<主题>`；
 - 保持改动范围单一，不混入无关格式化；
 - 推荐提交格式：`类型: 中文摘要`；
 - 常用类型：`feat`、`fix`、`docs`、`test`、`refactor`、`build`、`chore`；
@@ -60,6 +60,10 @@ docs: 补充当前配置与安装边界
 - 世界副作用有类型化结果、失败码和真实状态验证；
 - 未知状态应失败或澄清，不能猜测成功；
 - 日志不得包含 secret、Authorization、完整私聊或无关个人数据。
+
+客户端凭据相关改动还必须保持：原始 Key 不出现在命令、聊天、Minecraft payload、服务端
+或世界数据；只有持久 owner 可以配置；同一 credential profile 共享时各 bot 的 agentId
+与状态仍然隔离；没有 Provider/HTTP 时不得宣称已经接入 DeepSeek。
 
 Mixin 必须保持最小、精确和版本隔离。新增行为注入前先提交 ADR，说明为什么事件、子类或
 访问器无法解决。

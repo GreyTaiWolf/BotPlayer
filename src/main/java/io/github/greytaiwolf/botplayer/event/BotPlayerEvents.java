@@ -5,6 +5,7 @@ import io.github.greytaiwolf.botplayer.command.BotPlayerCommands;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.lifecycle.BotPlayerManagers;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
@@ -40,6 +41,19 @@ public final class BotPlayerEvents {
         MinecraftServer server = botPlayer.getServer();
         if (server != null) {
             BotPlayerManagers.find(server).ifPresent(manager -> manager.onRespawn(botPlayer));
+        }
+    }
+
+    @SubscribeEvent
+    public static void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)
+                || player instanceof BotServerPlayer) {
+            return;
+        }
+        MinecraftServer server = player.getServer();
+        if (server != null) {
+            BotPlayerManagers.find(server)
+                    .ifPresent(manager -> manager.onRealPlayerLogout(player));
         }
     }
 

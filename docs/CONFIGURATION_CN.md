@@ -1,6 +1,7 @@
 # BotPlayer 配置说明
 
-本文只描述当前代码已经注册的配置。路线图中的 AI、记忆、动作、背包和性能配置尚不可用。
+本文描述当前 server 配置和客户端本地凭据存储。路线图中的 AI Provider、模型调用、记忆、
+动作、背包和性能配置尚不可用。
 
 ## 配置文件
 
@@ -22,7 +23,7 @@ NeoForge 默认从物理端配置目录加载：客户端为 `.minecraft/config`
 
 建议停止服务器后编辑，再重新启动。不要依赖开发阶段的热重载行为。
 
-## 当前配置项
+## 当前 server 配置项
 
 | TOML 键 | 类型 | 默认值 | 范围 | 当前作用 |
 |---|---|---:|---:|---|
@@ -31,9 +32,9 @@ NeoForge 默认从物理端配置目录加载：客户端为 `.minecraft/config`
 | `server_player.autoRespawn` | 布尔 | `true` | `true/false` | 死亡后是否请求原版重生 |
 | `server_player.respawnDelayTicks` | 整数 | `20` | `0..1200` | 自动重生等待 Tick；正常 20 TPS 时 20 Tick 约 1 秒 |
 | `server_player.chunkTrackingRefreshTicks` | 整数 | `10` | `1..200` | 刷新连接位置和玩家区块跟踪的间隔 |
-| `permissions.commandPermissionLevel` | 整数 | `2` | `0..4` | 使用所有 `/botplayer` 子命令需要的原版权限等级 |
+| `permissions.commandPermissionLevel` | 整数 | `2` | `0..4` | 使用 `spawn`、`list`、`remove` 需要的原版权限等级 |
 
-## 当前 TOML 示例
+## 当前 server TOML 示例
 
 ```toml
 [server_player]
@@ -87,15 +88,16 @@ Tick 可以重新安排重生，但动态配置更改还没有专门 GameTest。
 | 3 | 玩家管理 |
 | 4 | 最高管理权限 |
 
-生产服务器不要为了方便将它设为 `0`。owner/ACL 尚未实现，当前一个权限值控制所有
-`spawn`、`list` 和 `remove`。
+生产服务器不要为了方便将它设为 `0`。当前一个权限值控制 `spawn`、`list` 和 `remove`。
+`/botplayer credentials <name>` 不读取这个值：它只允许真实玩家，并精确比较 roster 中
+持久 owner；提高 OP 等级或降低该配置都不能打开别人的凭据界面。trusted/observer ACL
+尚未实现。
 
 ## 尚不存在的配置
 
-下列内容只在架构路线图中设计，当前 TOML 中不存在：
+下列内容只在架构路线图中设计，当前 server TOML 中不存在：
 
 - DeepSeek provider、模型、API URL、超时和预算；
-- API Key 或 `credentialId`；
 - owner、trusted、observer 和动作 ACL；
 - 挖掘、放置、PVP、搭桥和高风险确认；
 - 感知距离、路径节点和 Tick 预算；
@@ -105,30 +107,80 @@ Tick 可以重新安排重生，但动态配置更改还没有专门 GameTest。
 
 不要自行添加这些键并期待生效。
 
-## API Key 规则
+## 客户端本地凭据
 
-DeepSeek 进入 P6 后，Key 也不能写入这个 server 配置。允许方式将是服务端环境变量、
-容器 secret 或操作系统密钥管理；配置最多保存不含 secret 的 `credentialId`。
+API Key 不属于 NeoForge `SERVER` 配置，也不写进普通 `CLIENT` TOML。客户端通过本地 GUI
+维护：
+
+- credential profile：保存 profile ID、固定的 `deepseek` provider 标签和 Key；
+- bot binding：以 `(serverInstanceId, ownerUuid, botId)` 绑定一个 credential profile；
+- agentId：每个 bot 独立生成，不能因共用 credential profile 而共用智能体状态。
+
+文件位置（`<client-game-dir>` 是当前客户端游戏目录，默认启动目录通常是 `.minecraft`）：
+
+```text
+<client-game-dir>/config/botplayer/
+  credentials-v1.json   # 明文 Key；不要分享
+  bindings-v1.json      # server/owner/bot/profile/agent ID；不含 Key
+```
+
+同一个 credential profile 可以绑定给 owner 的多个 bot，Key 只保存一次。在相同 profile
+ID 下输入新 Key 会替换共享 Key，并影响所有引用该 profile 的本地 bot binding；Key 输入留空
+会继续使用已有 profile。当前支持创建/替换 profile 和绑定/解绑 bot，不支持删除 credential
+profile；解绑不会删除共享 Key。
+
+本地文件当前是明文存储。实现优先使用原子替换，文件系统不支持时退化为同目录覆盖，并
+尽力收紧文件权限；它不是加密、操作系统 keychain 或防本机恶意软件的安全区。在支持
+POSIX 权限的文件系统上，目录尽力设为仅 owner 可读/写/进入，文件尽力设为仅 owner
+可读写；Windows 或不支持 POSIX 的文件系统不能保证这些位。不要把文件放入云同步、支持
+包、截图、Git 或公开备份。损坏或未知 schema 会让本次客户端运行拒绝加载和覆盖，不能从
+服务端恢复 Key。
+
+当前输入限制：
+
+| 字段 | 规则 |
+|---|---|
+| profile ID | 1–64 位；首位字母或数字，后续可用字母、数字、`.`、`_`、`-` |
+| API Key | 8–512 位，不允许空白或控制字符 |
+| provider | 当前固定为 `deepseek`；这不代表 Provider 已接入 |
+| profile 数量 | 每个客户端本地 store 最多 64 个 |
+| binding 数量 | 每个客户端本地 store 最多 2048 个 |
+| 文件大小 | credential 文件最多 128 KiB；binding 文件最多 1 MiB |
+
+## API Key 传输规则
+
+当前没有 DeepSeek Provider 或 HTTP 请求。Key 只能从客户端本地 Screen 进入本地凭据
+存储；原始值和可还原值不会发送给服务端。
 
 禁止把 Key 放入：
 
 - 聊天或 `/botplayer` 命令；
 - `botplayer-server.toml`；
-- 客户端配置；
+- 普通客户端 TOML、游戏选项或语言资源；
+- Minecraft 自定义 payload；
 - 世界 NBT、SavedData 或 playerdata；
 - 日志、崩溃报告、Issue 和截图。
+
+只有服务端 roster 中持久 owner 与当前玩家一致、并且当前在线的 bot 才能打开界面和修改
+服务端运行时 binding。`serverInstanceId` 与 `ownerUuid` 用于隔离不同服务器/owner；
+编辑客户端文件不能改变 owner 或获得服务端权限。owner 退出、bot 卸载或停服会清除服务端
+active agent binding，但客户端 `bindings-v1.json` 保留。
+未来使用本地 Key 的 Provider HTTP 必须在客户端执行，且 owner 离线时不可用。
 
 如果 Key 已经泄漏，应立即在提供商后台撤销并创建新 Key，不能只删除聊天或日志。
 
 ## 配置变更规则
 
-开发者新增或修改配置时必须同时更新：
+开发者新增或修改 server 配置时必须同时更新：
 
 1. `BotPlayerConfig` 的类型、默认值、范围和注释；
 2. 本文的配置表和示例；
 3. README 或安装文档中的相关行为；
 4. `CHANGELOG.md`；
 5. 配置加载、边界值和迁移测试。
+
+改变客户端凭据格式时还必须同步更新 schema 版本、原子迁移/回滚、权限处理、删除语义、
+`SECURITY.md` 和 ADR-0012；不得把“能保存 Key”写成“已经能调用 DeepSeek”。
 
 配置文件位置与 `SERVER` 类型规则可参考
 [NeoForge 1.21.1 Configuration 文档](https://docs.neoforged.net/docs/1.21.1/misc/config)。

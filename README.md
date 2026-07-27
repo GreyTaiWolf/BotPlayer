@@ -1,14 +1,15 @@
 # BotPlayer
 
-[![Build](https://github.com/GreyTaiWolf/BotPlayer/actions/workflows/build.yml/badge.svg?branch=agent%2Fp0-p1-server-player-kernel)](https://github.com/GreyTaiWolf/BotPlayer/actions/workflows/build.yml)
+[![Build](https://github.com/GreyTaiWolf/BotPlayer/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/GreyTaiWolf/BotPlayer/actions/workflows/build.yml)
 
 BotPlayer 是面向 Minecraft Java 的真实服务端玩家 AI 框架。项目首先支持
 Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 
 > **当前状态：早期开发内核，不是可用于重要存档的正式版本。**
 >
-> 现在已经可以生成、列出和移除一个真实的 `BotServerPlayer`，但它还没有移动、采集、
-> 聊天、DeepSeek、记忆和背包 GUI 等完整能力。请以
+> 现在已经可以生成、列出和移除一个真实的 `BotServerPlayer`，并有持久 roster/owner 与
+> 客户端本地 API Key 管理基础；但它还没有移动、采集、聊天、DeepSeek、记忆和背包 GUI
+> 等完整能力。保存 Key 不代表 AI 已经接通。请以
 > [当前实现状态](docs/IMPLEMENTATION_STATUS_CN.md) 为准，不要把路线图中的目标当成已完成。
 
 ## 设计目标
@@ -51,6 +52,11 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - 重生时保持 `BotServerPlayer` 类型的窄 Mixin；
 - 只在原版死亡真正完成后进入重生流程；
 - 临时、确定性的名字派生 UUID；
+- schema v1 持久 roster、规范名字、稳定 bot/player UUID、owner 和服务器实例 ID；
+- 只有持久 owner 可进入客户端凭据配置；
+- `/botplayer credentials <name>` 打开客户端本地 API Key GUI；
+- 客户端可创建/替换凭据 profile、绑定/解绑 bot；每 bot 使用独立 agentId，profile 删除
+  尚未实现；
 - 既有 playerdata 检测与保存位置保留；
 - 服务器线程生命周期管理；
 - 自动重生、维度切换基础路径和区块跟踪刷新；
@@ -61,13 +67,13 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 
 ## 尚未实现
 
-- 稳定 roster、owner/ACL、自动恢复与数据迁移；
+- 自动恢复、trusted/observer ACL 与完整数据迁移；
 - 生命周期 GameTest；
 - 空手主手右键打开 bot 背包；
 - 玩家输入、移动、挖掘、放置、攻击和容器动作；
 - 感知、世界事件、玩家活动理解和世界模型；
 - 寻路、安全反射、战斗、建造和生存技能；
-- DeepSeek API、聊天、工具防火墙和预算；
+- DeepSeek Provider/HTTP、聊天、工具防火墙和预算；
 - 分层长期记忆、目标恢复和模组适配；
 - 多 bot 协作与正式发布级性能验证。
 
@@ -84,7 +90,6 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 ```bash
 git clone https://github.com/GreyTaiWolf/BotPlayer.git
 cd BotPlayer
-git switch agent/p0-p1-server-player-kernel
 ./gradlew --no-daemon clean build
 ```
 
@@ -98,8 +103,7 @@ gradlew.bat --no-daemon clean build
 客户端与专用服务器行为尚无自动验收，纯服务端安装也尚未验证。未来 P2 背包 screen
 需要客户端代码。
 
-当前实现仍在上述 `agent/p0-p1-server-player-kernel` 审查分支；该 PR 合并后，获取源码
-应改用仓库默认 `main`，无需再切换此临时分支。
+开发基线是仓库默认 `main`。功能分支应从最新 `main` 创建。
 
 ### 开发运行
 
@@ -118,12 +122,15 @@ gradlew.bat --no-daemon clean build
 
 ## 当前命令
 
-执行者需要达到 `permissions.commandPermissionLevel` 配置的原版权限等级，默认是 `2`。
+`spawn`、`list` 和 `remove` 需要达到 `permissions.commandPermissionLevel`，默认是 `2`。
+`credentials` 不要求 OP 等级，但只能由 roster 中记录的精确 owner 对活动 bot 执行；OP
+也不能配置别人的 bot。
 
 ```text
 /botplayer spawn <name>
 /botplayer list
 /botplayer remove <name>
+/botplayer credentials <name>
 ```
 
 名称必须是 1–16 位 ASCII 字母、数字或下划线。现阶段 UUID 由名称的小写形式派生：只改
@@ -147,10 +154,20 @@ gradlew.bat --no-daemon clean build
 
 ## AI 与安全边界
 
-DeepSeek 尚未接入。后续接入必须满足：
+DeepSeek 尚未接入。当前客户端可以本地保存和绑定 API Key，但没有 Provider 或 HTTP
+请求；bot 不会因此聊天、规划或行动。凭据边界是：
 
-- API Key 只来自服务端环境变量或外部 secret；
-- 不通过聊天命令、客户端配置、世界 NBT、网络包或普通日志保存密钥；
+- Key 只在 owner 客户端游戏目录的 `config/botplayer/credentials-v1.json` 保存（默认启动
+  目录通常是 `.minecraft`）；
+  `(serverInstanceId, ownerUuid, botId) → profileId/agentId` 绑定写在同目录
+  `bindings-v1.json`；当前是明文落盘，优先原子替换（不支持时退化为同目录覆盖）并尽力
+  收紧文件权限，不宣称加密或系统密钥库；
+- Key 不进入聊天或命令参数、Minecraft payload、服务端、世界 NBT/SavedData、playerdata、
+  普通日志、崩溃报告或 Git；
+- 一个本地 credential profile 可以绑定多个 bot，但每个 bot 使用独立 agentId 和状态；
+- 只有持久 owner 可以配置；未来 client-sponsored LLM 在 owner 离线时不可用；
+- 服务端 active agent binding 在 owner 退出、bot 卸载或停服时清除；客户端本地 binding
+  保留，重新打开界面后可以再次绑定；
 - LLM 不逐 Tick 控制，不直接运行代码、命令、脚本或任意 HTTP；
 - 模型只能提出结构化计划，不能直接改变方块、物品或玩家状态；
 - 每个有副作用的动作都要经过权限、风险、范围、幂等和结果验证；
@@ -174,8 +191,8 @@ P0 工程基线
 → P10 硬化与发布
 ```
 
-当前正在完成 P0/P1，下一批先补齐虚拟连接协议闭环，再实现 roster `SavedData`、自动恢复
-和生命周期 GameTest。
+当前正在完成 P0/P1。持久 roster、owner、服务器实例 ID 和客户端凭据基础已经进入代码；
+下一批先补齐虚拟连接协议闭环、自动恢复、ACL 和生命周期 GameTest，再按阶段建立可靠身体。
 
 ## License
 

@@ -3,20 +3,24 @@ package io.github.greytaiwolf.botplayer.lifecycle;
 import com.mojang.authlib.GameProfile;
 import io.github.greytaiwolf.botplayer.BotPlayer;
 import io.github.greytaiwolf.botplayer.config.BotPlayerConfig;
-import io.github.greytaiwolf.botplayer.identity.BotIdentityIds;
 import io.github.greytaiwolf.botplayer.kernel.BotConnection;
 import io.github.greytaiwolf.botplayer.kernel.BotRuntimeHandle;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
+import io.github.greytaiwolf.botplayer.network.payload.AgentBindingStatus;
+import io.github.greytaiwolf.botplayer.network.payload.OpenCredentialScreenPayload;
+import io.github.greytaiwolf.botplayer.persistence.BotRosterSavedData;
+import io.github.greytaiwolf.botplayer.profile.BotProfile;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
-import java.nio.file.Files;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ServerboundClientCommandPacket;
@@ -28,6 +32,7 @@ import net.minecraft.server.network.CommonListenerCookie;
 import net.minecraft.world.level.storage.LevelResource;
 import net.minecraft.world.phys.Vec2;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.connection.ConnectionType;
 import org.jetbrains.annotations.Nullable;
 
@@ -38,11 +43,15 @@ public final class BotLifecycleManager {
     private static final Pattern VALID_NAME = Pattern.compile("[A-Za-z0-9_]{1,16}");
 
     private final MinecraftServer server;
+    private final BotRosterSavedData roster;
     private final Map<UUID, RuntimeEntry> runtimes = new LinkedHashMap<>();
+    private final Map<UUID, UUID> activeAgentByBot = new LinkedHashMap<>();
+    private final Map<UUID, UUID> botByActiveAgent = new LinkedHashMap<>();
     private boolean stopping;
 
     BotLifecycleManager(MinecraftServer server) {
         this.server = server;
+        this.roster = BotRosterSavedData.get(server);
     }
 
     public BotServerPlayer spawn(CommandSourceStack source, String requestedName) {
@@ -61,23 +70,29 @@ public final class BotLifecycleManager {
             throw new IllegalArgumentException("A player or bot with that name is already online");
         }
 
-        UUID botId = BotIdentityIds.forImmutableName(requestedName);
+        @Nullable UUID proposedOwnerId =
+                source.getEntity() instanceof ServerPlayer owner
+                                && !(owner instanceof BotServerPlayer)
+                        ? owner.getUUID()
+                        : null;
+        BotProfile profile = roster.getOrCreate(requestedName, proposedOwnerId);
+        UUID botId = profile.botId();
+        String canonicalName = profile.name();
         if (server.getPlayerList().getPlayer(botId) != null) {
             throw new IllegalArgumentException("That BotPlayer identity is already online");
         }
-        @Nullable UUID ownerId =
-                source.getEntity() instanceof ServerPlayer owner ? owner.getUUID() : null;
-        BotRuntimeHandle handle = new BotRuntimeHandle(botId, requestedName, ownerId);
+        BotRuntimeHandle handle = new BotRuntimeHandle(
+                botId, canonicalName, profile.ownerId().orElse(null));
         RuntimeEntry runtime = new RuntimeEntry(handle, BotLifecycleState.SPAWNING);
         runtimes.put(botId, runtime);
 
         ServerLevel level = source.getLevel();
         Vec3 position = source.getPosition();
         Vec2 rotation = source.getRotation();
-        GameProfile profile = new GameProfile(botId, requestedName);
+        GameProfile gameProfile = new GameProfile(botId, canonicalName);
         ClientInformation clientInformation = ClientInformation.createDefault();
         BotServerPlayer player =
-                new BotServerPlayer(server, level, profile, clientInformation, handle);
+                new BotServerPlayer(server, level, gameProfile, clientInformation, handle);
         BotConnection connection = new BotConnection();
         boolean hasExistingPlayerData = Files.isRegularFile(server
                 .getWorldPath(LevelResource.PLAYER_DATA_DIR)
@@ -85,7 +100,7 @@ public final class BotLifecycleManager {
 
         try {
             CommonListenerCookie cookie = new CommonListenerCookie(
-                    profile,
+                    gameProfile,
                     0,
                     clientInformation,
                     false,
@@ -108,7 +123,10 @@ public final class BotLifecycleManager {
                 runtime.state = BotLifecycleState.ACTIVE;
             }
             BotPlayer.LOGGER.info(
-                    "Spawned BotPlayer {} ({}) in {}", requestedName, botId, level.dimension().location());
+                    "Spawned BotPlayer {} ({}) in {}",
+                    canonicalName,
+                    botId,
+                    level.dimension().location());
             return player;
         } catch (RuntimeException exception) {
             rollbackFailedSpawn(player, connection, runtime);
@@ -133,6 +151,105 @@ public final class BotLifecycleManager {
                         runtime.handle.botId(), runtime.handle.name(), runtime.state))
                 .sorted(Comparator.comparing(BotSnapshot::name, String.CASE_INSENSITIVE_ORDER))
                 .toList();
+    }
+
+    /**
+     * Verifies exact persistent ownership and opens the client-local credential screen.
+     */
+    public void openCredentialScreen(ServerPlayer requester, String name) {
+        requireServerThread();
+        if (stopping) {
+            throw new IllegalStateException("The server is stopping");
+        }
+        if (requester instanceof BotServerPlayer) {
+            throw new IllegalArgumentException("Only a real player can configure credentials");
+        }
+
+        RuntimeEntry runtime = findByName(name);
+        if (runtime == null || runtime.state == BotLifecycleState.DESPAWNING) {
+            throw new IllegalArgumentException("No active BotPlayer named " + name);
+        }
+        if (!isExactOwner(runtime, requester)) {
+            throw new IllegalArgumentException("You do not own that BotPlayer");
+        }
+
+        PacketDistributor.sendToPlayer(
+                requester,
+                new OpenCredentialScreenPayload(
+                        roster.serverInstanceId(),
+                        runtime.handle.botId(),
+                        runtime.handle.name(),
+                        Optional.ofNullable(activeAgentByBot.get(runtime.handle.botId()))));
+    }
+
+    /**
+     * Applies a client-agent binding request after authenticating the sending real player.
+     */
+    public AgentBindingStatus updateAgentBinding(
+            ServerPlayer requester, UUID botId, UUID agentId, boolean active) {
+        requireServerThread();
+        if (stopping) {
+            return AgentBindingStatus.BOT_NOT_ACTIVE;
+        }
+        RuntimeEntry runtime = runtimes.get(botId);
+        if (runtime == null || runtime.state == BotLifecycleState.DESPAWNING) {
+            return AgentBindingStatus.BOT_NOT_ACTIVE;
+        }
+        if (requester instanceof BotServerPlayer || !isExactOwner(runtime, requester)) {
+            return AgentBindingStatus.NOT_OWNER;
+        }
+
+        UUID currentAgentId = activeAgentByBot.get(botId);
+        if (!active) {
+            if (currentAgentId == null) {
+                return AgentBindingStatus.ALREADY_UNBOUND;
+            }
+            if (!currentAgentId.equals(agentId)) {
+                return AgentBindingStatus.STALE_AGENT_ID;
+            }
+            clearAgentBinding(botId);
+            return AgentBindingStatus.UNBOUND;
+        }
+
+        UUID boundBotId = botByActiveAgent.get(agentId);
+        if (boundBotId != null && !boundBotId.equals(botId)) {
+            return AgentBindingStatus.AGENT_ID_IN_USE;
+        }
+        if (agentId.equals(currentAgentId)) {
+            return AgentBindingStatus.BOUND;
+        }
+
+        AgentBindingStatus status =
+                currentAgentId == null
+                        ? AgentBindingStatus.BOUND
+                        : AgentBindingStatus.REPLACED;
+        clearAgentBinding(botId);
+        activeAgentByBot.put(botId, agentId);
+        botByActiveAgent.put(agentId, botId);
+        return status;
+    }
+
+    /**
+     * Clears transient bindings sponsored by a real player when that player disconnects.
+     */
+    public void onRealPlayerLogout(ServerPlayer player) {
+        requireServerThread();
+        if (player instanceof BotServerPlayer) {
+            return;
+        }
+
+        UUID ownerId = player.getUUID();
+        List<UUID> ownedBotIds = activeAgentByBot.keySet().stream()
+                .filter(botId -> {
+                    RuntimeEntry runtime = runtimes.get(botId);
+                    return runtime != null
+                            && roster.findById(botId)
+                                    .flatMap(BotProfile::ownerId)
+                                    .filter(ownerId::equals)
+                                    .isPresent();
+                })
+                .toList();
+        ownedBotIds.forEach(this::clearAgentBinding);
     }
 
     public void onDeath(BotServerPlayer player) {
@@ -176,6 +293,7 @@ public final class BotLifecycleManager {
 
         BotServerPlayer current = runtime.handle.player().orElse(null);
         if (current == player) {
+            clearAgentBinding(player.getUUID());
             runtime.handle.detach(player);
             runtimes.remove(player.getUUID());
             BotPlayer.LOGGER.info("Unloaded BotPlayer {} ({})", runtime.handle.name(), player.getUUID());
@@ -234,6 +352,8 @@ public final class BotLifecycleManager {
             }
         } finally {
             runtimes.clear();
+            activeAgentByBot.clear();
+            botByActiveAgent.clear();
         }
     }
 
@@ -296,6 +416,20 @@ public final class BotLifecycleManager {
     private boolean isNameInUse(String requestedName) {
         return server.getPlayerList().getPlayers().stream()
                 .anyMatch(player -> player.getGameProfile().getName().equalsIgnoreCase(requestedName));
+    }
+
+    private boolean isExactOwner(RuntimeEntry runtime, ServerPlayer requester) {
+        return roster.findById(runtime.handle.botId())
+                .flatMap(BotProfile::ownerId)
+                .filter(requester.getUUID()::equals)
+                .isPresent();
+    }
+
+    private void clearAgentBinding(UUID botId) {
+        UUID agentId = activeAgentByBot.remove(botId);
+        if (agentId != null) {
+            botByActiveAgent.remove(agentId, botId);
+        }
     }
 
     private void requireServerThread() {
