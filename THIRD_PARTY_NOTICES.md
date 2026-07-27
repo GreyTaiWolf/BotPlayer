@@ -45,6 +45,7 @@ BotPlayer 当前分支没有复制或内嵌下列研究项目的源代码、资�
 - Parchment mappings 2024.11.17 for Minecraft 1.21.1。
 - JUnit Jupiter 5.11.4 与 JUnit Platform Launcher（仅用于测试，EPL-2.0，不打包进模组
   运行时构件）。
+- Gson 2.10.1（用于独立 JVM 测试运行时，Apache-2.0，不重复打包进模组运行时构件）。
 
 这些组件及其传递依赖继续服从各自的许可证。本文件不是完整的传递依赖许可证清单。
 正式发布前必须生成、人工核对并随发布物提供完整清单。
