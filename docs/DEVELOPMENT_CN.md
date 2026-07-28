@@ -41,8 +41,8 @@ gradlew.bat --no-daemon clean build
 ./gradlew processResources
 ```
 
-`runGameTestServer` 已有 run configuration，但当前没有测试类和模板。首批 GameTest 加入后
-才把以下命令纳入强制验收：
+P2 已加入生命周期、移动、交互和库存 GameTest 类与 structure fixture；涉及
+Minecraft 行为的提交必须运行：
 
 ```bash
 ./gradlew --no-daemon runGameTestServer
@@ -60,18 +60,22 @@ src/main/java/io/github/greytaiwolf/botplayer/
   profile/                       持久 BotProfile DTO 与 NBT 编解码
   persistence/                   schema v1 roster、owner 与 serverInstanceId
   kernel/                        ServerPlayer、连接、listener、runtime handle
-  lifecycle/                     在线实例状态机和管理器
+  lifecycle/                     在线实例状态机、generation、动作/会话装配和管理器
+  action/                        动作契约、FSM、mailbox/ledger/仲裁、输入与 Minecraft backend
+  inventory/                     77 槽 menu、session、写锁与 mutation gate
+  gametest/                      P2 生命周期、移动、交互与库存 GameTest
   network/                       界面打开与 agentId 绑定 payload；永不传 Key
   client/
     BotPlayerClient.java         CLIENT 物理端装配本地 store 与 payload 实现
     ClientPayloadHandlers.java   common-safe facade，不引用 net.minecraft.client
     PhysicalClientPayloadHandler.java 真实客户端 Screen/payload 处理
     credential/                  profile、binding、严格 JSON 与原子保存
-    screen/                      Key 输入/掩码、保存、绑定与解绑 GUI
+    screen/                      Key GUI 与 bot 自身背包 screen
   mixin/                         三个最小版本接入类
 
 src/main/resources/
   assets/botplayer/lang/         客户端文本
+  data/botplayer/structure/      P2 GameTest structure fixture
   botplayer.mixins.json          Mixin 清单
 
 src/main/templates/
@@ -163,9 +167,9 @@ src/main/templates/
 - 多 bot 顺序和并发请求；
 - PlayerList、Level、连接、区块和 runtime handle 残留。
 
-## 计划中的动作层规则
+## 当前 P2 动作层规则
 
-P2 后所有普通世界变化都应经过：
+P2 候选中的普通世界变化必须经过：
 
 ```text
 意图/技能
@@ -200,7 +204,9 @@ P2 后所有普通世界变化都应经过：
 | 手工客户端 | 玩家外观、Tab、动画、背包 Screen |
 | Soak/性能 | 多 bot、内存、MSPT、连接和任务泄漏 |
 
-当前 CI 只运行 `clean build` 并上传 JAR。它证明编译和打包成功，不证明游戏内生命周期正确。
+当前 CI 运行 `clean build`、`runGameTestServer` 并上传 JAR；本地已取得 140/140 单测和
+连续两轮 19/19 GameTest，远端绿色终态待分支推送后确认。即使这些任务通过，也不证明
+客户端 screen、独立专用服或多 bot soak。
 
 ## 每次提交前
 
@@ -209,7 +215,7 @@ git diff --check
 ./gradlew --no-daemon clean build
 ```
 
-有 GameTest 后再执行：
+存在 GameTest，因此还要执行：
 
 ```bash
 ./gradlew --no-daemon runGameTestServer

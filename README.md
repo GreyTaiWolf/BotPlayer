@@ -5,11 +5,13 @@
 BotPlayer 是面向 Minecraft Java 的真实服务端玩家 AI 框架。项目首先支持
 Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 
-> **当前状态：早期开发内核，不是可用于重要存档的正式版本。**
+> **当前状态：P2 本地自动化验收已通过，等待远端 CI；仍不是正式版本。**
 >
-> 现在已经可以生成、列出和移除一个真实的 `BotServerPlayer`，并有持久 roster/owner 与
-> 客户端本地 API Key 管理基础；但它还没有移动、采集、聊天、DeepSeek、记忆和背包 GUI
-> 等完整能力。保存 Key 不代表 AI 已经接通。请以
+> 当前代码已建立真实 `BotServerPlayer`、generation 隔离、确定性动作运行时、短程输入、
+> 基础世界交互和 bot 自身背包 GUI；140 项单测与 19 项 GameTest 连续两轮全绿，干净
+> 构建已产出 JAR，远端 CI 结果待分支推送后回写。
+> 它还没有感知、长距离寻路、技能闭环、通用世界容器、聊天、DeepSeek 或记忆。保存 Key
+> 不代表 AI 已经接通，P2 通过也只代表拥有可信身体。请以
 > [当前实现状态](docs/IMPLEMENTATION_STATUS_CN.md) 为准，不要把路线图中的目标当成已完成。
 
 ## 设计目标
@@ -38,10 +40,10 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 | ModDevGradle | `2.0.142` |
 | Gradle Wrapper | `9.2.1` |
 | 模组 ID | `botplayer` |
-| 开发版本 | `0.1.0-alpha.1` |
+| 开发版本 | `0.1.0-alpha.2` |
 | 发布状态 | 尚未发布，仅开发构件 |
 
-版本号是开发标识，不代表 P1/P2 已全部验收。
+版本号是开发标识，不代表 P2 已完成验收。
 
 ## 已经实现
 
@@ -60,19 +62,30 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - 既有 playerdata 检测与保存位置保留；
 - 服务器线程生命周期管理；
 - 自动重生、维度切换基础路径和区块跟踪刷新；
+- 稳定 runtime handle、generation 与旧实例拒绝；
 - 生成失败回滚、幂等断开和停服异常隔离清理；
+- 有界动作 mailbox、幂等 ledger、通道仲裁、取消/抢占/超时和结构化结果；
+- `WAIT / LOOK_AT / MOVE_INPUT / JUMP / STOP` 与普通玩家输入/物理适配；
+- 选择快捷栏、使用/释放物品、使用方块、分阶段破坏、攻击/实体交互、丢弃与拾取等待；
+- 空主手、主手右键打开 bot 自身 41 格真实库存，77 槽 menu、单 viewer 写锁、距离和
+  lifecycle 校验、动作 mutation gate；
+- 虚拟连接 callback 与 keepalive/teleport 诊断记账；
+- P2 生命周期、移动、交互和库存 GameTest 来源；
 - `/botplayer spawn|remove|list`；
 - NeoForge server 配置；
-- GitHub Actions Java 21 完整构建。
+- GitHub Actions Java 21 构建与 GameTest 门禁配置。
+
+以上 P2 项已通过本地自动化退出门；最终远端状态见
+[P2 完成验收报告](docs/P2_COMPLETION_REPORT_CN.md)。
 
 ## 尚未实现
 
 - 自动恢复、trusted/observer ACL 与完整数据迁移；
-- 生命周期 GameTest；
-- 空手主手右键打开 bot 背包；
-- 玩家输入、移动、挖掘、放置、攻击和容器动作；
+- 客户端 screen 手工验收、独立专用服和远端 CI 终态；
+- 长距离寻路、动态重规划、完整移动模式和安全反射；
+- 箱子/木桶/潜影盒等通用世界容器、工作站与制作/熔炼流程；
 - 感知、世界事件、玩家活动理解和世界模型；
-- 寻路、安全反射、战斗、建造和生存技能；
+- 战斗策略、建造和生存技能；
 - DeepSeek Provider/HTTP、聊天、工具防火墙和预算；
 - 分层长期记忆、目标恢复和模组适配；
 - 多 bot 协作与正式发布级性能验证。
@@ -100,8 +113,8 @@ gradlew.bat --no-daemon clean build
 ```
 
 构件位于 `build/libs/`。在当前开发阶段，规定的测试拓扑是客户端、服务端安装同一 JAR；
-客户端与专用服务器行为尚无自动验收，纯服务端安装也尚未验证。未来 P2 背包 screen
-需要客户端代码。
+客户端 screen 与独立专用服务器行为尚无完整自动验收，纯服务端安装也尚未验证。P2
+背包 screen 包含客户端代码。
 
 开发基线是仓库默认 `main`。功能分支应从最新 `main` 创建。
 
@@ -112,7 +125,14 @@ gradlew.bat --no-daemon clean build
 ./gradlew runServer
 ```
 
-`runGameTestServer` 已配置，但仓库还没有首批 GameTest；加入测试前不把它视为有效验收。
+P2 已加入生命周期、移动、交互和库存 GameTest：
+
+```bash
+./gradlew --no-daemon runGameTestServer
+```
+
+本地结果为 140/140 单元测试和同一持久世界连续两轮 19/19 GameTest；远端 CI 终态见
+[P2 完成验收报告](docs/P2_COMPLETION_REPORT_CN.md)。
 
 更完整的步骤见：
 
@@ -137,10 +157,17 @@ gradlew.bat --no-daemon clean build
 字母大小写仍得到同一临时 UUID，其他改名会得到新身份；当前没有重命名约束或迁移工具，
 因此不要把改名当作受支持操作。
 
+P2 还提供 bot 自身背包入口：持久 owner 或服务器 OP 与活动 bot 同维度、存活且
+在 `inventory.viewDistance` 内时，用**空主手的主手交互**右键 bot；副手和持物品不会打开。
+GUI 展示 bot 的 41 格真实玩家库存和 viewer 自己的 36 格库存。它不代表已经支持箱子、
+工作站或模组容器自动化。
+
 ## 文档导航
 
 - [文档总目录与维护规则](docs/README_CN.md)
 - [当前实现状态](docs/IMPLEMENTATION_STATUS_CN.md)
+- [AI 玩家调研与 P2 重新基线](docs/AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md)
+- [P2 完成验收报告](docs/P2_COMPLETION_REPORT_CN.md)
 - [完整架构与 P0–P10 路线图](docs/ARCHITECTURE_AND_ROADMAP_CN.md)
 - [原版玩法能力矩阵与发布门槛](docs/VANILLA_CAPABILITY_MATRIX_CN.md)
 - [安装与当前用法](docs/INSTALLATION_AND_USAGE_CN.md)
@@ -191,8 +218,9 @@ P0 工程基线
 → P10 硬化与发布
 ```
 
-当前正在完成 P0/P1。持久 roster、owner、服务器实例 ID 和客户端凭据基础已经进入代码；
-下一批先补齐虚拟连接协议闭环、自动恢复、ACL 和生命周期 GameTest，再按阶段建立可靠身体。
+P2 的严格编译、单元测试、GameTest 和干净构建已在本地通过，当前等待远端 CI 关闭最后
+一道自动化门。P3 从感知与世界模型开始；通用世界容器分别延期到 P5A/P5B，模组自定义
+menu 属于 P8。
 
 ## License
 

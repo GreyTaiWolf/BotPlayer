@@ -9,7 +9,8 @@
 | 想了解项目 | 根目录 [README](../README.md) → [当前实现状态](IMPLEMENTATION_STATUS_CN.md) |
 | 想安装测试 | [安装与当前用法](INSTALLATION_AND_USAGE_CN.md) → [配置说明](CONFIGURATION_CN.md) |
 | 想参与开发 | 根目录 [AGENTS.md](../AGENTS.md) → [开发指南](DEVELOPMENT_CN.md) → [参与开发](../CONTRIBUTING.md) |
-| 想理解整体设计 | [架构与 P0–P10 路线图](ARCHITECTURE_AND_ROADMAP_CN.md) |
+| 想理解整体设计 | [AI 玩家调研与 P2 重新基线](AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md) → [架构与 P0–P10 路线图](ARCHITECTURE_AND_ROADMAP_CN.md) |
+| 想核对 P2 验收 | [P2 完成验收报告](P2_COMPLETION_REPORT_CN.md) |
 | 想修改核心边界 | [架构决策记录](adr/README.md) → 总架构相关章节 |
 | 想报告安全问题 | [安全策略](../SECURITY.md) |
 
@@ -20,6 +21,8 @@
 | [AGENTS.md](../AGENTS.md) | 开发代理阅读顺序、需求到源码路由、验证与文档同步规则 | 代替当前实现状态或总架构 |
 | [README.md](../README.md) | 项目入口、当前能力摘要、快速构建 | 完整架构细节 |
 | [IMPLEMENTATION_STATUS_CN.md](IMPLEMENTATION_STATUS_CN.md) | 当前代码真实状态、已知缺口、下一批任务 | 描述尚未实现的完整方案 |
+| [AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md](AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md) | 外部调研、六层 FSM、P2-A～E 与 P3–P10 阶段门 | 代替实时测试结果 |
+| [P2_COMPLETION_REPORT_CN.md](P2_COMPLETION_REPORT_CN.md) | P2 已编码、已验证、未覆盖与最终命令/CI 证据 | 宣称完整 AI 玩家 |
 | [ARCHITECTURE_AND_ROADMAP_CN.md](ARCHITECTURE_AND_ROADMAP_CN.md) | 最终设计、代码边界、P0–P10 任务与验收 | 宣称路线图已经实现 |
 | [VANILLA_CAPABILITY_MATRIX_CN.md](VANILLA_CAPABILITY_MATRIX_CN.md) | 原版玩法逐项能力、成熟度和发布门槛 | 模组专用兼容承诺 |
 | [INSTALLATION_AND_USAGE_CN.md](INSTALLATION_AND_USAGE_CN.md) | 当前开发构件的安装、命令和排错 | 正式版承诺 |
@@ -46,7 +49,10 @@
 
 ## 状态用语
 
-- **已实现**：代码存在且通过当前构建门禁；
+- **已编码**：生产代码或测试来源存在，不自动表示构建或 GameTest 已通过；
+- **本地已验证**：对应严格编译、自动测试或构建已在当前分支实际通过；
+- **待主线验证**：候选代码已接线，最终本地命令或远端 CI 终态尚待回写；
+- **已实现**：代码存在且通过该文档明确要求的当前门禁；
 - **部分完成**：主路径存在，但异常场景、持久化或自动测试仍缺失；
 - **已验证**：对应单元测试、GameTest 或明确手工场景已经通过；
 - **计划/目标**：只在路线图中承诺开发方向，不能当作当前功能；
