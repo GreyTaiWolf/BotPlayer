@@ -216,6 +216,65 @@ class ActivityInferenceServiceTest {
         Assertions.assertTrue(hypothesis.evidence().isEmpty());
     }
 
+    @Test
+    void canonicalEventsCoverMiningBuildingCombatAndFarming() {
+        ActivityInferenceService inference =
+                new ActivityInferenceService(200, 8);
+        List<PerceivedEvent> events = List.of(
+                event(
+                        1L,
+                        1L,
+                        30L,
+                        ACTOR_ID,
+                        SemanticEventType.BLOCK_BROKEN,
+                        SemanticEventOutcome.COMMITTED,
+                        1.0F,
+                        Map.of(),
+                        Set.of()),
+                event(
+                        2L,
+                        2L,
+                        30L,
+                        ACTOR_ID,
+                        SemanticEventType.BLOCK_PLACED,
+                        SemanticEventOutcome.COMMITTED,
+                        1.0F,
+                        Map.of(),
+                        Set.of()),
+                event(
+                        3L,
+                        3L,
+                        30L,
+                        ACTOR_ID,
+                        SemanticEventType.ENTITY_DAMAGED,
+                        SemanticEventOutcome.COMMITTED,
+                        1.0F,
+                        Map.of(),
+                        Set.of()),
+                event(
+                        4L,
+                        4L,
+                        30L,
+                        ACTOR_ID,
+                        SemanticEventType.BLOCK_BROKEN,
+                        SemanticEventOutcome.COMMITTED,
+                        1.0F,
+                        Map.of(),
+                        Set.of("activity:farming")));
+
+        List<ActivityType> expected = List.of(
+                ActivityType.MINING,
+                ActivityType.BUILDING,
+                ActivityType.COMBAT,
+                ActivityType.FARMING);
+        for (int index = 0; index < events.size(); index++) {
+            ActivityHypothesis hypothesis = inference.infer(
+                    ACTOR_ID, List.of(events.get(index)), 30L);
+            Assertions.assertEquals(expected.get(index), hypothesis.type());
+            Assertions.assertFalse(hypothesis.evidence().isEmpty());
+        }
+    }
+
     private static PerceivedEvent event(
             long perceivedSeq,
             long authoritySeq,
