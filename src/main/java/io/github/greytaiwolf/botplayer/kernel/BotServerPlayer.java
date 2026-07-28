@@ -2,6 +2,7 @@ package io.github.greytaiwolf.botplayer.kernel;
 
 import com.mojang.authlib.GameProfile;
 import io.github.greytaiwolf.botplayer.config.BotPlayerConfig;
+import io.github.greytaiwolf.botplayer.lifecycle.BotPlayerManagers;
 import net.minecraft.network.protocol.game.ServerboundClientCommandPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ClientInformation;
@@ -21,6 +22,7 @@ import org.jetbrains.annotations.Nullable;
  */
 public final class BotServerPlayer extends ServerPlayer {
     private final BotRuntimeHandle runtimeHandle;
+    private int lastClientlessConnectionTick = Integer.MIN_VALUE;
 
     public BotServerPlayer(
             MinecraftServer server,
@@ -48,13 +50,41 @@ public final class BotServerPlayer extends ServerPlayer {
 
     @Override
     public void tick() {
+        /*
+         * ServerLevel owns the ServerPlayer housekeeping phase, EntityTickEvent, freeze and
+         * ticking-range semantics. The lifecycle manager separately supplies the connection-owned
+         * Player#doTick phase that advances LivingEntity physics and tickCount; BotConnection
+         * never receives that phase from the physical connection list.
+         */
         super.tick();
-        doTick();
+    }
 
-        int refreshInterval = BotPlayerConfig.CHUNK_TRACKING_REFRESH_TICKS.get();
-        if (connection != null && server.getTickCount() % refreshInterval == 0) {
-            connection.resetPosition();
-            serverLevel().getChunkSource().move(this);
+    /**
+     * Runs the connection-owned half of a real player's tick once per absolute server tick.
+     *
+     * <p>This method does not increment {@link #tickCount} directly. Its guarded {@link #doTick()}
+     * call advances that counter exactly once and still emits NeoForge PlayerTickEvent.Pre/Post, so
+     * other mods observe the normal event path.
+     */
+    public void tickClientlessConnectionPhase() {
+        MinecraftServer server = getServer();
+        if (server == null || !server.isSameThread()) {
+            throw new IllegalStateException(
+                    "BotPlayer connection phase must run on the server thread");
+        }
+        int currentTick = server.getTickCount();
+        if (lastClientlessConnectionTick == currentTick) {
+            return;
+        }
+        lastClientlessConnectionTick = currentTick;
+
+        BotPlayerManagers.find(server)
+                .ifPresent(manager -> manager.applyPlayerInput(this));
+        doTick();
+        BotPlayerManagers.find(server)
+                .ifPresent(manager -> manager.syncPlayerInputAfterPhysics(this));
+        if (connection instanceof BotGamePacketListener botListener) {
+            botListener.tickVirtualProtocol();
         }
     }
 
@@ -75,8 +105,12 @@ public final class BotServerPlayer extends ServerPlayer {
             if (currentPlayer.isChangingDimension()) {
                 currentPlayer.hasChangedDimension();
             }
-            if (currentPlayer instanceof BotServerPlayer currentBot) {
-                runtimeHandle.attach(currentBot);
+            if (currentPlayer instanceof BotServerPlayer currentBot
+                    && currentBot != this) {
+                BotPlayerManagers.find(server)
+                        .ifPresent(manager ->
+                                manager.onConnectionPlayerReplaced(
+                                        this, currentBot));
             }
             return currentPlayer;
         }

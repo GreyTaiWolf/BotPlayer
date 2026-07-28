@@ -1,4 +1,5 @@
 {
+  "container.botplayer.inventory": "Bot Inventory",
   "message.botplayer.agent_binding.agent_id_in_use": "BotPlayer: This agent ID is already used by another bot.",
   "message.botplayer.agent_binding.already_unbound": "BotPlayer: This bot is already unbound.",
   "message.botplayer.agent_binding.bot_not_active": "BotPlayer: The target bot is not online.",

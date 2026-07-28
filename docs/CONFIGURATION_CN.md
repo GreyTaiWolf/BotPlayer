@@ -1,7 +1,9 @@
 # BotPlayer 配置说明
 
-本文描述当前 server 配置和客户端本地凭据存储。路线图中的 AI Provider、模型调用、记忆、
-动作、背包和性能配置尚不可用。
+本文描述当前 server 配置和客户端本地凭据存储。P2 新增了动作运行时容量与
+bot 自身背包查看距离；AI Provider、模型调用、感知、寻路、技能和记忆配置仍不可用。
+代码与 GameTest 的最终主线验证状态见
+[P2 完成报告](P2_COMPLETION_REPORT_CN.md)。
 
 ## 配置文件
 
@@ -32,6 +34,12 @@ NeoForge 默认从物理端配置目录加载：客户端为 `.minecraft/config`
 | `server_player.autoRespawn` | 布尔 | `true` | `true/false` | 死亡后是否请求原版重生 |
 | `server_player.respawnDelayTicks` | 整数 | `20` | `0..1200` | 自动重生等待 Tick；正常 20 TPS 时 20 Tick 约 1 秒 |
 | `server_player.chunkTrackingRefreshTicks` | 整数 | `10` | `1..200` | 刷新连接位置和玩家区块跟踪的间隔 |
+| `actions.mailboxCapacity` | 整数 | `1024` | `2..65536` | 等待服务器线程处理的动作/取消命令总容量 |
+| `actions.ledgerCapacity` | 整数 | `4096` | `1..65536` | 动作幂等 ledger 保留的 canonical 条目容量 |
+| `actions.commandsPerTick` | 整数 | `128` | `1..4096` | 每个服务器 Tick 最多处理的动作 mailbox 命令数 |
+| `actions.activeCapacity` | 整数 | `512` | `1..16384` | 所有 BotPlayer 合计最多活跃动作数 |
+| `actions.completionCapacity` | 整数 | `2048` | `2..65536` | 等待 callback dispatcher 的完成通知容量 |
+| `inventory.viewDistance` | 浮点数 | `8.0` | `1.0..64.0` | 同维度玩家可编辑 bot 自身背包的最大距离（方块） |
 | `permissions.commandPermissionLevel` | 整数 | `2` | `0..4` | 使用 `spawn`、`list`、`remove` 需要的原版权限等级 |
 
 ## 当前 server TOML 示例
@@ -44,6 +52,16 @@ autoRespawn = true
 respawnDelayTicks = 20
 chunkTrackingRefreshTicks = 10
 
+[actions]
+mailboxCapacity = 1024
+ledgerCapacity = 4096
+commandsPerTick = 128
+activeCapacity = 512
+completionCapacity = 2048
+
+[inventory]
+viewDistance = 8.0
+
 [permissions]
 commandPermissionLevel = 2
 ```
@@ -55,7 +73,7 @@ commandPermissionLevel = 2
 ### `maxBots`
 
 这只是在线数量硬上限，不代表服务器已经通过 128 bot 的性能验证。当前没有多 bot soak、
-动作、感知或 AI 压力测试，开发测试建议保持较小数量。
+感知或 AI 压力测试，开发测试建议保持较小数量。
 
 ### `showInPlayerList`
 
@@ -75,6 +93,39 @@ Tick 可以重新安排重生，但动态配置更改还没有专门 GameTest。
 
 较小值会增加服务端工作量。它用于保持无物理客户端玩家的区块跟踪位置，不是独立的强制
 区块加载器，也不保证 bot 离线后继续加载区块。
+
+### `actions.mailboxCapacity`
+
+这是等待服务器主线程接收的动作与取消命令的总容量。达到上限后新提交会被拒绝，而不是
+无限堆积。最小值 `2` 用于给普通提交与取消至少留下可用空间；它不是“每 bot”容量。
+
+### `actions.ledgerCapacity`
+
+幂等 ledger 保存 canonical 动作及其进行中/终态信息。已完成条目可以按有界策略淘汰，
+进行中条目不会为容纳新请求而被随意驱逐。容量过小会更快失去历史重放窗口；容量过大则
+增加常驻内存。它不能代替持久任务历史。
+
+### `actions.commandsPerTick`
+
+限制一个服务器 Tick 内从 mailbox 处理的动作与取消命令数，用于控制尖峰主线程成本。
+调高该值会缩短排队时间，也可能增加单 Tick 负载；它不改变动作自己的 deadline 或
+`maxTicks`。
+
+### `actions.activeCapacity`
+
+限制整个服务器当前可处于校验、运行或验证阶段的动作数。达到上限的新动作会得到容量失败，
+不会绕过通道仲裁。该值不是每个 bot 的并行度；同一 bot 仍受动作通道租约约束。
+
+### `actions.completionCapacity`
+
+限制等待异步 completion callback 的通知数。dispatcher 有界并对入口施加背压，避免阻塞
+callback 把服务器长期运行变成无界线程/队列增长。调大前应先定位 callback 消费变慢的原因。
+
+### `inventory.viewDistance`
+
+真人只有在与活动 bot 同一维度、双方存活且距离不超过该值时，才能打开或继续编辑 bot
+自身背包。会话期间每 Tick 复核；超距、死亡、换维度或退出会关闭会话。该配置只作用于
+bot 自身 41 格库存 GUI，不开启箱子、工作站或模组容器自动化。
 
 ### `commandPermissionLevel`
 
@@ -101,7 +152,7 @@ Tick 可以重新安排重生，但动态配置更改还没有专门 GameTest。
 - owner、trusted、observer 和动作 ACL；
 - 挖掘、放置、PVP、搭桥和高风险确认；
 - 感知距离、路径节点和 Tick 预算；
-- 背包打开距离和写锁；
+- 通用世界容器、工作站和模组 menu 的距离、事务和适配策略；
 - 长期记忆、聊天保存和数据保留；
 - 自动加载 roster 和每 bot 独立策略。
 

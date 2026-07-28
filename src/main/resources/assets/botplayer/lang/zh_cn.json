@@ -1,4 +1,5 @@
 {
+  "container.botplayer.inventory": "Bot 背包",
   "message.botplayer.agent_binding.agent_id_in_use": "BotPlayer：该智能体标识已被其他 Bot 使用。",
   "message.botplayer.agent_binding.already_unbound": "BotPlayer：该 Bot 已经处于未绑定状态。",
   "message.botplayer.agent_binding.bot_not_active": "BotPlayer：目标 Bot 当前不在线。",

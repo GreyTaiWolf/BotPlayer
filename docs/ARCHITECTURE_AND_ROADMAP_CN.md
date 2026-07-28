@@ -1,7 +1,7 @@
 # BotPlayer：NeoForge 1.21.1 完整架构、编码规范与 P0–P10 路线图
 
-> 文档状态：架构基线 v1.2
-> 更新日期：2026-07-27
+> 文档状态：架构基线 v1.3
+> 更新日期：2026-07-28
 > 目标仓库：`GreyTaiWolf/BotPlayer`
 > 第一目标平台：Minecraft Java 1.21.1、NeoForge 21.1.244、Java 21
 > 模组 ID：`botplayer`
@@ -14,7 +14,10 @@ BotPlayer 的最终目标是让一个由 AI 控制的服务端玩家，按照普
 
 本文描述的是**目标架构和验收门槛**，不是当前功能清单。当前代码事实以
 [IMPLEMENTATION_STATUS_CN.md](IMPLEMENTATION_STATUS_CN.md) 为准；原版玩法逐项覆盖以
-[VANILLA_CAPABILITY_MATRIX_CN.md](VANILLA_CAPABILITY_MATRIX_CN.md) 为准。
+[VANILLA_CAPABILITY_MATRIX_CN.md](VANILLA_CAPABILITY_MATRIX_CN.md) 为准。P2 的调研依据、
+六层状态机与重新定界见
+[AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md](AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md)；
+P2 实现与验证边界见 [P2_COMPLETION_REPORT_CN.md](P2_COMPLETION_REPORT_CN.md)。
 
 ---
 
@@ -204,6 +207,23 @@ DeepSeek 响应期间，L0–L2 继续运行。模型永远不处于服务器 Ti
 12. 失败时按局部重试、替代方案、重新规划、询问玩家的顺序恢复。
 13. 成功事实写入情景记忆，向玩家报告数量、位置和剩余问题。
 
+### 3.4 六层可组合状态机
+
+BotPlayer 不使用一个跨越全部职责的巨型 FSM。六层状态机按不同时间尺度组合：
+
+| 状态层 | 权威职责 | 阶段 |
+|---|---|---|
+| 玩家生命周期 | 当前 `ServerPlayer`、generation、死亡/重生/卸载 | P1，P2 加固 |
+| 控制协调 | 身体/手/库存通道租约、优先级与抢占清理 | P2-A |
+| 原子动作 | 校验、运行、验证、唯一终态、取消与幂等 | P2-A～C |
+| 背包会话 | viewer 权限、距离、写锁、token 和关闭 | P2-D |
+| 技能运行 | 多动作组合、检查点、补偿和资源预留 | P5A |
+| Goal/计划 | 意图、承诺、DAG、阻塞与跨重启恢复 | P7；P6 只产生受限提案 |
+
+各层只通过 ID、generation、结构化 outcome 与事件协调，禁止出现
+“RESPAWNING_AND_MINING_AND_MENU_OPEN”这类组合状态。完整状态与跨层协议见
+[AI 玩家调研与 P2 重新基线](AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md#4-六层可组合状态机)。
+
 ---
 
 ## 4. 真实 `ServerPlayer` 内核
@@ -246,7 +266,7 @@ future/player-profile/
 | `BotConnection` | 提供有效虚拟 `Connection`；安全消费只发给 bot 客户端的包 |
 | `BotGamePacketListener` | 保持服务器连接不变量、同步程序化移动、拒绝无意义客户端依赖 |
 | `BotLifecycleManager` | 唯一创建、卸载、重生、恢复 bot 的入口 |
-| `BotRuntimeHandle` | 通过 botId 间接解析当前权威实例；后续加入 generation |
+| `BotRuntimeHandle` | 通过 botId/generation 间接解析当前权威实例；重生后旧代际失效 |
 | `BotIdentity` | 不可变 botId、UUID、当前名字、创建时间 |
 | `BotProfile` | 当前持久 botId、规范名字与可选 owner；未来扩展皮肤、默认维度和行为引用 |
 | `BotProfileStore` | 身份和生命周期元数据的持久化 |
@@ -258,7 +278,7 @@ future/player-profile/
 |---|---|---|
 | `BotPlayer` | 模组入口 | 保留当前类名 |
 | `BotPlayerConfig` | 已实现的 server 配置 | 后续按 server/client/AI schema 拆分 |
-| `BotRuntimeHandle` | 跨重生持有当前实例 | 加入 generation 后完整承担间接实例职责 |
+| `BotRuntimeHandle` | 跨重生持有当前实例和 generation | 继续保持稳定 handle，不向业务层暴露长期玩家引用 |
 | `BotIdentityIds` | 创建/兼容阶段的身份 ID 生成 | roster 已成为持久权威；后续补迁移与重命名 |
 | `BotRosterSavedData` | 持久 `serverInstanceId`、bot/player 身份和 owner | 加入迁移、autoload、自动恢复和诊断 |
 | `BotLifecycleManager` | 在线实例、生命周期和 roster 解析 | 加入 autoload、诊断和完整事务 |
@@ -283,12 +303,14 @@ record BotIdentity(
 - 创建前检查离线档案、白名单/封禁名单、当前在线玩家和已有 bot；
 - 名称必须符合 1.21.1 玩家名规则，并支持配置统一前缀。
 
-> **当前 P1 状态**
+> **当前 P1/P2 生命周期状态**
 >
 > 当前代码已经使用 roster SavedData 持久保存 `serverInstanceId`、botId、player UUID、
 > 当前名字与 owner。名字派生 ID 只保留为创建/兼容阶段的输入；条目创建后
 > 以 roster 记录为权威，客户端不能通过名字或本地绑定改写身份与 owner。自动恢复、正式
 > 重命名命令、旧档迁移故障注入和完整冲突回滚仍未完成，因此任何手工改名仍不受支持。
+> P2 候选已让 runtime handle 在同一服务器会话内稳定保留，并在重生替换身体时递增
+> generation；动作和背包会话按旧代际失效。
 
 ### 4.3 生命周期状态机
 
@@ -386,9 +408,11 @@ CompletionStage<SpawnResult> spawn(BotSpawnRequest request) {
 - 暴露极少量诊断指标：已丢弃包数、最后包类型、关闭原因；
 - 对服务端广播给其他真人客户端的 bot 实体同步没有影响。
 
-当前 P1 首版只完成合法 `EmbeddedChannel`、登录路径、幂等关闭和丢弃 bot 专属出站包；
-还没有正确完成带 `PacketSendListener` 的发送回调、keepalive 回环、teleport acknowledge
-和连接诊断指标。因此虚拟连接在这些项目及连续在线测试通过前只能标记为“部分完成”。
+P2 已在合法 `EmbeddedChannel`、登录路径、幂等关闭和丢弃 bot 专属出站包之上，
+补充 `PacketSendListener` callback 隔离、teleport acknowledge、进程内 keepalive 处理
+记账和常量空间诊断。它没有伪造不存在的网络往返；keepalive 不调用需要私有 pending
+challenge 的原版 handler。连续在线、独立专用服和多 bot soak 尚未完成，因此虚拟连接
+仍不能标记为发布级验证。
 
 `BotGamePacketListener` 不承担 AI 动作。它只用于：
 
@@ -597,7 +621,16 @@ record ActionOutcome(
 ) {}
 ```
 
-状态：`QUEUED`、`RUNNING`、`SUCCEEDED`、`FAILED`、`CANCELLED`、`PREEMPTED`、`STALE`。
+状态：`QUEUED`、`VALIDATING`、`RUNNING`、`VERIFYING`、`SUCCEEDED`、`FAILED`、
+`CANCELLED`、`PREEMPTED`、`STALE`。
+
+> **P2 的实际边界**
+>
+> 当前 `BotActionRuntime` 已实现上述中央状态表、有界 mailbox/ledger/completion、
+> generation 校验和通道仲裁；`WAIT / LOOK_AT / MOVE_INPUT / JUMP / STOP` 以及 P2-C
+> 基础交互已接入 Minecraft backend。Goal、Skill、snapshot/world revision 与完整 ACL
+> 仍属于后续阶段，不能因 envelope 已有扩展点而写成现有能力。最终验证结果见
+> [P2 完成报告](P2_COMPLETION_REPORT_CN.md)。
 
 ### 5.3 Guard 固定顺序
 
@@ -685,6 +718,10 @@ Bot 没有真实客户端输入包，因此需要 `PlayerInputController` 在服
 
 ### 5.8 容器事务
 
+本节描述目标事务协议。P2-D 只实现真人查看/编辑 bot 自身 41 格玩家库存的专用 menu，
+不实现箱子、工作站或模组容器自动化。首条生存闭环所需的最小原版世界容器驱动进入 P5A，
+更广泛原版容器/工作站进入 P5B，模组和自定义 menu 进入 P8。
+
 所有容器动作绑定：
 
 - 当前 `containerId`；
@@ -719,7 +756,7 @@ bot + 打开容器 + carried stack + 合法消耗/产出
 - viewer 与 bot 同维度；
 - 直线距离不超过默认 8 格；
 - 双方存活，bot 生命周期为 `ACTIVE`；
-- viewer 是 owner、ACL 授权者或 OP；
+- P2 当前 viewer 是持久 owner 或服务器 OP；trusted/observer 与细粒度 ACL 后续实现；
 - 同一 bot 同时只有一个可写 viewer；
 - 打开期间暂停所有会改 bot 背包的动作；
 - 危险反射可抢占 GUI，并向 viewer 说明关闭原因；
@@ -775,11 +812,12 @@ bot + 打开容器 + carried stack + 合法消耗/产出
 
 ```text
 inventory/
+  BotInventoryLayout.java
   BotInventoryMenu.java
   BotInventorySession.java
   BotInventorySessionManager.java
-  BotInventorySlot.java
   BotInventoryLock.java
+  BotPlayerMenus.java
   InventoryMutationGate.java
 client/screen/
   BotInventoryScreen.java
@@ -1868,7 +1906,7 @@ interface ServerCommand<T> {
 
 ## 16. 推荐包结构与类职责
 
-本节是概念职责分组，不要求 P0/P1 先创建空包。具体文件名以当前代码和 4.1 映射为准；
+本节是概念职责分组，不要求 P0–P2 先创建空包。具体文件名以当前代码和 4.1 映射为准；
 新增包时保持依赖方向即可，是否移动已有类必须单独重构并更新文档。
 
 ```text
@@ -1927,9 +1965,12 @@ src/main/resources/
   data/botplayer/
 
 src/test/java/
-src/gametest/java/
 docs/
 ```
+
+当前 NeoForge P2 GameTest 位于主源码的 `gametest/` 包，结构位于
+`src/main/resources/data/botplayer/structure/`；未来是否拆独立 source set 由构建验证后
+决定，不能在不存在时把 `src/gametest/java` 写成当前事实。
 
 ### 16.1 关键类清单
 
@@ -1946,13 +1987,15 @@ docs/
 | player | `BotServerPlayer` | ServerPlayer 子类标记 |
 | player | `BotConnection` | 虚拟连接 |
 | player | `BotGamePacketListener` | bot listener |
-| lifecycle | `BotRuntimeHandle` | 当前实例间接引用与未来 generation |
-| action | `BotActionExecutor` | 动作队列与 Tick |
-| action | `ActionValidatorChain` | Guard 编排 |
+| lifecycle | `BotRuntimeHandle` | 当前实例间接引用、generation 与旧代际关闭 |
+| action | `BotActionRuntime` | 有界动作队列、FSM、仲裁、Tick、取消和 completion |
+| action | `ControlArbiter` | 动作通道租约、优先级和抢占 |
 | action | `ActionLedger` | 幂等与结果 |
-| action | `PlayerInputController` | 输入状态 |
-| platform bridge | `PlayerActionBridge` | 1.21.1 NMS 动作入口 |
+| action input | `PlayerInputController` | generation/action owner 绑定的输入状态 |
+| action minecraft | `MinecraftActionBackend` | 1.21.1 玩家输入与世界交互入口 |
 | inventory | `BotInventorySessionManager` | GUI 会话和锁 |
+| inventory | `BotInventoryMenu` | bot 41 槽与 viewer 36 槽的权威 menu |
+| client screen | `BotInventoryScreen` | bot 自身背包客户端 screen |
 | navigation | `NavigationService` | 路线请求与执行 |
 | navigation | `StuckDetector` | 卡住检测 |
 | perception | `PerceptionService` | 传感器编排 |
@@ -2011,9 +2054,11 @@ interface PlayerLifecycleBridge {
 ### 17.1 配置分层
 
 **当前实现**有 NeoForge `SERVER` 配置，以及不属于 TOML 的客户端本地 credential
-profile/binding store；准确字段和边界见 [CONFIGURATION_CN.md](CONFIGURATION_CN.md)。
-下面的 common/client 配置与大部分 TOML 示例仍是 P1–P10 逐步实现的**目标 schema**，
-当前加入这些键不会生效。
+profile/binding store。P2 新增
+`actions.mailboxCapacity / ledgerCapacity / commandsPerTick / activeCapacity /
+completionCapacity` 与 `inventory.viewDistance`；准确默认值、范围和边界见
+[CONFIGURATION_CN.md](CONFIGURATION_CN.md)。下面的 common/client 配置与其他 TOML
+示例仍是 P3–P10 逐步实现的**目标 schema**，当前加入这些目标键不会生效。
 
 建议文件：
 
@@ -2265,13 +2310,13 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 - [x] 建立基础日志；
 - [ ] 建立统一脱敏工具；
 - [x] 建立 `src/test` 与首批客户端凭据单元测试；
-- [ ] 建立 `src/gametest`；
-- [ ] 添加最小启动 GameTest；
+- [x] 建立 NeoForge GameTest 类与 structure fixture；当前放在 NeoForge 可发现的主源码集中；
+- [x] 添加首批 P2 生命周期、移动、交互和库存 GameTest 来源；
 - [ ] 添加 dedicated server 启动 smoke test；
 - [x] 建立 GitHub Actions 编译与构件上传；
 - [x] 单元测试随 `clean build` 进入 CI；
-- [ ] 把 GameTest 加入 CI；
-- [ ] 建立代码格式、静态检查和依赖锁；
+- [x] 把 `runGameTestServer` 加入 CI 配置；远端 Build #18 已绿色通过；
+- [ ] 建立代码格式和依赖锁；Java 编译候选已启用 `-Xlint:all -Werror`；
 - [x] 添加 `THIRD_PARTY_NOTICES.md` 研究与发布审查基线；
 - [x] 添加架构决策目录 `docs/adr/`；
 - [x] 记录开发命令和 Java 21 要求。
@@ -2301,11 +2346,11 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 - [ ] 实现离线 roster、playerdata、白名单/封禁 profile 冲突检查；
 - [x] 实现 `BotServerPlayer` 首版内核；
 - [x] 实现 `BotConnection` 和 `BotGamePacketListener` 首版；
-- [ ] 完成发送回调、keepalive、teleport ack 和连接指标；
+- [x] 完成发送 callback、keepalive/teleport 处理和常量空间连接指标候选；
 - [x] 实现 `BotLifecycleManager` 与首版生成失败回滚；
 - [ ] 完成所有故障点的事务回滚、残留诊断和故障注入测试；
 - [x] 实现跨重生 `BotRuntimeHandle`；
-- [ ] 加入 generation 和旧实例引用失效检测；
+- [x] 加入 generation 和旧实例引用失效检测；
 - [x] 完成登录监听器窄 Mixin；
 - [x] 完成重生实例窄 Mixin；
 - [x] 完成正常死亡 TAIL 观察 Mixin；
@@ -2321,22 +2366,24 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 - [ ] 完成三维度 GameTest；
 - [x] 写入连接位置与区块跟踪刷新；
 - [ ] 完成普通玩家 ticket、方块实体 Tick、旧 ticket 释放和残留诊断；
-- [ ] 添加 lifecycle 诊断。
+- [x] 添加有界 lifecycle 转换诊断候选；
+- [ ] 完成完整生命周期/三维度/保存恢复与残留诊断验收。
 
-GameTest：
+GameTest（复选框表示来源已加入，最终结果仍以 P2 完成报告为准）：
 
 - [ ] 创建与生成；
 - [ ] 同一 bot 重复生成被拒绝；
 - [ ] UUID/名字冲突回滚干净；
 - [ ] 保存、卸载、加载后背包/位置/经验一致；
 - [ ] `keepInventory` true/false 死亡；
-- [ ] 死亡后新实例仍为 `BotServerPlayer`；
-- [ ] generation 递增，旧引用失效；
+- [x] 100 次死亡后新实例仍为 `BotServerPlayer`；同一持久世界连续两轮通过；
+- [x] generation 递增、旧引用/动作/会话失效；同一测试连续两轮通过；
 - [ ] 下界/末地往返；
 - [ ] 服务器停止与恢复；
 - [ ] 零真人玩家时持续存在；
 - [ ] 多 bot 依次生成无冲突；
-- [ ] 连接非空、无包队列泄漏；
+- [x] 无客户端玩家连接阶段每服务器 Tick 至多运行一次；连续两轮通过；
+- [ ] 连接非空、无包队列泄漏的长时间验收；
 - [ ] 卸载后 PlayerList/level/chunk 无残留。
 
 验收：连续 100 次生成—卸载和 100 次死亡—重生无泄漏、无重复实例、无 playerdata 损坏。
@@ -2347,48 +2394,75 @@ GameTest：
 
 **目标**：bot 能以玩家规则完成基础身体和世界动作，真人能安全操作其背包。
 
-任务清单：
+P2 根据调研拆成五个子阶段；详细理由与阶段门见
+[AI 玩家调研与 P2 重新基线](AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md)。
 
-- [ ] `ActionEnvelope`、`ActionOutcome`、失败码；
-- [ ] `ActionValidatorChain`；
-- [ ] `ActionLedger` 幂等；
-- [ ] `PlayerInputController`；
-- [ ] 视角、走、跑、蹲、跳、游泳；
-- [ ] 攻击、实体交互；
-- [ ] 使用物品、使用方块；
-- [ ] 分阶段挖掘和中止；
-- [ ] 选择槽、装备、丢弃；
-- [ ] 容器打开、点击、Shift 移动、关闭；
-- [ ] 世界 revision 和迟到动作拒绝；
-- [ ] 动作取消时清空输入；
-- [ ] 空手右键入口；
-- [ ] 41 格 bot 背包 menu 与客户端 screen；
-- [ ] ACL、一人写锁、距离和生命周期校验；
-- [ ] GUI 打开时 `InventoryMutationGate`；
-- [ ] 危险/死亡/维度切换强制关闭；
-- [ ] 提供可由 P4 调用的 `forceClose(DANGER)`；P2 使用测试触发器验收；
-- [ ] 物品守恒诊断。
+#### P2-A：确定性动作脊柱
 
-GameTest：
+- [x] `ActionEnvelope`、`ActionOutcome`、中央状态表和结构化失败码；
+- [x] 有界 mailbox、每 Tick 命令预算与活跃动作容量；
+- [x] `ActionLedger` canonical 幂等、别名加入、终态重放和有界淘汰；
+- [x] `MOVE/LOOK/HAND/INVENTORY/INTERACT/CHAT` 通道仲裁和优先级抢占；
+- [x] deadline、`maxTicks`、取消、shutdown、一次性 cleanup 和安全 reset；
+- [x] generation 权威实例解析、旧代际拒绝与生命周期同步关闭；
+- [x] 有界 completion dispatcher、callback 线程隔离与取消保留容量；
+- [x] `WAIT / LOOK_AT / STOP` 最小 Minecraft 纵切片；
+- [x] 动作核心纯 Java 测试来源；
+- [x] 主线严格编译、140/140 单元测试与连续两轮 19/19 GameTest；
+- [x] 远端 GitHub Actions Build #18 绿色终态回写。
 
-- [ ] 不使用传送完成固定路线移动；
-- [ ] 跳上一格、蹲防坠落、游泳；
-- [ ] 正常破坏速度、工具耐久和掉落；
-- [ ] 保护事件取消后动作失败；
-- [ ] 放置碰撞与方块状态正确；
-- [ ] 攻击冷却和目标死亡验证；
-- [ ] 持物品右键不打开，主手空手才打开；
-- [ ] 副手不误触；
-- [ ] 未授权玩家被拒绝；
-- [ ] 两 viewer 争锁只有一人成功；
-- [ ] 超距、死亡、换维度、退出自动关闭；
-- [ ] Shift 移动、盔甲、副手与绑定诅咒；
-- [ ] GUI 和技能并发不复制物品；
-- [ ] 重复幂等请求只执行一次。
+#### P2-B：输入与短程移动
 
-验收：所有基础世界变化都可以追溯到动作结果；压力测试无物品复制。
+- [x] generation/action owner 绑定的 `PlayerInputController`；
+- [x] 有界前后/横向、跑、蹲、跳输入和主动停止；
+- [x] 每个绝对服务器 Tick 只应用一次输入与玩家物理阶段；
+- [x] 取消、租约过期、死亡、卸载与抢占主动清零输入；
+- [x] 位置、速度、落地/离地、姿态、碰撞和水中状态证据；
+- [x] 一格跳跃、静止蹲姿、浅水前移、撞墙不穿透、空中跳跃拒绝 GameTest 来源；
+- [ ] P4 长距离寻路、动态重规划、门/梯子/脚手架和危险成本。
 
-退出产物：`0.1.0-alpha.N` 系列达到 P2 完成门槛；当前 `alpha.1` 尚未达到。
+#### P2-C：基础世界交互
+
+- [x] 选择快捷栏、使用/持续使用/释放物品；
+- [x] 使用方块、分阶段破坏、STOP/ABORT；
+- [x] 攻击、实体交互；
+- [x] 丢弃和按明确 ItemEntity UUID 等待拾取；
+- [x] 维度、方块/实体/物品指纹、距离、视线和冷却前置条件；
+- [x] 普通服务端玩家入口与方块、实体、物品世界证据；
+- [x] 放置、破坏、保护拒绝、攻击、丢弃和拾取 GameTest 来源；
+- [ ] 完整保护/领地/PVP/反作弊模组兼容矩阵；
+- [ ] 通用世界容器与工作站；明确延期到 P5A/P5B。
+
+#### P2-D：bot 自身背包会话
+
+- [x] 空主手、主手右键入口；副手与持物品不误触；
+- [x] 41 格 bot 真实库存 + 36 格 viewer 库存的 77 槽 menu 与客户端 screen；
+- [x] owner/OP 权限、同维度/存活/距离和 generation 校验；
+- [x] 每 bot 单 viewer 写锁、每 viewer 单会话、nonce token 与有界关闭墓碑；
+- [x] 打开前同步排空动作、打开期间 `InventoryMutationGate`；
+- [x] Shift 移动、盔甲/副手语义、关闭确认和物品数量守恒；
+- [x] 死亡、重生、换维度、超距、退出、menu 替换和停服关闭；
+- [x] 入口、权限、锁、距离/生命周期、77 槽与 mutation gate GameTest 来源；
+- [ ] trusted/observer 与细粒度背包 ACL；
+- [ ] 箱子、木桶、潜影盒和工作站 menu；不属于 P2-D。
+
+#### P2-E：集成、故障注入与验收
+
+- [x] 动作、输入、交互、背包会话与生命周期接入同一服务端 Tick；
+- [x] 虚拟连接 callback、keepalive/teleport 处理和常量空间 telemetry；
+- [x] generation、生命周期转换诊断与无客户端玩家两阶段 Tick；
+- [x] 生命周期、移动、交互和库存四组 GameTest 来源与 structure fixture；
+- [x] 严格 Java 编译警告和 CI `runGameTestServer` 门禁配置；
+- [x] 重复/取消/抢占/回调背压/cleanup 失败/死亡重入/停服竞态测试来源；
+- [x] 主线 `compileJava / compileTestJava / test / runGameTestServer / clean build` 全部通过；
+- [x] 推送后 GitHub Actions Build #18 到达绿色终态；
+- [ ] 客户端 screen 手工验收、独立专用服和多 bot 长时间 soak。
+
+验收：所有 P2 基础世界变化可追溯到唯一动作结果；旧 generation 无副作用；取消后输入/
+持续交互清零；背包会话与动作库存写互斥；自动测试与 CI 有明确绿色证据。
+
+退出产物：`0.1.0-alpha.N` 系列达到 P2 完成门槛。当前本地与远端自动化退出门均已
+通过；实时结果与仍未验证边界见 [P2 完成报告](P2_COMPLETION_REPORT_CN.md)。
 
 ### P3：感知、事件和玩家活动理解
 
@@ -2468,6 +2542,8 @@ GameTest：
 - [ ] 检查点持久化；
 - [ ] DAG scheduler；
 - [ ] 资源和容器预留；
+- [ ] 实现首条生存闭环所需的最小原版世界容器驱动：真实 menu、stateId/revision、
+  carried stack、关闭和物品守恒；
 - [ ] 超时、重试、补偿和恢复；
 - [ ] 声明式 Skill Pack loader；
 - [ ] 草案、静态检查、测试、管理员批准流程；
@@ -2497,6 +2573,8 @@ GameTest：
 
 任务与验收：
 
+- [ ] 扩展到箱子、木桶、潜影盒等广泛原版储存容器，支持读取、指定数量存取、Shift
+  移动、并发变化重读和物品守恒；
 - [ ] 2×2/3×3 制作、熔炉、高炉、烟熏炉；
 - [ ] 切石、锻造、铁砧、砂轮、附魔、酿造、织布和制图；
 - [ ] 作物、树苗、甘蔗、竹子、仙人掌等种植与补种；
@@ -2607,7 +2685,9 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 
 ### P8：模组适配 API
 
-**目标**：在不硬编码具体内容的前提下，通过 C0–C3 扩展到其他模组。
+**目标**：在不硬编码具体内容的前提下，通过 C0–C3 扩展到其他模组。P2 的 bot 自身
+背包与 P5 的原版容器不会自动证明模组 menu 兼容；标准 item handler/container 属于 C1，
+自定义 menu/机器语义必须通过版本化 C3 适配器。
 
 任务清单：
 
@@ -2616,10 +2696,10 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 - [ ] `/reload` 重建和技能重验证；
 - [ ] content descriptor API；
 - [ ] sensor/skill/adapter 注册事件；
-- [ ] 通用 item handler/container driver；
+- [ ] 模组标准 item handler/container driver（C1）；
 - [ ] Knowledge Pack；
 - [ ] Skill Pack 兼容范围；
-- [ ] `BotMenuAdapter`；
+- [ ] 自定义 menu/机器语义的 `BotMenuAdapter`（C3）；
 - [ ] `BotModAdapter` SPI；
 - [ ] 兼容失败隔离；
 - [ ] 测试用示例模组/测试 fixture。
@@ -2706,7 +2786,8 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 ### 19.1 版本节点
 
 版本号表示开发序列，不单独证明能力已完成；具体成熟度必须同时查看实现状态、能力矩阵、
-测试和对应 Release 说明。当前 `0.1.0-alpha.1` 是 P0/P1 内核快照，不代表 P2 已完成。
+测试和对应 Release 说明。`0.1.0-alpha.1` 是历史 P0/P1 内核快照；当前 P2 已通过本地
+自动化门，但尚未因此自动成为新的正式 Release。
 
 | 版本序列 | 阶段目标 | 用户可见含义 |
 |---|---|---|
@@ -2734,7 +2815,9 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 
 ### 20.2 生命周期矩阵
 
-下表中的 `✓` 表示**必须覆盖的测试组合**，不表示当前已经通过。当前分支尚无 GameTest。
+下表中的 `✓` 表示**必须覆盖的测试组合**，不表示当前已经通过。P2 的生命周期、移动、
+交互和 bot 自身背包 19 项 GameTest 已连续两轮通过，但只覆盖矩阵的一部分；结果与缺口
+以 [P2 完成报告](P2_COMPLETION_REPORT_CN.md) 为准。
 
 | 用例 | 单人集成服 | 专用服 | 零真人 | 多 bot |
 |---|---:|---:|---:|---:|
@@ -2974,16 +3057,21 @@ P0 工程
 
 研发可以在前一阶段验收未完成时提前实现下一阶段的独立内核、接口和测试夹具；但不能把
 后一阶段演示当作前一阶段通过，也不能为了展示 AI 聊天而跳过玩家生命周期、动作校验或
-结果验证。当前正是“P0 构建基线已通过、P0 GameTest 尚缺，同时提前实现 P1 内核”的状态。
+结果验证。当前 P2-A～P2-E 的严格编译、140/140 单元测试、连续两轮 19/19 GameTest 和
+干净构建已在本地通过，远端 GitHub Actions Build #18 也已全绿。
 
 P5B–P5D 是横向原版能力扩展轨：在各自依赖完成后可与 P6–P9 并行，但所有 REQUIRED
 能力必须在 P10 前完成，P10 不能承担首次功能开发。
 
-第一轮实施只做 P0 与 P1。完成标准不是“bot 出现在世界里”，而是它可以反复生成、保存、卸载、死亡、重生、跨维度和重启恢复，且始终保持真实 `BotServerPlayer`、有效虚拟连接、唯一实例和干净的区块/运行时引用。
+第一轮 P0/P1 的完成标准不是“bot 出现在世界里”，而是它可以反复生成、保存、卸载、
+死亡、重生、跨维度和重启恢复，且始终保持真实 `BotServerPlayer`、有效虚拟连接、唯一
+实例和干净的区块/运行时引用。autoload、完整保存恢复、三维度与残留诊断仍需独立收口，
+不能由 P2 动作测试代替。
 
-第二轮 P2 完成后，项目才拥有可以信任的“身体”。P3–P5A 让它具备本地感知和第一条
-游戏技能闭环。P6 才把 DeepSeek 接到已经受控的身体上；P5B–P5D 与 P7–P9 扩展完整
-原版、长期记忆、模组和多 bot 能力，最后由 P10 统一硬化。
+第二轮 P2 通过后，项目才拥有可以信任的“身体”。P3–P5A 让它具备本地感知和第一条
+游戏技能闭环。最小原版世界容器在 P5A，广泛原版容器/工作站在 P5B，自定义模组 menu
+在 P8。P6 才把 DeepSeek 接到已经受控的身体上；P5B–P5D 与 P7–P9 扩展完整原版、
+长期记忆、模组和多 bot 能力，最后由 P10 统一硬化。
 
 当前完成度和下一批任务始终以
 [IMPLEMENTATION_STATUS_CN.md](IMPLEMENTATION_STATUS_CN.md) 为准；原版玩法广度以

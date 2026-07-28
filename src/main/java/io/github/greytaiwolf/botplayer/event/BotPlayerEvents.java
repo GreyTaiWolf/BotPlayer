@@ -3,13 +3,17 @@ package io.github.greytaiwolf.botplayer.event;
 import io.github.greytaiwolf.botplayer.BotPlayer;
 import io.github.greytaiwolf.botplayer.command.BotPlayerCommands;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
+import io.github.greytaiwolf.botplayer.inventory.BotInventorySessionManager;
 import io.github.greytaiwolf.botplayer.lifecycle.BotPlayerManagers;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
@@ -40,7 +44,31 @@ public final class BotPlayerEvents {
         }
         MinecraftServer server = botPlayer.getServer();
         if (server != null) {
-            BotPlayerManagers.find(server).ifPresent(manager -> manager.onRespawn(botPlayer));
+            BotPlayerManagers.find(server)
+                    .ifPresent(
+                            manager ->
+                                    manager.onRespawnCandidate(botPlayer));
+        }
+    }
+
+    @SubscribeEvent
+    public static void onPlayerChangedDimension(
+            PlayerEvent.PlayerChangedDimensionEvent event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)) {
+            return;
+        }
+        MinecraftServer server = player.getServer();
+        if (server != null) {
+            if (player instanceof BotServerPlayer botPlayer) {
+                BotPlayerManagers.find(server)
+                        .ifPresent(manager ->
+                                manager.onChangedDimension(botPlayer));
+            } else {
+                BotPlayerManagers.find(server)
+                        .ifPresent(manager ->
+                                manager.onRealPlayerChangedDimension(
+                                        player));
+            }
         }
     }
 
@@ -54,6 +82,32 @@ public final class BotPlayerEvents {
         if (server != null) {
             BotPlayerManagers.find(server)
                     .ifPresent(manager -> manager.onRealPlayerLogout(player));
+        }
+    }
+
+    @SubscribeEvent
+    public static void onEntityInteract(PlayerInteractEvent.EntityInteract event) {
+        if (!(event.getEntity() instanceof ServerPlayer viewer)
+                || viewer instanceof BotServerPlayer
+                || !(event.getTarget() instanceof BotServerPlayer bot)
+                || event.getHand() != InteractionHand.MAIN_HAND
+                || !event.getItemStack().isEmpty()) {
+            return;
+        }
+        MinecraftServer server = viewer.getServer();
+        if (server == null) {
+            return;
+        }
+        BotInventorySessionManager.OpenStatus status =
+                BotPlayerManagers.find(server)
+                        .map(manager -> manager.openInventory(viewer, bot))
+                        .orElse(BotInventorySessionManager.OpenStatus.SERVER_STOPPING);
+        if (status == BotInventorySessionManager.OpenStatus.OPENING
+                || status
+                        == BotInventorySessionManager.OpenStatus
+                                .EXISTING_SESSION) {
+            event.setCancellationResult(InteractionResult.SUCCESS);
+            event.setCanceled(true);
         }
     }
 
