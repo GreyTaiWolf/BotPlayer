@@ -4,7 +4,7 @@
 >
 > 当前验收分支：`agent/p2-complete`
 >
-> 当前阶段：P2-A～P2-E 本地自动化门已通过，等待远端 CI
+> 当前阶段：P2-A～P2-E 实现与本地/远端自动化退出门已通过
 >
 > 发布状态：尚未发布，不建议用于重要存档
 
@@ -36,7 +36,7 @@ soak 必须分别报告。
 | 严格 Java 编译 | 本地已验证 | `compileJava` / `compileTestJava` 在 `-Xlint:all -Werror` 下通过 |
 | 纯 Java 单元测试 | 本地已验证 | 140/140 通过，0 failed、0 skipped |
 | NeoForge GameTest | 本地已验证 | 同一持久世界连续两次 19/19 通过 |
-| GitHub Actions | 已编码，待远端验证 | 候选执行 `clean build` 和 `runGameTestServer` 并上传 JAR |
+| GitHub Actions | 远端已验证 | Build #18 执行 `clean build runGameTestServer` 并上传 JAR |
 | 客户端 screen 手工测试 | 未验证 | 需要真实客户端核对布局、交互与多语言 |
 | 独立专用服务器 | 未验证 | 当前不宣称纯服务端或版本不一致兼容 |
 | 多 bot soak / 性能 | 未实现 | 没有长时间 MSPT、内存、队列与区块残留证据 |
@@ -174,13 +174,13 @@ soak 必须分别报告。
 | 完整 `test` | 140/140 通过 |
 | P2 `runGameTestServer` | 19/19，连续两轮通过 |
 | `clean build` / JAR | 通过，产出 `botplayer-0.1.0-alpha.2.jar` |
-| 推送后 GitHub Actions | 待主线验证 |
+| 推送后 GitHub Actions | 通过；[Build #18](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30352199722) |
 | 客户端 screen 手工测试 | 未验证 |
 | 独立专用服 | 未验证 |
 | 多 bot soak / 性能 | 未验证 |
 
-本地自动化退出门已经通过；整体 P2 仍等待远端 CI 到达绿色终态。客户端 screen、独立
-专用服和长时间 soak 是明确保留的专项验证，不随自动化门一起冒充完成。
+本地与远端自动化退出门均已通过，因此整体 P2 的实现与自动化验收判定为完成。客户端
+screen、独立专用服和长时间 soak 是明确保留的专项验证，不随自动化门一起冒充完成。
 
 ## P2 之后的阶段状态
 
@@ -200,11 +200,10 @@ soak 必须分别报告。
 
 ## 下一道门
 
-1. 推送 `agent/p2-complete`；
-2. 等待 GitHub Actions 到绿色终态，失败则在当前分支修复并复验；
-3. 把提交、PR 和 CI 链接回写 P2 完成报告；
-4. 保留客户端、独立专用服和 soak 的未验证标签；
-5. P2 退出后从 P3 权威感知开始，不提前接 DeepSeek。
+1. 保留客户端 screen、独立专用服和 soak 的未验证标签；
+2. 从 P3 权威感知、语义事件和世界模型开始；
+3. 在 P4 之前不把 P2 短程输入宣传成长距离导航；
+4. 在 P6 之前不把客户端凭据宣传成 DeepSeek 已接通。
 
 ## 验证命令
 

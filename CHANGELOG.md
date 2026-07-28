@@ -71,7 +71,8 @@
 - Java 编译启用 `-Xlint:all -Werror`，CI 在 `clean build` 后运行
   `runGameTestServer`；
 - 本轮本地严格编译、140/140 单元测试、同一持久世界连续两轮 19/19 GameTest 与
-  `clean build` 已通过；远端 CI 终态在分支推送后回写。
+  `clean build` 已通过；远端 GitHub Actions Build #18 的标准
+  `clean build runGameTestServer` 也已通过并上传 JAR。
 
 ### 文档
 

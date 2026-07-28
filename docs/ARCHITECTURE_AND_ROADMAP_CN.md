@@ -2315,7 +2315,7 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 - [ ] 添加 dedicated server 启动 smoke test；
 - [x] 建立 GitHub Actions 编译与构件上传；
 - [x] 单元测试随 `clean build` 进入 CI；
-- [x] 把 `runGameTestServer` 加入 CI 配置；远端绿色终态待完成候选推送后确认；
+- [x] 把 `runGameTestServer` 加入 CI 配置；远端 Build #18 已绿色通过；
 - [ ] 建立代码格式和依赖锁；Java 编译候选已启用 `-Xlint:all -Werror`；
 - [x] 添加 `THIRD_PARTY_NOTICES.md` 研究与发布审查基线；
 - [x] 添加架构决策目录 `docs/adr/`；
@@ -2409,7 +2409,7 @@ P2 根据调研拆成五个子阶段；详细理由与阶段门见
 - [x] `WAIT / LOOK_AT / STOP` 最小 Minecraft 纵切片；
 - [x] 动作核心纯 Java 测试来源；
 - [x] 主线严格编译、140/140 单元测试与连续两轮 19/19 GameTest；
-- [ ] 远端 CI 终态回写。
+- [x] 远端 GitHub Actions Build #18 绿色终态回写。
 
 #### P2-B：输入与短程移动
 
@@ -2455,14 +2455,14 @@ P2 根据调研拆成五个子阶段；详细理由与阶段门见
 - [x] 严格 Java 编译警告和 CI `runGameTestServer` 门禁配置；
 - [x] 重复/取消/抢占/回调背压/cleanup 失败/死亡重入/停服竞态测试来源；
 - [x] 主线 `compileJava / compileTestJava / test / runGameTestServer / clean build` 全部通过；
-- [ ] 推送后 GitHub Actions 到达绿色终态；
+- [x] 推送后 GitHub Actions Build #18 到达绿色终态；
 - [ ] 客户端 screen 手工验收、独立专用服和多 bot 长时间 soak。
 
 验收：所有 P2 基础世界变化可追溯到唯一动作结果；旧 generation 无副作用；取消后输入/
 持续交互清零；背包会话与动作库存写互斥；自动测试与 CI 有明确绿色证据。
 
-退出产物：`0.1.0-alpha.N` 系列达到 P2 完成门槛。当前本地自动化退出门已通过，等待
-远端 CI 关闭最后一道门；实时结果见 [P2 完成报告](P2_COMPLETION_REPORT_CN.md)。
+退出产物：`0.1.0-alpha.N` 系列达到 P2 完成门槛。当前本地与远端自动化退出门均已
+通过；实时结果与仍未验证边界见 [P2 完成报告](P2_COMPLETION_REPORT_CN.md)。
 
 ### P3：感知、事件和玩家活动理解
 
@@ -3058,7 +3058,7 @@ P0 工程
 研发可以在前一阶段验收未完成时提前实现下一阶段的独立内核、接口和测试夹具；但不能把
 后一阶段演示当作前一阶段通过，也不能为了展示 AI 聊天而跳过玩家生命周期、动作校验或
 结果验证。当前 P2-A～P2-E 的严格编译、140/140 单元测试、连续两轮 19/19 GameTest 和
-干净构建已在本地通过，等待远端 CI 终态回写。
+干净构建已在本地通过，远端 GitHub Actions Build #18 也已全绿。
 
 P5B–P5D 是横向原版能力扩展轨：在各自依赖完成后可与 P6–P9 并行，但所有 REQUIRED
 能力必须在 P10 前完成，P10 不能承担首次功能开发。

@@ -205,7 +205,7 @@ P2 候选中的普通世界变化必须经过：
 | Soak/性能 | 多 bot、内存、MSPT、连接和任务泄漏 |
 
 当前 CI 运行 `clean build`、`runGameTestServer` 并上传 JAR；本地已取得 140/140 单测和
-连续两轮 19/19 GameTest，远端绿色终态待分支推送后确认。即使这些任务通过，也不证明
+连续两轮 19/19 GameTest，远端 Build #18 也已绿色通过。即使这些任务通过，也不证明
 客户端 screen、独立专用服或多 bot soak。
 
 ## 每次提交前

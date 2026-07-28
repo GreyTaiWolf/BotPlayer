@@ -5,11 +5,11 @@
 BotPlayer 是面向 Minecraft Java 的真实服务端玩家 AI 框架。项目首先支持
 Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 
-> **当前状态：P2 本地自动化验收已通过，等待远端 CI；仍不是正式版本。**
+> **当前状态：P2 实现与自动化验收已通过；仍不是正式版本。**
 >
 > 当前代码已建立真实 `BotServerPlayer`、generation 隔离、确定性动作运行时、短程输入、
 > 基础世界交互和 bot 自身背包 GUI；140 项单测与 19 项 GameTest 连续两轮全绿，干净
-> 构建已产出 JAR，远端 CI 结果待分支推送后回写。
+> 构建已产出 JAR，GitHub Actions 标准环境的 `clean build runGameTestServer` 也已全绿。
 > 它还没有感知、长距离寻路、技能闭环、通用世界容器、聊天、DeepSeek 或记忆。保存 Key
 > 不代表 AI 已经接通，P2 通过也只代表拥有可信身体。请以
 > [当前实现状态](docs/IMPLEMENTATION_STATUS_CN.md) 为准，不要把路线图中的目标当成已完成。
@@ -43,7 +43,7 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 | 开发版本 | `0.1.0-alpha.2` |
 | 发布状态 | 尚未发布，仅开发构件 |
 
-版本号是开发标识，不代表 P2 已完成验收。
+版本号是开发标识；P2 自动化验收通过不等于正式发布或完整 AI 玩家。
 
 ## 已经实现
 
@@ -75,13 +75,13 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - NeoForge server 配置；
 - GitHub Actions Java 21 构建与 GameTest 门禁配置。
 
-以上 P2 项已通过本地自动化退出门；最终远端状态见
+以上 P2 项已通过本地与远端自动化退出门；完整证据与未验证边界见
 [P2 完成验收报告](docs/P2_COMPLETION_REPORT_CN.md)。
 
 ## 尚未实现
 
 - 自动恢复、trusted/observer ACL 与完整数据迁移；
-- 客户端 screen 手工验收、独立专用服和远端 CI 终态；
+- 客户端 screen 手工验收、独立专用服和多 bot 长时间 soak；
 - 长距离寻路、动态重规划、完整移动模式和安全反射；
 - 箱子/木桶/潜影盒等通用世界容器、工作站与制作/熔炼流程；
 - 感知、世界事件、玩家活动理解和世界模型；
@@ -131,7 +131,9 @@ P2 已加入生命周期、移动、交互和库存 GameTest：
 ./gradlew --no-daemon runGameTestServer
 ```
 
-本地结果为 140/140 单元测试和同一持久世界连续两轮 19/19 GameTest；远端 CI 终态见
+本地结果为 140/140 单元测试和同一持久世界连续两轮 19/19 GameTest；远端
+[GitHub Actions Build #18](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30352199722)
+也通过了标准 `clean build runGameTestServer`，完整证据见
 [P2 完成验收报告](docs/P2_COMPLETION_REPORT_CN.md)。
 
 更完整的步骤见：
@@ -218,9 +220,9 @@ P0 工程基线
 → P10 硬化与发布
 ```
 
-P2 的严格编译、单元测试、GameTest 和干净构建已在本地通过，当前等待远端 CI 关闭最后
-一道自动化门。P3 从感知与世界模型开始；通用世界容器分别延期到 P5A/P5B，模组自定义
-menu 属于 P8。
+P2 的严格编译、单元测试、GameTest 和干净构建已在本地及远端通过，自动化退出门已经
+关闭。P3 从感知与世界模型开始；通用世界容器分别延期到 P5A/P5B，模组自定义 menu
+属于 P8。
 
 ## License
 

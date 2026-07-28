@@ -4,12 +4,13 @@
 >
 > 验收分支：`agent/p2-complete`
 >
-> 报告状态：本地自动化退出门已通过，等待远端 CI 终态
+> 报告状态：P2 实现与本地/远端自动化退出门已通过
 >
 > 发布状态：未发布
 
 本文按“已编码事实、验证证据、未覆盖边界”报告 P2，不用“有源码”等价替代“已通过”。
-远端提交、PR 与 CI 链接在分支推送后回写。
+验收分支见 [PR #3](https://github.com/GreyTaiWolf/BotPlayer/pull/3)，远端标准构建见
+[GitHub Actions Build #18](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30352199722)。
 
 ## 1. 当前判定
 
@@ -19,8 +20,8 @@
 | P2-B 输入与短程移动 | 本地已验证 | 五项普通玩家物理 GameTest 连续两轮通过 |
 | P2-C 基础世界交互 | 本地已验证 | 六项交互 GameTest 连续两轮通过 |
 | P2-D bot 自身背包会话 | 本地已验证 | 六项库存/会话 GameTest 连续两轮通过 |
-| P2-E 集成与硬化 | 本地自动化门已通过 | 140 项单测、19 项 GameTest 双跑、干净构建；远端 CI 待回写 |
-| 整体 P2 退出门 | **等待远端 CI** | 本地证据完整；客户端手工、专用服和长时 soak 继续单独标记 |
+| P2-E 集成与硬化 | 自动化门已通过 | 140 项单测、19 项 GameTest 双跑、干净构建及远端 CI 全绿 |
+| 整体 P2 退出门 | **已通过（自动化验收范围）** | 客户端手工、专用服和长时 soak 继续单独标记 |
 
 ## 2. 已编码内容
 
@@ -118,8 +119,8 @@
 | `actions.completionCapacity` | `2048` | `2..65536` |
 | `inventory.viewDistance` | `8.0` | `1.0..64.0` |
 
-Java 编译警告已提升为错误，`runGameTestServer` 已接入 CI 工作流；本地编译、测试与打包
-结果见下节，最终退出判定还需远端 CI 终态。
+Java 编译警告已提升为错误，`runGameTestServer` 已接入 CI 工作流；本地编译、测试与
+打包以及远端标准构建均已通过，结果见下节。
 
 ## 3. 验证状态
 
@@ -143,14 +144,14 @@ Java 编译警告已提升为错误，`runGameTestServer` 已接入 CI 工作流
 | 完整 `test` 数量与结果 | 140/140 通过，0 failed、0 skipped |
 | `runGameTestServer` 数量与结果 | 同一持久 `run` 世界连续两次 19/19 通过；每轮含 100 次死亡—重生 |
 | `clean build` 与最终 JAR | 通过；`botplayer-0.1.0-alpha.2.jar`，SHA-256 `b445ffd757d418ea0137677ad938166d670403a58d76a519e8005d84d31ffef5` |
-| 推送后的 GitHub Actions | 待分支推送后回写 |
+| 推送后的 GitHub Actions | [Build #18](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30352199722) 成功；`clean build runGameTestServer` 与 JAR 上传均通过 |
 | 客户端 screen 手工交互 | 未验证 |
 | 独立专用服务器 | 未验证 |
 | 多 bot 长时间 soak / MSPT / 内存 | 未验证 |
 
 本地运行环境无法访问 NeoForge/Mojang 依赖站点，因此通过只读本地依赖镜像完成离线构建；
-GameTest 使用本地资源索引并跳过 `downloadAssets`。这些环境补丁没有进入仓库，远端 CI
-会使用仓库声明的正式依赖与标准任务重新验证。
+GameTest 使用本地资源索引并跳过 `downloadAssets`。这些环境补丁没有进入仓库；远端 CI
+已经使用仓库声明的正式依赖和标准任务重新验证成功。
 
 ## 4. 明确未覆盖的边界
 
@@ -190,7 +191,7 @@ P2-D 只处理 bot 自己的玩家库存。以下能力仍未实现：
 - [x] 全部单元测试通过并记录数量；
 - [x] 全部 P2 GameTest 通过并记录数量；
 - [x] `clean build` 产出可安装 JAR；
-- [ ] 分支已推送，远端 CI 到达绿色终态；
+- [x] 分支已推送，远端 CI 到达绿色终态；
 - [x] README、更新日志、实现状态、配置和路线图与本地结果一致；
 - [x] 未运行的客户端、专用服和 soak 仍明确标记为未验证；
 - [x] 通用世界容器没有被误写成 P2 已实现；
@@ -200,14 +201,21 @@ P2-D 只处理 bot 自己的玩家库存。以下能力仍未实现：
 
 ```text
 提交：
-- 待本地提交后回写
+- P2 代码（远端）：28e137b9127f9d49c2c4aac848dcc27ec7e78936
+- 调研与本地验收文档（远端）：fe11fe6e9cd3b3a85267b584c3030a34962db2b4
+- 本地对应代码检查点：a912486
+- 本地对应文档检查点：e1ea26c
+
+审阅：
+- PR: https://github.com/GreyTaiWolf/BotPlayer/pull/3
 
 验证：
 - compileJava/compileTestJava: 通过（-Xlint:all -Werror）
 - test: 140/140
 - GameTest: 19/19，连续两轮
 - clean build: 通过，botplayer-0.1.0-alpha.2.jar
-- GitHub Actions: 待推送后回写
+- GitHub Actions: Build #18 成功
+- CI: https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30352199722
 
 仍未验证：
 - 客户端 screen
