@@ -20,6 +20,7 @@ public final class BotActionRuntime {
    private final ActionLedger ledger;
    private final ControlArbiter arbiter;
    private final ActionBackend backend;
+   private final ActionOutcomeSink outcomeSink;
    private final CompletionDispatcher completionDispatcher;
    private final int commandBudget;
    private final int activeCapacity;
@@ -30,16 +31,30 @@ public final class BotActionRuntime {
    private long lastTick = -1L;
    private long lastMutationTick = -1L;
    private long cleanupFailureCount;
+   private long outcomeSinkFailureCount;
    private boolean mutating;
    private boolean drainingLifecycleCloses;
    private boolean shutdown;
 
    public BotActionRuntime(ActionBackend var1, int var2, int var3, int var4, int var5) {
-      this(var1, var2, var3, var4, var5, Math.max(var2, var5));
+      this(var1, var2, var3, var4, var5, Math.max(var2, var5), ActionOutcomeSink.noop());
    }
 
    public BotActionRuntime(ActionBackend var1, int var2, int var3, int var4, int var5, int var6) {
+      this(var1, var2, var3, var4, var5, var6, ActionOutcomeSink.noop());
+   }
+
+   public BotActionRuntime(
+      ActionBackend var1,
+      int var2,
+      int var3,
+      int var4,
+      int var5,
+      int var6,
+      ActionOutcomeSink var7
+   ) {
       this.backend = Objects.requireNonNull(var1, "backend");
+      this.outcomeSink = Objects.requireNonNull(var7, "outcomeSink");
       this.completionDispatcher = new CompletionDispatcher(var6);
       if (var4 < 1 || var4 > 4096) {
          throw new IllegalArgumentException("commandBudget must be between 1 and 4096");
@@ -471,6 +486,7 @@ public final class BotActionRuntime {
       if (this.active.size() >= this.activeCapacity) {
          ActionOutcome var8 = this.rejectedOutcome(var4, var2, ActionFailureCode.RUNTIME_CAPACITY_EXCEEDED, "Active action capacity is exhausted");
          this.ledger.complete(var4, var8);
+         this.publishOutcome(var4, var8);
          this.publish(var1.completion(), var8);
       } else {
          Long var5 = this.unsafeGenerationByBot.get(var4.botId());
@@ -479,6 +495,7 @@ public final class BotActionRuntime {
                var4, var2, ActionFailureCode.UNSAFE_CONTROL_STATE, "Bot controls are quarantined after an unsafe cleanup"
             );
             this.ledger.complete(var4, var9);
+            this.publishOutcome(var4, var9);
             this.publish(var1.completion(), var9);
          } else {
             BotActionRuntime.Ticket var6 = new BotActionRuntime.Ticket(var4, var1.priority(), var2, var1.completion());
@@ -787,6 +804,7 @@ public final class BotActionRuntime {
          this.ledger.complete(var1.envelope, var15);
          var1.outcome = var15;
          this.active.remove(new BotActionRuntime.ActionKey(var1.envelope.botId(), var1.envelope.actionId()), var1);
+         this.publishOutcome(var1.envelope, var15);
 
          for (CompletionDispatcher.Completion<ActionOutcome> var17 : var1.waiters) {
             this.publish(var17, var15);
@@ -925,6 +943,7 @@ public final class BotActionRuntime {
       ActionOutcome var8 = new ActionOutcome(var1.envelope.actionId(), var2, var3, var5, var5, List.of(), var4);
       if (var7) {
          this.ledger.complete(var1.envelope, var8);
+         this.publishOutcome(var1.envelope, var8);
       }
 
       var1.outcome = var8;
@@ -967,6 +986,19 @@ public final class BotActionRuntime {
 
    private <T> void publish(CompletionDispatcher.Completion<T> var1, T var2) {
       this.completionDispatcher.dispatch(var1, var2);
+   }
+
+   private void publishOutcome(ActionEnvelope var1, ActionOutcome var2) {
+      try {
+         this.outcomeSink.accept(var1, var2);
+      } catch (RuntimeException var4) {
+         this.outcomeSinkFailureCount++;
+      }
+   }
+
+   public long outcomeSinkFailureCount() {
+      this.assertOwnerThread();
+      return this.outcomeSinkFailureCount;
    }
 
    private void beginMutation(long var1) {

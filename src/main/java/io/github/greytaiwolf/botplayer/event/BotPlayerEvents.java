@@ -33,6 +33,12 @@ public final class BotPlayerEvents {
     }
 
     @SubscribeEvent
+    public static void onServerTick(ServerTickEvent.Pre event) {
+        BotPlayerManagers.find(event.getServer())
+                .ifPresent(manager -> manager.beginServerTick());
+    }
+
+    @SubscribeEvent
     public static void onServerTick(ServerTickEvent.Post event) {
         BotPlayerManagers.find(event.getServer()).ifPresent(manager -> manager.tick());
     }

@@ -25,7 +25,14 @@ import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.network.payload.AgentBindingStatus;
 import io.github.greytaiwolf.botplayer.network.payload.OpenCredentialScreenPayload;
 import io.github.greytaiwolf.botplayer.persistence.BotRosterSavedData;
+import io.github.greytaiwolf.botplayer.perception.AuthorityEventCollector;
+import io.github.greytaiwolf.botplayer.perception.ObservationSnapshot;
+import io.github.greytaiwolf.botplayer.perception.PerceptionService;
+import io.github.greytaiwolf.botplayer.perception.PerceptionSettings;
+import io.github.greytaiwolf.botplayer.perception.SoundObservationCandidate;
 import io.github.greytaiwolf.botplayer.profile.BotProfile;
+import io.github.greytaiwolf.botplayer.worldmodel.WorldFact;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -71,6 +78,7 @@ public final class BotLifecycleManager {
     private final BotRosterSavedData roster;
     private final BotInventorySessionManager inventorySessions;
     private final PlayerInputController inputController;
+    private final PerceptionService perceptionService;
     private final BotActionRuntime actionRuntime;
     private final Map<UUID, RuntimeEntry> runtimes = new LinkedHashMap<>();
     private final Map<UUID, BotRuntimeHandle> handlesByBot = new LinkedHashMap<>();
@@ -78,6 +86,7 @@ public final class BotLifecycleManager {
     private final Map<UUID, UUID> botByActiveAgent = new LinkedHashMap<>();
     private final Deque<BotLifecycleTransition> lifecycleHistory =
             new ArrayDeque<>(LIFECYCLE_HISTORY_CAPACITY);
+    private long serverTickStartedNanos = -1L;
     private boolean stopping;
 
     BotLifecycleManager(MinecraftServer server) {
@@ -89,13 +98,33 @@ public final class BotLifecycleManager {
                 this::validateInventoryLifecycle);
         this.inputController =
                 new PlayerInputController(BotPlayerConfig.MAX_BOTS.get());
+        this.perceptionService = new PerceptionService(
+                server,
+                PerceptionSettings.fromConfig(),
+                this::resolveActive);
         this.actionRuntime = new BotActionRuntime(
                 new MinecraftActionBackend(this, inputController),
                 BotPlayerConfig.ACTION_MAILBOX_CAPACITY.get(),
                 BotPlayerConfig.ACTION_LEDGER_CAPACITY.get(),
                 BotPlayerConfig.ACTION_COMMANDS_PER_TICK.get(),
                 BotPlayerConfig.ACTION_ACTIVE_CAPACITY.get(),
-                BotPlayerConfig.ACTION_COMPLETION_CAPACITY.get());
+                BotPlayerConfig.ACTION_COMPLETION_CAPACITY.get(),
+                perceptionService.actionOutcomeSink());
+    }
+
+    public void beginServerTick() {
+        requireServerThread();
+        serverTickStartedNanos = System.nanoTime();
+    }
+
+    public AuthorityEventCollector authorityEventCollector() {
+        requireServerThread();
+        return perceptionService.authorityCollector();
+    }
+
+    public void offerSoundObservation(
+            SoundObservationCandidate candidate) {
+        perceptionService.offerSound(candidate);
     }
 
     public ActionMailbox.Submission submitAction(
@@ -347,6 +376,8 @@ public final class BotLifecycleManager {
                 onDeath(player);
             } else {
                 transition(runtime, BotLifecycleState.ACTIVE);
+                perceptionService.activate(
+                        botId, handle.generation());
             }
             BotPlayer.LOGGER.info(
                     "Spawned BotPlayer {} ({}) in {}",
@@ -380,6 +411,115 @@ public final class BotLifecycleManager {
                         runtime.handle.generation()))
                 .sorted(Comparator.comparing(BotSnapshot::name, String.CASE_INSENSITIVE_ORDER))
                 .toList();
+    }
+
+    public Optional<ObservationSnapshot> latestPerception(
+            String name) {
+        requireServerThread();
+        RuntimeEntry runtime = findByName(name);
+        if (runtime == null
+                || runtime.state != BotLifecycleState.ACTIVE) {
+            return Optional.empty();
+        }
+        return perceptionService.latest(
+                runtime.handle.botId(),
+                runtime.handle.generation());
+    }
+
+    public Optional<ObservationSnapshot> latestPerception(
+            UUID botId, long expectedGeneration) {
+        requireServerThread();
+        return perceptionService.latest(
+                botId, expectedGeneration);
+    }
+
+    public List<WorldFact> recentPerceptionFacts(
+            String name, int limit) {
+        requireServerThread();
+        RuntimeEntry runtime = findByName(name);
+        if (runtime == null
+                || runtime.state != BotLifecycleState.ACTIVE) {
+            return List.of();
+        }
+        return perceptionService.recentFacts(
+                runtime.handle.botId(),
+                runtime.handle.generation(),
+                limit);
+    }
+
+    public long perceptionCoverageGaps(String name) {
+        requireServerThread();
+        RuntimeEntry runtime = findByName(name);
+        if (runtime == null
+                || runtime.state != BotLifecycleState.ACTIVE) {
+            return 0L;
+        }
+        return perceptionService.coverageGapCount(
+                runtime.handle.botId(),
+                runtime.handle.generation());
+    }
+
+    /**
+     * 仅供服务器诊断与 GameTest 使用的权威事件内部水位。
+     */
+    public long perceptionAuthoritySequence() {
+        requireServerThread();
+        return perceptionService.eventBus()
+                .currentAuthoritySeq();
+    }
+
+    public void correctPerceivedActivity(
+            CommandSourceStack source,
+            String botName,
+            String actorName,
+            String correctedActivity) {
+        requireServerThread();
+        Objects.requireNonNull(source, "source");
+        if (!source.hasPermission(2)) {
+            throw new IllegalArgumentException(
+                    "P3 activity correction requires operator permission");
+        }
+        RuntimeEntry runtime = findByName(botName);
+        if (runtime == null
+                || runtime.state != BotLifecycleState.ACTIVE) {
+            throw new IllegalArgumentException(
+                    "No active BotPlayer named " + botName);
+        }
+        ServerPlayer actor = server.getPlayerList()
+                .getPlayers()
+                .stream()
+                .filter(player -> player.getScoreboardName()
+                        .equalsIgnoreCase(actorName))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "No online player named " + actorName));
+        ServerPlayer corrector = source.getEntity()
+                        instanceof ServerPlayer sourcePlayer
+                ? sourcePlayer
+                : null;
+        UUID correctorId = corrector == null
+                ? UUID.nameUUIDFromBytes(
+                        ("botplayer:command_source:"
+                                        + source.getTextName())
+                                .getBytes(StandardCharsets.UTF_8))
+                : corrector.getUUID();
+        String correctorName = corrector == null
+                ? source.getTextName()
+                : corrector.getScoreboardName();
+        perceptionService.recordActivityCorrection(
+                runtime.handle.botId(),
+                runtime.handle.generation(),
+                actor.getUUID(),
+                actor.getScoreboardName(),
+                correctorId,
+                correctorName,
+                correctedActivity,
+                server.getTickCount());
+    }
+
+    public long droppedSoundObservations() {
+        requireServerThread();
+        return perceptionService.droppedSounds();
     }
 
     public List<ActionTransition> actionTransitionHistory(int limit) {
@@ -473,7 +613,12 @@ public final class BotLifecycleManager {
         inputController.forceClear(
                 runtime.handle.botId(), oldGeneration);
         MinecraftPlayerInputAdapter.clear(player);
+        perceptionService.closeGeneration(
+                runtime.handle.botId(), oldGeneration);
         runtime.handle.rotateGeneration(player);
+        perceptionService.activate(
+                runtime.handle.botId(),
+                runtime.handle.generation());
     }
 
     /**
@@ -712,6 +857,8 @@ public final class BotLifecycleManager {
                 runtime,
                 generation,
                 ActionCancellationReason.LIFECYCLE);
+        perceptionService.closeGeneration(
+                runtime.handle.botId(), generation);
         clearPlayerInput(runtime, false);
         transition(runtime, BotLifecycleState.DEAD);
         runtime.respawnCandidate = null;
@@ -782,8 +929,13 @@ public final class BotLifecycleManager {
         inputController.forceClear(
                 runtime.handle.botId(), oldGeneration);
         MinecraftPlayerInputAdapter.clear(oldPlayer);
+        perceptionService.closeGeneration(
+                runtime.handle.botId(), oldGeneration);
         runtime.handle.attach(replacement);
         MinecraftPlayerInputAdapter.clear(replacement);
+        perceptionService.activate(
+                runtime.handle.botId(),
+                runtime.handle.generation());
     }
 
     public void onDisconnected(BotServerPlayer player) {
@@ -801,6 +953,7 @@ public final class BotLifecycleManager {
                     runtime,
                     runtime.handle.generation(),
                     ActionCancellationReason.LIFECYCLE);
+            perceptionService.closeBot(player.getUUID());
             clearPlayerInput(runtime, true);
             clearAgentBinding(player.getUUID());
             runtime.handle.detach(player);
@@ -815,6 +968,8 @@ public final class BotLifecycleManager {
             return;
         }
 
+        long tickStartedNanos = serverTickStartedNanos;
+        serverTickStartedNanos = -1L;
         int currentTick = server.getTickCount();
         for (RuntimeEntry runtime : List.copyOf(runtimes.values())) {
             if (runtime.state == BotLifecycleState.RESPAWNING) {
@@ -883,6 +1038,13 @@ public final class BotLifecycleManager {
         }
         revalidateInventorySessions();
         actionRuntime.tick(currentTick);
+        perceptionService.tick(currentTick);
+        if (tickStartedNanos >= 0L) {
+            perceptionService.recordTickDurationNanos(
+                    Math.max(
+                            0L,
+                            System.nanoTime() - tickStartedNanos));
+        }
     }
 
     public void shutdown() {
@@ -907,6 +1069,7 @@ public final class BotLifecycleManager {
                 }
             }
         } finally {
+            perceptionService.shutdown();
             runtimes.clear();
             activeAgentByBot.clear();
             botByActiveAgent.clear();
@@ -920,6 +1083,9 @@ public final class BotLifecycleManager {
                 runtime,
                 runtime.handle.generation(),
                 ActionCancellationReason.LIFECYCLE);
+        perceptionService.closeGeneration(
+                runtime.handle.botId(),
+                runtime.handle.generation());
         clearPlayerInput(runtime, false);
         transition(runtime, BotLifecycleState.DESPAWNING);
         runtime.respawnAtTick = -1;
@@ -942,6 +1108,7 @@ public final class BotLifecycleManager {
             server.getPlayerList().remove(player);
         }
         connection.markClosed();
+        perceptionService.closeBot(runtime.handle.botId());
         clearPlayerInput(runtime, true);
         runtime.handle.detach(player);
         runtimes.remove(runtime.handle.botId());
@@ -964,6 +1131,7 @@ public final class BotLifecycleManager {
                     runtime.handle.botId(),
                     fallbackFailure);
         } finally {
+            perceptionService.closeBot(runtime.handle.botId());
             clearPlayerInput(runtime, true);
             if (player.connection != null
                     && player.connection.getConnection() instanceof BotConnection botConnection) {
@@ -1169,6 +1337,9 @@ public final class BotLifecycleManager {
         runtime.handle.attach(replacement);
         MinecraftPlayerInputAdapter.clear(replacement);
         transition(runtime, BotLifecycleState.ACTIVE);
+        perceptionService.activate(
+                runtime.handle.botId(),
+                runtime.handle.generation());
         runtime.respawnAtTick = -1;
         runtime.respawnFinalizeDeadlineTick = -1;
         runtime.respawnCandidate = null;

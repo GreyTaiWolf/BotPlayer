@@ -5,13 +5,15 @@
 BotPlayer 是面向 Minecraft Java 的真实服务端玩家 AI 框架。项目首先支持
 Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 
-> **当前状态：P2 实现与自动化验收已通过；仍不是正式版本。**
+> **当前状态：P2 实现与自动化验收已通过；P3 候选已编码、待 Java 21 CI 验证；仍不是
+> 正式版本。**
 >
 > 当前代码已建立真实 `BotServerPlayer`、generation 隔离、确定性动作运行时、短程输入、
-> 基础世界交互和 bot 自身背包 GUI；140 项单测与 19 项 GameTest 连续两轮全绿，干净
-> 构建已产出 JAR，GitHub Actions 标准环境的 `clean build runGameTestServer` 也已全绿。
-> 它还没有感知、长距离寻路、技能闭环、通用世界容器、聊天、DeepSeek 或记忆。保存 Key
-> 不代表 AI 已经接通，P2 通过也只代表拥有可信身体。请以
+> 基础世界交互和 bot 自身背包 GUI；P2 的 140 项单测与 19 项 GameTest 连续两轮全绿，
+> GitHub Actions 也已全绿。P3 候选新增有限感知、权威/认知事件、短期世界事实和玩家活动
+> 推断，但当前环境无法运行所需 Java 21/Gradle 门禁，不能沿用 P2 绿色数字。它还没有
+> 长距离寻路、技能闭环、通用世界容器、聊天、DeepSeek 或长期记忆。保存 Key 不代表 AI
+> 已经接通，P3 方块观察也不代表能读取箱子内容。请以
 > [当前实现状态](docs/IMPLEMENTATION_STATUS_CN.md) 为准，不要把路线图中的目标当成已完成。
 
 ## 设计目标
@@ -40,7 +42,7 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 | ModDevGradle | `2.0.142` |
 | Gradle Wrapper | `9.2.1` |
 | 模组 ID | `botplayer` |
-| 开发版本 | `0.1.0-alpha.2` |
+| 开发版本 | `0.2.0-alpha.1` |
 | 发布状态 | 尚未发布，仅开发构件 |
 
 版本号是开发标识；P2 自动化验收通过不等于正式发布或完整 AI 玩家。
@@ -70,13 +72,36 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - 空主手、主手右键打开 bot 自身 41 格真实库存，77 槽 menu、单 viewer 写锁、距离和
   lifecycle 校验、动作 mutation gate；
 - 虚拟连接 callback 与 keepalive/teleport 诊断记账；
+- 权威 `AuthorityEvent` 与每 bot generation 的 `PerceivedEvent` 双平面；普通 audit、
+  spatial projection、声音审计三个权威环共享唯一序号，非声音/声音认知分环共享
+  generation-local 序号；
+- `ActionOutcome`、NeoForge post-state 验证事件与原版定向声音包的 P3 收集入口；
+  break/place/toss 候选冻结 generation 且私有 `routing.*` 不进入认知载荷，critical
+  outcome ingress 与 P2 最大吞吐对齐（成功 break 按 2，其他终态按 1）；
+- 自身、背包、注视、附近实体、威胁、局部方块和声音有限传感器，不强制加载区块；
+- SELF 必须来自快照当前 Tick，41 槽完整背包超过 20 Tick 未刷新时撤下快照；威胁、
+  视觉和普通实体使用子配额，视觉异常不伪造未命中；
+- 相互独立的权威投影预算与公开传感器预算；后者实行每 bot/全局限额和 EWMA MSPT
+  降级，并产出 AI-safe 不可变 `ObservationSnapshot`；
+- 快照只暴露 generation-local 认知水位与本 bot 分类预算，不暴露 authority/global
+  counters；`SELF/VISUAL` actor 身份按通道最小披露，视觉/听觉历史积压 fail-closed；
+- `SELF/DIRECT` 同步可靠路由，空间事件从独立 authority projection ring 的当前尾部
+  有界投影；定向洪泛不会挤出空间候选，定向声音按 generation 公平份额和 round-robin
+  进入独立声音认知环；
+- 服务器内部 scoped revision、运行时短期事实，以及已感知变化/TTL 的可溯源失效；
+- 基于认知事件的确定性玩家活动推断、证据引用、置信表达与管理纠正；
+- 活动窗口每 Tick 严格淘汰过期证据，单次按 actor 聚合并优先保留新近候选；压力分级
+  actor 上限为 `NORMAL 64 / DEGRADED 16 / CRITICAL 4`，单独一次 `use_on_block`
+  不会被猜成 building；
+- `/botplayer perception inspect|correct` 管理诊断入口；
 - P2 生命周期、移动、交互和库存 GameTest 来源；
 - `/botplayer spawn|remove|list`；
 - NeoForge server 配置；
 - GitHub Actions Java 21 构建与 GameTest 门禁配置。
 
-以上 P2 项已通过本地与远端自动化退出门；完整证据与未验证边界见
-[P2 完成验收报告](docs/P2_COMPLETION_REPORT_CN.md)。
+以上 P2 项已通过本地与远端自动化退出门；P3 项目前只代表候选代码已编码。P2 完整证据
+见 [P2 完成验收报告](docs/P2_COMPLETION_REPORT_CN.md)，P3 待验证门禁见
+[P3 完成报告草案](docs/P3_COMPLETION_REPORT_CN.md)。
 
 ## 尚未实现
 
@@ -84,7 +109,8 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - 客户端 screen 手工验收、独立专用服和多 bot 长时间 soak；
 - 长距离寻路、动态重规划、完整移动模式和安全反射；
 - 箱子/木桶/潜影盒等通用世界容器、工作站与制作/熔炼流程；
-- 感知、世界事件、玩家活动理解和世界模型；
+- P3 Java 21 严格编译、GameTest、独立专用服与多 bot 性能验证；
+- 持久世界模型、长期来源化记忆和自然语言“刚才发生了什么”对话；
 - 战斗策略、建造和生存技能；
 - DeepSeek Provider/HTTP、聊天、工具防火墙和预算；
 - 分层长期记忆、目标恢复和模组适配；
@@ -125,7 +151,7 @@ gradlew.bat --no-daemon clean build
 ./gradlew runServer
 ```
 
-P2 已加入生命周期、移动、交互和库存 GameTest：
+P2 已加入生命周期、移动、交互和库存 GameTest；P3 候选新增感知相关测试来源：
 
 ```bash
 ./gradlew --no-daemon runGameTestServer
@@ -136,6 +162,11 @@ P2 已加入生命周期、移动、交互和库存 GameTest：
 也通过了标准 `clean build runGameTestServer`，完整证据见
 [P2 完成验收报告](docs/P2_COMPLETION_REPORT_CN.md)。
 
+这组数字只对应 P2 合并基线。P3 候选尚未在当前环境完成 Java 21 编译、单元测试、
+GameTest 或干净构建；当前静态计数新增 42 个 P3 `@Test` 方法（完整源码 182 个）和
+6 个 P3 GameTest 来源，均尚未执行。推送后必须以新的 CI 结果回写，不能把 Build #18
+当作 P3 证据。
+
 更完整的步骤见：
 
 - [安装与当前用法](docs/INSTALLATION_AND_USAGE_CN.md)
@@ -144,7 +175,8 @@ P2 已加入生命周期、移动、交互和库存 GameTest：
 
 ## 当前命令
 
-`spawn`、`list` 和 `remove` 需要达到 `permissions.commandPermissionLevel`，默认是 `2`。
+`spawn`、`list`、`remove` 需要达到 `permissions.commandPermissionLevel`，默认是
+`2`。P3 `perception` 管理命令固定要求原版权限等级 `2`，不随该配置降级。
 `settings` 不要求 OP 等级，但只能由 roster 中记录的精确 owner 对活动 bot 执行；OP
 也不能配置别人的 bot。
 
@@ -153,7 +185,14 @@ P2 已加入生命周期、移动、交互和库存 GameTest：
 /botplayer list
 /botplayer remove <name>
 /botplayer settings <name>
+/botplayer perception inspect <name>
+/botplayer perception correct <bot> <actor> <activity>
 ```
+
+`inspect` 有界显示活动 bot 的最新快照、置信活动/generation-local 证据序号和最近短期
+事实；`correct` 将对在线玩家 actor 的活动纠正追加为证据事件。允许的 activity 是
+`idle|moving|exploring|mining|building|combat|farming|crafting|smelting|none`。这两个
+命令是管理诊断入口，不代表 bot 已能聊天或回答自然语言问题。
 
 名称必须是 1–16 位 ASCII 字母、数字或下划线。现阶段 UUID 由名称的小写形式派生：只改
 字母大小写仍得到同一临时 UUID，其他改名会得到新身份；当前没有重命名约束或迁移工具，
@@ -170,6 +209,8 @@ GUI 展示 bot 的 41 格真实玩家库存和 viewer 自己的 36 格库存。�
 - [当前实现状态](docs/IMPLEMENTATION_STATUS_CN.md)
 - [AI 玩家调研与 P2 重新基线](docs/AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md)
 - [P2 完成验收报告](docs/P2_COMPLETION_REPORT_CN.md)
+- [P3 感知与世界模型调研设计](docs/AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md)
+- [P3 完成报告草案](docs/P3_COMPLETION_REPORT_CN.md)
 - [完整架构与 P0–P10 路线图](docs/ARCHITECTURE_AND_ROADMAP_CN.md)
 - [原版玩法能力矩阵与发布门槛](docs/VANILLA_CAPABILITY_MATRIX_CN.md)
 - [安装与当前用法](docs/INSTALLATION_AND_USAGE_CN.md)
@@ -221,8 +262,8 @@ P0 工程基线
 ```
 
 P2 的严格编译、单元测试、GameTest 和干净构建已在本地及远端通过，自动化退出门已经
-关闭。P3 从感知与世界模型开始；通用世界容器分别延期到 P5A/P5B，模组自定义 menu
-属于 P8。
+关闭。P3 有限感知与世界模型已形成 `0.2.0-alpha.1` 候选，但仍待 Java 21 CI 验证；
+通用世界容器分别延期到 P5A/P5B，模组自定义 menu 属于 P8。
 
 ## License
 

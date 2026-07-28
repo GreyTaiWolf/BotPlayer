@@ -899,6 +899,88 @@ class BotActionRuntimeTest {
    }
 
    @Test
+   void publishesEachCanonicalOutcomeOnceAndDoesNotRepublishAReplay() {
+      BotActionRuntimeTest.ScriptedBackend backend = new BotActionRuntimeTest.ScriptedBackend();
+      List<UUID> published = new ArrayList<>();
+      BotActionRuntime runtime = new BotActionRuntime(
+         backend, 16, 16, 16, 8, 16, (envelope, outcome) -> published.add(outcome.actionId())
+      );
+      ActionEnvelope first = envelope(FIRST_BOT, 1L, "sink-once", new StopAction(), 100L, 5);
+      ActionMailbox.Submission firstSubmission = runtime.submit(first, ActionPriority.OWNER_CONTROL);
+      runtime.tick(1L);
+      Assertions.assertEquals(ActionState.SUCCEEDED, outcome(firstSubmission).state());
+
+      ActionEnvelope replay = envelope(FIRST_BOT, 2L, "sink-once", first.action(), 200L, 5);
+      ActionMailbox.Submission replaySubmission = runtime.submit(replay, ActionPriority.OWNER_CONTROL);
+      runtime.tick(2L);
+      Assertions.assertSame(outcome(firstSubmission), outcome(replaySubmission));
+      Assertions.assertEquals(List.of(first.actionId()), published);
+   }
+
+   @Test
+   void isolatesOutcomeSinkFailureFromTheCanonicalActionResult() {
+      BotActionRuntimeTest.ScriptedBackend backend = new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime runtime = new BotActionRuntime(
+         backend,
+         16,
+         16,
+         16,
+         8,
+         16,
+         (envelope, outcome) -> {
+            throw new IllegalStateException("synthetic sink failure");
+         }
+      );
+      ActionEnvelope action = envelope(FIRST_BOT, 1L, "sink-failure", new StopAction(), 100L, 5);
+      ActionMailbox.Submission submission = runtime.submit(action, ActionPriority.OWNER_CONTROL);
+      runtime.tick(1L);
+
+      Assertions.assertEquals(ActionState.SUCCEEDED, outcome(submission).state());
+      Assertions.assertEquals(1L, runtime.outcomeSinkFailureCount());
+      Assertions.assertEquals(1, runtime.ledgerSize());
+   }
+
+   @Test
+   void publishesCanonicalRuntimeCapacityRejectionToTheOutcomeSink() {
+      BotActionRuntimeTest.ScriptedBackend backend =
+         new BotActionRuntimeTest.ScriptedBackend();
+      List<UUID> published = new ArrayList<>();
+      BotActionRuntime runtime = new BotActionRuntime(
+         backend,
+         16,
+         16,
+         16,
+         1,
+         16,
+         (envelope, outcome) -> published.add(outcome.actionId())
+      );
+      ActionEnvelope active = envelope(
+         FIRST_BOT, 1L, "capacity-active", new WaitAction(20), 100L, 20
+      );
+      ActionMailbox.Submission activeSubmission =
+         runtime.submit(active, ActionPriority.OWNER_TASK);
+      runtime.tick(1L);
+      Assertions.assertFalse(future(activeSubmission).toCompletableFuture().isDone());
+
+      ActionEnvelope rejected = envelope(
+         SECOND_BOT, 2L, "capacity-rejected", new StopAction(), 100L, 5
+      );
+      ActionMailbox.Submission rejectedSubmission =
+         runtime.submit(rejected, ActionPriority.OWNER_CONTROL);
+      runtime.tick(2L);
+
+      Assertions.assertEquals(
+         ActionFailureCode.RUNTIME_CAPACITY_EXCEEDED,
+         outcome(rejectedSubmission).failureCode()
+      );
+      Assertions.assertEquals(List.of(rejected.actionId()), published);
+      Assertions.assertSame(
+         outcome(rejectedSubmission),
+         runtime.completedOutcome(SECOND_BOT, rejected.actionId()).orElseThrow()
+      );
+   }
+
+   @Test
    void transitionDiagnosticsAreStructuredChronologicalAndHardBounded() {
       BotActionRuntimeTest.ScriptedBackend var1 = new BotActionRuntimeTest.ScriptedBackend();
       BotActionRuntime var2 = new BotActionRuntime(var1, 32, 256, 32, 16, 32);

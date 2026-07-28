@@ -1,11 +1,12 @@
 # Third-Party Notices
 
-更新日期：2026-07-27
+更新日期：2026-07-28
 
 ## 当前代码来源声明
 
-BotPlayer 当前分支没有复制或内嵌下列研究项目的源代码、资源、模型、提示模板或数据集。
-这些项目仅用于理解公开行为、划分能力和设计测试场景。
+BotPlayer 当前分支没有复制或内嵌下列研究项目的源代码、资源、模型、提示模板、权重或
+数据集。这些项目仅用于理解公开行为、划分能力和设计测试场景。P3 的事件、传感器、预算、
+revision、事实与活动推断均为 clean-room Java 实现，本轮没有新增第三方运行时依赖。
 
 用户指定的旧 `FakeAiPlayer` 仓库只允许参考“空手右键打开 bot 背包”的产品交互；
 其他 AI 架构和实现不作为 BotPlayer 的代码来源。
@@ -18,12 +19,21 @@ BotPlayer 当前分支没有复制或内嵌下列研究项目的源代码、资�
 | [Fabric Carpet](https://github.com/gnembon/fabric-carpet) | `6f607be9f353f0244e1c0f2053f319b99affada6` | 服务端玩家与动作包思路 | 未复制代码 |
 | [SiliconeDolls](https://github.com/Anvil-Dev/SiliconeDolls) | `439d9aae7665df99bfd4a742afc928d72aff0ae0` | NeoForge 生命周期与驻留问题 | 未复制代码 |
 | [Mineflayer](https://github.com/PrismarineJS/mineflayer) | 2026-07-26 访问默认分支 | 能力分类、插件和任务边界 | Node.js 代码不进入核心 |
+| [Mineflayer API](https://github.com/PrismarineJS/mineflayer/blob/master/docs/api.md) | 2026-07-28 访问公开 API 文档 | 事件驱动观察和能力模块边界 | 只研究公开接口；未复制代码 |
+| [prismarine-world API](https://github.com/PrismarineJS/prismarine-world/blob/master/docs/API.md) | 2026-07-28 访问公开 API 文档 | 未知/未加载世界表达和增量读取 | 只借鉴语义；Node.js 代码不进入核心 |
 | [Baritone](https://github.com/cabaletta/baritone) | 2026-07-26 访问默认分支 | 分层寻路、成本和动态重算 | 不内嵌其源码 |
 | [Voyager](https://github.com/MineDojo/Voyager) | 2026-07-26 访问论文与公开仓库 | 技能库、反馈和验证循环 | 不执行模型生成脚本 |
+| [Voyager 论文](https://arxiv.org/abs/2305.16291) | 2026-07-28 访问论文 | 时序环境反馈与自验证 | 不复制提示、代码或训练资产 |
+| [STEVE-1](https://arxiv.org/abs/2306.00937) | 2026-07-28 访问论文 | 时序观察对活动理解的价值 | 不引入源码、模型权重或训练数据 |
 | [Mindcraft](https://github.com/mindcraft-bots/mindcraft) | 2026-07-26 访问默认分支 | 对话、代理循环和模型抽象 | 不采用任意代码执行 |
 | [CraftAssist](https://github.com/facebookresearch/craftassist) | 2026-07-26 访问默认分支 | Dialogue、Task、Memory 分层 | 以 Java 独立设计 |
 | [Project Malmo](https://github.com/microsoft/malmo) | 2026-07-26 访问默认分支 | 观察—动作—成功条件 | 仅作测试思想参考 |
 | [MineDojo](https://github.com/MineDojo/MineDojo) | 2026-07-26 访问默认分支 | 环境观察、任务定义与评测场景 | 仅作测试设计参考 |
+| [W3C PROV-DM](https://www.w3.org/TR/prov-dm/) | 2026-07-28 访问公开规范 | 事实来源、证据和派生关系 | 只借鉴公开概念与术语 |
+| [NeoForge 1.21.1 Events](https://docs.neoforged.net/docs/1.21.1/concepts/events) | 2026-07-28 访问官方文档 | 事件总线、取消与逻辑端语义 | 依目标 API 独立实现 |
+| [NeoForge GameTest](https://docs.neoforged.net/docs/1.21.1/misc/gametest/) | 2026-07-28 访问官方文档 | P3 世界内验收设计 | 仅使用官方开发接口 |
+| [Minecraft `GameEvent` Javadoc](https://nekoyue.github.io/ForgeJavaDocs-NG/javadoc/1.21.x-neoforge/net/minecraft/world/level/gameevent/GameEvent.html) | 2026-07-28 访问公开 API 文档 | 区分游戏语义事件与某个 bot 的实际认知 | 未复制实现代码 |
+| [DynamicGameEventListener Javadoc](https://nekoyue.github.io/ForgeJavaDocs-NG/javadoc/1.21.x-neoforge/net/minecraft/world/level/gameevent/DynamicGameEventListener.html) | 2026-07-28 访问公开 API 文档 | 动态监听与已加载区块边界 | 当前 P3 不直接采用该监听器 |
 
 完整研究边界见
 [架构文档第 22 节](docs/ARCHITECTURE_AND_ROADMAP_CN.md#22-许可证与参考边界)。

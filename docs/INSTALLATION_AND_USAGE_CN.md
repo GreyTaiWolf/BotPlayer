@@ -1,6 +1,6 @@
 # BotPlayer 安装与当前用法
 
-> 适用版本：`0.1.0-alpha.2` P2 验收分支
+> 适用版本：`0.2.0-alpha.1` P3 候选分支
 >
 > Minecraft：`1.21.1`
 >
@@ -8,7 +8,8 @@
 >
 > Java：`21`
 
-当前没有正式 Release。本文用于开发测试，不建议在重要世界中安装。
+当前没有正式 Release。`0.2.0-alpha.1` 尚待 Java 21 CI 构建与 GameTest；本文用于开发
+测试，不建议在重要世界中安装。需要已验证基线时，请使用 P2 报告列出的对应 commit/JAR。
 
 ## 当前安装拓扑
 
@@ -72,8 +73,9 @@ build/libs/
 
 ## 当前命令
 
-`spawn`、`list` 和 `remove` 默认要求原版权限等级 `2`；`settings` 改为精确 owner
-校验，不要求 OP。
+`spawn`、`list`、`remove` 默认要求原版权限等级 `2`，可通过
+`permissions.commandPermissionLevel` 调整；P3 `perception` 管理命令固定要求等级
+`2`，不随该配置降级。`settings` 改为精确 owner 校验，不要求 OP。
 
 ### 生成
 
@@ -164,6 +166,35 @@ profile 不会自动删除。
 权限，但仍是本机明文。不要把它们上传到 Issue、支持包、云盘或 Git。文件损坏或 schema
 不支持时，客户端会拒绝加载和覆盖。
 
+### 检查 P3 感知候选
+
+```text
+/botplayer perception inspect <name>
+```
+
+目标必须是活动 bot 且已经产生最新快照。命令只输出有界摘要，包括 snapshot/tick/维度、
+MSPT 压力、生命/饥饿、视线类型、实体/威胁/方块/事件数量、本 bot 分类预算、最多 4 个
+活动假设及最多 5 条最近事实。它不会输出 authority session/seq、全局 world revision、
+全服预算、完整权威事件、任意容器内容或长期记忆。
+
+P3 当前是待 CI 验证的开发候选；该命令能返回内容不代表遮挡、声音隔离和区块加载不变量
+已经通过 GameTest。
+
+### 纠正 P3 活动假设
+
+```text
+/botplayer perception correct <bot> <actor> <activity>
+```
+
+`bot` 必须活动，`actor` 必须是在线玩家。`activity` 允许：
+
+```text
+idle moving exploring mining building combat farming crafting smelting none
+```
+
+纠正会作为新的 `PLAYER_CORRECTION` 证据事件追加，不删除历史事件。`none` 表示没有这些
+可识别活动。这个入口用于管理/测试，不是 owner 聊天接口，也不会修改玩家实际动作或世界。
+
 ### 查看/编辑 bot 自身背包（P2）
 
 条件：
@@ -187,16 +218,20 @@ profile 不会自动删除。
 - bot 使用标准玩家模型和名称；
 - 默认显示在 Tab 玩家列表；
 - bot 死亡后默认等待 20 Tick，再请求原版重生；
-- bot 没有物理客户端，服务端发给它的客户端包会被专用 listener 丢弃；
+- bot 没有物理客户端；专用 listener 在丢弃客户端包前只提取受支持的定向声音 DTO，
+  其余包仍按既有有界诊断路径处理；
 - 在线时会刷新原版玩家区块跟踪。
 - roster 保存稳定身份、持久 owner 和服务器实例 ID；
 - P2 具有 generation 隔离、确定性动作、短程输入、基础世界交互和 bot 自身背包；
+- P3 候选会生成有限、不可变的自身/背包/注视/局部实体/方块/声音快照，并以有证据的
+  置信表达推断近期玩家活动；
 - owner 客户端可以在本地 GUI 创建/替换 credential profile，并为自己的多个 bot
   绑定/解绑；每个 bot 使用独立 agentId。
 
-这些仍是开发阶段行为。P2 本地已通过 140/140 单测和连续两轮 19/19 GameTest；客户端
-手工、长时间在线、独立专用服、跨维度完整矩阵和多 bot soak 尚无保证。请不要据此假定
-保护模组、所有维度或大型模组包已经兼容。
+这些仍是开发阶段行为。P2 本地已通过 140/140 单测和连续两轮 19/19 GameTest；P3
+候选尚未在当前环境完成 Java 21 编译、GameTest 或干净构建。客户端手工、长时间在线、
+独立专用服、跨维度完整矩阵和多 bot soak 尚无保证。请不要据此假定保护模组、所有维度
+或大型模组包已经兼容。
 
 ## 当前不能做
 
@@ -208,11 +243,12 @@ profile 不会自动删除。
 - 操作箱子、工作站或模组自定义 menu；
 - 聊天、连接 DeepSeek 或发起任何模型 HTTP 请求；
 - 测试 Key 是否有效，或使用已保存 Key 进行规划；
-- 感知附近事件、理解玩家活动；
+- 通过聊天回答附近事件或自主使用活动理解；P3 当前只有管理诊断候选；
 - 保存长期目标、记忆或技能；
 - 自动理解其他模组。
 
-P2 只提供可信身体；以上高层功能必须按 P3–P10 实现和验证。
+P2 只提供可信身体，P3 候选只增加有限运行时认知；以上高层功能仍必须按 P4–P10 实现
+和验证。P3 不读取箱子、工作站或模组 menu 内容。
 
 ## 卸载与备份
 
@@ -233,7 +269,8 @@ P2 只提供可信身体；以上高层功能必须按 P3–P10 实现和验证�
 
 - 检查模组是否加载；
 - 检查 Minecraft、NeoForge 和 Java 版本；
-- 检查执行者是否达到配置的权限等级；
+- 检查执行者是否达到对应权限等级：`spawn/list/remove` 使用配置值，`perception`
+  固定要求等级 2；
 - 查看服务端日志中的 Mixin 或模组加载错误。
 
 ### 名称被拒绝

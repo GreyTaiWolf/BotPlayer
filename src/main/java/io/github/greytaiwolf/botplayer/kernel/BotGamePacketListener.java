@@ -2,8 +2,12 @@ package io.github.greytaiwolf.botplayer.kernel;
 
 import io.github.greytaiwolf.botplayer.BotPlayer;
 import io.github.greytaiwolf.botplayer.lifecycle.BotPlayerManagers;
+import io.github.greytaiwolf.botplayer.perception.SoundObservationCandidate;
+import io.github.greytaiwolf.botplayer.perception.event.SpatialPoint;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.Connection;
 import net.minecraft.network.DisconnectionDetails;
 import net.minecraft.network.PacketSendListener;
@@ -11,11 +15,14 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.common.ClientboundKeepAlivePacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
+import net.minecraft.network.protocol.game.ClientboundSoundEntityPacket;
+import net.minecraft.network.protocol.game.ClientboundSoundPacket;
 import net.minecraft.network.protocol.game.ServerboundAcceptTeleportationPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.CommonListenerCookie;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.RelativeMovement;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -134,6 +141,7 @@ public final class BotGamePacketListener extends ServerGamePacketListenerImpl {
 
         botConnection.recordDiscarded(packetType);
         try {
+            captureSoundObservation(packet);
             if (packet instanceof ClientboundPlayerPositionPacket positionPacket) {
                 handleAcceptTeleportPacket(
                         new ServerboundAcceptTeleportationPacket(positionPacket.getId()));
@@ -153,6 +161,98 @@ public final class BotGamePacketListener extends ServerGamePacketListenerImpl {
                     packetType,
                     exception);
         }
+    }
+
+    private void captureSoundObservation(Packet<?> packet) {
+        /*
+         * 发包接口允许被异步调用；P3 不能在该路径读取 ServerPlayer、level 或
+         * generation。异步声音候选保守丢弃，包本身仍按虚拟连接契约完成。
+         */
+        if (!server.isSameThread()) {
+            return;
+        }
+        if (!(player instanceof BotServerPlayer botPlayer)) {
+            return;
+        }
+        try {
+            if (packet instanceof ClientboundSoundPacket soundPacket) {
+                offerSound(
+                        botPlayer,
+                        soundPacket.getX(),
+                        soundPacket.getY(),
+                        soundPacket.getZ(),
+                        BuiltInRegistries.SOUND_EVENT
+                                .getKey(soundPacket.getSound().value())
+                                .toString(),
+                        soundPacket.getSource()
+                                .name()
+                                .toLowerCase(Locale.ROOT),
+                        soundPacket.getVolume(),
+                        soundPacket.getPitch());
+            } else if (packet instanceof ClientboundSoundEntityPacket soundPacket) {
+                Entity sourceEntity =
+                        botPlayer.serverLevel().getEntity(soundPacket.getId());
+                if (sourceEntity != null) {
+                    offerSound(
+                            botPlayer,
+                            sourceEntity.getX(),
+                            sourceEntity.getY(),
+                            sourceEntity.getZ(),
+                            BuiltInRegistries.SOUND_EVENT
+                                    .getKey(soundPacket.getSound().value())
+                                    .toString(),
+                            soundPacket.getSource()
+                                    .name()
+                                    .toLowerCase(Locale.ROOT),
+                            soundPacket.getVolume(),
+                            soundPacket.getPitch());
+                }
+            }
+        } catch (RuntimeException exception) {
+            BotPlayer.LOGGER.debug(
+                    "Ignored an invalid BotPlayer sound observation candidate",
+                    exception);
+        }
+    }
+
+    private void offerSound(
+            BotServerPlayer botPlayer,
+            double x,
+            double y,
+            double z,
+            String soundId,
+            String source,
+            float volume,
+            float pitch) {
+        long generation =
+                botPlayer.runtimeHandle().generation();
+        if (generation <= 0
+                || !Double.isFinite(x)
+                || !Double.isFinite(y)
+                || !Double.isFinite(z)
+                || !Float.isFinite(volume)
+                || volume < 0.0F
+                || !Float.isFinite(pitch)
+                || pitch < 0.0F) {
+            return;
+        }
+        SoundObservationCandidate candidate =
+                new SoundObservationCandidate(
+                        botPlayer.getUUID(),
+                        generation,
+                        botPlayer.serverLevel()
+                                .dimension()
+                                .location()
+                                .toString(),
+                        server.getTickCount(),
+                        new SpatialPoint(x, y, z),
+                        soundId,
+                        source,
+                        volume,
+                        pitch);
+        BotPlayerManagers.find(server)
+                .ifPresent(manager ->
+                        manager.offerSoundObservation(candidate));
     }
 
     private static void safelyComplete(

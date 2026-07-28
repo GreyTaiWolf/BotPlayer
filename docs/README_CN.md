@@ -9,8 +9,9 @@
 | 想了解项目 | 根目录 [README](../README.md) → [当前实现状态](IMPLEMENTATION_STATUS_CN.md) |
 | 想安装测试 | [安装与当前用法](INSTALLATION_AND_USAGE_CN.md) → [配置说明](CONFIGURATION_CN.md) |
 | 想参与开发 | 根目录 [AGENTS.md](../AGENTS.md) → [开发指南](DEVELOPMENT_CN.md) → [参与开发](../CONTRIBUTING.md) |
-| 想理解整体设计 | [AI 玩家调研与 P2 重新基线](AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md) → [架构与 P0–P10 路线图](ARCHITECTURE_AND_ROADMAP_CN.md) |
+| 想理解整体设计 | [AI 玩家调研与 P2 重新基线](AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md) → [P3 感知调研设计](AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md) → [架构与 P0–P10 路线图](ARCHITECTURE_AND_ROADMAP_CN.md) |
 | 想核对 P2 验收 | [P2 完成验收报告](P2_COMPLETION_REPORT_CN.md) |
+| 想核对 P3 候选状态 | [P3 完成报告草案](P3_COMPLETION_REPORT_CN.md) |
 | 想修改核心边界 | [架构决策记录](adr/README.md) → 总架构相关章节 |
 | 想报告安全问题 | [安全策略](../SECURITY.md) |
 
@@ -23,6 +24,8 @@
 | [IMPLEMENTATION_STATUS_CN.md](IMPLEMENTATION_STATUS_CN.md) | 当前代码真实状态、已知缺口、下一批任务 | 描述尚未实现的完整方案 |
 | [AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md](AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md) | 外部调研、六层 FSM、P2-A～E 与 P3–P10 阶段门 | 代替实时测试结果 |
 | [P2_COMPLETION_REPORT_CN.md](P2_COMPLETION_REPORT_CN.md) | P2 已编码、已验证、未覆盖与最终命令/CI 证据 | 宣称完整 AI 玩家 |
+| [AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md](AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md) | P3 外部调研、权威/认知双平面、有限感知、revision 与容器边界 | 代替编译、GameTest 或 CI 证据 |
+| [P3_COMPLETION_REPORT_CN.md](P3_COMPLETION_REPORT_CN.md) | P3 候选代码、待验证门禁、已知限制与 CI 回写模板 | 在 CI 前宣称 P3 已通过 |
 | [ARCHITECTURE_AND_ROADMAP_CN.md](ARCHITECTURE_AND_ROADMAP_CN.md) | 最终设计、代码边界、P0–P10 任务与验收 | 宣称路线图已经实现 |
 | [VANILLA_CAPABILITY_MATRIX_CN.md](VANILLA_CAPABILITY_MATRIX_CN.md) | 原版玩法逐项能力、成熟度和发布门槛 | 模组专用兼容承诺 |
 | [INSTALLATION_AND_USAGE_CN.md](INSTALLATION_AND_USAGE_CN.md) | 当前开发构件的安装、命令和排错 | 正式版承诺 |
@@ -73,5 +76,7 @@
 9. 所有相对链接和标题锚点是否有效。
 10. 客户端凭据、owner、`serverInstanceId` 与每 bot agent 状态是否仍保持隔离；
 11. 是否把凭据保存基础错误描述成 DeepSeek、聊天或 P6 已完成。
+12. 是否把全服权威事件错误写成 bot 已感知知识，或把未加载区域写成空气；
+13. 是否把 P3 方块观察错误描述成容器内容读取；世界容器仍属于 P5A/P5B/P8。
 
 文档默认使用中文；代码符号、命令、路径、协议字段和错误码保留原文。
