@@ -42,7 +42,8 @@
   玩家活动推断；
 - 新增 `/botplayer perception inspect <name>` 和
   `/botplayer perception correct <bot> <actor> <activity>` 管理诊断/纠正入口；
-- 开发版本进入 `0.2.0-alpha.1` P3 候选；尚未正式发布或取得本版本 CI 构件。
+- 开发版本进入 `0.2.0-alpha.1` P3 候选；Build #28 自动化退出门已通过并上传构件，但
+  尚未正式发布。
 
 ### 加固
 
@@ -135,14 +136,22 @@
   `clean build` 已通过；远端 GitHub Actions Build #18 的标准
   `clean build runGameTestServer` 也已通过并上传 JAR。
 - 新增 P3 DTO/设置/预算/MSPT、投影与双事件平面、revision/短期事实和活动推断单元测试
-  来源；按 `@Test` 方法静态计数新增 42 个，完整源码为 182 个，均待 Java 21 CI 执行；
+  来源；按 `@Test` 方法静态计数新增 43 个，完整源码为 183 个；这是当前源码计数，不是
+  CI 日志直接报告的通过数；Build #28 的 Gradle `test` 已通过当前源码；
 - 扩展 `BotActionRuntimeTest`，覆盖 P3 outcome sink 的 canonical 单次通知、replay 不重复
   和 sink 异常隔离；
-- 新增 6 个 P3 NeoForge GameTest 来源，覆盖自身/背包快照、视觉遮挡、远方权威事件与
+- 新增并通过 8 个 P3 NeoForge GameTest，覆盖自身/背包快照、视觉遮挡、远方权威事件与
   actor 不进入 local cognitive stream、generation 新 stream、超远方块焦点不强制加载，
-  以及未提交破坏/放置/丢弃候选不进入权威流；定向声音与事实失效仍缺直接运行场景；
-- P3 新增代码尚未在当前环境运行 Java 21 严格编译、单元测试、GameTest 或干净构建；
-  P2 的 140/140、19/19 和 Build #18 不作为 P3 通过证据。
+  未提交破坏/放置/丢弃候选不进入权威流、定向声音只进入目标 generation，以及已感知
+  committed 方块变化使旧事实 stale；
+- [PR #4](https://github.com/GreyTaiWolf/BotPlayer/pull/4) 的
+  [Build #28](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30394484181)
+  在提交 `38851d1791b84e73705b302be8438e441c3f26ff` 使用 Temurin Java 21.0.11 执行
+  `./gradlew --no-daemon clean build runGameTestServer`；
+  `compileJava`、`compileTestJava`、Gradle `test`、27/27 GameTest、clean build 与
+  JAR upload 全部通过，日志明确 `All 27 required tests passed`，P3 batch 为 8 tests；
+  artifact 为 `botplayer-neoforge-1.21.1`（ID `8702261459`，`653364` bytes，SHA-256
+  `90ddf753c58a3f81a4a5d407a6beafd30c08c208345b01dea51fd241156224ac`）。
 
 ### 文档
 
@@ -154,8 +163,8 @@
 - 记录虚拟连接仍缺发送回调、keepalive/teleport ack 和长时间在线验证；
 - 补充当前真实配置键、命令语义、开发构件安装边界和排错；
 - 扩充 ADR 索引及第三方研究/许可证边界；
-- 明确 DeepSeek、技能和长期记忆仍未实现；P2 动作与 bot 自身背包按实际自动化验证
-  状态报告；P3 感知只按候选状态报告；客户端 API Key 仍只完成本地管理基础。
+- 明确 DeepSeek、技能和长期记忆仍未实现；P2 动作、bot 自身背包与 P3 感知按实际自动化
+  验证状态报告；客户端 API Key 仍只完成本地管理基础。
 - 明确临时名称 UUID 的大小写语义、审查分支过渡规则和双端开发测试边界。
 - 将已经合并的 P0/P1 审查分支说明改为默认 `main` 开发基线；
 - 同步客户端凭据、owner、服务器实例隔离、离线限制和明文存储风险。
@@ -164,10 +173,10 @@
 - 新增 P2 完成验收报告，分别记录已编码、实际验证和未覆盖边界；
 - 将 P2 重排为 P2-A～P2-E，并明确 bot 自身背包属于 P2-D；最小原版世界容器、广泛原版
   容器/工作站和模组自定义 menu 分别延期到 P5A、P5B 和 P8。
-- 新增 P3 感知与世界模型调研设计、P3 完成报告草案和 ADR-0013，固定有限感知、权威/
+- 新增 P3 感知与世界模型调研设计、P3 完成验收报告和 ADR-0013，固定有限感知、权威/
   认知双平面、有界 DTO、定向声音、无强制区块加载、scoped revision 与容器延期边界；
 - 同步 README、实现状态、能力矩阵、配置、安装用法、开发指南、路线图和第三方研究边界；
-  在 CI 结果回写前统一使用“已编码、待验证”。
+  回写 Build #28 结果，并保留客户端、独立专用服和 soak 缺口。
 
 ## 0.1.0-alpha.1 — 开发基线（2026-07-26，尚未正式发布）
 

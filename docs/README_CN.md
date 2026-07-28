@@ -11,7 +11,7 @@
 | 想参与开发 | 根目录 [AGENTS.md](../AGENTS.md) → [开发指南](DEVELOPMENT_CN.md) → [参与开发](../CONTRIBUTING.md) |
 | 想理解整体设计 | [AI 玩家调研与 P2 重新基线](AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md) → [P3 感知调研设计](AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md) → [架构与 P0–P10 路线图](ARCHITECTURE_AND_ROADMAP_CN.md) |
 | 想核对 P2 验收 | [P2 完成验收报告](P2_COMPLETION_REPORT_CN.md) |
-| 想核对 P3 候选状态 | [P3 完成报告草案](P3_COMPLETION_REPORT_CN.md) |
+| 想核对 P3 验收状态 | [P3 完成验收报告](P3_COMPLETION_REPORT_CN.md) |
 | 想修改核心边界 | [架构决策记录](adr/README.md) → 总架构相关章节 |
 | 想报告安全问题 | [安全策略](../SECURITY.md) |
 
@@ -25,7 +25,7 @@
 | [AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md](AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md) | 外部调研、六层 FSM、P2-A～E 与 P3–P10 阶段门 | 代替实时测试结果 |
 | [P2_COMPLETION_REPORT_CN.md](P2_COMPLETION_REPORT_CN.md) | P2 已编码、已验证、未覆盖与最终命令/CI 证据 | 宣称完整 AI 玩家 |
 | [AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md](AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md) | P3 外部调研、权威/认知双平面、有限感知、revision 与容器边界 | 代替编译、GameTest 或 CI 证据 |
-| [P3_COMPLETION_REPORT_CN.md](P3_COMPLETION_REPORT_CN.md) | P3 候选代码、待验证门禁、已知限制与 CI 回写模板 | 在 CI 前宣称 P3 已通过 |
+| [P3_COMPLETION_REPORT_CN.md](P3_COMPLETION_REPORT_CN.md) | P3 自动化验收证据、已知限制与未验证边界 | 把自动化通过扩大成客户端、专用服或 soak 已验证 |
 | [ARCHITECTURE_AND_ROADMAP_CN.md](ARCHITECTURE_AND_ROADMAP_CN.md) | 最终设计、代码边界、P0–P10 任务与验收 | 宣称路线图已经实现 |
 | [VANILLA_CAPABILITY_MATRIX_CN.md](VANILLA_CAPABILITY_MATRIX_CN.md) | 原版玩法逐项能力、成熟度和发布门槛 | 模组专用兼容承诺 |
 | [INSTALLATION_AND_USAGE_CN.md](INSTALLATION_AND_USAGE_CN.md) | 当前开发构件的安装、命令和排错 | 正式版承诺 |

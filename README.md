@@ -5,13 +5,12 @@
 BotPlayer 是面向 Minecraft Java 的真实服务端玩家 AI 框架。项目首先支持
 Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 
-> **当前状态：P2 实现与自动化验收已通过；P3 候选已编码、待 Java 21 CI 验证；仍不是
-> 正式版本。**
+> **当前状态：P2 与 P3 自动化退出门已通过；仍不是正式版本。**
 >
 > 当前代码已建立真实 `BotServerPlayer`、generation 隔离、确定性动作运行时、短程输入、
 > 基础世界交互和 bot 自身背包 GUI；P2 的 140 项单测与 19 项 GameTest 连续两轮全绿，
-> GitHub Actions 也已全绿。P3 候选新增有限感知、权威/认知事件、短期世界事实和玩家活动
-> 推断，但当前环境无法运行所需 Java 21/Gradle 门禁，不能沿用 P2 绿色数字。它还没有
+> GitHub Actions 也已全绿。P3 新增有限感知、权威/认知事件、短期世界事实和玩家活动
+> 推断，并已由 Temurin Java 21.0.11 的 Build #28 通过完整自动化退出门。它还没有
 > 长距离寻路、技能闭环、通用世界容器、聊天、DeepSeek 或长期记忆。保存 Key 不代表 AI
 > 已经接通，P3 方块观察也不代表能读取箱子内容。请以
 > [当前实现状态](docs/IMPLEMENTATION_STATUS_CN.md) 为准，不要把路线图中的目标当成已完成。
@@ -99,9 +98,9 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - NeoForge server 配置；
 - GitHub Actions Java 21 构建与 GameTest 门禁配置。
 
-以上 P2 项已通过本地与远端自动化退出门；P3 项目前只代表候选代码已编码。P2 完整证据
-见 [P2 完成验收报告](docs/P2_COMPLETION_REPORT_CN.md)，P3 待验证门禁见
-[P3 完成报告草案](docs/P3_COMPLETION_REPORT_CN.md)。
+以上 P2/P3 项已通过自动化退出门。P2 完整证据见
+[P2 完成验收报告](docs/P2_COMPLETION_REPORT_CN.md)，P3 进展见
+[P3 完成验收报告](docs/P3_COMPLETION_REPORT_CN.md)。
 
 ## 尚未实现
 
@@ -109,7 +108,7 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - 客户端 screen 手工验收、独立专用服和多 bot 长时间 soak；
 - 长距离寻路、动态重规划、完整移动模式和安全反射；
 - 箱子/木桶/潜影盒等通用世界容器、工作站与制作/熔炼流程；
-- P3 Java 21 严格编译、GameTest、独立专用服与多 bot 性能验证；
+- 独立专用服与多 bot 性能验证；
 - 持久世界模型、长期来源化记忆和自然语言“刚才发生了什么”对话；
 - 战斗策略、建造和生存技能；
 - DeepSeek Provider/HTTP、聊天、工具防火墙和预算；
@@ -151,7 +150,7 @@ gradlew.bat --no-daemon clean build
 ./gradlew runServer
 ```
 
-P2 已加入生命周期、移动、交互和库存 GameTest；P3 候选新增感知相关测试来源：
+P2 已加入生命周期、移动、交互和库存 GameTest；P3 新增感知相关测试：
 
 ```bash
 ./gradlew --no-daemon runGameTestServer
@@ -162,10 +161,17 @@ P2 已加入生命周期、移动、交互和库存 GameTest；P3 候选新增�
 也通过了标准 `clean build runGameTestServer`，完整证据见
 [P2 完成验收报告](docs/P2_COMPLETION_REPORT_CN.md)。
 
-这组数字只对应 P2 合并基线。P3 候选尚未在当前环境完成 Java 21 编译、单元测试、
-GameTest 或干净构建；当前静态计数新增 42 个 P3 `@Test` 方法（完整源码 182 个）和
-6 个 P3 GameTest 来源，均尚未执行。推送后必须以新的 CI 结果回写，不能把 Build #18
-当作 P3 证据。
+P3 提交 `38851d1791b84e73705b302be8438e441c3f26ff` 由
+[PR #4](https://github.com/GreyTaiWolf/BotPlayer/pull/4) 的
+[GitHub Actions Build #28](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30394484181)
+使用 Temurin Java 21.0.11 执行
+`./gradlew --no-daemon clean build runGameTestServer`。`compileJava`、
+`compileTestJava`、Gradle `test`、clean build 与 JAR upload 全部通过；GameTest 日志
+明确报告 `All 27 required tests passed`，其中 P3 batch 为 8 tests。当前源码静态计数为
+P3 新增 43 个 `@Test` 方法、全仓 183 个；这是源码计数，不是 CI 日志直接报告的通过数。
+上传 [artifact `botplayer-neoforge-1.21.1`](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30394484181/artifacts/8702261459)
+ID 为 `8702261459`，大小 `653364` bytes，SHA-256
+`90ddf753c58a3f81a4a5d407a6beafd30c08c208345b01dea51fd241156224ac`。
 
 更完整的步骤见：
 
@@ -210,7 +216,7 @@ GUI 展示 bot 的 41 格真实玩家库存和 viewer 自己的 36 格库存。�
 - [AI 玩家调研与 P2 重新基线](docs/AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md)
 - [P2 完成验收报告](docs/P2_COMPLETION_REPORT_CN.md)
 - [P3 感知与世界模型调研设计](docs/AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md)
-- [P3 完成报告草案](docs/P3_COMPLETION_REPORT_CN.md)
+- [P3 完成验收报告](docs/P3_COMPLETION_REPORT_CN.md)
 - [完整架构与 P0–P10 路线图](docs/ARCHITECTURE_AND_ROADMAP_CN.md)
 - [原版玩法能力矩阵与发布门槛](docs/VANILLA_CAPABILITY_MATRIX_CN.md)
 - [安装与当前用法](docs/INSTALLATION_AND_USAGE_CN.md)
@@ -261,9 +267,8 @@ P0 工程基线
 → P10 硬化与发布
 ```
 
-P2 的严格编译、单元测试、GameTest 和干净构建已在本地及远端通过，自动化退出门已经
-关闭。P3 有限感知与世界模型已形成 `0.2.0-alpha.1` 候选，但仍待 Java 21 CI 验证；
-通用世界容器分别延期到 P5A/P5B，模组自定义 menu 属于 P8。
+P2 与 P3 自动化退出门均已关闭。客户端手工、独立专用服和多 bot soak 仍未验证；通用
+世界容器分别延期到 P5A/P5B，模组自定义 menu 属于 P8。
 
 ## License
 

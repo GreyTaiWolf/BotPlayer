@@ -42,9 +42,9 @@ gradlew.bat --no-daemon clean build
 ```
 
 P2 已加入生命周期、移动、交互和库存 GameTest 类与 structure fixture；涉及
-Minecraft 行为的提交必须运行。P3 候选当前增加 6 个自身/背包、遮挡、权威隔离、
-generation、无强制加载和未提交 mutation 隔离场景；定向声音与事实失效仍需直接运行期
-覆盖。最终数量以 CI 实际输出为准：
+Minecraft 行为的提交必须运行。Build #28 已运行并通过 P3 的 8 个场景，包括自身/背包、
+遮挡、权威隔离、generation、无强制加载、未提交 mutation 隔离、定向声音隔离与方块事实
+失效：
 
 ```bash
 ./gradlew --no-daemon runGameTestServer
@@ -206,7 +206,7 @@ P2 候选中的普通世界变化必须经过：
 
 ## 当前 P3 感知层规则
 
-P3 候选的固定顺序是：
+P3 的固定顺序是：
 
 ```text
 P2 ActionOutcome / NeoForge 候选 / 定向声音包
@@ -273,11 +273,17 @@ P2 ActionOutcome / NeoForge 候选 / 定向声音包
 | 手工客户端 | 玩家外观、Tab、动画、背包 Screen |
 | Soak/性能 | 多 bot、内存、MSPT、连接和任务泄漏 |
 
-当前 CI 运行 `clean build`、`runGameTestServer` 并上传 JAR；本地已取得 140/140 单测和
-连续两轮 19/19 GameTest，远端 Build #18 也已绿色通过。即使这些任务通过，也不证明
-客户端 screen、独立专用服或多 bot soak。以上数字只属于 P2 基线；P3 新增代码的严格
-编译、单元测试、GameTest 和干净构建当前均待 Java 21 CI，不能提前合并通过数。当前
-按源码 `@Test` 方法静态计数，P3 新增 42 个、完整源码 182 个；这些不是执行结果。
+当前 CI 运行 `clean build`、`runGameTestServer` 并上传 JAR。P2 基线由 Build #18
+验证；P3 提交 `38851d1791b84e73705b302be8438e441c3f26ff` 的
+[Build #28](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30394484181)
+使用 Temurin Java 21.0.11 执行 `./gradlew --no-daemon clean build runGameTestServer`，
+`compileJava`、`compileTestJava`、Gradle `test`、27/27 GameTest、clean build 与 JAR
+upload 全部通过，日志明确 `All 27 required tests passed`，P3 batch 为 8 tests。
+源码静态 `@Test` 计数是 P3 43、全仓 183，不是 CI 日志直接报告的通过数。日志中的
+GameTest 27/P3 batch 8 是实际运行结果。artifact 为 `botplayer-neoforge-1.21.1`
+（ID `8702261459`，`653364` bytes，SHA-256
+`90ddf753c58a3f81a4a5d407a6beafd30c08c208345b01dea51fd241156224ac`）。这些自动化结果
+不证明客户端 screen、独立专用服或多 bot soak。
 
 ## 每次提交前
 

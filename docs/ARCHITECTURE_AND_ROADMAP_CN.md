@@ -18,7 +18,7 @@ BotPlayer 的最终目标是让一个由 AI 控制的服务端玩家，按照普
 六层状态机与重新定界见
 [AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md](AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md)；
 P2 实现与验证边界见 [P2_COMPLETION_REPORT_CN.md](P2_COMPLETION_REPORT_CN.md)。P3
-有限感知的调研/设计与候选验证缺口分别见
+有限感知的调研/设计与自动化验收、剩余缺口分别见
 [AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md](AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md) 和
 [P3_COMPLETION_REPORT_CN.md](P3_COMPLETION_REPORT_CN.md)。
 
@@ -846,7 +846,7 @@ client/screen/
 
 全服审计不能自动变成 bot 的知识。管理员可以开启调试全知模式，但生成的事实必须标注来源为 `ADMIN_OMNISCIENT`，普通玩法默认关闭。
 
-P3 候选实现进一步固定：
+P3 实现进一步固定：
 
 - 普通 authority audit、独立 spatial authority projection 与 routed sound audit 三环
   保存，但共享运行时 `sessionId + eventSeq` 唯一序号；定向/声音洪泛不挤出空间候选，
@@ -869,8 +869,8 @@ P3 候选实现进一步固定：
   `STALE_UNKNOWN`。authority coverage gap 只进入管理员私有诊断并快进内部 cursor。
 
 规范性边界见
-[ADR-0013](adr/0013-finite-perception-two-plane-world-model.md)；当前候选仍待 Java 21 CI，
-不能把本节写成 P3 已通过。
+[ADR-0013](adr/0013-finite-perception-two-plane-world-model.md)；具体自动化覆盖与退出门
+缺口见 [P3 完成验收报告](P3_COMPLETION_REPORT_CN.md)。
 
 ### 7.2 语义事件结构
 
@@ -2402,7 +2402,7 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 - [ ] 添加 dedicated server 启动 smoke test；
 - [x] 建立 GitHub Actions 编译与构件上传；
 - [x] 单元测试随 `clean build` 进入 CI；
-- [x] 把 `runGameTestServer` 加入 CI 配置；远端 Build #18 已绿色通过；
+- [x] 把 `runGameTestServer` 加入 CI 配置；P2 Build #18 与 P3 Build #28 均绿色通过；
 - [ ] 建立代码格式和依赖锁；Java 编译候选已启用 `-Xlint:all -Werror`；
 - [x] 添加 `THIRD_PARTY_NOTICES.md` 研究与发布审查基线；
 - [x] 添加架构决策目录 `docs/adr/`；
@@ -2570,24 +2570,28 @@ P2 根据调研拆成五个子阶段；详细理由与阶段门见
 - [x] 不强制加载区块的扫描约束；
 - [x] P3 不读取容器内容；P5A/P5B/P8 边界固定。
 
-以上勾选表示候选生产代码/接口已出现，不表示编译、GameTest 或 P3 退出门通过。验证状态以
-[P3 完成报告草案](P3_COMPLETION_REPORT_CN.md) 为准。
+以上生产代码/接口已通过 Build #28 自动化退出门；勾选不表示每个行为都有直接
+GameTest，也不覆盖客户端、独立专用服或 soak。验证状态以
+[P3 完成验收报告](P3_COMPLETION_REPORT_CN.md) 为准。
 
 测试：
 
 - [x] 视线遮挡时看不到目标的 GameTest 来源；
 - [ ] 听觉范围内外事件不同；
+- [x] 定向声音只进入目标 bot generation 的 GameTest；
 - [x] 全服事件不会默认进入 bot 知识的 GameTest 来源；
-- [ ] 方块/容器改变使旧事实 stale；
-- [ ] 挖矿、建造、战斗、农耕活动场景；
+- [x] 已感知 committed 方块变化使旧事实 stale 的 GameTest；P3 不读取容器内容；
+- [x] 挖矿、建造、战斗、农耕 canonical evidence 纯单元测试来源；运行期行为场景仍可扩充；
 - [x] 低置信度使用不确定表达的单元测试来源；
 - [x] 严格滑动窗口、新近 actor 选择与 `use_on_block` 不证明 building 的单元测试来源；
 - [x] TPS 压力下降低非关键感知频率的单元测试来源；L0 不受影响的集成验收放到 P4；
 - [x] 同一回放产生确定活动推断的单元测试来源。
 - [x] generation 轮换新 stream 与超远焦点不强制加载区块的 GameTest 来源。
 
-所有测试项当前都待 Java 21 CI 实际执行。验收：bot 可引用事件证据回答“刚才发生了什么/
-我在做什么”，且不会声称知道未感知事件；管理诊断命令本身不等于 P6 对话能力。
+Build #28 已执行并通过当前纯 Java 测试与 8 个 P3 GameTest。未勾选项仍是直接运行期
+覆盖缺口；定向声音目标 generation 隔离已直接验证，但声音队列公平份额/round-robin
+没有直接运行期压力场景。验收：管理诊断可引用事件证据说明“刚才发生了什么/我在做
+什么”，且不会声称知道未感知事件；管理诊断命令本身不等于 P6 对话能力。
 
 ### P4：导航与安全反射
 
@@ -2880,8 +2884,8 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 ### 19.1 版本节点
 
 版本号表示开发序列，不单独证明能力已完成；具体成熟度必须同时查看实现状态、能力矩阵、
-测试和对应 Release 说明。`0.1.0-alpha.N` 是历史 P0–P2 开发序列；当前候选标识为
-`0.2.0-alpha.1`，但 P3 仍待 Java 21 CI，也尚未因此成为正式 Release。
+测试和对应 Release 说明。`0.1.0-alpha.N` 是历史 P0–P2 开发序列；当前开发标识为
+`0.2.0-alpha.1`；P3 Build #28 自动化退出门已通过，但尚未因此成为正式 Release。
 
 | 版本序列 | 阶段目标 | 用户可见含义 |
 |---|---|---|
@@ -3160,10 +3164,10 @@ P0 工程
 结果验证。当前 P2-A～P2-E 的严格编译、140/140 单元测试、连续两轮 19/19 GameTest 和
 干净构建已在本地通过，远端 GitHub Actions Build #18 也已全绿。
 
-P3 有限感知候选已完成双事件平面、传感器、预算、快照、scoped revision、短期事实、
-活动推断、纠正与管理诊断的代码接线；开发版本标识为 `0.2.0-alpha.1`。当前本地环境没有
-可用 JDK 21 且依赖下载受限，所以只能写“已编码、待 CI 验证”，不能沿用 P2 绿色数字或
-提前关闭 P3 退出门。
+P3 有限感知已完成双事件平面、传感器、预算、快照、scoped revision、短期事实、活动
+推断、纠正与管理诊断的代码接线；开发版本标识为 `0.2.0-alpha.1`。PR #4 的 Build #28
+使用 Temurin Java 21.0.11 通过严格编译、Gradle `test`、27/27 GameTest、clean build
+与 JAR upload，P3 自动化退出门已关闭。客户端、独立专用服和多 bot soak 仍未验证。
 
 P5B–P5D 是横向原版能力扩展轨：在各自依赖完成后可与 P6–P9 并行，但所有 REQUIRED
 能力必须在 P10 前完成，P10 不能承担首次功能开发。

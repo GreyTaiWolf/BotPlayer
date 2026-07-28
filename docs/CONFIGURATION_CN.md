@@ -1,10 +1,10 @@
 # BotPlayer 配置说明
 
 本文描述当前 server 配置和客户端本地凭据存储。P2 提供动作运行时容量与 bot 自身背包
-查看距离；P3 候选实现新增有限感知的范围、读取预算、事件/事实容量和 MSPT 降级阈值。
-P3 配置已编码但仍待 Java 21 CI 验证；AI Provider、模型调用、寻路、技能和记忆配置仍
-不可用。实时状态见 [当前实现状态](IMPLEMENTATION_STATUS_CN.md)，P3 验证缺口见
-[P3 完成报告草案](P3_COMPLETION_REPORT_CN.md)。
+查看距离；P3 实现新增有限感知的范围、读取预算、事件/事实容量和 MSPT 降级阈值。
+P3 配置已通过 Build #28 自动化退出门；AI Provider、模型调用、寻路、技能和记忆配置
+仍不可用。实时状态见 [当前实现状态](IMPLEMENTATION_STATUS_CN.md)，P3 验收边界见
+[P3 完成验收报告](P3_COMPLETION_REPORT_CN.md)。
 
 ## 配置文件
 

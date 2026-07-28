@@ -1,6 +1,6 @@
 # BotPlayer 安装与当前用法
 
-> 适用版本：`0.2.0-alpha.1` P3 候选分支
+> 适用版本：`0.2.0-alpha.1` P3 Build #28 构件
 >
 > Minecraft：`1.21.1`
 >
@@ -8,8 +8,8 @@
 >
 > Java：`21`
 
-当前没有正式 Release。`0.2.0-alpha.1` 尚待 Java 21 CI 构建与 GameTest；本文用于开发
-测试，不建议在重要世界中安装。需要已验证基线时，请使用 P2 报告列出的对应 commit/JAR。
+当前没有正式 Release。`0.2.0-alpha.1` 已通过 Java 21 自动化构建与 GameTest，但客户端
+手工、独立专用服和多 bot soak 仍未验证；本文用于开发测试，不建议在重要世界中安装。
 
 ## 当前安装拓扑
 
@@ -166,7 +166,7 @@ profile 不会自动删除。
 权限，但仍是本机明文。不要把它们上传到 Issue、支持包、云盘或 Git。文件损坏或 schema
 不支持时，客户端会拒绝加载和覆盖。
 
-### 检查 P3 感知候选
+### 检查 P3 感知
 
 ```text
 /botplayer perception inspect <name>
@@ -177,8 +177,9 @@ MSPT 压力、生命/饥饿、视线类型、实体/威胁/方块/事件数量�
 活动假设及最多 5 条最近事实。它不会输出 authority session/seq、全局 world revision、
 全服预算、完整权威事件、任意容器内容或长期记忆。
 
-P3 当前是待 CI 验证的开发候选；该命令能返回内容不代表遮挡、声音隔离和区块加载不变量
-已经通过 GameTest。
+P3 Build #28 已通过自动化退出门，包括定向声音目标 generation 隔离与已感知方块事实
+失效两个直接 GameTest。该命令能返回内容仍不代表所有异常路径、独立专用服或多 bot
+压力已经逐项验证。
 
 ### 纠正 P3 活动假设
 
@@ -223,15 +224,15 @@ idle moving exploring mining building combat farming crafting smelting none
 - 在线时会刷新原版玩家区块跟踪。
 - roster 保存稳定身份、持久 owner 和服务器实例 ID；
 - P2 具有 generation 隔离、确定性动作、短程输入、基础世界交互和 bot 自身背包；
-- P3 候选会生成有限、不可变的自身/背包/注视/局部实体/方块/声音快照，并以有证据的
+- P3 会生成有限、不可变的自身/背包/注视/局部实体/方块/声音快照，并以有证据的
   置信表达推断近期玩家活动；
 - owner 客户端可以在本地 GUI 创建/替换 credential profile，并为自己的多个 bot
   绑定/解绑；每个 bot 使用独立 agentId。
 
-这些仍是开发阶段行为。P2 本地已通过 140/140 单测和连续两轮 19/19 GameTest；P3
-候选尚未在当前环境完成 Java 21 编译、GameTest 或干净构建。客户端手工、长时间在线、
-独立专用服、跨维度完整矩阵和多 bot soak 尚无保证。请不要据此假定保护模组、所有维度
-或大型模组包已经兼容。
+这些仍是开发阶段行为。P3 的 [Build #28](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30394484181)
+使用 Temurin Java 21.0.11 完成严格编译、Gradle `test`、27/27 GameTest、clean build
+与 JAR upload，其中 P3 batch 为 8 tests。客户端手工、长时间在线、独立专用服、跨维度
+完整矩阵和多 bot soak 尚无保证。请不要据此假定保护模组、所有维度或大型模组包已经兼容。
 
 ## 当前不能做
 

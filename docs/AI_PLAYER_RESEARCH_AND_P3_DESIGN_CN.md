@@ -1,19 +1,20 @@
 # BotPlayer P3 感知与世界模型调研设计
 
-> 文档状态：研究结论与候选实现设计 v1
+> 文档状态：研究结论与 P3 实现设计 v1
 >
 > 更新日期：2026-07-28
 >
-> 适用分支：`agent/p3-perception`
+> 验收载体：[PR #4](https://github.com/GreyTaiWolf/BotPlayer/pull/4)
 >
-> 验证状态：生产代码与测试来源已开始接线；受当前环境 JDK/网络限制，仍待 Java 21 CI
-> 执行严格编译、单元测试和 NeoForge GameTest
+> 验证状态：Temurin Java 21.0.11 的 Build #28 已通过严格编译、Gradle `test`、27/27
+> NeoForge GameTest、clean build 与 JAR upload
 
 本文回答 P3 的核心问题：一个服务器内真实 `ServerPlayer` bot 应当知道什么、如何知道、
 什么时候必须承认“不知道”，以及怎样把短期观察变成可失效而非永久正确的世界事实。
 
 当前代码事实见 [当前实现状态](IMPLEMENTATION_STATUS_CN.md)，验证结果与缺口见
-[P3 完成报告草案](P3_COMPLETION_REPORT_CN.md)。本文是设计与调研记录，不是测试通过证明。
+[P3 完成验收报告](P3_COMPLETION_REPORT_CN.md)。本文是设计与调研记录；具体通过项与未
+验证边界以完成报告为准。
 
 ## 1. 结论摘要
 
@@ -334,8 +335,8 @@ authority 顺序。中文输出按置信度使用“正在”“看起来正在�
 | 活动理解 | `worldmodel/ActivityInferenceService`、`ActivityReportFormatter` |
 | 管理诊断与纠正 | `/botplayer perception inspect\|correct` |
 
-这些类存在只说明“已编码”。当前环境不能下载/运行所需 Java 21 Gradle 工具链，因此编译、
-测试和运行期语义必须由 CI 再确认。
+这些类已通过 Build #28 的编译/测试任务。类存在与自动化门禁通过都不表示每项生产行为
+有直接 GameTest；具体覆盖与缺口见完成报告。
 
 ## 8. 明确延期
 
@@ -352,21 +353,24 @@ P3 不包含：
 容器边界保持：P5A 实现第一条生存闭环所需的最小原版世界容器驱动，P5B 扩展广泛原版
 容器和工作站，P8 处理模组标准/自定义 menu。
 
-## 9. 验收计划
+## 9. 验收结果
 
-P3 退出门至少需要：
+P3 自动化退出门结果：
 
-1. Java 21 下 `-Xlint:all -Werror` 严格编译；
-2. 事件环、DTO 上限、预算、负载滞回、revision、事实冲突/TTL/认知侧失效、活动回放的
-   单元测试；
-3. NeoForge GameTest 验证自身/背包快照、视觉遮挡、定向声音隔离、全服事件不自动进入
-   bot 知识、方块事实失效、generation 清理且不强制加载区块；
-4. 相同认知事件回放得到相同活动类型、置信区间和 generation-local `perceivedSeq`；
-5. `clean build` 与 CI `runGameTestServer` 取得可追溯绿色终态；
-6. 未执行的客户端、独立专用服和多 bot soak 继续明确为未验证。
+1. Temurin Java 21.0.11 下严格编译与 Gradle `test` 通过；
+2. 源码静态 `@Test` 计数为 P3 43、全仓 183；静态数不是日志直接通过数；
+3. Build #28 的 NeoForge GameTest 27/27，日志明确 `All 27 required tests passed`，
+   P3 batch 8；`P3SoundTarget/Other` 与 `P3FactStale` 成功；
+4. Build #28 的 `clean build` 与 JAR upload 通过，artifact 为
+   `botplayer-neoforge-1.21.1`（ID `8702261459`，`653364` bytes，SHA-256
+   `90ddf753c58a3f81a4a5d407a6beafd30c08c208345b01dea51fd241156224ac`）；
+5. 8 个 P3 GameTest 直接覆盖自身/背包、视觉遮挡、全服/认知隔离、generation、
+   无强制加载、未提交 mutation 隔离、定向声音目标 generation 隔离和已感知 committed
+   方块变化使旧事实 stale；
+6. 客户端、独立专用服和多 bot soak 继续明确为未验证。
 
-在以上证据回写前，README、能力矩阵和完成报告只使用“已编码/候选/待 CI 验证”，不写
-“P3 已通过”或“完整 AI 玩家”。
+因此可以写“P3 自动化退出门已通过”，但不能把未执行的手工、专用服或 soak 项扩大为
+已验证，也不能宣称声音队列公平份额/round-robin 已有直接运行期覆盖。
 
 ## 10. 许可证与 clean-room 边界
 

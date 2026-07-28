@@ -244,17 +244,20 @@ P3 当前没有持久 schema，因此回滚不会迁移世界数据。回滚到 
 
 ## 验证方式
 
-接受本决策不等于候选实现已经通过。P3 合并前至少验证：
+接受本决策本身不等于实现通过。PR #4 的 Build #28 已使用 Temurin Java 21.0.11 完成
+严格编译、Gradle `test`、27/27 NeoForge GameTest、clean build 与 JAR upload。下列
+不变量由纯 Java 测试、GameTest 或编译接线共同保护：
 
 - `-Xlint:all -Werror` 下 Java 21 严格编译；
 - 权威环容量/gap 只进入管理员私有诊断并快进内部 cursor；认知侧事实、水位和公开预算
   不受影响，只见 generation-local `perceivedSeq` 与 opaque `authorityEventId`；
 - DTO 字段与集合上限、预算耗尽和 MSPT 滞回；
 - SELF 当前 Tick 与完整背包 TTL 门、视觉异常 `Unavailable/UNKNOWN_STALE`；
-- 多 generation 声音公平份额/round-robin，以及威胁/视觉/普通实体子配额；
+- 多 generation 声音公平份额/round-robin，以及威胁/视觉/普通实体子配额；声音公平
+  分配与 round-robin 尚无直接运行期压力场景；
 - scoped revision、冲突、TTL、可见失效和 `STALE_UNKNOWN`；
 - 同一认知事件回放得到确定活动输出和 generation-local `perceivedSeq`；
-- 视觉遮挡、未知未加载边界、定向声音隔离；
+- 视觉遮挡与未知未加载边界；定向声音目标 generation 隔离有直接 GameTest；
 - `VISUAL/AUDIBLE` 积压、预算延迟和晚到声音 fail-closed；
 - 独立 spatial authority ring 不被 `SELF/DIRECT` 洪泛或旧 backlog 阻塞；同 Tick
   超预算只取最新窗口并计 coverage，可靠路由不被共享预算丢失；
@@ -264,4 +267,5 @@ P3 当前没有持久 schema，因此回滚不会迁移世界数据。回滚到 
 - 感知不会增加未加载区块；
 - `clean build` 与 NeoForge GameTest 在 CI 取得可追溯绿色终态。
 
-当前候选验证状态见 [P3 完成报告草案](../P3_COMPLETION_REPORT_CN.md)。
+具体直接覆盖、源码静态计数和未验证边界见
+[P3 完成验收报告](../P3_COMPLETION_REPORT_CN.md)。
