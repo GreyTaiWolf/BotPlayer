@@ -29,6 +29,21 @@
   Shift 移动、关闭确认与动作侧 `InventoryMutationGate`；
 - 新增虚拟连接常量空间 telemetry，记录丢弃/拒绝包计数、callback、keepalive/teleport
   处理与首个关闭原因，不记录包内容。
+- 新增 P3 有限感知候选：权威 `AuthorityEvent` 与每 bot generation 的
+  `PerceivedEvent` 双平面、有界运行时序号环和读取 gap；
+- 新增动作终态、NeoForge post-state 验证事件和原版定向声音包收集入口；全服权威事件
+  不自动成为所有 bot 的认知；
+- 新增自身、背包、注视、附近实体、威胁、局部方块和声音传感器；只读取已加载世界，
+  未加载边界显式为未知；
+- 新增彼此隔离的权威投影/公开传感器预算、EWMA MSPT 降级与 AI-safe 不可变
+  `ObservationSnapshot`；快照只暴露 generation-local 认知水位和本 bot 公开传感器
+  分类预算；
+- 新增全局/维度/target scope revision、运行时短期事实、已投影变化/TTL 失效与确定性
+  玩家活动推断；
+- 新增 `/botplayer perception inspect <name>` 和
+  `/botplayer perception correct <bot> <actor> <activity>` 管理诊断/纠正入口；
+- 开发版本进入 `0.2.0-alpha.1` P3 候选；Build #28 自动化退出门已通过并上传构件，但
+  尚未正式发布。
 
 ### 加固
 
@@ -41,6 +56,43 @@
 - 死亡、卸载、换维度、viewer 退出、超距、menu 替换和停服会关闭相关背包会话；
 - 普通世界交互使用服务端玩家路径，并以方块、实体和物品前后状态验证，不以调用成功代替
   世界成功。
+- P3 事件、快照、事实、revision scope、声音候选、扫描和证据全部有界；死亡、重生、
+  换维度、卸载、回滚和停服关闭旧 generation 认知；
+- 定向声音 ingress 按 generation 分队列、限制动态公平份额并 round-robin 抽取；全局
+  容量满时优先从最大队列淘汰旧候选，单队列保持封包顺序；历史声音 ring 在快照预算
+  不足时先选择最新事件，再按认知序号恢复时间顺序；
+- SELF 状态必须在当前 Tick 成功，完整 41 槽背包必须仍在 20 Tick 新鲜度内；关键输入
+  失效时撤下快照，其他传感器按各自 TTL 降级或清空；
+- 实体传感器使用达到预算即中止的有界枚举；威胁/视觉/普通实体使用子配额且威胁优先，
+  每次实体索引原始回调扣 `ENTITY_SCAN`、匹配候选再扣 `ENTITY_READ`，威胁 relevant
+  selector 另有 raw scan 上限；视觉 loaded-ray 使用最多 64 chunk 的 DDA；
+- 第三方实体/物品/效果/方块属性的单项异常只截断本次观察；含 `BlockEntity` 的方块只
+  输出 opaque 标记，不读取对象或内容；视觉异常返回 `Unavailable`，不伪造为未命中；
+- `SELF/DIRECT` 在权威事件发布时按精确 actor/target 可靠路由；`VISUAL/AUDIBLE`
+  使用独立 spatial authority projection ring，定向洪泛不会挤出空间候选；同 Tick
+  空间事件超预算时只选最新有界窗口，并把遗漏计入管理员 coverage 诊断；
+- `SELF` 只保留 bot 自身 actor，`VISUAL` 只保留逐个通过视距、视锥、已加载和遮挡复核
+  的 actor；两类投影删除未由对应通道证明的通用身份 delta；
+- 方块放置只有完整预期 `BlockState` 匹配才提交；破坏只有变空气才归因 actor，同 ID
+  属性变化不再冒充破坏，非空气替换只记录无 actor 的泛化 `BLOCK_CHANGED`；
+- 活动推断每 Tick 严格剔除滑动窗口外证据，单次按 actor 聚合并按新近证据选择候选；
+  actor 上限随压力为 `NORMAL 64 / DEGRADED 16 / CRITICAL 4`；单独 `use_on_block`
+  不足以证明 building，必须有方块放置等已提交语义证据；
+- `PerceivedEvent` 只引用并重构权威事件的允许字段，不携带完整权威载荷；完全未感知的
+  变化不触碰该 bot 的事实、认知水位或公开预算，避免泄露变化发生时刻；
+- `PerceivedEvent` 只保留 opaque `authorityEventId`，不暴露 authority session/seq；
+  `VISUAL/AUDIBLE` 只允许 same-tick 投影，积压和晚到事件 fail-closed；
+- 普通 authority audit、spatial authority projection 与 routed sound audit 三环独立，
+  但共享唯一递增 `eventSeq`；每 generation 的声音/非声音认知也分环并共享 local
+  `perceivedSeq`，声音洪泛不逐出动作、方块、伤害或活动证据；
+- 待复核 break/place/toss 候选在捕获时冻结 bot generation，发布时仅用私有
+  `routing.*` 元数据完成 SELF 路由，认知投影不会公开这些字段；
+- critical action-outcome ingress 上限与 P2 最大 canonical 吞吐对齐；成功 break 预留
+  两个事件单位，其他终态按一个单位计，避免常规 pending 容量截断关键终态；
+- P3 明确不读取 `BlockEntity` NBT 或 menu slot 获取容器内容；最小/广泛原版世界容器
+  分别延期到 P5A/P5B，模组自定义 menu 属于 P8。
+- 成功 `UseOnBlock` 不再被猜测成 `CONTAINER_CHANGED` 或推进容器 revision；真正容器
+  内容变化事件与验证留到 P5。
 
 ### 配置
 
@@ -49,6 +101,16 @@
   `actions.completionCapacity` 五个有界动作运行时配置；
 - 新增 `inventory.viewDistance`，默认 `8.0` 方块，只控制 bot 自身背包 GUI 的同维度
   查看/编辑距离。
+- 新增 `perception.*`：视觉/实体/听觉范围、脚下局部方块半径、彼此分离的权威投影与
+  公开传感器预算（传感器侧含每 bot/全局限额）、事件/事实/revision 容量、活动窗口和
+  MSPT 降级/恢复阈值；
+- `perception.globalWorkPerTick` 最小值为 `64`，保证 1/4、3/4 分池后公开池仍可原子
+  读取完整 41 槽背包；
+- `perception.localBlockRadius` 默认 `1`、范围 `0..2`，只控制脚下已加载小邻域，不是
+  未计费体素泛扫；
+- `permissions.commandPermissionLevel` 继续控制 `spawn/list/remove`；P3
+  `perception inspect/correct` 为避免配置降到 `0` 后泄露 bot 局部知识，固定要求原版
+  权限等级 `2`。
 
 ### 安全
 
@@ -73,6 +135,23 @@
 - 本轮本地严格编译、140/140 单元测试、同一持久世界连续两轮 19/19 GameTest 与
   `clean build` 已通过；远端 GitHub Actions Build #18 的标准
   `clean build runGameTestServer` 也已通过并上传 JAR。
+- 新增 P3 DTO/设置/预算/MSPT、投影与双事件平面、revision/短期事实和活动推断单元测试
+  来源；按 `@Test` 方法静态计数新增 43 个，完整源码为 183 个；这是当前源码计数，不是
+  CI 日志直接报告的通过数；Build #28 的 Gradle `test` 已通过当前源码；
+- 扩展 `BotActionRuntimeTest`，覆盖 P3 outcome sink 的 canonical 单次通知、replay 不重复
+  和 sink 异常隔离；
+- 新增并通过 8 个 P3 NeoForge GameTest，覆盖自身/背包快照、视觉遮挡、远方权威事件与
+  actor 不进入 local cognitive stream、generation 新 stream、超远方块焦点不强制加载，
+  未提交破坏/放置/丢弃候选不进入权威流、定向声音只进入目标 generation，以及已感知
+  committed 方块变化使旧事实 stale；
+- [PR #4](https://github.com/GreyTaiWolf/BotPlayer/pull/4) 的
+  [Build #28](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30394484181)
+  在提交 `38851d1791b84e73705b302be8438e441c3f26ff` 使用 Temurin Java 21.0.11 执行
+  `./gradlew --no-daemon clean build runGameTestServer`；
+  `compileJava`、`compileTestJava`、Gradle `test`、27/27 GameTest、clean build 与
+  JAR upload 全部通过，日志明确 `All 27 required tests passed`，P3 batch 为 8 tests；
+  artifact 为 `botplayer-neoforge-1.21.1`（ID `8702261459`，`653364` bytes，SHA-256
+  `90ddf753c58a3f81a4a5d407a6beafd30c08c208345b01dea51fd241156224ac`）。
 
 ### 文档
 
@@ -84,8 +163,8 @@
 - 记录虚拟连接仍缺发送回调、keepalive/teleport ack 和长时间在线验证；
 - 补充当前真实配置键、命令语义、开发构件安装边界和排错；
 - 扩充 ADR 索引及第三方研究/许可证边界；
-- 明确 DeepSeek、感知、技能和记忆仍未实现；P2 动作与 bot 自身背包按实际自动化验证
-  状态报告；客户端 API Key 仍只完成本地管理基础。
+- 明确 DeepSeek、技能和长期记忆仍未实现；P2 动作、bot 自身背包与 P3 感知按实际自动化
+  验证状态报告；客户端 API Key 仍只完成本地管理基础。
 - 明确临时名称 UUID 的大小写语义、审查分支过渡规则和双端开发测试边界。
 - 将已经合并的 P0/P1 审查分支说明改为默认 `main` 开发基线；
 - 同步客户端凭据、owner、服务器实例隔离、离线限制和明文存储风险。
@@ -94,6 +173,10 @@
 - 新增 P2 完成验收报告，分别记录已编码、实际验证和未覆盖边界；
 - 将 P2 重排为 P2-A～P2-E，并明确 bot 自身背包属于 P2-D；最小原版世界容器、广泛原版
   容器/工作站和模组自定义 menu 分别延期到 P5A、P5B 和 P8。
+- 新增 P3 感知与世界模型调研设计、P3 完成验收报告和 ADR-0013，固定有限感知、权威/
+  认知双平面、有界 DTO、定向声音、无强制区块加载、scoped revision 与容器延期边界；
+- 同步 README、实现状态、能力矩阵、配置、安装用法、开发指南、路线图和第三方研究边界；
+  回写 Build #28 结果，并保留客户端、独立专用服和 soak 缺口。
 
 ## 0.1.0-alpha.1 — 开发基线（2026-07-26，尚未正式发布）
 

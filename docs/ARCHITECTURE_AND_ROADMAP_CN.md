@@ -1,6 +1,6 @@
 # BotPlayer：NeoForge 1.21.1 完整架构、编码规范与 P0–P10 路线图
 
-> 文档状态：架构基线 v1.3
+> 文档状态：架构基线 v1.4
 > 更新日期：2026-07-28
 > 目标仓库：`GreyTaiWolf/BotPlayer`
 > 第一目标平台：Minecraft Java 1.21.1、NeoForge 21.1.244、Java 21
@@ -17,7 +17,10 @@ BotPlayer 的最终目标是让一个由 AI 控制的服务端玩家，按照普
 [VANILLA_CAPABILITY_MATRIX_CN.md](VANILLA_CAPABILITY_MATRIX_CN.md) 为准。P2 的调研依据、
 六层状态机与重新定界见
 [AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md](AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md)；
-P2 实现与验证边界见 [P2_COMPLETION_REPORT_CN.md](P2_COMPLETION_REPORT_CN.md)。
+P2 实现与验证边界见 [P2_COMPLETION_REPORT_CN.md](P2_COMPLETION_REPORT_CN.md)。P3
+有限感知的调研/设计与自动化验收、剩余缺口分别见
+[AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md](AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md) 和
+[P3_COMPLETION_REPORT_CN.md](P3_COMPLETION_REPORT_CN.md)。
 
 ---
 
@@ -843,10 +846,37 @@ client/screen/
 
 全服审计不能自动变成 bot 的知识。管理员可以开启调试全知模式，但生成的事实必须标注来源为 `ADMIN_OMNISCIENT`，普通玩法默认关闭。
 
+P3 实现进一步固定：
+
+- 普通 authority audit、独立 spatial authority projection 与 routed sound audit 三环
+  保存，但共享运行时 `sessionId + eventSeq` 唯一序号；定向/声音洪泛不挤出空间候选，
+  跨重启不冒充连续；
+- 每个 `(botId, generation)` 的非声音语义/声音认知分环保存，并共享从 1 递增的 local
+  `perceivedSeq`；声音洪泛不逐出动作、方块、伤害或活动证据；
+- `PerceivedEvent` 只保留 opaque `authorityEventId` 与重新构造的有界认知载荷，不嵌入
+  完整 `AuthorityEvent`，不暴露 authority session/sequence/revision；
+- 认知通道为 `SELF / DIRECT / VISUAL / AUDIBLE / ADMIN`；
+- `SELF/DIRECT` 在权威发布时按精确 actor/target 可靠路由；`VISUAL/AUDIBLE` 从独立
+  spatial ring 尾部取有界窗口且只允许 same-tick 投影；同 Tick 超预算只选最新窗口并计
+  管理员 coverage，积压、预算延迟和晚到声音 fail-closed；
+- `SELF` 只保留 bot 自身 actor；`VISUAL` 对 actor 逐个复核视距、视锥、已加载和遮挡，
+  两类投影删除未由对应通道证明的通用身份 delta；
+- break/place/toss 待复核候选在捕获时冻结 bot generation，内部 `routing.*` 只用于
+  投给原 generation，不得进入认知载荷；critical outcome ingress 与 P2 最大 canonical
+  吞吐对齐，成功 break 按 2 个发布单位计，其他终态按 1 个单位计；
+- 完全未感知的 scope 变化不触碰该 bot 的事实、认知水位或公开传感器预算，避免泄露
+  隐藏变化的发生时刻；已投影但结果不确定的变化或 TTL 才能令事实变为
+  `STALE_UNKNOWN`。authority coverage gap 只进入管理员私有诊断并快进内部 cursor。
+
+规范性边界见
+[ADR-0013](adr/0013-finite-perception-two-plane-world-model.md)；具体自动化覆盖与退出门
+缺口见 [P3 完成验收报告](P3_COMPLETION_REPORT_CN.md)。
+
 ### 7.2 语义事件结构
 
 ```java
 record SemanticEvent(
+    UUID sessionId,
     long eventSeq,
     UUID eventId,
     ResourceKey<Level> dimension,
@@ -864,6 +894,14 @@ record SemanticEvent(
     Set<String> tags
 ) {}
 ```
+
+上面是长期概念结构。当前候选将原始语义载荷放在有界 `SemanticEventDraft`，再由
+`SemanticEventBus` 包装为 `AuthorityEvent`；认知侧使用独立 `PerceptionProjection` 和
+`PerceivedEvent`。权威读取窗口的容量 gap 只进入管理员私有 coverage 诊断并快进内部
+cursor，不改变认知事件、事实、local perceived watermark、公开传感器预算或 AI-safe
+快照。`VISUAL/AUDIBLE` 候选位于独立 spatial projection ring，定向洪泛不会挤出；
+routed sound audit 位于另一独立审计 ring。声音与非声音认知也分别保留，再按共享 local
+`perceivedSeq` 提供有序视图。
 
 事件类型至少包含：
 
@@ -884,22 +922,23 @@ interface BotSensor {
     SensorId id();
     SensorSchedule schedule();
     SensorCost estimatedCost();
-    SensorResult sample(ServerBotContext context, PerceptionBudget budget);
+    SensorResult sample(SensorContext context, PerceptionBudget budget);
 }
 ```
 
 内置传感器：
 
-| 传感器 | 内容 | 默认频率 |
+| 传感器 | 当前 P3 候选内容 | 正常/降级/临界默认频率 |
 |---|---|---|
-| `SelfStateSensor` | 生命、饥饿、空气、火、状态、姿态、背包摘要 | 每 Tick/变化 |
-| `VisionRaySensor` | 注视方块/实体、视线遮挡、交互面 | 每 Tick |
-| `NearbyThreatSensor` | 近距离敌对实体、弹射物、爆炸、危险方块 | 2–5 Tick |
-| `LocalEntitySensor` | 局部实体类别、距离、速度、关系 | 5–10 Tick |
-| `LocalBlockSensor` | 任务相关方块、小范围空间占据 | 按预算 |
-| `Sound/EventSensor` | 聊天、伤害、方块和实体声音语义 | 事件驱动 |
-| `InventorySensor` | 数量、装备、工具、食物和空间 | 变化驱动 |
-| `TaskSensor` | 目标、进度、预留、最近失败 | 变化驱动 |
+| `SelfStateSensor` | 生命、饥饿、空气、火、水、状态、位置、速度与姿态 | `1 / 1 / 1` Tick |
+| `InventorySensor` | 原版背包槽位的有界物品摘要与 digest | `1 / 5 / 20` Tick |
+| `VisionRaySensor` | 注视方块/实体、遮挡与未加载边界 | `1 / 2 / 5` Tick |
+| `NearbyThreatSensor` | 已加载局部敌对/危险实体 | `3 / 5 / 5` Tick |
+| `LocalEntitySensor` | 已加载且有视线的局部实体摘要 | `5 / 10 / 暂停` |
+| `LocalBlockSensor` | 注视点、脚下半径 `0..2` 小邻域和事件焦点；仅实际支撑块免 LoS | `10 / 20 / 暂停` |
+| `SoundEventSensor` | 已投影给当前 bot 的定向声音事件 | `1 / 2 / 5` Tick |
+
+`TaskSensor` 是 P5/P7 目标，不属于当前 P3 候选。
 
 所有局部扫描都必须：
 
@@ -910,26 +949,51 @@ interface BotSensor {
 - 不强制加载区块；
 - TPS 压力下可降频。
 
+“不强制加载”是可测试不变量：视觉射线在第一个未加载区块边界停止并返回
+`UNKNOWN_UNLOADED`；方块/实体读取先检查已加载，不调用 `getChunk` 制造观察。实体枚举
+必须达到预算立即中止，不能先构造无界候选列表；实体索引每次原始回调扣
+`ENTITY_SCAN`，selector 匹配后才扣 `ENTITY_READ`，两者都计入全服工作池。含
+`BlockEntity` 的方块只输出 opaque 标记，不读取对象/内容。
+
 ### 7.4 不可变观察快照
 
 ```java
 record ObservationSnapshot(
+    UUID streamId,
     long snapshotId,
-    long worldRevision,
+    long perceivedWatermark,
     UUID botId,
     long botGeneration,
-    ResourceKey<Level> dimension,
+    String dimension,
     long gameTick,
-    SelfSnapshot self,
+    SelfObservation self,
+    InventoryObservation inventory,
+    VisionObservation vision,
     List<EntityObservation> entities,
+    List<ThreatObservation> threats,
     List<BlockObservation> blocks,
-    List<SemanticEventRef> recentEvents,
-    TaskSnapshot task,
+    List<PerceivedEvent> recentSounds,
+    List<PerceivedEvent> recentEvents,
+    List<ActivityHypothesis> activities,
     PerceptionLimits limits
 ) {}
 ```
 
 快照在服务器线程构造，随后可以安全地交给异步规划和 AI。DTO 不能包含 `Level`、`Entity`、`ItemStack`、`BlockEntity`、`Menu` 的活动引用；`ItemStack` 只能转成受限的不可变摘要。
+候选快照只暴露 generation-local cognitive stream/snapshot/perceived 水位、当前压力、
+本 bot 分类预算及哪些传感器被采样/截断；不暴露 authority session/seq、全局
+`worldRevision` 或全服预算计数。下游不能把截断快照描述成完整世界。
+
+SELF 状态必须在当前快照 Tick 成功采样，背包必须是一次完整 41 槽采样且成功时间不超过
+20 Tick；否则撤下最新快照。视觉异常返回 `Unavailable` 并且不能刷新成功时间，旧视觉
+超过新鲜度窗口后显式转为 `UNKNOWN_STALE`。实体读取预算进一步分给威胁、视觉和普通
+实体，威胁先采样；多 bot 的共享工作预算逐 Tick 轮转采样起点。
+`globalWorkPerTick` 最小为 64，保证 1/4、3/4 分池后公开池可原子读取 41 槽背包。
+
+定向声音候选按 `(botId, generation)` 分队列，单 generation 受动态公平份额约束；消费
+按 generation round-robin 并轮转起点，单队列保持封包顺序。历史声音 ring 在快照预算
+不足时先选最新事件，再按 local `perceivedSeq` 恢复时间顺序。该机制只定义有界公平
+策略，发布级多 bot 公平性仍需 soak 证明。
 
 ### 7.5 世界模型
 
@@ -940,7 +1004,8 @@ record WorldFact(
     UUID factId,
     FactKey key,
     FactValue value,
-    FactScope scope,
+    RevisionScope scope,
+    RevisionStamp revision,
     long firstObservedTick,
     long lastConfirmedTick,
     float confidence,
@@ -951,16 +1016,23 @@ record WorldFact(
 ) {}
 ```
 
-事实状态：`ACTIVE`、`STALE`、`SUPERSEDED`、`RETRACTED`、`UNVERIFIED`。
+事实状态：`ACTIVE`、`STALE`、`STALE_UNKNOWN`、`SUPERSEDED`、`RETRACTED`、
+`UNVERIFIED`。`ACTIVE` 表示该事实仍是 bot 在 TTL 内的当前认知，不保证隐藏世界没有
+变化；`STALE_UNKNOWN` 只表示已投影事件的结果不确定或 TTL 到期使旧认知不再可靠。
+完全未感知的变化和 authority coverage gap 都不会改变事实状态。
 
 示例：
 
 - “主基地入口在主世界 (120, 64, -30)”；
-- “东侧仓库的这个箱子用于存木材”；
+- “我看到东侧仓库坐标有一个箱子；内容未知”；
 - “玩家 Angelo 最近 20 秒正在建造石墙，置信度 0.86”；
 - “矿井入口可能被堵住，最后确认时间为两天前”。
 
 新事实和旧事实冲突时，保留两者和证据，把旧事实标为 superseded；不能悄悄覆盖历史。
+当前 P3 只保存运行时短期事实，不跨重启持久化；P7 才处理长期记忆、保留、删除与迁移。
+revision 在服务器内部使用维度和 target scope，事实失效优先比较精确 scope；全局内部
+计数不进入 AI-safe 快照。容器只保留 opaque 位置/方块事实和 scope 失效，不生成内容
+digest，不读取 `BlockEntity`、槽位或 menu 状态。
 
 ### 7.6 玩家活动理解
 
@@ -979,17 +1051,24 @@ record WorldFact(
 
 ```java
 record ActivityHypothesis(
-    UUID actor,
+    UUID actorId,
     ActivityType type,
     long startedTick,
     long lastEvidenceTick,
-    RegionRef region,
     float confidence,
+    ActivityConfidenceBand band,
     List<EvidenceRef> evidence
 ) {}
 ```
 
 只有达到阈值才使用肯定表达；低置信度应说“看起来可能在挖矿”，并允许玩家纠正。玩家纠正会成为标注事件，但不直接修改历史证据。
+
+当前 P3 候选只从已感知事件确定性推断，支持证据最完整的挖矿、建造、战斗、农耕和探索
+候选；枚举中存在合成/冶炼不代表已经接入容器/工作站事件。相同事件回放必须产生相同
+活动类型、置信区间和 generation-local `perceivedSeq`；证据不能反推出 authority 顺序。
+滑动窗口每 Tick 严格剔除过期事件；推断单次按 actor 聚合，候选只从窗口内事件产生并按
+新近证据优先，压力分级上限为 `NORMAL 64 / DEGRADED 16 / CRITICAL 4`；
+`use_on_block` 单独不足以证明建造，必须有 `BLOCK_PLACED` 等已验证专门事件。
 
 ---
 
@@ -1998,10 +2077,13 @@ docs/
 | client screen | `BotInventoryScreen` | bot 自身背包客户端 screen |
 | navigation | `NavigationService` | 路线请求与执行 |
 | navigation | `StuckDetector` | 卡住检测 |
-| perception | `PerceptionService` | 传感器编排 |
-| perception | `SemanticEventBus` | 权威/感知事件 |
-| worldmodel | `WorldModelService` | 事实更新和失效 |
-| worldmodel | `ActivityInferenceService` | 玩家活动推断 |
+| perception | `PerceptionService` | generation 绑定的传感器、事件投影、预算、快照与事实编排 |
+| perception | `AuthorityEventCollector` | 动作终态、NeoForge 候选与 post-state 验证 |
+| perception event | `SemanticEventBus` | 有界权威/认知双事件平面、序号与 gap |
+| perception sensor | `BotSensor` 与内置实现 | 主线程读取已加载世界并输出有界不可变 DTO |
+| worldmodel | `WorldRevisionTracker` | 全局、维度与 target scope revision |
+| worldmodel | `WorldModelService` | 短期事实来源、冲突、TTL 与认知侧失效 |
+| worldmodel | `ActivityInferenceService` | 基于感知事件的确定性玩家活动推断 |
 | goal | `GoalStack` | 目标优先级 |
 | goal | `TaskPlanner` | 计划 DAG |
 | goal | `PlanRepository` | 检查点与 revision |
@@ -2056,9 +2138,10 @@ interface PlayerLifecycleBridge {
 **当前实现**有 NeoForge `SERVER` 配置，以及不属于 TOML 的客户端本地 credential
 profile/binding store。P2 新增
 `actions.mailboxCapacity / ledgerCapacity / commandsPerTick / activeCapacity /
-completionCapacity` 与 `inventory.viewDistance`；准确默认值、范围和边界见
+completionCapacity` 与 `inventory.viewDistance`；P3 候选新增 `perception.*` 的范围、
+读取预算、事件/事实/revision 容量、活动窗口和 MSPT 滞回阈值。准确默认值、范围和边界见
 [CONFIGURATION_CN.md](CONFIGURATION_CN.md)。下面的 common/client 配置与其他 TOML
-示例仍是 P3–P10 逐步实现的**目标 schema**，当前加入这些目标键不会生效。
+示例仍是 P4–P10 逐步实现的**目标 schema**，当前加入这些目标键不会生效。
 
 建议文件：
 
@@ -2150,11 +2233,15 @@ botplayer.debug
 /botplayer list
 /botplayer remove <name>
 /botplayer settings <name>
+/botplayer perception inspect <name>
+/botplayer perception correct <bot> <actor> <activity>
 ```
 
 `/botplayer` 是永久 canonical root；`remove` 只卸载在线 bot，不删除 playerdata。
 `spawn/list/remove` 使用配置的原版权限等级；`settings` 不接受 Key、不要求 OP，只允许
-活动 bot 的精确持久 owner，OP 也不能绕过。
+活动 bot 的精确持久 owner，OP 也不能绕过。两个 P3 `perception` 子命令固定要求原版权限
+等级 2，不随可降低的生命周期命令配置降级；它们是有界管理诊断/纠正入口，不是 bot
+聊天能力。`correct` 只接受在线 actor 和固定活动枚举/`none`。
 下面是在同一 root 上逐阶段扩展的目标接口，当前不可用的子命令不能提前宣传：
 
 ```text
@@ -2315,7 +2402,7 @@ Screen 需要客户端请求操作，服务端仍须重新做 ACL、距离、生
 - [ ] 添加 dedicated server 启动 smoke test；
 - [x] 建立 GitHub Actions 编译与构件上传；
 - [x] 单元测试随 `clean build` 进入 CI；
-- [x] 把 `runGameTestServer` 加入 CI 配置；远端 Build #18 已绿色通过；
+- [x] 把 `runGameTestServer` 加入 CI 配置；P2 Build #18 与 P3 Build #28 均绿色通过；
 - [ ] 建立代码格式和依赖锁；Java 编译候选已启用 `-Xlint:all -Werror`；
 - [x] 添加 `THIRD_PARTY_NOTICES.md` 研究与发布审查基线；
 - [x] 添加架构决策目录 `docs/adr/`；
@@ -2470,30 +2557,41 @@ P2 根据调研拆成五个子阶段；详细理由与阶段门见
 
 任务清单：
 
-- [ ] AuthorityEvent 与 PerceivedEvent；
-- [ ] `SemanticEventBus` 和递增序号；
-- [ ] 自身、注视、威胁、附近实体、局部方块、声音、背包传感器；
-- [ ] 感知预算和 TPS 降级；
-- [ ] 不可变 `ObservationSnapshot`；
-- [ ] `WorldModelService`、事实来源和失效；
-- [ ] 世界 revision；
-- [ ] `ActivityInferenceService`；
-- [ ] 玩家纠正反馈；
-- [ ] 调试可视化/诊断命令；
-- [ ] 不强制加载区块的扫描约束。
+- [x] AuthorityEvent 与 PerceivedEvent；
+- [x] `SemanticEventBus`、运行时 session、递增序号与 gap；
+- [x] 自身、注视、威胁、附近实体、局部方块、声音、背包传感器；
+- [x] 权威投影与公开传感器分池预算；传感器侧每 bot/全局限额和 EWMA MSPT 降级；
+- [x] 有界不可变 `ObservationSnapshot`；
+- [x] `WorldModelService`、事实来源、冲突、TTL 与认知侧失效；
+- [x] 服务器内部维度/target scope revision；全局计数不进入 AI-safe 快照；
+- [x] 确定性 `ActivityInferenceService` 与证据化置信表达；
+- [x] 玩家纠正反馈事件；
+- [x] 有界管理诊断与纠正命令；
+- [x] 不强制加载区块的扫描约束；
+- [x] P3 不读取容器内容；P5A/P5B/P8 边界固定。
+
+以上生产代码/接口已通过 Build #28 自动化退出门；勾选不表示每个行为都有直接
+GameTest，也不覆盖客户端、独立专用服或 soak。验证状态以
+[P3 完成验收报告](P3_COMPLETION_REPORT_CN.md) 为准。
 
 测试：
 
-- [ ] 视线遮挡时看不到目标；
+- [x] 视线遮挡时看不到目标的 GameTest 来源；
 - [ ] 听觉范围内外事件不同；
-- [ ] 全服事件不会默认进入 bot 知识；
-- [ ] 方块/容器改变使旧事实 stale；
-- [ ] 挖矿、建造、战斗、农耕活动场景；
-- [ ] 低置信度使用不确定表达；
-- [ ] TPS 压力下降低非关键感知频率；L0 不受影响的集成验收放到 P4；
-- [ ] 同一回放产生确定活动推断。
+- [x] 定向声音只进入目标 bot generation 的 GameTest；
+- [x] 全服事件不会默认进入 bot 知识的 GameTest 来源；
+- [x] 已感知 committed 方块变化使旧事实 stale 的 GameTest；P3 不读取容器内容；
+- [x] 挖矿、建造、战斗、农耕 canonical evidence 纯单元测试来源；运行期行为场景仍可扩充；
+- [x] 低置信度使用不确定表达的单元测试来源；
+- [x] 严格滑动窗口、新近 actor 选择与 `use_on_block` 不证明 building 的单元测试来源；
+- [x] TPS 压力下降低非关键感知频率的单元测试来源；L0 不受影响的集成验收放到 P4；
+- [x] 同一回放产生确定活动推断的单元测试来源。
+- [x] generation 轮换新 stream 与超远焦点不强制加载区块的 GameTest 来源。
 
-验收：bot 可引用事件证据回答“刚才发生了什么/我在做什么”，且不会声称知道未感知事件。
+Build #28 已执行并通过当前纯 Java 测试与 8 个 P3 GameTest。未勾选项仍是直接运行期
+覆盖缺口；定向声音目标 generation 隔离已直接验证，但声音队列公平份额/round-robin
+没有直接运行期压力场景。验收：管理诊断可引用事件证据说明“刚才发生了什么/我在做
+什么”，且不会声称知道未感知事件；管理诊断命令本身不等于 P6 对话能力。
 
 ### P4：导航与安全反射
 
@@ -2786,13 +2884,13 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 ### 19.1 版本节点
 
 版本号表示开发序列，不单独证明能力已完成；具体成熟度必须同时查看实现状态、能力矩阵、
-测试和对应 Release 说明。`0.1.0-alpha.1` 是历史 P0/P1 内核快照；当前 P2 已通过本地
-自动化门，但尚未因此自动成为新的正式 Release。
+测试和对应 Release 说明。`0.1.0-alpha.N` 是历史 P0–P2 开发序列；当前开发标识为
+`0.2.0-alpha.1`；P3 Build #28 自动化退出门已通过，但尚未因此成为正式 Release。
 
 | 版本序列 | 阶段目标 | 用户可见含义 |
 |---|---|---|
-| `0.1.0-alpha.N`（当前） | P0–P2 开发 | 从内核快照逐步达到稳定真实玩家、基础动作和背包 |
-| `0.2.0-alpha` | P3–P5 | 感知、导航、第一条生存闭环 |
+| `0.1.0-alpha.N`（历史） | P0–P2 开发 | 从内核快照逐步达到稳定真实玩家、基础动作和背包 |
+| `0.2.0-alpha.N`（当前开发序列） | P3–P5 | 感知、导航、第一条生存闭环 |
 | `0.3.0-beta` | P6–P8 | DeepSeek、记忆、模组适配 |
 | `0.4.0-beta` | P9 | 多 bot 协作 |
 | `1.0.0` | P10 + 原版能力矩阵 | 所有 REQUIRED ID 已验证；仅明确 OUT_OF_SCOPE 可排除 |
@@ -2947,8 +3045,11 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 | [Fabric Carpet](https://github.com/gnembon/fabric-carpet) | `6f607be9f353f0244e1c0f2053f319b99affada6` | `ServerPlayer`、虚拟连接、ActionPack 思路 | 仅研究；复制前重新做许可证审查 |
 | [SiliconeDolls](https://github.com/Anvil-Dev/SiliconeDolls) | `439d9aae7665df99bfd4a742afc928d72aff0ae0` | NeoForge 假玩家生命周期思路 | 研究公开架构；未复制代码 |
 | [Mineflayer](https://github.com/PrismarineJS/mineflayer) | 2026-07-26 访问默认分支 | 能力分类、插件/技能边界 | 外部 Node 客户端代码不并入核心 |
+| [prismarine-world API](https://github.com/PrismarineJS/prismarine-world/blob/master/docs/API.md) | 2026-07-28 访问公开 API 文档 | 未知/未加载世界表达、有界增量读取 | 只借鉴语义；未复制 Node.js 源码 |
 | [Baritone](https://github.com/cabaletta/baritone) | 2026-07-26 访问默认分支 | 分层寻路、成本、动态重算 | 不把源码直接并入 MIT 核心，优先独立实现 |
 | [Voyager](https://github.com/MineDojo/Voyager) | 2026-07-26 访问论文与公开仓库 | 技能库、环境反馈、自验证 | 不执行模型生成脚本；复用前核对许可 |
+| [STEVE-1](https://arxiv.org/abs/2306.00937) | 2026-07-28 访问论文 | 时序观察对活动理解的价值 | 不引入模型权重、训练数据或源码 |
+| [W3C PROV-DM](https://www.w3.org/TR/prov-dm/) | 2026-07-28 访问公开规范 | 来源、证据和派生关系 | 只借鉴公开数据溯源概念 |
 | [Mindcraft](https://github.com/mindcraft-bots/mindcraft) | 2026-07-26 访问默认分支 | 多模型、对话、循环检测 | 不采用任意代码执行；复用前核对许可 |
 | [CraftAssist](https://github.com/facebookresearch/craftassist) | 2026-07-26 访问默认分支 | Dialogue/Task/Memory 分层 | 以 Java 独立实现 |
 | [Project Malmo](https://github.com/microsoft/malmo) / [MineDojo](https://github.com/MineDojo/MineDojo) | 2026-07-26 访问论文与公开仓库 | 观察—动作—成功条件和测试场景 | 用作测试设计，不作为运行时 |
@@ -3025,6 +3126,9 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 - ADR-0011：以 `ServerPlayer.die` TAIL 观察确认死亡，消除可取消事件的同优先级竞态。
 - ADR-0012：API Key 只在 owner 客户端本地保存；credential profile 可共享，但每 bot
   agentId 独立；服务端继续权威校验。ADR-0010 仍有效。
+- ADR-0013：P3 采用有限感知、权威/认知双事件平面、有界 DTO 与 scoped revision；
+  AI-safe 快照不暴露 authority/global counters；不强制加载区块，视觉/听觉仅同 Tick，
+  声音优先服从原版定向包，容器内容延期到 P5/P8。
 
 新增或变更 ADR 时包含：
 
@@ -3059,6 +3163,11 @@ P0 工程
 后一阶段演示当作前一阶段通过，也不能为了展示 AI 聊天而跳过玩家生命周期、动作校验或
 结果验证。当前 P2-A～P2-E 的严格编译、140/140 单元测试、连续两轮 19/19 GameTest 和
 干净构建已在本地通过，远端 GitHub Actions Build #18 也已全绿。
+
+P3 有限感知已完成双事件平面、传感器、预算、快照、scoped revision、短期事实、活动
+推断、纠正与管理诊断的代码接线；开发版本标识为 `0.2.0-alpha.1`。PR #4 的 Build #28
+使用 Temurin Java 21.0.11 通过严格编译、Gradle `test`、27/27 GameTest、clean build
+与 JAR upload，P3 自动化退出门已关闭。客户端、独立专用服和多 bot soak 仍未验证。
 
 P5B–P5D 是横向原版能力扩展轨：在各自依赖完成后可与 P6–P9 并行，但所有 REQUIRED
 能力必须在 P10 前完成，P10 不能承担首次功能开发。

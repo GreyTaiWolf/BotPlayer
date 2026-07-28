@@ -42,7 +42,9 @@ gradlew.bat --no-daemon clean build
 ```
 
 P2 已加入生命周期、移动、交互和库存 GameTest 类与 structure fixture；涉及
-Minecraft 行为的提交必须运行：
+Minecraft 行为的提交必须运行。Build #28 已运行并通过 P3 的 8 个场景，包括自身/背包、
+遮挡、权威隔离、generation、无强制加载、未提交 mutation 隔离、定向声音隔离与方块事实
+失效：
 
 ```bash
 ./gradlew --no-daemon runGameTestServer
@@ -63,7 +65,11 @@ src/main/java/io/github/greytaiwolf/botplayer/
   lifecycle/                     在线实例状态机、generation、动作/会话装配和管理器
   action/                        动作契约、FSM、mailbox/ledger/仲裁、输入与 Minecraft backend
   inventory/                     77 槽 menu、session、写锁与 mutation gate
-  gametest/                      P2 生命周期、移动、交互与库存 GameTest
+  perception/                    P3 预算、快照、事件收集/投影与 generation 编排
+    event/                       有界 AuthorityEvent/PerceivedEvent 双平面
+    sensor/                      只读已加载世界的有限传感器
+  worldmodel/                    scoped revision、短期事实与确定性活动推断
+  gametest/                      P2 回归与 P3 感知 NeoForge GameTest
   network/                       界面打开与 agentId 绑定 payload；永不传 Key
   client/
     BotPlayerClient.java         CLIENT 物理端装配本地 store 与 payload 实现
@@ -104,6 +110,13 @@ src/main/templates/
 12. 共用 credential profile 不得合并不同 bot 的 agentId 或状态；
 13. 客户端凭据落盘当前是明文与尽力文件权限，不得描述成加密或 keychain；
 14. 没有 Provider/HTTP 时不得把凭据 UI 描述成 DeepSeek 已接入。
+15. 全服 `AuthorityEvent` 不得自动成为任何 bot 的 `PerceivedEvent`；
+16. 传感器不得用 `getChunk` 或 ticket 为感知强制加载区块，未知不等于空气；
+17. P3 DTO、事件环、声音候选、事实、revision scope、扫描和证据都必须有硬上限；
+18. 完全未感知的变化不得触碰该 bot 的事实、认知水位或公开传感器预算；只有已投影但
+    结果不确定的事件或 TTL 才能令事实 `STALE_UNKNOWN`；authority coverage gap 也只能
+    进入管理员私有诊断并快进内部 cursor；
+19. P3 不读取 `BlockEntity` NBT/menu slot 获取容器内容；世界容器仍属于 P5A/P5B/P8。
 
 ## Roster 与客户端凭据检查
 
@@ -191,6 +204,62 @@ P2 候选中的普通世界变化必须经过：
 
 测试夹具、管理员恢复工具和迁移器可以有受限的直接写入，但必须与普通技能入口隔离并审计。
 
+## 当前 P3 感知层规则
+
+P3 的固定顺序是：
+
+```text
+P2 ActionOutcome / NeoForge 候选 / 定向声音包
+→ post-state 验证与 AuthorityEvent
+→ 维度/目标/距离/视线/预算投影
+→ (botId, generation) PerceivedEvent
+→ 有界不可变 ObservationSnapshot
+→ scoped revision 与短期 WorldFact
+→ 有证据、带置信度的 ActivityHypothesis
+```
+
+修改感知时至少检查：
+
+- `PerceivedEvent` 不嵌入完整 `AuthorityEvent` 或未授权 delta，只保留 opaque
+  `authorityEventId`；其 `perceivedSeq` 必须按 generation-local stream 递增；
+- 普通 authority audit、独立 spatial authority projection 与 routed sound audit 三环
+  共享唯一 `eventSeq`；声音审计不得进入空间投影环，`SELF/DIRECT` 洪泛不得挤出
+  `VISUAL/AUDIBLE` 候选；每 generation 的声音/非声音认知分环并共享 local
+  `perceivedSeq`，声音洪泛不得逐出普通语义证据；
+- AI-safe 快照不暴露 authority session/seq、全局 `worldRevision` 或全服预算计数；
+- `VISUAL/AUDIBLE` 只做 same-tick 投影；空间事件超预算时只选独立 spatial ring 的最新
+  有界窗口并计管理员 coverage，积压、预算延迟、gap 和晚到声音 fail-closed；
+- 动作终态 sink 同步、隔离失败且不重复发布 replay/alias；
+- 可取消事件在世界结果验证前不写 `COMMITTED`；
+- break/place/toss 待验证候选在捕获时冻结 bot generation；`routing.*` 只供内部
+  generation 定向，不得进入 `PerceivedEvent`；
+- critical action-outcome ingress 与 P2 最大 canonical 吞吐对齐；成功 break 按两个
+  发布单位计，其他终态按一个单位计；
+- 射线在未加载边界停止，方块/实体读取前检查已加载；
+- 实体索引每次原始回调先扣 `ENTITY_SCAN`，selector 匹配后再扣 `ENTITY_READ`，达到任一
+  上限立即中止，不能先构造无界候选 `List`；
+- 局部方块只有实际支撑块可免 LoS，其余邻域/焦点必须防 X-ray；
+- `BlockState.hasBlockEntity()` 只能输出 opaque 标记，不能调用 `getBlockEntity`；
+- 对已读取候选使用稳定排序；超出读取上限必须显式 `truncated`，不承诺密集场景的入选
+  子集完全独立于底层实体迭代顺序；
+- `NORMAL/DEGRADED/CRITICAL` 下自身关键观察仍有明确频率；
+- 权威扫描与公开传感器分池计费；快照只暴露公开传感器预算，未感知权威事件不能改变它；
+- `globalWorkPerTick` 不得低于 64，否则 3/4 公开池无法原子读取完整 41 槽背包；
+- 预算耗尽和未加载通过本 bot limits/截断暴露；权威环淘汰只在服务器内部 fail-closed；
+- 死亡、重生、换维度、卸载、回滚和停服关闭旧 generation；
+- 完全未感知的世界变化不触碰该 bot 的世界模型；已投影 `COMMITTED` 变化令 scope
+  `STALE`，已投影但结果不确定的变化或 TTL 才令事实 `STALE_UNKNOWN`；authority gap
+  不改变事实、认知水位或公开预算；
+- 诊断命令有界，不输出全服权威载荷、authority/global counters 或任意容器内容；
+- 容器事实只能是 opaque 位置/方块类型与失效，不得生成内容 digest。
+- 活动窗口每 Tick 严格剔除过期证据，推断单次按 actor 聚合并按窗口内新近证据优先；
+  actor 上限为 `NORMAL 64 / DEGRADED 16 / CRITICAL 4`，不得把 `use_on_block`
+  单独解释为 building。
+
+设计依据见
+[P3 调研设计](AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md) 和
+[ADR-0013](adr/0013-finite-perception-two-plane-world-model.md)。
+
 ## 测试层次
 
 | 测试 | 适合内容 |
@@ -204,9 +273,17 @@ P2 候选中的普通世界变化必须经过：
 | 手工客户端 | 玩家外观、Tab、动画、背包 Screen |
 | Soak/性能 | 多 bot、内存、MSPT、连接和任务泄漏 |
 
-当前 CI 运行 `clean build`、`runGameTestServer` 并上传 JAR；本地已取得 140/140 单测和
-连续两轮 19/19 GameTest，远端 Build #18 也已绿色通过。即使这些任务通过，也不证明
-客户端 screen、独立专用服或多 bot soak。
+当前 CI 运行 `clean build`、`runGameTestServer` 并上传 JAR。P2 基线由 Build #18
+验证；P3 提交 `38851d1791b84e73705b302be8438e441c3f26ff` 的
+[Build #28](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30394484181)
+使用 Temurin Java 21.0.11 执行 `./gradlew --no-daemon clean build runGameTestServer`，
+`compileJava`、`compileTestJava`、Gradle `test`、27/27 GameTest、clean build 与 JAR
+upload 全部通过，日志明确 `All 27 required tests passed`，P3 batch 为 8 tests。
+源码静态 `@Test` 计数是 P3 43、全仓 183，不是 CI 日志直接报告的通过数。日志中的
+GameTest 27/P3 batch 8 是实际运行结果。artifact 为 `botplayer-neoforge-1.21.1`
+（ID `8702261459`，`653364` bytes，SHA-256
+`90ddf753c58a3f81a4a5d407a6beafd30c08c208345b01dea51fd241156224ac`）。这些自动化结果
+不证明客户端 screen、独立专用服或多 bot soak。
 
 ## 每次提交前
 
@@ -260,7 +337,10 @@ git diff --check
 ## 关键资料
 
 - [NeoForge 1.21.1 Getting Started](https://docs.neoforged.net/docs/1.21.1/gettingstarted/)
+- [NeoForge 1.21.1 Events](https://docs.neoforged.net/docs/1.21.1/concepts/events)
 - [NeoForge 1.21.1 GameTest](https://docs.neoforged.net/docs/1.21.1/misc/gametest/)
+- [NeoForge 1.21.1 Debug Profiler](https://docs.neoforged.net/docs/1.21.1/misc/debugprofiler/)
 - [NeoForge 1.21.1 Configuration](https://docs.neoforged.net/docs/1.21.1/misc/config)
+- [P3 感知与世界模型调研设计](AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md)
 - [架构与路线图](ARCHITECTURE_AND_ROADMAP_CN.md)
 - [贡献规范](../CONTRIBUTING.md)
