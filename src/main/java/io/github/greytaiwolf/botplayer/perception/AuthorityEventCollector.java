@@ -376,7 +376,7 @@ public final class AuthorityEventCollector {
                 ServerLevel level =
                         server.getLevel(mutation.dimension());
                 if (level == null
-                        || !level.hasChunkAt(mutation.position())) {
+                        || !level.isLoaded(mutation.position())) {
                     continue;
                 }
                 switch (mutation.kind()) {

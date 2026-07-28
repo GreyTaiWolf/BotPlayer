@@ -108,7 +108,7 @@ public final class EventPerceptionProjector {
             SpatialPoint point,
             PerceptionBudget budget) {
         BlockPos target = BlockPos.containing(point.x(), point.y(), point.z());
-        if (!player.serverLevel().hasChunkAt(target)
+        if (!player.serverLevel().isLoaded(target)
                 || !budget.tryConsume(BudgetKind.RAYCAST)) {
             return false;
         }
@@ -193,7 +193,7 @@ public final class EventPerceptionProjector {
                 || entity.isRemoved()
                 || !generationMatches(entity, event)
                 || !player.serverLevel()
-                        .hasChunkAt(entity.blockPosition())) {
+                        .isLoaded(entity.blockPosition())) {
             return false;
         }
         Vec3 center = entity.getBoundingBox().getCenter();

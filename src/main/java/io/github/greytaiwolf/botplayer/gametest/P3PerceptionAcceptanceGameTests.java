@@ -427,7 +427,7 @@ public final class P3PerceptionAcceptanceGameTests {
                     .blockPosition()
                     .offset(4096, 0, 0);
             P2GameTestSupport.require(
-                    !helper.getLevel().hasChunkAt(farFocus),
+                    !helper.getLevel().isLoaded(farFocus),
                     "Far focus chunk unexpectedly started loaded");
             Vec3 unloadedStart = Vec3.atCenterOf(farFocus);
             Vec3 unloadedEnd =
@@ -444,8 +444,8 @@ public final class P3PerceptionAcceptanceGameTests {
                                     <= 1.0E-12D,
                     "Loaded-ray guard did not stop at the unloaded start chunk");
             P2GameTestSupport.require(
-                    !helper.getLevel().hasChunkAt(farFocus)
-                            && !helper.getLevel().hasChunkAt(
+                    !helper.getLevel().isLoaded(farFocus)
+                            && !helper.getLevel().isLoaded(
                                     BlockPos.containing(unloadedEnd)),
                     "Loaded-ray guard force-loaded an in-range chunk");
 
@@ -475,7 +475,7 @@ public final class P3PerceptionAcceptanceGameTests {
                             && blocks.truncated(),
                     "Out-of-range block focus was not rejected as truncated");
             P2GameTestSupport.require(
-                    !helper.getLevel().hasChunkAt(farFocus),
+                    !helper.getLevel().isLoaded(farFocus),
                     "Block focus sampling force-loaded a distant chunk");
             cleanup.run();
             helper.succeed();

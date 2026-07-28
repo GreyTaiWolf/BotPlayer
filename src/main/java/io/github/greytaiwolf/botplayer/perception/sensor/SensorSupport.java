@@ -195,9 +195,12 @@ public final class SensorSupport {
     }
 
     static Comparator<BlockPos> blockOrder() {
-        return Comparator.comparingInt(BlockPos::getX)
-                .thenComparingInt(BlockPos::getY)
-                .thenComparingInt(BlockPos::getZ);
+        return Comparator.comparingInt(
+                        (BlockPos position) -> position.getX())
+                .thenComparingInt(
+                        position -> position.getY())
+                .thenComparingInt(
+                        position -> position.getZ());
     }
 
     static boolean isWithinBuildHeight(
