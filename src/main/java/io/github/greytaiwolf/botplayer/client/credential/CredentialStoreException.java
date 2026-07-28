@@ -4,6 +4,8 @@ package io.github.greytaiwolf.botplayer.client.credential;
  * Reports a local credential-store failure without including credential material.
  */
 public final class CredentialStoreException extends Exception {
+    private static final long serialVersionUID = 1L;
+
     private final Reason reason;
 
     public CredentialStoreException(Reason reason) {

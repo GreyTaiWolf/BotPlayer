@@ -13,13 +13,17 @@ import org.jetbrains.annotations.NotNull;
  * An always-local connection that keeps vanilla's connected-player invariants without a remote client.
  */
 public final class BotConnection extends Connection {
+    private final BotConnectionTelemetry telemetry = new BotConnectionTelemetry();
+
     public BotConnection() {
         super(PacketFlow.SERVERBOUND);
         ((ConnectionAccessor) (Object) this).botplayer$setChannel(new EmbeddedChannel());
     }
 
     @Override
-    public void setReadOnly() {}
+    public void setReadOnly() {
+        telemetry.markReadOnly();
+    }
 
     @Override
     public void handleDisconnection() {}
@@ -32,9 +36,42 @@ public final class BotConnection extends Connection {
             @NotNull ProtocolInfo<T> protocolInfo, @NotNull T listener) {}
 
     public void markClosed() {
+        markClosed(BotConnectionCloseReason.EXPLICIT_CLOSE);
+    }
+
+    public void markClosed(BotConnectionCloseReason reason) {
+        telemetry.markClosed(reason);
         Channel currentChannel = channel();
         if (currentChannel != null && currentChannel.isOpen()) {
             currentChannel.close();
         }
+    }
+
+    public BotConnectionSnapshot snapshot() {
+        return telemetry.snapshot();
+    }
+
+    void recordDiscarded(String packetType) {
+        telemetry.recordDiscarded(packetType);
+    }
+
+    void recordRejected(String packetType) {
+        telemetry.recordRejected(packetType);
+    }
+
+    void recordSuccessfulCallback() {
+        telemetry.recordSuccessfulCallback();
+    }
+
+    void recordFailedCallback() {
+        telemetry.recordFailedCallback();
+    }
+
+    void recordKeepAliveAcknowledgement() {
+        telemetry.recordKeepAliveAcknowledgement();
+    }
+
+    void recordTeleportAcknowledgement() {
+        telemetry.recordTeleportAcknowledgement();
     }
 }

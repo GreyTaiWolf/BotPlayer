@@ -32,7 +32,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build
-        run: ./gradlew --no-daemon clean build
+        run: ./gradlew --no-daemon clean build runGameTestServer
 
       - name: Upload mod artifact
         uses: actions/upload-artifact@v4

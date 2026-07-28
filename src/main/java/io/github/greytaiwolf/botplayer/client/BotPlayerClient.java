@@ -3,9 +3,13 @@ package io.github.greytaiwolf.botplayer.client;
 import io.github.greytaiwolf.botplayer.BotPlayer;
 import io.github.greytaiwolf.botplayer.client.credential.ClientCredentialStore;
 import io.github.greytaiwolf.botplayer.client.credential.CredentialStoreException;
+import io.github.greytaiwolf.botplayer.client.screen.BotInventoryScreen;
+import io.github.greytaiwolf.botplayer.inventory.BotPlayerMenus;
 import java.nio.file.Path;
 import java.util.Optional;
 import net.neoforged.api.distmarker.Dist;
+import net.neoforged.bus.api.IEventBus;
+import net.neoforged.neoforge.client.event.RegisterMenuScreensEvent;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.loading.FMLPaths;
 
@@ -17,9 +21,15 @@ public final class BotPlayerClient {
     private static ClientCredentialStore credentialStore;
     private static boolean credentialStoreUnavailable;
 
-    public BotPlayerClient() {
+    public BotPlayerClient(IEventBus modBus) {
         initializeCredentialStore();
         ClientPayloadHandlers.install(new PhysicalClientPayloadHandler());
+        modBus.addListener(BotPlayerClient::registerMenuScreens);
+    }
+
+    private static void registerMenuScreens(RegisterMenuScreensEvent event) {
+        event.register(
+                BotPlayerMenus.BOT_INVENTORY.get(), BotInventoryScreen::new);
     }
 
     public static synchronized Optional<ClientCredentialStore> credentialStore() {
