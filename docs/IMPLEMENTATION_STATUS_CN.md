@@ -46,7 +46,7 @@ soak 必须分别报告。
 | P3 严格编译与单元测试 | 远端已验证 | Build #28 的 Temurin Java 21.0.11 编译与 Gradle `test` 通过；P3 43、全仓 183 是源码静态 `@Test` 计数 |
 | P3 NeoForge GameTest | 远端已验证 | Build #28 日志明确 `All 27 required tests passed`、P3 batch 8；`P3SoundTarget/Other` 与 `P3FactStale` 成功 |
 | P3 clean build / JAR | 远端已验证 | `BUILD SUCCESSFUL in 50s`，JAR upload 通过；artifact `botplayer-neoforge-1.21.1`，ID `8702261459`，`653364` bytes，SHA-256 `90ddf753c58a3f81a4a5d407a6beafd30c08c208345b01dea51fd241156224ac` |
-| 客户端 screen 手工测试 | 未验证 | 需要真实客户端核对布局、交互与多语言 |
+| 客户端 screen 手工测试 | 基础场景已验证 | 用户已在真实客户端确认 `176×256` 原版玩家风格视觉修复有效；多语言、资源包与全部 GUI Scale 组合仍未专项验证 |
 | 独立专用服务器 | 未验证 | 当前不宣称纯服务端或版本不一致兼容 |
 | 多 bot soak / 性能 | 未实现 | 没有长时间 MSPT、内存、队列与区块残留证据 |
 | 正式发布包 | 未实现 | 当前仍是未发布开发候选 |
@@ -171,7 +171,11 @@ P3 的生产路径已编码并通过 Build #28 自动化退出门；这表示提
 | 空主手、主手入口 | 已编码 | NeoForge `EntityInteract`；bot、副手和持物品不触发 |
 | 权威库存 | 已编码 | 直接绑定 bot 原版 41 格 `Inventory`，没有第二份服务端库存 |
 | 77 槽 menu | 已编码 | bot 41 槽 + viewer 36 槽；盔甲反向映射、副手和快捷栏明确 |
-| 客户端 screen / MenuType | 已编码，待手工验证 | 自定义 screen 与 `IMenuTypeExtension` 注册 |
+| 客户端 screen / MenuType | 已编码，用户已验证 | 自定义 screen 与 `IMenuTypeExtension` 注册；`176×256` 上下堆叠布局，上方 bot、下方 viewer |
+| 原版玩家视觉 | 已编码，用户已验证 | 上方按原版玩家背包排列盔甲、副手、主背包和快捷栏，并渲染真实 bot 的 3D 玩家模型 |
+| 合成区与快捷栏高亮 | 已编码，用户已验证 | 原版 2×2 合成区域被背景覆盖且没有 menu slot；服务端同步 bot 当前快捷栏索引并只读高亮 |
+| GUI 资源边界 | 已编码，未专项验证资源包 | 运行时引用 `inventory.png`、`generic_54.png` 与原版 HUD 选中框；未复制或打包 Mojang PNG，可跟随资源包替换 |
+| GUI Scale 边界 | 已编码，基础场景已验证 | 画布逻辑高度为 256；窗口或显示高度不足时需要降低游戏 GUI Scale，全部比例组合仍未专项验证 |
 | 会话 FSM | 已编码 | `OPENING → OPEN → CLOSING → CLOSED` |
 | generation/nonce token | 已编码 | 旧代际、错误 nonce 和关闭墓碑拒绝 |
 | 权限 | 已编码 | 持久 owner 或服务器 OP；trusted/observer 尚未实现 |
@@ -222,7 +226,7 @@ P3 的生产路径已编码并通过 Build #28 自动化退出门；这表示提
 | P2 `runGameTestServer` | 19/19，连续两轮通过 |
 | `clean build` / JAR | 通过，产出 `botplayer-0.1.0-alpha.2.jar` |
 | 推送后 GitHub Actions | 通过；[Build #18](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30352199722) |
-| 客户端 screen 手工测试 | 未验证 |
+| 客户端 screen 手工测试 | 本轮基础场景已验证 |
 | 独立专用服 | 未验证 |
 | 多 bot soak / 性能 | 未验证 |
 
@@ -247,7 +251,7 @@ screen、独立专用服和长时间 soak 是明确保留的专项验证，不�
 
 ## 下一道门
 
-1. 保留客户端 screen、独立专用服和 soak 的未验证标签；
+1. 补充客户端 screen 的多语言、资源包与全部 GUI Scale 组合专项验收；
 2. 补充隐藏变化 no-touch 的独立运行期场景；
 3. 继续证明保护模组、异常注入和高密度压力下的感知边界；
 4. 不把 Build #28 的自动化结果扩大成客户端、专用服或 soak 已验证；

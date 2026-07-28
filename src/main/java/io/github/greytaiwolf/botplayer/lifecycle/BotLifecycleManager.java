@@ -258,16 +258,18 @@ public final class BotLifecycleManager {
 
         OptionalInt menuId;
         try {
-            menuId = viewer.openMenu(new SimpleMenuProvider(
-                    (containerId, viewerInventory, player) ->
-                            new BotInventoryMenu(
-                                    containerId,
-                                    viewerInventory,
-                                    bot,
-                                    token,
-                                    inventorySessions),
-                    Component.translatable(
-                            "container.botplayer.inventory")));
+            menuId = viewer.openMenu(
+                    new SimpleMenuProvider(
+                            (containerId, viewerInventory, player) ->
+                                    new BotInventoryMenu(
+                                            containerId,
+                                            viewerInventory,
+                                            bot,
+                                            token,
+                                            inventorySessions),
+                            Component.translatable(
+                                    "container.botplayer.inventory")),
+                    extraData -> extraData.writeVarInt(bot.getId()));
         } catch (RuntimeException exception) {
             inventorySessions.failOpen(token);
             BotPlayer.LOGGER.error(

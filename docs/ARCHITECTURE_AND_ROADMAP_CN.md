@@ -748,7 +748,8 @@ bot + 打开容器 + carried stack + 合法消耗/产出
 
 ### 6.1 交互规则
 
-只参考旧 `FakeAiPlayer` 的背包交互概念，新项目在 1.21.1 重写：
+只参考旧 `FakeAiPlayer` 的背包交互概念和原版资源组合绘制思路，新项目在 1.21.1
+clean-room 重写；没有复制其代码或 PNG：
 
 - 真人玩家使用主手；
 - 主手必须为空；
@@ -766,7 +767,22 @@ bot + 打开容器 + carried stack + 合法消耗/产出
 - 死亡、重生、换维度、距离超限、退出和卸载强制关闭；
 - menu 真正关闭后才能恢复被暂停的技能。
 
-### 6.2 槽位布局
+### 6.2 客户端布局与资源边界
+
+- screen 固定为 `176×256`，上方组合原版 `inventory.png` 的玩家背包区域，下方组合
+  `generic_54.png` 的 viewer 物品栏区域；
+- 上方按原版玩家背包风格显示盔甲、副手、3D bot 模型、主背包和快捷栏；bot 当前选中
+  快捷栏由服务端同步，并使用原版 HUD 选中框只读高亮；
+- 原版 2×2 合成输入、箭头和结果区域由同一原版背景覆盖，menu 不创建任何合成槽，因此
+  既不显示假槽也不可交互；
+- 不在 `assets/botplayer` 复制或打包 Mojang PNG；screen 只在运行时引用 Minecraft
+  1.21.1 客户端现有 GUI/HUD 资源，因此替换相同资源的资源包能够接管外观；
+- 画布需要至少 256 个逻辑 GUI 像素的垂直空间；小窗口或过高 GUI Scale 下由用户降低
+  “界面尺寸”，本阶段不增加紧凑或左右并排布局；
+- 用户已在真实客户端确认本轮视觉修复有效；多语言、资源包与全部 GUI Scale 组合仍需
+  专项验收，自动化构建不替代这些扩展场景结论。
+
+### 6.3 槽位布局
 
 权威库存是 `BotServerPlayer#getInventory()` 的 41 格，不复制到临时容器：
 
@@ -811,7 +827,7 @@ bot + 打开容器 + carried stack + 合法消耗/产出
 - menu 关闭时，viewer 的 carried stack 通过原版归还/掉落语义处理，不能写进 bot 库存；
 - P2 用测试替身调用 `forceClose(DANGER)`；真正的 L0 危险触发在 P4 做集成验收。
 
-### 6.3 相关类
+### 6.4 相关类
 
 ```text
 inventory/
@@ -3041,7 +3057,7 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 
 | 项目/类型 | 固定 commit 或参考入口 | 可借鉴 | 代码处理 |
 |---|---|---|---|
-| [用户旧 FakeAiPlayer](https://github.com/GreyTaiWolf/FakeAiPlayer) | `b1a0597a21a26f054784b5d1284343aae28c59f9` | 仅空手右键背包的产品思路 | 不参考其他架构；未复制代码 |
+| [用户旧 FakeAiPlayer](https://github.com/GreyTaiWolf/FakeAiPlayer) | `b1a0597a21a26f054784b5d1284343aae28c59f9` | 空手右键交互、原版资源组合与背包绘制思路 | 不参考其他架构；未复制代码或 PNG |
 | [Fabric Carpet](https://github.com/gnembon/fabric-carpet) | `6f607be9f353f0244e1c0f2053f319b99affada6` | `ServerPlayer`、虚拟连接、ActionPack 思路 | 仅研究；复制前重新做许可证审查 |
 | [SiliconeDolls](https://github.com/Anvil-Dev/SiliconeDolls) | `439d9aae7665df99bfd4a742afc928d72aff0ae0` | NeoForge 假玩家生命周期思路 | 研究公开架构；未复制代码 |
 | [Mineflayer](https://github.com/PrismarineJS/mineflayer) | 2026-07-26 访问默认分支 | 能力分类、插件/技能边界 | 外部 Node 客户端代码不并入核心 |

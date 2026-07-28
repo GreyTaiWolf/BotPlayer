@@ -26,6 +26,7 @@ import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec2;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.network.registration.NetworkRegistry;
 
 final class P2GameTestSupport {
     static final String TEMPLATE = "empty_9x5x9";
@@ -85,6 +86,8 @@ final class P2GameTestSupport {
     static ServerPlayer spawnViewer(
             GameTestHelper helper, Vec3 relativePosition) {
         ServerPlayer viewer = helper.makeMockServerPlayerInLevel();
+        NetworkRegistry.configureMockConnection(
+                viewer.connection.getConnection());
         Vec3 position = helper.absoluteVec(relativePosition);
         viewer.setGameMode(GameType.SURVIVAL);
         viewer.getInventory().clearContent();

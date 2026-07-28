@@ -13,6 +13,7 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.DataSlot;
 import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
@@ -42,18 +43,22 @@ public final class BotInventoryMenu extends AbstractContainerMenu {
 
     @Nullable private final InventorySessionToken sessionToken;
     @Nullable private final BotInventorySessionManager sessionManager;
+    private final int botEntityId;
+    private final DataSlot selectedBotHotbar;
 
     public BotInventoryMenu(
             int containerId,
             Inventory viewerInventory,
-            RegistryFriendlyByteBuf ignored) {
+            RegistryFriendlyByteBuf extraData) {
         this(
                 containerId,
                 viewerInventory,
                 new SimpleContainer(BotInventoryLayout.BOT_INVENTORY_SIZE),
                 viewerInventory.player,
                 null,
-                null);
+                null,
+                extraData.readVarInt(),
+                DataSlot.standalone());
     }
 
     public BotInventoryMenu(
@@ -68,7 +73,9 @@ public final class BotInventoryMenu extends AbstractContainerMenu {
                 bot.getInventory(),
                 bot,
                 sessionToken,
-                sessionManager);
+                sessionManager,
+                bot.getId(),
+                selectedHotbarData(bot.getInventory()));
     }
 
     private BotInventoryMenu(
@@ -77,11 +84,15 @@ public final class BotInventoryMenu extends AbstractContainerMenu {
             Container botInventory,
             LivingEntity equipmentOwner,
             @Nullable InventorySessionToken sessionToken,
-            @Nullable BotInventorySessionManager sessionManager) {
+            @Nullable BotInventorySessionManager sessionManager,
+            int botEntityId,
+            DataSlot selectedBotHotbar) {
         super(BotPlayerMenus.BOT_INVENTORY.get(), containerId);
         checkContainerSize(botInventory, BotInventoryLayout.BOT_INVENTORY_SIZE);
         this.sessionToken = sessionToken;
         this.sessionManager = sessionManager;
+        this.botEntityId = botEntityId;
+        this.selectedBotHotbar = addDataSlot(selectedBotHotbar);
 
         for (int armorIndex = 0; armorIndex < ARMOR_SLOTS.length; armorIndex++) {
             EquipmentSlot equipmentSlot = ARMOR_SLOTS[armorIndex];
@@ -91,9 +102,9 @@ public final class BotInventoryMenu extends AbstractContainerMenu {
                     equipmentOwner,
                     equipmentSlot,
                     BotInventoryLayout.botInventoryIndex(armorIndex),
-                    BotInventoryLayout.BOT_EQUIPMENT_X
+                    BotInventoryLayout.BOT_EQUIPMENT_X,
+                    BotInventoryLayout.BOT_EQUIPMENT_Y
                             + armorIndex * BotInventoryLayout.SLOT_SPACING,
-                    BotInventoryLayout.BOT_EQUIPMENT_Y,
                     emptyIcon));
         }
 
@@ -102,7 +113,7 @@ public final class BotInventoryMenu extends AbstractContainerMenu {
                 equipmentOwner,
                 BotInventoryLayout.botInventoryIndex(BotInventoryLayout.BOT_OFFHAND_SLOT),
                 BotInventoryLayout.BOT_OFFHAND_X,
-                BotInventoryLayout.BOT_EQUIPMENT_Y));
+                BotInventoryLayout.BOT_OFFHAND_Y));
 
         for (int row = 0; row < 3; row++) {
             for (int column = 0; column < 9; column++) {
@@ -168,6 +179,14 @@ public final class BotInventoryMenu extends AbstractContainerMenu {
 
     public Optional<InventorySessionToken> sessionToken() {
         return Optional.ofNullable(sessionToken);
+    }
+
+    public int botEntityId() {
+        return botEntityId;
+    }
+
+    public int selectedBotHotbar() {
+        return clampHotbarSlot(selectedBotHotbar.get());
     }
 
     @Override
@@ -250,6 +269,24 @@ public final class BotInventoryMenu extends AbstractContainerMenu {
         }
         sessionManager.forceClose(
                 sessionToken, InventoryCloseReason.ITEM_CONSERVATION_FAILURE);
+    }
+
+    private static DataSlot selectedHotbarData(Inventory inventory) {
+        return new DataSlot() {
+            @Override
+            public int get() {
+                return clampHotbarSlot(inventory.selected);
+            }
+
+            @Override
+            public void set(int value) {
+                // Server authoritative: client data updates must not select a bot slot.
+            }
+        };
+    }
+
+    private static int clampHotbarSlot(int selected) {
+        return Math.max(0, Math.min(8, selected));
     }
 
     private static final class BotEquipmentSlot extends Slot {

@@ -1,75 +1,262 @@
 package io.github.greytaiwolf.botplayer.inventory;
 
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 class BotInventoryLayoutTest {
-   @Test
-   void rangesAreContiguousAndContainExactlySeventySevenSlots() {
-      Assertions.assertEquals(0, 0);
-      Assertions.assertEquals(4, 4);
-      Assertions.assertEquals(5, 5);
-      Assertions.assertEquals(32, 32);
-      Assertions.assertEquals(32, 32);
-      Assertions.assertEquals(41, 41);
-      Assertions.assertEquals(41, 41);
-      Assertions.assertEquals(68, 68);
-      Assertions.assertEquals(68, 68);
-      Assertions.assertEquals(77, 77);
-      Assertions.assertEquals(77, 77);
-   }
+    private static final int SLOT_SIZE = 16;
 
-   @Test
-   void botMenuMapsEveryRealInventoryIndexExactlyOnce() {
-      HashSet<Integer> var1 = new HashSet<>();
+    @Test
+    void rangesAreContiguousAndContainExactlySeventySevenSlots() {
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(0, BotInventoryLayout.BOT_ARMOR_START),
+                () -> Assertions.assertEquals(
+                        BotInventoryLayout.BOT_ARMOR_END,
+                        BotInventoryLayout.BOT_OFFHAND_SLOT),
+                () -> Assertions.assertEquals(
+                        BotInventoryLayout.BOT_OFFHAND_SLOT + 1,
+                        BotInventoryLayout.BOT_MAIN_START),
+                () -> Assertions.assertEquals(
+                        BotInventoryLayout.BOT_MAIN_END,
+                        BotInventoryLayout.BOT_HOTBAR_START),
+                () -> Assertions.assertEquals(
+                        BotInventoryLayout.BOT_HOTBAR_END,
+                        BotInventoryLayout.VIEWER_MAIN_START),
+                () -> Assertions.assertEquals(
+                        BotInventoryLayout.VIEWER_MAIN_END,
+                        BotInventoryLayout.VIEWER_HOTBAR_START),
+                () -> Assertions.assertEquals(
+                        BotInventoryLayout.VIEWER_HOTBAR_END,
+                        BotInventoryLayout.TOTAL_MENU_SLOTS),
+                () -> Assertions.assertEquals(
+                        41, BotInventoryLayout.BOT_INVENTORY_SIZE),
+                () -> Assertions.assertEquals(
+                        36, BotInventoryLayout.VIEWER_INVENTORY_SIZE),
+                () -> Assertions.assertEquals(
+                        77, BotInventoryLayout.TOTAL_MENU_SLOTS));
+    }
 
-      for (int var2 = 0; var2 < 41; var2++) {
-         var1.add(BotInventoryLayout.botInventoryIndex(var2));
-      }
+    @Test
+    void botMenuMapsEveryRealInventoryIndexExactlyOnce() {
+        HashSet<Integer> inventoryIndexes = new HashSet<>();
 
-      Assertions.assertEquals(41, var1.size());
+        for (int menuIndex = 0;
+                menuIndex < BotInventoryLayout.BOT_INVENTORY_SIZE;
+                menuIndex++) {
+            inventoryIndexes.add(
+                    BotInventoryLayout.botInventoryIndex(menuIndex));
+        }
 
-      for (int var3 = 0; var3 < 41; var3++) {
-         Assertions.assertEquals(true, var1.contains(var3));
-      }
+        Assertions.assertEquals(
+                BotInventoryLayout.BOT_INVENTORY_SIZE,
+                inventoryIndexes.size());
+        for (int inventoryIndex = 0;
+                inventoryIndex < BotInventoryLayout.BOT_INVENTORY_SIZE;
+                inventoryIndex++) {
+            Assertions.assertTrue(
+                    inventoryIndexes.contains(inventoryIndex),
+                    "Missing bot inventory index " + inventoryIndex);
+        }
 
-      Assertions.assertEquals(39, BotInventoryLayout.botInventoryIndex(0));
-      Assertions.assertEquals(36, BotInventoryLayout.botInventoryIndex(3));
-      Assertions.assertEquals(40, BotInventoryLayout.botInventoryIndex(4));
-      Assertions.assertEquals(9, BotInventoryLayout.botInventoryIndex(5));
-      Assertions.assertEquals(35, BotInventoryLayout.botInventoryIndex(31));
-      Assertions.assertEquals(0, BotInventoryLayout.botInventoryIndex(32));
-      Assertions.assertEquals(8, BotInventoryLayout.botInventoryIndex(40));
-   }
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(
+                        39, BotInventoryLayout.botInventoryIndex(0)),
+                () -> Assertions.assertEquals(
+                        36, BotInventoryLayout.botInventoryIndex(3)),
+                () -> Assertions.assertEquals(
+                        40, BotInventoryLayout.botInventoryIndex(4)),
+                () -> Assertions.assertEquals(
+                        9, BotInventoryLayout.botInventoryIndex(5)),
+                () -> Assertions.assertEquals(
+                        35, BotInventoryLayout.botInventoryIndex(31)),
+                () -> Assertions.assertEquals(
+                        0, BotInventoryLayout.botInventoryIndex(32)),
+                () -> Assertions.assertEquals(
+                        8, BotInventoryLayout.botInventoryIndex(40)));
+    }
 
-   @Test
-   void viewerMenuMapsEveryViewerInventoryIndexExactlyOnce() {
-      HashSet<Integer> var1 = new HashSet<>();
+    @Test
+    void viewerMenuMapsEveryViewerInventoryIndexExactlyOnce() {
+        HashSet<Integer> inventoryIndexes = new HashSet<>();
 
-      for (int var2 = 41; var2 < 77; var2++) {
-         var1.add(BotInventoryLayout.viewerInventoryIndex(var2));
-      }
+        for (int menuIndex = BotInventoryLayout.VIEWER_MAIN_START;
+                menuIndex < BotInventoryLayout.TOTAL_MENU_SLOTS;
+                menuIndex++) {
+            inventoryIndexes.add(
+                    BotInventoryLayout.viewerInventoryIndex(menuIndex));
+        }
 
-      Assertions.assertEquals(36, var1.size());
+        Assertions.assertEquals(
+                BotInventoryLayout.VIEWER_INVENTORY_SIZE,
+                inventoryIndexes.size());
+        for (int inventoryIndex = 0;
+                inventoryIndex < BotInventoryLayout.VIEWER_INVENTORY_SIZE;
+                inventoryIndex++) {
+            Assertions.assertTrue(
+                    inventoryIndexes.contains(inventoryIndex),
+                    "Missing viewer inventory index " + inventoryIndex);
+        }
+    }
 
-      for (int var3 = 0; var3 < 36; var3++) {
-         Assertions.assertEquals(true, var1.contains(var3));
-      }
-   }
+    @Test
+    void mappingRejectsTheOtherOwnerAndOutOfRangeSlots() {
+        Assertions.assertAll(
+                () -> Assertions.assertThrows(
+                        IndexOutOfBoundsException.class,
+                        () -> BotInventoryLayout.botInventoryIndex(-1)),
+                () -> Assertions.assertThrows(
+                        IndexOutOfBoundsException.class,
+                        () -> BotInventoryLayout.botInventoryIndex(
+                                BotInventoryLayout.BOT_INVENTORY_SIZE)),
+                () -> Assertions.assertThrows(
+                        IndexOutOfBoundsException.class,
+                        () -> BotInventoryLayout.viewerInventoryIndex(
+                                BotInventoryLayout.VIEWER_MAIN_START - 1)),
+                () -> Assertions.assertThrows(
+                        IndexOutOfBoundsException.class,
+                        () -> BotInventoryLayout.viewerInventoryIndex(
+                                BotInventoryLayout.TOTAL_MENU_SLOTS)));
+    }
 
-   @Test
-   void mappingRejectsTheOtherOwnerAndOutOfRangeSlots() {
-      Assertions.assertThrows(IndexOutOfBoundsException.class, () -> BotInventoryLayout.botInventoryIndex(-1));
-      Assertions.assertThrows(IndexOutOfBoundsException.class, () -> BotInventoryLayout.botInventoryIndex(41));
-      Assertions.assertThrows(IndexOutOfBoundsException.class, () -> BotInventoryLayout.viewerInventoryIndex(40));
-      Assertions.assertThrows(IndexOutOfBoundsException.class, () -> BotInventoryLayout.viewerInventoryIndex(77));
-   }
+    @Test
+    void coordinatesMatchTheVanillaPlayerInventoryArrangement() {
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(176, BotInventoryLayout.IMAGE_WIDTH),
+                () -> Assertions.assertEquals(256, BotInventoryLayout.IMAGE_HEIGHT),
+                () -> assertCoordinate(
+                        BotInventoryLayout.BOT_EQUIPMENT_X,
+                        BotInventoryLayout.BOT_EQUIPMENT_Y,
+                        8,
+                        8),
+                () -> assertCoordinate(
+                        BotInventoryLayout.BOT_EQUIPMENT_X,
+                        BotInventoryLayout.BOT_EQUIPMENT_Y
+                                + 3 * BotInventoryLayout.SLOT_SPACING,
+                        8,
+                        62),
+                () -> assertCoordinate(
+                        BotInventoryLayout.BOT_OFFHAND_X,
+                        BotInventoryLayout.BOT_OFFHAND_Y,
+                        77,
+                        62),
+                () -> assertCoordinate(
+                        BotInventoryLayout.BOT_MAIN_X,
+                        BotInventoryLayout.BOT_MAIN_Y,
+                        8,
+                        84),
+                () -> assertCoordinate(
+                        BotInventoryLayout.BOT_MAIN_X
+                                + 8 * BotInventoryLayout.SLOT_SPACING,
+                        BotInventoryLayout.BOT_MAIN_Y
+                                + 2 * BotInventoryLayout.SLOT_SPACING,
+                        152,
+                        120),
+                () -> assertCoordinate(
+                        BotInventoryLayout.BOT_HOTBAR_X,
+                        BotInventoryLayout.BOT_HOTBAR_Y,
+                        8,
+                        142),
+                () -> assertCoordinate(
+                        BotInventoryLayout.VIEWER_MAIN_X,
+                        BotInventoryLayout.VIEWER_MAIN_Y,
+                        8,
+                        174),
+                () -> assertCoordinate(
+                        BotInventoryLayout.VIEWER_HOTBAR_X
+                                + 8 * BotInventoryLayout.SLOT_SPACING,
+                        BotInventoryLayout.VIEWER_HOTBAR_Y,
+                        152,
+                        232));
+    }
 
-   @Test
-   void screenCoordinatesKeepBothInventoriesInsideTheFrame() {
-      Assertions.assertEquals(18, 18);
-      Assertions.assertEquals(80, 80);
-      Assertions.assertEquals(198, 198);
-   }
+    @Test
+    void allSeventySevenSlotsStayInsideTheScreenAndDoNotOverlap() {
+        List<SlotCoordinate> coordinates = allSlotCoordinates();
+
+        Assertions.assertEquals(
+                BotInventoryLayout.TOTAL_MENU_SLOTS, coordinates.size());
+        Assertions.assertEquals(
+                BotInventoryLayout.TOTAL_MENU_SLOTS,
+                new HashSet<>(coordinates).size(),
+                "Menu slots overlap");
+
+        for (int menuIndex = 0; menuIndex < coordinates.size(); menuIndex++) {
+            SlotCoordinate coordinate = coordinates.get(menuIndex);
+            Assertions.assertTrue(
+                    coordinate.x() >= 0
+                            && coordinate.x() + SLOT_SIZE
+                                    <= BotInventoryLayout.IMAGE_WIDTH,
+                    "Menu slot "
+                            + menuIndex
+                            + " exceeds the horizontal screen bounds at "
+                            + coordinate);
+            Assertions.assertTrue(
+                    coordinate.y() >= 0
+                            && coordinate.y() + SLOT_SIZE
+                                    <= BotInventoryLayout.IMAGE_HEIGHT,
+                    "Menu slot "
+                            + menuIndex
+                            + " exceeds the vertical screen bounds at "
+                            + coordinate);
+        }
+    }
+
+    private static List<SlotCoordinate> allSlotCoordinates() {
+        List<SlotCoordinate> coordinates =
+                new ArrayList<>(BotInventoryLayout.TOTAL_MENU_SLOTS);
+
+        for (int armorIndex = 0; armorIndex < 4; armorIndex++) {
+            coordinates.add(new SlotCoordinate(
+                    BotInventoryLayout.BOT_EQUIPMENT_X,
+                    BotInventoryLayout.BOT_EQUIPMENT_Y
+                            + armorIndex * BotInventoryLayout.SLOT_SPACING));
+        }
+        coordinates.add(new SlotCoordinate(
+                BotInventoryLayout.BOT_OFFHAND_X,
+                BotInventoryLayout.BOT_OFFHAND_Y));
+        addGrid(
+                coordinates,
+                BotInventoryLayout.BOT_MAIN_X,
+                BotInventoryLayout.BOT_MAIN_Y,
+                3);
+        addGrid(
+                coordinates,
+                BotInventoryLayout.BOT_HOTBAR_X,
+                BotInventoryLayout.BOT_HOTBAR_Y,
+                1);
+        addGrid(
+                coordinates,
+                BotInventoryLayout.VIEWER_MAIN_X,
+                BotInventoryLayout.VIEWER_MAIN_Y,
+                3);
+        addGrid(
+                coordinates,
+                BotInventoryLayout.VIEWER_HOTBAR_X,
+                BotInventoryLayout.VIEWER_HOTBAR_Y,
+                1);
+        return coordinates;
+    }
+
+    private static void addGrid(
+            List<SlotCoordinate> coordinates, int startX, int startY, int rows) {
+        for (int row = 0; row < rows; row++) {
+            for (int column = 0; column < 9; column++) {
+                coordinates.add(new SlotCoordinate(
+                        startX + column * BotInventoryLayout.SLOT_SPACING,
+                        startY + row * BotInventoryLayout.SLOT_SPACING));
+            }
+        }
+    }
+
+    private static void assertCoordinate(
+            int actualX, int actualY, int expectedX, int expectedY) {
+        Assertions.assertEquals(
+                new SlotCoordinate(expectedX, expectedY),
+                new SlotCoordinate(actualX, actualY));
+    }
+
+    private record SlotCoordinate(int x, int y) {}
 }

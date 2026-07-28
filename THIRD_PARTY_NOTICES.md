@@ -8,14 +8,16 @@ BotPlayer 当前分支没有复制或内嵌下列研究项目的源代码、资�
 数据集。这些项目仅用于理解公开行为、划分能力和设计测试场景。P3 的事件、传感器、预算、
 revision、事实与活动推断均为 clean-room Java 实现，本轮没有新增第三方运行时依赖。
 
-用户指定的旧 `FakeAiPlayer` 仓库只允许参考“空手右键打开 bot 背包”的产品交互；
-其他 AI 架构和实现不作为 BotPlayer 的代码来源。
+用户指定的旧 `FakeAiPlayer` 仓库只允许参考“空手右键打开 bot 背包”的产品交互，以及
+使用原版 GUI 资源组合玩家背包外观的绘制思路；其他 AI 架构和实现不作为 BotPlayer 的
+代码来源。BotPlayer 没有复制该仓库的代码或 PNG，也没有复制或打包 Mojang GUI PNG；
+界面只在运行时引用 Minecraft 客户端已有资源。
 
 ## 研究参考
 
 | 项目 | 固定 commit 或参考入口 | 本项目研究内容 | 当前代码处理 |
 |---|---|---|---|
-| [GreyTaiWolf/FakeAiPlayer](https://github.com/GreyTaiWolf/FakeAiPlayer) | `b1a0597a21a26f054784b5d1284343aae28c59f9` | 仅空手右键背包交互 | 未复制代码 |
+| [GreyTaiWolf/FakeAiPlayer](https://github.com/GreyTaiWolf/FakeAiPlayer) | `b1a0597a21a26f054784b5d1284343aae28c59f9` | 空手右键交互、原版资源组合与背包绘制思路 | 仅参考思路；未复制代码或 PNG |
 | [Fabric Carpet](https://github.com/gnembon/fabric-carpet) | `6f607be9f353f0244e1c0f2053f319b99affada6` | 服务端玩家与动作包思路 | 未复制代码 |
 | [SiliconeDolls](https://github.com/Anvil-Dev/SiliconeDolls) | `439d9aae7665df99bfd4a742afc928d72aff0ae0` | NeoForge 生命周期与驻留问题 | 未复制代码 |
 | [Mineflayer](https://github.com/PrismarineJS/mineflayer) | 2026-07-26 访问默认分支 | 能力分类、插件和任务边界 | Node.js 代码不进入核心 |

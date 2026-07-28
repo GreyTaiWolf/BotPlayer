@@ -13,9 +13,11 @@ import io.github.greytaiwolf.botplayer.gametest.P2GameTestSupport.TestBot;
 import io.github.greytaiwolf.botplayer.inventory.BotInventoryLayout;
 import io.github.greytaiwolf.botplayer.inventory.BotInventoryMenu;
 import io.github.greytaiwolf.botplayer.inventory.BotInventorySessionManager;
+import io.netty.buffer.Unpooled;
 import java.util.concurrent.CompletionStage;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.protocol.game.ServerboundInteractPacket;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
@@ -26,6 +28,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
+import net.neoforged.neoforge.network.connection.ConnectionType;
 
 /**
  * P2-D acceptance for the real 41-slot bot inventory and its single-viewer transaction.
@@ -57,6 +60,7 @@ public final class P2InventoryAcceptanceGameTests {
                     new Vec3(4.5D, 1.0D, 4.5D),
                     180.0F);
             trackBot(cleanup, bot);
+            bot.player().getInventory().selected = 6;
             viewer.setItemInHand(
                     InteractionHand.MAIN_HAND, ItemStack.EMPTY);
             viewer.setItemInHand(
@@ -78,6 +82,64 @@ public final class P2InventoryAcceptanceGameTests {
                     menu.slots.size()
                             == BotInventoryLayout.TOTAL_MENU_SLOTS,
                     "Opened bot menu did not expose 77 slots");
+            requireSlotPosition(menu, 0, 8, 8);
+            requireSlotPosition(menu, 3, 8, 62);
+            requireSlotPosition(menu, 4, 77, 62);
+            requireSlotPosition(menu, 5, 8, 84);
+            requireSlotPosition(menu, 31, 152, 120);
+            requireSlotPosition(menu, 32, 8, 142);
+            requireSlotPosition(menu, 40, 152, 142);
+            requireSlotPosition(menu, 41, 8, 174);
+            requireSlotPosition(menu, 67, 152, 210);
+            requireSlotPosition(menu, 68, 8, 232);
+            requireSlotPosition(menu, 76, 152, 232);
+            P2GameTestSupport.require(
+                    menu.botEntityId() == bot.player().getId(),
+                    "Opened bot menu did not expose the current bot entity ID");
+            P2GameTestSupport.require(
+                    menu.selectedBotHotbar() == 6,
+                    "Opened bot menu did not expose the selected bot hotbar slot");
+
+            bot.player().getInventory().selected = 99;
+            menu.broadcastChanges();
+            P2GameTestSupport.require(
+                    menu.selectedBotHotbar() == 8,
+                    "Bot hotbar synchronization did not clamp its upper bound");
+            bot.player().getInventory().selected = -3;
+            menu.broadcastChanges();
+            P2GameTestSupport.require(
+                    menu.selectedBotHotbar() == 0,
+                    "Bot hotbar synchronization did not clamp its lower bound");
+            bot.player().getInventory().selected = 6;
+
+            RegistryFriendlyByteBuf clientData = new RegistryFriendlyByteBuf(
+                    Unpooled.buffer(),
+                    viewer.registryAccess(),
+                    ConnectionType.NEOFORGE);
+            try {
+                clientData.writeVarInt(bot.player().getId());
+                BotInventoryMenu clientMenu = new BotInventoryMenu(
+                        menu.containerId,
+                        viewer.getInventory(),
+                        clientData);
+                P2GameTestSupport.require(
+                        clientMenu.botEntityId() == bot.player().getId(),
+                        "Client menu did not decode the bot entity ID");
+                clientMenu.setData(0, 6);
+                P2GameTestSupport.require(
+                        clientMenu.selectedBotHotbar() == 6,
+                        "Client menu did not accept the synchronized hotbar slot");
+                clientMenu.setData(0, 99);
+                P2GameTestSupport.require(
+                        clientMenu.selectedBotHotbar() == 8,
+                        "Client menu did not clamp the synchronized upper bound");
+                clientMenu.setData(0, -3);
+                P2GameTestSupport.require(
+                        clientMenu.selectedBotHotbar() == 0,
+                        "Client menu did not clamp the synchronized lower bound");
+            } finally {
+                clientData.release();
+            }
         } finally {
             cleanup.run();
         }
@@ -471,6 +533,27 @@ public final class P2InventoryAcceptanceGameTests {
                 viewer.serverLevel(),
                 position,
                 viewer.getYRot());
+    }
+
+    private static void requireSlotPosition(
+            BotInventoryMenu menu,
+            int menuIndex,
+            int expectedX,
+            int expectedY) {
+        P2GameTestSupport.require(
+                menu.slots.get(menuIndex).x == expectedX
+                        && menu.slots.get(menuIndex).y == expectedY,
+                "Menu slot "
+                        + menuIndex
+                        + " was at ("
+                        + menu.slots.get(menuIndex).x
+                        + ", "
+                        + menu.slots.get(menuIndex).y
+                        + ") instead of ("
+                        + expectedX
+                        + ", "
+                        + expectedY
+                        + ")");
     }
 
     private static int totalCount(
