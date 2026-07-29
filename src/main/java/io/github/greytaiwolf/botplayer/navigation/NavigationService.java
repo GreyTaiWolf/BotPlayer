@@ -325,7 +325,10 @@ public final class NavigationService implements AutoCloseable {
                     }
                 }
                 case FOLLOWING -> follow(session, player, currentTick);
-                case VERIFYING -> succeed(session, player, currentTick);
+                case VERIFYING -> recoverOrFail(
+                        session,
+                        currentTick,
+                        "路线节点已耗尽，但真实身体尚未满足目标");
                 case PLANNING, INTERACTING, RECOVERING -> {
                     // 等待有界 inbox 中的规划或动作结果。
                 }

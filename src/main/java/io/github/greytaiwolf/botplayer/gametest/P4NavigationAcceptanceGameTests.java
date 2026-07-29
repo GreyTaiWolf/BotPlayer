@@ -496,7 +496,7 @@ public final class P4NavigationAcceptanceGameTests {
         try {
             boolean[] observedWater = {false};
             BlockPos target =
-                    helper.absolutePos(new BlockPos(4, 1, 7));
+                    helper.absolutePos(new BlockPos(4, 1, 4));
             NavigationSubmission submission =
                     bot.manager().startNavigation(
                             bot.name(), GridPoint.from(target));
