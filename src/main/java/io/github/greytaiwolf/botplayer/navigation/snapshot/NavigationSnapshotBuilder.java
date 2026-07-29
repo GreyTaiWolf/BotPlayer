@@ -46,7 +46,8 @@ public final class NavigationSnapshotBuilder {
 
         GridPoint start = GridPoint.from(player.blockPosition());
         GridPoint frontier = localFrontier(start, goal.center());
-        int margin = settings.horizontalRadius();
+        int margin = Math.max(
+                4, settings.horizontalRadius() / 3);
         int minimumX = Math.min(start.x(), frontier.x()) - margin;
         int maximumX = Math.max(start.x(), frontier.x()) + margin;
         int minimumZ = Math.min(start.z(), frontier.z()) - margin;
@@ -115,7 +116,7 @@ public final class NavigationSnapshotBuilder {
                     "bot generation 或维度已经变化");
         }
         if (currentTick - cursor.startedTick()
-                >= settings.maximumSnapshotTicks()) {
+                > settings.maximumSnapshotTicks()) {
             cursor.cancel();
             return terminal(
                     SnapshotBuildProgress.Status.TIMED_OUT,
