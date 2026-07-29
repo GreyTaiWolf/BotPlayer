@@ -5,14 +5,16 @@
 BotPlayer 是面向 Minecraft Java 的真实服务端玩家 AI 框架。项目首先支持
 Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 
-> **当前状态：P2 与 P3 自动化退出门已通过；仍不是正式版本。**
+> **当前状态：P2、P3 与 P4 自动化退出门已通过；仍不是正式版本。**
 >
 > 当前代码已建立真实 `BotServerPlayer`、generation 隔离、确定性动作运行时、短程输入、
 > 基础世界交互和 bot 自身背包 GUI；P2 的 140 项单测与 19 项 GameTest 连续两轮全绿，
 > GitHub Actions 也已全绿。P3 新增有限感知、权威/认知事件、短期世界事实和玩家活动
-> 推断，并已由 Temurin Java 21.0.11 的 Build #28 通过完整自动化退出门。它还没有
-> 长距离寻路、技能闭环、通用世界容器、聊天、DeepSeek 或长期记忆。保存 Key 不代表 AI
-> 已经接通，P3 方块观察也不代表能读取箱子内容。请以
+> 推断。P4 新增已加载世界中的有界分段导航、真实输入路线跟随、每 Tick L0 安全反射、
+> 真实玩家伤害/效果兼容基线和默认关闭的受限 Terrain Assist；Build #97 已通过全仓
+> 55/55 GameTest，其中 P4 直接场景 28 个。它还没有完整生存技能、通用世界容器、聊天、
+> DeepSeek 或长期记忆。保存 Key 不代表 AI 已经接通，方块观察也不代表能读取箱子内容。
+> 请以
 > [当前实现状态](docs/IMPLEMENTATION_STATUS_CN.md) 为准，不要把路线图中的目标当成已完成。
 
 ## 设计目标
@@ -44,7 +46,7 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 | 开发版本 | `0.2.0-alpha.1` |
 | 发布状态 | 尚未发布，仅开发构件 |
 
-版本号是开发标识；P2 自动化验收通过不等于正式发布或完整 AI 玩家。
+版本号是开发标识；P2–P4 自动化验收通过不等于正式发布或完整 AI 玩家。
 
 ## 已经实现
 
@@ -98,20 +100,32 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
   actor 上限为 `NORMAL 64 / DEGRADED 16 / CRITICAL 4`，单独一次 `use_on_block`
   不会被猜成 building；
 - `/botplayer perception inspect|correct` 管理诊断入口；
+- 不可变已加载世界运动快照、有界分段 A*、真实玩家输入 follower、方块 revision
+  失效重算与有限 stuck 恢复；
+- 跳跃、木门、浅水、梯子基础路线，以及低生命/食物的长途请求拒绝和低食物停跑；
+- 每 Tick 有界 `SafetyFrame` 与 incident FSM；悬崖、燃烧、溺水、来袭箭、已点燃 TNT、
+  敌对目标等危险可关闭背包、挂起导航并抢占普通输入；
+- 原版僵尸目标与近战伤害、护甲减伤、饥饿/exhaustion、药水/效果/属性、动态
+  `DamageType` 和标准 NeoForge 玩家 Tick 对真实 Bot 身体生效；
+- 默认关闭的 Terrain Assist；只有请求 policy 与服务端配置同时允许时，才可在白名单、
+  工具、支撑、库存、保护事件和单次预算约束下挖掘短通道或搭建简单短桥；
+- `/botplayer navigation go|stop|inspect` 与 `/botplayer safety inspect` 管理入口；
 - P2 生命周期、移动、交互和库存 GameTest 来源；
 - `/botplayer spawn|remove|list`；
 - NeoForge server 配置；
 - GitHub Actions Java 21 构建与 GameTest 门禁配置。
 
-以上 P2/P3 项已通过自动化退出门。P2 完整证据见
-[P2 完成验收报告](docs/P2_COMPLETION_REPORT_CN.md)，P3 进展见
-[P3 完成验收报告](docs/P3_COMPLETION_REPORT_CN.md)。
+以上 P2–P4 项已通过自动化退出门。完整证据见
+[P2 完成验收报告](docs/P2_COMPLETION_REPORT_CN.md)、
+[P3 完成验收报告](docs/P3_COMPLETION_REPORT_CN.md)和
+[P4 完成验收报告](docs/P4_COMPLETION_REPORT_CN.md)。
 
 ## 尚未实现
 
 - 自动恢复、trusted/observer ACL 与完整数据迁移；
 - 背包 screen 的多语言、资源包与 GUI Scale 组合专项验收、独立专用服和多 bot 长时间 soak；
-- 长距离寻路、动态重规划、完整移动模式和安全反射；
+- 跨未加载区块/维度的长期路线、船/矿车/坐骑/鞘翅、复杂水流、脚手架和藤蔓；
+- 自动寻找与食用食物、主动用药/解毒、正式反击/持盾/装备选择等生存技能闭环；
 - 箱子/木桶/潜影盒等通用世界容器、工作站与制作/熔炼流程；
 - 独立专用服与多 bot 性能验证；
 - 持久世界模型、长期来源化记忆和自然语言“刚才发生了什么”对话；
@@ -155,7 +169,8 @@ gradlew.bat --no-daemon clean build
 ./gradlew runServer
 ```
 
-P2 已加入生命周期、移动、交互和库存 GameTest；P3 新增感知相关测试：
+P2 已加入生命周期、移动、交互和库存 GameTest；P3 新增感知测试；P4 新增导航、安全、
+饥饿、仇恨、伤害/效果兼容和 Terrain Assist 测试：
 
 ```bash
 ./gradlew --no-daemon runGameTestServer
@@ -178,6 +193,15 @@ P3 新增 43 个 `@Test` 方法、全仓 183 个；这是源码计数，不是 C
 ID 为 `8702261459`，大小 `653364` bytes，SHA-256
 `90ddf753c58a3f81a4a5d407a6beafd30c08c208345b01dea51fd241156224ac`。
 
+P4 提交 `9fec0388c36870248a204d7ff21b1b663b62bebf` 由
+[PR #5](https://github.com/GreyTaiWolf/BotPlayer/pull/5) 的
+[GitHub Actions Build #97](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30445259204)
+使用 Temurin Java 21.0.11 执行同一完整命令。严格编译、Gradle `test`、clean build、
+JAR upload 均通过；GameTest 日志明确报告 `All 55 required tests passed`，其中 P4
+直接场景为 28 个。当前源码静态计数为全仓 200 个 JUnit `@Test` 方法；该数字是源码计数，
+不是 CI 日志打印的执行数。构件 ID 为 `8721162398`，大小 `838883` bytes，SHA-256
+`b36a69f607e4f0e028e2afff15946a03bddd64004638c2d64d479c704706ddcd`。
+
 更完整的步骤见：
 
 - [安装与当前用法](docs/INSTALLATION_AND_USAGE_CN.md)
@@ -187,7 +211,8 @@ ID 为 `8702261459`，大小 `653364` bytes，SHA-256
 ## 当前命令
 
 `spawn`、`list`、`remove` 需要达到 `permissions.commandPermissionLevel`，默认是
-`2`。P3 `perception` 管理命令固定要求原版权限等级 `2`，不随该配置降级。
+`2`。P3 `perception` 与 P4 `navigation/safety` 管理命令固定要求原版权限等级 `2`，
+不随该配置降级。
 `settings` 不要求 OP 等级，但只能由 roster 中记录的精确 owner 对活动 bot 执行；OP
 也不能配置别人的 bot。
 
@@ -198,12 +223,18 @@ ID 为 `8702261459`，大小 `653364` bytes，SHA-256
 /botplayer settings <name>
 /botplayer perception inspect <name>
 /botplayer perception correct <bot> <actor> <activity>
+/botplayer navigation go <name> <x> <y> <z>
+/botplayer navigation stop <name>
+/botplayer navigation inspect <name>
+/botplayer safety inspect <name>
 ```
 
-`inspect` 有界显示活动 bot 的最新快照、置信活动/generation-local 证据序号和最近短期
-事实；`correct` 将对在线玩家 actor 的活动纠正追加为证据事件。允许的 activity 是
+感知 `inspect` 有界显示活动 bot 的最新快照、置信活动/generation-local 证据序号和最近
+短期事实；`correct` 将对在线玩家 actor 的活动纠正追加为证据事件。允许的 activity 是
 `idle|moving|exploring|mining|building|combat|farming|crafting|smelting|none`。这两个
-命令是管理诊断入口，不代表 bot 已能聊天或回答自然语言问题。
+命令是管理诊断入口，不代表 bot 已能聊天或回答自然语言问题。`navigation go` 只使用
+不挖掘、不搭桥的 `safeDefault()`；导航/安全 `inspect` 输出有界运行状态，不提供普通玩家
+任务或 AI 技能入口。
 
 名称必须是 1–16 位 ASCII 字母、数字或下划线。现阶段 UUID 由名称的小写形式派生：只改
 字母大小写仍得到同一临时 UUID，其他改名会得到新身份；当前没有重命名约束或迁移工具，
@@ -226,6 +257,7 @@ GUI 以完整原版玩家背包风格在上方展示 bot 的 41 格真实库存�
 - [P3 感知与世界模型调研设计](docs/AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md)
 - [P3 完成验收报告](docs/P3_COMPLETION_REPORT_CN.md)
 - [P4 导航与安全反射调研设计](docs/AI_PLAYER_RESEARCH_AND_P4_DESIGN_CN.md)
+- [P4 完成验收报告](docs/P4_COMPLETION_REPORT_CN.md)
 - [完整架构与 P0–P10 路线图](docs/ARCHITECTURE_AND_ROADMAP_CN.md)
 - [原版玩法能力矩阵与发布门槛](docs/VANILLA_CAPABILITY_MATRIX_CN.md)
 - [安装与当前用法](docs/INSTALLATION_AND_USAGE_CN.md)
@@ -276,8 +308,8 @@ P0 工程基线
 → P10 硬化与发布
 ```
 
-P2 与 P3 自动化退出门均已关闭。客户端手工、独立专用服和多 bot soak 仍未验证；通用
-世界容器分别延期到 P5A/P5B，模组自定义 menu 属于 P8。
+P2、P3 与 P4 自动化退出门均已关闭。客户端手工、独立专用服和多 bot soak 仍未验证；
+主动进食/用药/战斗与通用世界容器分别进入 P5，模组自定义 menu 和专用语义属于 P8。
 
 ## License
 

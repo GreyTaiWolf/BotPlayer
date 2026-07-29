@@ -50,7 +50,7 @@ rg -n '^#{1,4} ' docs/ARCHITECTURE_AND_ROADMAP_CN.md
 | Mixin 或映射敏感行为 | `mixin/`、`botplayer.mixins.json` | ADR、精确 descriptor、真人路径回归 |
 | 客户端 UI、本地凭据、网络 | `client/`、`network/` 及注册入口 | ADR-0012、SECURITY、配置/安装/开发文档、双端验证 |
 | AI Provider、对话、智能体状态 | 当前实现状态列出的 AI 包；目标边界见架构 §8、§11 | 不得把“保存 Key”写成“AI 已接通” |
-| 动作、背包、感知、技能、记忆 | 对应功能包；未建立时先读架构 §5–§12 | 能力矩阵、阶段门和测试证据 |
+| 动作、背包、感知、导航、安全、技能、记忆 | 对应功能包；未建立时先读架构 §5–§12 | 能力矩阵、阶段门和测试证据 |
 | 客户端文字 | `assets/botplayer/lang/zh_cn.json`、`en_us.json` | UI 不硬编码用户可见文本 |
 | 当前能力与缺口 | `docs/IMPLEMENTATION_STATUS_CN.md` | README、CHANGELOG |
 
@@ -72,6 +72,13 @@ rg -n '^#{1,4} ' docs/ARCHITECTURE_AND_ROADMAP_CN.md
   NBT 或传送来伪造完成。
 - Mixin 保持最小、版本精确且 `require = 1`。新增行为注入需先新增 ADR 和测试。
 - 所有队列、扫描、重试、请求、路径、上下文、时间和世界改动量必须有上限、取消与失败路径。
+- 导航只在主线程采样已加载世界并把不可变快照交给异步 planner；路线执行必须走 P2
+  输入/交互和真实玩家物理，不得传送或直接改位置/速度。
+- L0 安全每 Tick 使用权威玩家身体与有界近场，不能依赖降频感知；危险可抢占普通动作、
+  关闭菜单并挂起导航。
+- Bot 必须继承原版/NeoForge 伤害、护甲、饥饿、效果和属性链；不得复制数值或给予特殊免疫。
+- Terrain Assist 默认关闭，必须请求与服务端双门控，并通过 P2 动作、保护事件、结果复核
+  和单次预算；请求允许不代表强制修改世界。
 
 ## 客户端 API Key 边界
 

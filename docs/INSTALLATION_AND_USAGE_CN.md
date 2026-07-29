@@ -1,6 +1,6 @@
 # BotPlayer 安装与当前用法
 
-> 适用版本：`0.2.0-alpha.1` P3 Build #28 构件
+> 适用版本：`0.2.0-alpha.1` P4 Build #97 开发构件
 >
 > Minecraft：`1.21.1`
 >
@@ -8,7 +8,7 @@
 >
 > Java：`21`
 
-当前没有正式 Release。`0.2.0-alpha.1` 已通过 Java 21 自动化构建与 GameTest，但客户端
+当前没有正式 Release。`0.2.0-alpha.1` 已通过 Java 21 自动化构建与 55/55 GameTest，但客户端
 手工、独立专用服和多 bot soak 仍未验证；本文用于开发测试，不建议在重要世界中安装。
 
 ## 当前安装拓扑
@@ -74,8 +74,8 @@ build/libs/
 ## 当前命令
 
 `spawn`、`list`、`remove` 默认要求原版权限等级 `2`，可通过
-`permissions.commandPermissionLevel` 调整；P3 `perception` 管理命令固定要求等级
-`2`，不随该配置降级。`settings` 改为精确 owner 校验，不要求 OP。
+`permissions.commandPermissionLevel` 调整；P3 `perception` 与 P4 `navigation/safety`
+管理命令固定要求等级 `2`，不随该配置降级。`settings` 使用精确 owner 校验，不要求 OP。
 
 ### 生成
 
@@ -196,6 +196,37 @@ idle moving exploring mining building combat farming crafting smelting none
 纠正会作为新的 `PLAYER_CORRECTION` 证据事件追加，不删除历史事件。`none` 表示没有这些
 可识别活动。这个入口用于管理/测试，不是 owner 聊天接口，也不会修改玩家实际动作或世界。
 
+### P4 导航管理入口
+
+```text
+/botplayer navigation go <name> <x> <y> <z>
+/botplayer navigation stop <name>
+/botplayer navigation inspect <name>
+```
+
+三个命令固定要求原版权限等级 `2`。`go` 只接受当前维度的整数方块目标，并使用
+`NavigationPolicy.safeDefault()`：
+
+- 只读取已加载区块，未知区域不会被当成空气，也不会主动强制加载；
+- 通过短 look/move/jump/swim/climb/use 动作移动真实玩家身体；
+- 低生命/食物、错误维度、超距离、无路、预算、过载或 generation 变化会返回结构化失败；
+- 遇到 L0 危险会挂起，稳定安全后从真实位置重算；
+- 默认不会挖方块或搭桥。Terrain Assist 的显式请求 policy 当前只供服务 API/GameTest，
+  尚没有普通用户授权命令。
+
+`inspect` 输出 session 状态、路线节点、segment、replan、recovery、破坏/放置计数与安全
+摘要。它是管理诊断，不是聊天或长期任务入口。
+
+### P4 安全诊断
+
+```text
+/botplayer safety inspect <name>
+```
+
+固定要求权限等级 `2`。命令显示当前 incident，以及真实身体的生命/吸收、食物、空气、
+效果数量、近场威胁与最近伤害类型。L0 每 Tick 运行并可抢占普通输入；它能停止、后退、
+走向安全邻格、上浮和规避箭/TNT/敌对目标，但不会自动进食、主动用药、换甲、持盾或反击。
+
 ### 查看/编辑 bot 自身背包（P2）
 
 条件：
@@ -235,20 +266,26 @@ idle moving exploring mining building combat farming crafting smelting none
 - P2 具有 generation 隔离、确定性动作、短程输入、基础世界交互和 bot 自身背包；
 - P3 会生成有限、不可变的自身/背包/注视/局部实体/方块/声音快照，并以有证据的
   置信表达推断近期玩家活动；
+- P4 可以在已加载世界中进行有界分段导航、动态重算和基础门/跳跃/水域/梯子移动；
+- P4 L0 会观察真实生命、饥饿、空气、伤害/效果和近场威胁，并对悬崖、燃烧、溺水、
+  来袭箭、TNT 和锁定 Bot 的敌对生物做通用抢占/撤退；
+- 原版护甲、伤害、饥饿和状态效果，以及标准动态 `DamageType`/玩家 Tick 扩展，都会
+  作用在真实 `BotServerPlayer` 身体上；
 - owner 客户端可以在本地 GUI 创建/替换 credential profile，并为自己的多个 bot
   绑定/解绑；每个 bot 使用独立 agentId。
 
-这些仍是开发阶段行为。P3 的 [Build #28](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30394484181)
-使用 Temurin Java 21.0.11 完成严格编译、Gradle `test`、27/27 GameTest、clean build
-与 JAR upload，其中 P3 batch 为 8 tests。客户端手工、长时间在线、独立专用服、跨维度
-完整矩阵和多 bot soak 尚无保证。请不要据此假定保护模组、所有维度或大型模组包已经兼容。
+这些仍是开发阶段行为。P4 的 [Build #97](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30445259204)
+使用 Temurin Java 21.0.11 完成严格编译、Gradle `test`、55/55 GameTest、clean build
+与 JAR upload，其中 P4 直接场景为 28 个。客户端手工、长时间在线、独立专用服、跨维度
+完整矩阵和多 Bot soak 尚无保证。请不要据此假定保护模组、所有维度或大型模组包已经兼容。
 
 ## 当前不能做
 
 当前 bot 不会：
 
-- 通过用户命令、技能或 AI 自主选择并执行 P2 动作；
-- 跟随、长距离寻路、动态重规划或加载远方任务路线；
+- 通过普通玩家任务、技能或 AI 自主选择并执行 P2/P4 动作；
+- 强制加载远方区块、跨维度寻路或维护永久地图/地标；
+- 自动寻找和食用食物，主动使用药水/牛奶/模组解药，或完成正式战斗；
 - 执行砍树、采矿、制作、熔炼、完整战斗策略或建造技能；
 - 操作箱子、工作站或模组自定义 menu；
 - 聊天、连接 DeepSeek 或发起任何模型 HTTP 请求；
@@ -257,8 +294,8 @@ idle moving exploring mining building combat farming crafting smelting none
 - 保存长期目标、记忆或技能；
 - 自动理解其他模组。
 
-P2 只提供可信身体，P3 候选只增加有限运行时认知；以上高层功能仍必须按 P4–P10 实现
-和验证。P3 不读取箱子、工作站或模组 menu 内容。
+P2 提供可信身体，P3 提供有限运行时认知，P4 提供确定性导航与通用避险；以上技能和
+高层功能仍必须按 P5–P10 实现和验证。P3/P4 不读取箱子、工作站或模组 menu 内容。
 
 ## 卸载与备份
 

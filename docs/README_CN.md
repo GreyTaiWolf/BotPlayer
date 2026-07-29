@@ -12,6 +12,7 @@
 | 想理解整体设计 | [AI 玩家调研与 P2 重新基线](AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md) → [P3 感知调研设计](AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md) → [P4 导航与安全反射设计](AI_PLAYER_RESEARCH_AND_P4_DESIGN_CN.md) → [架构与 P0–P10 路线图](ARCHITECTURE_AND_ROADMAP_CN.md) |
 | 想核对 P2 验收 | [P2 完成验收报告](P2_COMPLETION_REPORT_CN.md) |
 | 想核对 P3 验收状态 | [P3 完成验收报告](P3_COMPLETION_REPORT_CN.md) |
+| 想核对 P4 验收状态 | [P4 完成验收报告](P4_COMPLETION_REPORT_CN.md) |
 | 想修改核心边界 | [架构决策记录](adr/README.md) → 总架构相关章节 |
 | 想报告安全问题 | [安全策略](../SECURITY.md) |
 
@@ -26,7 +27,8 @@
 | [P2_COMPLETION_REPORT_CN.md](P2_COMPLETION_REPORT_CN.md) | P2 已编码、已验证、未覆盖与最终命令/CI 证据 | 宣称完整 AI 玩家 |
 | [AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md](AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md) | P3 外部调研、权威/认知双平面、有限感知、revision 与容器边界 | 代替编译、GameTest 或 CI 证据 |
 | [P3_COMPLETION_REPORT_CN.md](P3_COMPLETION_REPORT_CN.md) | P3 自动化验收证据、已知限制与未验证边界 | 把自动化通过扩大成客户端、专用服或 soak 已验证 |
-| [AI_PLAYER_RESEARCH_AND_P4_DESIGN_CN.md](AI_PLAYER_RESEARCH_AND_P4_DESIGN_CN.md) | P4 调研、导航/L0、真实伤害/效果继承、模组兼容基线、预算与验收计划 | 宣称 P4 已编码、会主动使用药水、自动进食或正式战斗 |
+| [AI_PLAYER_RESEARCH_AND_P4_DESIGN_CN.md](AI_PLAYER_RESEARCH_AND_P4_DESIGN_CN.md) | P4 调研、导航/L0、真实伤害/效果继承、模组兼容基线、预算与验收计划 | 代替最终实现与 CI 证据 |
+| [P4_COMPLETION_REPORT_CN.md](P4_COMPLETION_REPORT_CN.md) | P4 已实现能力、直接 GameTest、CI 证据和保留边界 | 宣称会主动使用药水、自动进食、正式战斗或兼容所有模组 |
 | [ARCHITECTURE_AND_ROADMAP_CN.md](ARCHITECTURE_AND_ROADMAP_CN.md) | 最终设计、代码边界、P0–P10 任务与验收 | 宣称路线图已经实现 |
 | [VANILLA_CAPABILITY_MATRIX_CN.md](VANILLA_CAPABILITY_MATRIX_CN.md) | 原版玩法逐项能力、成熟度和发布门槛 | 模组专用兼容承诺 |
 | [INSTALLATION_AND_USAGE_CN.md](INSTALLATION_AND_USAGE_CN.md) | 当前开发构件的安装、命令和排错 | 正式版承诺 |
@@ -79,5 +81,7 @@
 11. 是否把凭据保存基础错误描述成 DeepSeek、聊天或 P6 已完成。
 12. 是否把全服权威事件错误写成 bot 已感知知识，或把未加载区域写成空气；
 13. 是否把 P3 方块观察错误描述成容器内容读取；世界容器仍属于 P5A/P5B/P8。
+14. 是否把 P4 的通用避险错误描述成自动进食、主动用药或完整战斗；
+15. Terrain Assist 是否仍保持请求与服务端双门控、默认关闭和动作后重规划。
 
 文档默认使用中文；代码符号、命令、路径、协议字段和错误码保留原文。

@@ -41,10 +41,8 @@ gradlew.bat --no-daemon clean build
 ./gradlew processResources
 ```
 
-P2 已加入生命周期、移动、交互和库存 GameTest 类与 structure fixture；涉及
-Minecraft 行为的提交必须运行。Build #28 已运行并通过 P3 的 8 个场景，包括自身/背包、
-遮挡、权威隔离、generation、无强制加载、未提交 mutation 隔离、定向声音隔离与方块事实
-失效：
+P2 已加入生命周期、移动、交互和库存 GameTest；P3 加入有限感知与世界事实场景；P4
+加入导航、安全、玩家规则兼容与 Terrain Assist 场景。涉及 Minecraft 行为的提交必须运行：
 
 ```bash
 ./gradlew --no-daemon runGameTestServer
@@ -68,8 +66,10 @@ src/main/java/io/github/greytaiwolf/botplayer/
   perception/                    P3 预算、快照、事件收集/投影与 generation 编排
     event/                       有界 AuthorityEvent/PerceivedEvent 双平面
     sensor/                      只读已加载世界的有限传感器
+  navigation/                    P4 请求/session、运动快照、A*、follower 与 Terrain Assist
+  safety/                        P4 每 Tick SafetyFrame、incident FSM、威胁探针与抢占
   worldmodel/                    scoped revision、短期事实与确定性活动推断
-  gametest/                      P2 回归与 P3 感知 NeoForge GameTest
+  gametest/                      P2–P4 NeoForge GameTest
   network/                       界面打开与 agentId 绑定 payload；永不传 Key
   client/
     BotPlayerClient.java         CLIENT 物理端装配本地 store 与 payload 实现
@@ -81,8 +81,12 @@ src/main/java/io/github/greytaiwolf/botplayer/
 
 src/main/resources/
   assets/botplayer/lang/         客户端文本
-  data/botplayer/structure/      P2 GameTest structure fixture
+  data/botplayer/structure/      GameTest structure fixture
   botplayer.mixins.json          Mixin 清单
+
+src/gameTestFixtures/
+  java/                          只参与 GameTest 的动态 DamageType/PlayerTick 兼容 fixture
+  resources/                     只参与 GameTest 的数据驱动伤害类型
 
 src/main/templates/
   META-INF/neoforge.mods.toml    构建时展开的模组元数据
@@ -117,6 +121,16 @@ src/main/templates/
     结果不确定的事件或 TTL 才能令事实 `STALE_UNKNOWN`；authority coverage gap 也只能
     进入管理员私有诊断并快进内部 cursor；
 19. P3 不读取 `BlockEntity` NBT/menu slot 获取容器内容；世界容器仍属于 P5A/P5B/P8。
+20. 导航搜索只读取服务器线程生成的不可变、已加载世界快照；异步 planner 不得持有
+    `Level`、`Entity`、`BlockState` 或其他活动 Minecraft 对象；
+21. 路线 follower 只通过有界 P2 输入动作驱动真实玩家物理，不得传送、直接改位置/速度
+    或跳过碰撞来伪造到达；
+22. L0 安全每 Tick 读取权威近场，不能依赖可能降频的 P3 快照；危险必须能够关闭菜单、
+    挂起导航并以 `SURVIVAL/EMERGENCY` 抢占普通输入；
+23. Bot 使用原版/NeoForge 玩家伤害、护甲、饥饿、效果和属性链；不得建立第二套数值、
+    特殊免疫或重复扣血；
+24. Terrain Assist 默认关闭，必须请求 policy 与服务器配置同时允许；所有破坏/放置
+    必须经过 P2 动作、保护事件、精确结果验证和单次预算，成功后重新采样和规划。
 
 ## Roster 与客户端凭据检查
 
@@ -260,6 +274,39 @@ P2 ActionOutcome / NeoForge 候选 / 定向声音包
 [P3 调研设计](AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md) 和
 [ADR-0013](adr/0013-finite-perception-two-plane-world-model.md)。
 
+## 当前 P4 导航与安全规则
+
+P4 主线程/异步边界是：
+
+```text
+主线程采样已加载世界
+→ 不可变 MotionSnapshot
+→ 有界 planner executor
+→ generation/revision 复核
+→ 短租约 P2 输入动作
+→ 真实玩家物理与结果验证
+```
+
+修改导航或安全时至少检查：
+
+- 未加载区块保持未知，不调用加载/ticket API，不把未知当空气；
+- planner 的节点、距离、队列、并发、结果 inbox、deadline 和取消全部有硬上限；
+- 终点必须以真实身体位置、速度和可站立面确认，不以“路线已算出”当作到达；
+- 方块 revision、动作后状态、偏航和 stuck 会使旧路线失效；恢复次数有限且失败码诚实；
+- L0 安全在任何 P3 压力档位继续每 Tick 运行，并只使用停止、后退/侧移、安全邻格、
+  上浮、闪避和远离威胁等 P4 动作；
+- 低生命/食物可以阻塞普通远行，低食物禁止 sprint；寻找/食用食物和主动用药仍属于 P5；
+- 伤害与效果观察以真实身体最终值为准，不通过固定原版枚举拒绝动态 `DamageType` 或
+  `MobEffect`；
+- Terrain Assist 的请求允许不是强制世界修改；存在纯移动路线时优先纯移动；
+- 破坏/放置白名单、工具、支撑、流体、方块实体、库存、远端锚点、保护事件和预算任一
+  不满足都要安全拒绝；
+- 死亡、重生、换维度、卸载、停服和 generation 变化关闭旧 session、incident 与动作。
+
+完整边界和证据见
+[P4 调研设计](AI_PLAYER_RESEARCH_AND_P4_DESIGN_CN.md)与
+[P4 完成验收报告](P4_COMPLETION_REPORT_CN.md)。
+
 ## 测试层次
 
 | 测试 | 适合内容 |
@@ -284,6 +331,15 @@ GameTest 27/P3 batch 8 是实际运行结果。artifact 为 `botplayer-neoforge-
 （ID `8702261459`，`653364` bytes，SHA-256
 `90ddf753c58a3f81a4a5d407a6beafd30c08c208345b01dea51fd241156224ac`）。这些自动化结果
 不证明客户端 screen、独立专用服或多 bot soak。
+
+P4 提交 `9fec0388c36870248a204d7ff21b1b663b62bebf` 的
+[Build #97](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30445259204) 使用同一
+Temurin Java 21.0.11 和完整命令通过严格编译、Gradle `test`、55/55 GameTest、clean
+build 与 JAR upload，日志明确 `All 55 required tests passed`，其中 P4 直接场景为 28 个。
+源码静态 `@Test` 计数为全仓 200，不是 CI 日志打印的执行数。artifact ID 为
+`8721162398`，大小 `838883` bytes，SHA-256
+`b36a69f607e4f0e028e2afff15946a03bddd64004638c2d64d479c704706ddcd`。
+客户端组合、独立专用服、保护模组矩阵和多 Bot soak 仍需专项验证。
 
 ## 每次提交前
 

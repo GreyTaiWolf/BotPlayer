@@ -1,10 +1,10 @@
 # BotPlayer 当前实现状态
 
-> 更新日期：2026-07-28
+> 更新日期：2026-07-29
 >
-> 验收载体：[PR #4](https://github.com/GreyTaiWolf/BotPlayer/pull/4)
+> 验收载体：[PR #5](https://github.com/GreyTaiWolf/BotPlayer/pull/5)
 >
-> 当前阶段：P2-A～P2-E 与 P3 自动化退出门已通过
+> 当前阶段：P2-A～P2-E、P3 与 P4 自动化退出门已通过
 >
 > 发布状态：尚未发布，不建议用于重要存档
 
@@ -14,14 +14,16 @@
 P2 最终验证结果见 [P2_COMPLETION_REPORT_CN.md](P2_COMPLETION_REPORT_CN.md)。P3 的设计
 依据与自动化验收、剩余缺口分别见
 [AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md](AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md) 和
-[P3_COMPLETION_REPORT_CN.md](P3_COMPLETION_REPORT_CN.md)。
+[P3_COMPLETION_REPORT_CN.md](P3_COMPLETION_REPORT_CN.md)。P4 的设计与最终实现边界见
+[AI_PLAYER_RESEARCH_AND_P4_DESIGN_CN.md](AI_PLAYER_RESEARCH_AND_P4_DESIGN_CN.md) 和
+[P4_COMPLETION_REPORT_CN.md](P4_COMPLETION_REPORT_CN.md)。
 
 ## 状态含义
 
 | 标记 | 含义 |
 |---|---|
 | 已编码 | 生产代码或测试来源存在，已做源码级核对；不自动表示构建或 GameTest 已通过 |
-| 已编码；Build #28 编译/测试通过 | 生产路径已编译，相关自动测试任务已通过；不自动表示逐项 GameTest 或手工验证 |
+| 已编码；Build #97 编译/测试通过 | 生产路径已编译，相关自动测试任务已通过；不自动表示逐项手工或兼容性验证 |
 | 本地已验证 | 对应严格编译、自动测试或构建已在当前分支实际通过 |
 | 远端已验证 | 对应严格编译、自动测试或构建已由可追溯 CI 运行通过 |
 | 待主线验证 | 已接入候选分支，最终本地命令或远端 CI 终态尚待回写 |
@@ -37,23 +39,26 @@ soak 必须分别报告。
 |---|---|---|
 | Minecraft 1.21.1 / NeoForge 21.1.244 / Java 21 | 已编码 | `gradle.properties`、Java toolchain |
 | ModDevGradle 2.0.142 / Gradle 9.2.1 | 已编码 | `build.gradle`、Wrapper |
-| 开发版本 `0.2.0-alpha.1` | 自动化构建已验证 | 尚未正式发布；Build #28 已上传验收构件 |
+| 开发版本 `0.2.0-alpha.1` | 自动化构建已验证 | 尚未正式发布；Build #97 已上传 P4 验收构件 |
 | 模组元数据和 Mixin 配置 | 已编码 | `neoforge.mods.toml` 模板、`botplayer.mixins.json` |
-| 严格 Java 编译 | 本地已验证 | `compileJava` / `compileTestJava` 在 `-Xlint:all -Werror` 下通过 |
-| 纯 Java 单元测试 | 本地已验证 | 140/140 通过，0 failed、0 skipped |
-| NeoForge GameTest | 本地已验证 | 同一持久世界连续两次 19/19 通过 |
-| GitHub Actions | 远端已验证 | Build #18 执行 `clean build runGameTestServer` 并上传 JAR |
+| P2 严格 Java 编译 | 本地与远端已验证 | `compileJava` / `compileTestJava` 在 `-Xlint:all -Werror` 下通过 |
+| P2 纯 Java 单元测试 | 本地与远端已验证 | 140/140 通过，0 failed、0 skipped |
+| P2 NeoForge GameTest | 本地与远端已验证 | 同一持久世界连续两次 19/19 通过；Build #18 通过 |
+| GitHub Actions | 远端已验证 | P2 Build #18、P3 Build #28 与 P4 Build #97 均执行完整门禁并上传 JAR |
 | P3 严格编译与单元测试 | 远端已验证 | Build #28 的 Temurin Java 21.0.11 编译与 Gradle `test` 通过；P3 43、全仓 183 是源码静态 `@Test` 计数 |
 | P3 NeoForge GameTest | 远端已验证 | Build #28 日志明确 `All 27 required tests passed`、P3 batch 8；`P3SoundTarget/Other` 与 `P3FactStale` 成功 |
 | P3 clean build / JAR | 远端已验证 | `BUILD SUCCESSFUL in 50s`，JAR upload 通过；artifact `botplayer-neoforge-1.21.1`，ID `8702261459`，`653364` bytes，SHA-256 `90ddf753c58a3f81a4a5d407a6beafd30c08c208345b01dea51fd241156224ac` |
+| P4 严格编译与单元测试 | 远端已验证 | Build #97 使用 Temurin Java 21.0.11；源码静态计数为全仓 200 个 JUnit `@Test` 方法 |
+| P4 NeoForge GameTest | 远端已验证 | Build #97 日志明确 `All 55 required tests passed`；P4 直接场景 28 个 |
+| P4 clean build / JAR | 远端已验证 | `BUILD SUCCESSFUL in 50s`；artifact ID `8721162398`，`838883` bytes，SHA-256 `b36a69f607e4f0e028e2afff15946a03bddd64004638c2d64d479c704706ddcd` |
 | 客户端 screen 手工测试 | 基础场景已验证 | 用户已在真实客户端确认 `176×256` 原版玩家风格视觉修复有效；多语言、资源包与全部 GUI Scale 组合仍未专项验证 |
 | 独立专用服务器 | 未验证 | 当前不宣称纯服务端或版本不一致兼容 |
 | 多 bot soak / 性能 | 未实现 | 没有长时间 MSPT、内存、队列与区块残留证据 |
 | 正式发布包 | 未实现 | 当前仍是未发布开发候选 |
 
-P2 与 P3 的完整数字、命令结果和 CI 链接分别见
+P2、P3 与 P4 的完整数字、命令结果和 CI 链接分别见
 [P2 完成报告](P2_COMPLETION_REPORT_CN.md) 与
-[P3 完成验收报告](P3_COMPLETION_REPORT_CN.md)。
+[P3 完成验收报告](P3_COMPLETION_REPORT_CN.md)、[P4 完成验收报告](P4_COMPLETION_REPORT_CN.md)。
 
 ## P3：有限感知、事件与世界模型
 
@@ -86,6 +91,35 @@ P2 与 P3 的完整数字、命令结果和 CI 链接分别见
 P3 的生产路径已编码并通过 Build #28 自动化退出门；这表示提交 `38851d1791b84e73705b302be8438e441c3f26ff`
 的编译、Gradle `test`、27 项 GameTest、clean build 和构件上传成功。它仍不表示每个
 行为都有直接 GameTest，或覆盖客户端手工、独立专用服、多 bot soak。
+
+## P4：导航、安全反射与玩家规则兼容
+
+| 能力 | 状态 | 证据或边界 |
+|---|---|---|
+| 导航契约与 session FSM | 已编码；Build #97 编译/测试通过 | goal/policy/deadline/generation 显式；终态、失败码和诊断计数有界 |
+| 不可变运动快照 | 已编码；Build #97 编译/测试通过 | 主线程分时读取已加载世界；未知区块不当成空气、不主动加 ticket |
+| 有界分段 A* | 已编码；Build #97 编译/测试通过 | 节点扩展、并发、队列、结果 inbox 和最大目标距离均有硬上限 |
+| 真实玩家 follower | 已验证基础场景 | 只经 P2 look/move/jump/swim/climb/use 动作；终点复核真实脚位，禁止传送 |
+| 动态重算 | 已验证基础场景 | 动态墙使旧路线失效并绕行；通用移动实体占位场景仍待扩展 |
+| 特殊移动 | 部分完成 | 一格跳跃、木门、浅水、梯子有直接 GameTest；脚手架、藤蔓、复杂水流、载具和鞘翅未完成 |
+| stuck 恢复 | 已编码 | 停止、重新对齐、重采样和重算次数有界；独立强制卡住 GameTest 仍待补 |
+| 资源门槛 | 已验证 | 低生命/食物拒绝普通远行，低食物停止 sprint，真实 sprint 触发原版 exhaustion |
+| L0 `SafetyFrame` | 已编码；Build #97 编译/测试通过 | 每 Tick 有界读取真实生命/吸收/护甲/食物/空气/环境/效果/伤害/威胁 |
+| 安全抢占 | 已验证基础场景 | 悬崖、燃烧、溺水、箭、TNT、敌对目标会挂起导航并抢占普通输入 |
+| 敌对仇恨与真实攻击 | 已验证 | 僵尸 `target == bot`、原版近战造成生命下降、L0 观察并撤退 |
+| 饥饿与伤害 | 已验证 | sprint exhaustion、临界食物停跑、Hard 难度零食物饥饿伤害 |
+| 原版伤害/护甲/效果 | 已验证基础场景 | 最终身体伤害、护甲减免、正负效果、属性变化和自然到期 |
+| 标准模组兼容基线 | 已验证 fixture | 动态 `botplayer:compatibility_probe` DamageType 与 `PlayerTickEvent.Post` 属性 Buff；fixture 不进正式 JAR |
+| generation 隔离 | 已验证 | 死亡使旧导航 `STALE_GENERATION`，新身体只产生新 generation 安全帧 |
+| Terrain Assist | 已验证、默认关闭 | 请求+服务端双门控；双格通道破坏、四格短桥、预算/库存守恒、服务端拒绝均有直接 GameTest |
+| P4 管理命令 | 已编码 | `navigation go/stop/inspect` 与 `safety inspect` 固定要求权限等级 2 |
+| P4 GameTest | 28/28 通过 | 全仓 55/55；完整清单见 P4 完成报告 |
+| 长距离/性能发布门 | 部分完成 | 滚动局部 frontier 已编码；平地 200 格直接 GameTest、多 Bot MSPT/内存 soak 尚未完成 |
+| 自主生存/战斗 | 未实现 | 不会找食物、主动吃药、换甲、持盾或反击；属于 P5A/P5C |
+
+P4 自动化门证明了“受控导航、安全反射和真实玩家规则底座”，不证明所有原版移动组合、
+所有伤害/效果或所有模组兼容，更不等于完整生存 AI。具体边界见
+[P4 完成验收报告](P4_COMPLETION_REPORT_CN.md)。
 
 ## 真实玩家内核
 
@@ -143,8 +177,8 @@ P3 的生产路径已编码并通过 Build #28 自动化退出门；这表示提
 | 一 Tick 一次 | 已编码 | 每绝对服务器 Tick 输入变更/应用有去重 |
 | 原版物理证据 | 已编码 | 位置、速度、姿态、碰撞、水中与跳跃因果 |
 | 移动 GameTest | 本地已验证 | 一格跳跃、静止蹲姿、浅水前移、撞墙、空中跳跃拒绝连续两轮通过 |
-| 长距离寻路 | 未实现 | A*、动态重算、stuck 恢复与安全成本属于 P4 |
-| 高级移动 | 未实现 | 梯子/脚手架/门、船、矿车、坐骑、鞘翅不在 P2 |
+| 长距离寻路 | 已编码，基础场景已验证 | P4 有界分段 A*、动态重算和 stuck 恢复已接线；200 格直接 GameTest 与跨未加载区域仍缺 |
+| 高级移动 | 部分完成 | P4 已验证梯子/门/浅水；脚手架、藤蔓、船、矿车、坐骑、鞘翅未完成 |
 
 ## P2-C：基础世界交互
 
@@ -197,10 +231,13 @@ P3 的生产路径已编码并通过 Build #28 自动化退出门；这表示提
 | `/botplayer settings <name>` | 已编码 | 只允许活动 bot 的持久 owner；不要求 OP，OP 也不能绕过凭据 owner |
 | `/botplayer perception inspect <name>` | 已编码；Build #28 编译/测试通过 | 固定要求原版权限等级 2；有界显示活动 bot 的快照、generation-local 活动证据序号和最近事实 |
 | `/botplayer perception correct <bot> <actor> <activity>` | 已编码；Build #28 编译/测试通过 | 固定要求原版权限等级 2；actor 必须在线，纠正作为新证据事件 |
+| `/botplayer navigation go <name> <x> <y> <z>` | 已编码；Build #97 编译/测试通过 | 固定要求等级 2；只使用 `safeDefault()`，不会开启挖掘或搭桥 |
+| `/botplayer navigation stop/inspect <name>` | 已编码；Build #97 编译/测试通过 | 取消活动导航或输出有界 session/重算/恢复/Terrain Assist 计数 |
+| `/botplayer safety inspect <name>` | 已编码；Build #97 编译/测试通过 | 输出当前 incident 与有界权威身体帧，不包含长期记忆 |
 | 空主手、主手右键 bot | 已编码，待客户端验收 | owner 或 OP 在范围内打开 bot 自身背包；不是世界容器自动化 |
 | 客户端 API Key 管理 | 已编码 | 创建/替换 profile、绑定/解绑；profile 删除未实现 |
 | 服务端 agent binding | 部分完成 | 只保存 botId↔agentId 运行时关系；owner 离线/卸载/停服时清除 |
-| 通过命令直接下动作 | 未实现 | 当前没有面向普通用户的动作调试命令或技能/AI 调用入口 |
+| 通过管理命令导航 | 已编码 | P4 提供 OP 诊断入口；不是普通玩家任务系统、技能或 AI 调用入口 |
 | 聊天与 DeepSeek | 未实现 | 没有 Provider、HTTP、对话、规划或工具调用 |
 
 ## 当前 server 配置
@@ -212,8 +249,11 @@ P3 的生产路径已编码并通过 Build #28 自动化退出门；这表示提
 - `inventory.viewDistance`：bot 自身背包查看/编辑距离；
 - `perception.*`：范围、彼此分离的权威投影与公开传感器预算（传感器侧含每 bot/全局
   限额）、事件/事实/revision 容量、活动窗口和 MSPT 降级/恢复阈值；
+- `navigation.*`：局部快照、A*、规划池、goal、follower、补给阈值，以及默认关闭的
+  Terrain Assist 服务端门和方块预算；
+- `safety.*`：生命/食物/空气/冻结阈值、威胁半径、实体读取预算、incident 稳定与干预上限；
 - `permissions.commandPermissionLevel`：`spawn/list/remove` 的原版权限等级；P3
-  `perception` 管理命令固定要求等级 2，不随该值降级。
+  `perception` 与 P4 `navigation/safety` 管理命令固定要求等级 2，不随该值降级。
 
 准确键、默认值、范围和建议见 [CONFIGURATION_CN.md](CONFIGURATION_CN.md)。
 
@@ -238,7 +278,7 @@ screen、独立专用服和长时间 soak 是明确保留的专项验证，不�
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | P3 | 感知、语义事件、世界模型、玩家活动理解 | 自动化退出门已通过；客户端、独立专用服与 soak 未验证 |
-| P4 | 导航、安全反射、动态重规划 | 未实现 |
+| P4 | 导航、安全反射、动态重规划、玩家规则兼容 | 自动化退出门已通过；复杂移动、专用服、保护模组与 soak 未验证 |
 | P5A | 技能 FSM、首条生存闭环、最小原版世界容器驱动 | 未实现 |
 | P5B | 广泛原版容器/工作站、制作、生产和日常生活 | 未实现 |
 | P5C | 运输、游戏进程和高级战斗 | 未实现 |
@@ -251,11 +291,11 @@ screen、独立专用服和长时间 soak 是明确保留的专项验证，不�
 
 ## 下一道门
 
-1. 补充客户端 screen 的多语言、资源包与全部 GUI Scale 组合专项验收；
-2. 补充隐藏变化 no-touch 的独立运行期场景；
-3. 继续证明保护模组、异常注入和高密度压力下的感知边界；
-4. 不把 Build #28 的自动化结果扩大成客户端、专用服或 soak 已验证；
-5. 在 P4 之前不把 P2 短程输入宣传成长距离导航；
+1. P5A 建立技能 FSM、最小容器驱动和首条“补给—采集—制作—存放”闭环；
+2. 补 P4 保留的 200 格、实体阻挡、stuck、熔岩/窒息/冰冻与喷溅药水专项场景；
+3. 在保护/领地模组上验证 Terrain Assist 拒绝后不重试、不伪装成功；
+4. 继续保留客户端、独立专用服与多 Bot soak 的未验证边界；
+5. 在 P5 之前不把 P4 通用避险宣传成会吃饭、会用药或会战斗；
 6. 在 P5 之前不把 P3 方块观察宣传成容器内容读取；
 7. 在 P6 之前不把客户端凭据宣传成 DeepSeek 已接通。
 

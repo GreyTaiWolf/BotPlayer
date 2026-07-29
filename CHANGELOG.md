@@ -44,6 +44,16 @@
   `/botplayer perception correct <bot> <actor> <activity>` 管理诊断/纠正入口；
 - 开发版本进入 `0.2.0-alpha.1` P3 候选；Build #28 自动化退出门已通过并上传构件，但
   尚未正式发布。
+- 新增 P4 导航请求/session、不可变已加载世界运动快照、有界分段 A*、真实输入 follower、
+  动态 revision 重算、有限 stuck 恢复，以及 `navigation go/stop/inspect` 管理入口；
+- 新增每 Tick L0 `SafetyFrame` 与 incident FSM，可对悬崖、燃烧、低空气、弹射物、TNT、
+  敌对目标、低生命/食物、伤害和有害效果关闭菜单、挂起导航并抢占普通输入；
+- 新增真实玩家规则兼容基线：僵尸原版仇恨与近战、护甲减伤、饥饿/exhaustion、效果与
+  属性、动态 `DamageType` 和 NeoForge `PlayerTickEvent` 均落在真实 Bot 身体；
+- 新增默认关闭的 Terrain Assist；请求/服务端双门控后，仅允许受白名单、工具、支撑、
+  库存、保护事件、精确结果和单次预算约束的短通道挖掘与简单短桥；
+- 新增 `/botplayer safety inspect <name>` 与 P4 完成验收报告；Build #97 已通过全仓
+  55/55 GameTest，其中 P4 直接场景 28 个，但尚未正式发布。
 
 ### 加固
 
@@ -100,6 +110,14 @@
   分别延期到 P5A/P5B，模组自定义 menu 属于 P8。
 - 成功 `UseOnBlock` 不再被猜测成 `CONTAINER_CHANGED` 或推进容器 revision；真正容器
   内容变化事件与验证留到 P5。
+- P4 planner 只读取主线程生成的不可变快照；未知/未加载区块不视为空气且不强制加载；
+  所有搜索、队列、并发、结果、恢复和世界修改量均有硬上限；
+- 路线 follower 只签发短租约 P2 动作并以真实身体终态判定到达；禁止传送、直接改速度
+  或在路径计算完成时伪造成功；
+- 导航、安全、动作和菜单全部绑定 generation；死亡、重生、换维度、卸载和停服会关闭
+  旧代际状态；
+- P4 不建立第二套生命、饥饿、护甲、效果或伤害系统，也不为未知模组伤害/效果给予免疫；
+  主动进食、用药、反击、持盾与装备选择明确留给 P5/P8。
 
 ### 配置
 
@@ -118,6 +136,10 @@
 - `permissions.commandPermissionLevel` 继续控制 `spawn/list/remove`；P3
   `perception inspect/correct` 为避免配置降到 `0` 后泄露 bot 局部知识，固定要求原版
   权限等级 `2`。
+- 新增 `safety.*` 每 Tick 探针、阈值、扫描、incident 和稳定恢复配置；
+- 新增 `navigation.*` 快照、搜索、队列、follower、重算、stuck、补给和 Terrain Assist
+  配置；Terrain Assist 默认关闭，单次默认最多破坏/放置各 4 格，策略硬上限为 8；
+- P4 `navigation/safety` 管理命令固定要求原版权限等级 `2`，不随普通命令权限降低。
 
 ### 安全
 
@@ -159,6 +181,16 @@
   JAR upload 全部通过，日志明确 `All 27 required tests passed`，P3 batch 为 8 tests；
   artifact 为 `botplayer-neoforge-1.21.1`（ID `8702261459`，`653364` bytes，SHA-256
   `90ddf753c58a3f81a4a5d407a6beafd30c08c208345b01dea51fd241156224ac`）。
+- 新增导航状态/成本/快照/A*、安全 incident、危险分类、补给门控和 Terrain Assist policy
+  的纯 Java 测试；当前源码静态 `@Test` 计数为全仓 200；
+- 新增 28 个 P4 NeoForge GameTest，直接覆盖真实输入导航、动态墙、门/跳跃/水/梯子、
+  无路/补给、挖掘/短桥、悬崖/火/低空气/箭/TNT、僵尸仇恨与伤害、护甲/效果/属性、
+  饥饿、动态伤害类型、玩家 Tick 以及死亡重生 generation 隔离；
+- [PR #5](https://github.com/GreyTaiWolf/BotPlayer/pull/5) 的
+  [Build #97](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30445259204) 在提交
+  `9fec0388c36870248a204d7ff21b1b663b62bebf` 使用 Temurin Java 21.0.11 执行完整
+  `clean build runGameTestServer`；严格编译、Gradle `test`、55/55 GameTest、clean
+  build 与 JAR upload 全部通过。
 
 ### 文档
 
@@ -184,6 +216,8 @@
   认知双平面、有界 DTO、定向声音、无强制区块加载、scoped revision 与容器延期边界；
 - 同步 README、实现状态、能力矩阵、配置、安装用法、开发指南、路线图和第三方研究边界；
   回写 Build #28 结果，并保留客户端、独立专用服和 soak 缺口。
+- 新增 P4 导航与安全反射调研设计、P4 完成验收报告，并同步 README、实现状态、能力矩阵、
+  配置、安装用法、开发指南、路线图和代理指南；准确记录自动化证据与 P5/P8 保留边界。
 
 ## 0.1.0-alpha.1 — 开发基线（2026-07-26，尚未正式发布）
 
