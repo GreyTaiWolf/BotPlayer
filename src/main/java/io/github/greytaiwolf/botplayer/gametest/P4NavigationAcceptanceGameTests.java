@@ -365,6 +365,45 @@ public final class P4NavigationAcceptanceGameTests {
             template = P2GameTestSupport.TEMPLATE,
             batch = BATCH,
             timeoutTicks = TIMEOUT_TICKS)
+    public static void lowSupplyRejectsDistantTravelBeforePlanning(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4Supply",
+                new Vec3(4.5D, 1.0D, 4.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        try {
+            bot.player().getFoodData().setFoodLevel(4);
+            NavigationSubmission submission =
+                    bot.manager().startNavigation(
+                            bot.name(),
+                            GridPoint.from(helper.absolutePos(
+                                    new BlockPos(4, 1, 20))));
+            P2GameTestSupport.require(
+                    submission.status()
+                            == NavigationSubmission.Status.SUPPLY_REQUIRED,
+                    "P4 low-supply travel was not rejected before planning: "
+                            + submission.status());
+            P2GameTestSupport.require(
+                    bot.manager()
+                            .navigationSession(bot.name())
+                            .isEmpty(),
+                    "Rejected low-supply travel created a navigation session");
+            cleanup.run();
+            helper.succeed();
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
     public static void forcedOneBlockStepUsesRealJumpPhysics(
             GameTestHelper helper) {
         P2GameTestSupport.prepareEmptyFloor(helper);
@@ -436,17 +475,22 @@ public final class P4NavigationAcceptanceGameTests {
             template = P2GameTestSupport.TEMPLATE,
             batch = BATCH,
             timeoutTicks = TIMEOUT_TICKS)
-    public static void shallowWaterRouteUsesRealSwimmingState(
+    public static void waterLaneRouteUsesRealSwimmingState(
             GameTestHelper helper) {
         P2GameTestSupport.prepareEmptyFloor(helper);
-        for (int z = 4; z <= 6; z++) {
-            helper.setBlock(new BlockPos(4, 1, z), Blocks.WATER);
+        for (int x = 3; x <= 5; x++) {
+            for (int z = 2; z <= 7; z++) {
+                helper.setBlock(
+                        new BlockPos(x, 1, z), Blocks.WATER);
+                helper.setBlock(
+                        new BlockPos(x, 2, z), Blocks.WATER);
+            }
         }
         TestBot bot = P2GameTestSupport.spawnBot(
                 helper,
                 null,
                 "P4Water",
-                new Vec3(4.5D, 1.0D, 2.5D),
+                new Vec3(4.5D, 1.05D, 2.5D),
                 0.0F);
         P2GameTestSupport.Cleanup cleanup = cleanup(bot);
         try {
@@ -527,7 +571,7 @@ public final class P4NavigationAcceptanceGameTests {
                     .orElse("missing-session");
             cleanup.run();
             helper.fail(
-                    "P4 shallow-water route timed out: " + session);
+                    "P4 water-lane route timed out: " + session);
             return;
         }
         helper.runAfterDelay(
