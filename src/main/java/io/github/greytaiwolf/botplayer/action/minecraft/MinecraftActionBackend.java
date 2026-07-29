@@ -5,6 +5,7 @@ import io.github.greytaiwolf.botplayer.action.ActionCleanupReason;
 import io.github.greytaiwolf.botplayer.action.ActionEnvelope;
 import io.github.greytaiwolf.botplayer.action.ActionEvidence;
 import io.github.greytaiwolf.botplayer.action.ActionFailureCode;
+import io.github.greytaiwolf.botplayer.action.ClimbInputAction;
 import io.github.greytaiwolf.botplayer.action.JumpAction;
 import io.github.greytaiwolf.botplayer.action.LookAtAction;
 import io.github.greytaiwolf.botplayer.action.MoveInputAction;
@@ -111,6 +112,21 @@ public final class MinecraftActionBackend implements ActionBackend {
             }
             return BackendResult.accepted(envelope);
         }
+        if (envelope.action() instanceof ClimbInputAction climb) {
+            BackendResult duration = validateMovementDuration(
+                    envelope, currentTick, climb.ticks());
+            if (duration.step() != BackendStep.ACCEPTED) {
+                return duration;
+            }
+            if (!player.onClimbable()) {
+                return BackendResult.failed(
+                        envelope,
+                        ActionFailureCode.PRECONDITION_FAILED,
+                        List.of(),
+                        "Climb input requires a vanilla climbable position");
+            }
+            return BackendResult.accepted(envelope);
+        }
         if (envelope.action() instanceof WaitAction
                 || envelope.action() instanceof StopAction) {
             return BackendResult.accepted(envelope);
@@ -156,6 +172,10 @@ public final class MinecraftActionBackend implements ActionBackend {
         if (envelope.action() instanceof JumpAction jump) {
             return startJump(
                     envelope, player, jump, currentTick);
+        }
+        if (envelope.action() instanceof ClimbInputAction climb) {
+            return startClimb(
+                    envelope, player, climb, currentTick);
         }
         if (envelope.action() instanceof StopAction) {
             return startStop(envelope, player, currentTick);
@@ -212,6 +232,15 @@ public final class MinecraftActionBackend implements ActionBackend {
                     jumpState,
                     currentTick);
         }
+        if (envelope.action() instanceof ClimbInputAction climb
+                && state instanceof ClimbState climbState) {
+            return tickClimb(
+                    envelope,
+                    target.player().orElseThrow(),
+                    climb,
+                    climbState,
+                    currentTick);
+        }
         if (envelope.action() instanceof StopAction
                 && state instanceof StopState) {
             return BackendResult.readyToVerify(envelope);
@@ -219,6 +248,7 @@ public final class MinecraftActionBackend implements ActionBackend {
         if (envelope.action() instanceof LookAtAction
                 || envelope.action() instanceof MoveInputAction
                 || envelope.action() instanceof JumpAction
+                || envelope.action() instanceof ClimbInputAction
                 || envelope.action() instanceof StopAction) {
             return missingState(envelope);
         }
@@ -282,6 +312,13 @@ public final class MinecraftActionBackend implements ActionBackend {
                 return missingState(envelope);
             }
             return verifyJump(envelope, player, jumpState);
+        }
+        if (envelope.action() instanceof ClimbInputAction climb) {
+            if (!(state instanceof ClimbState climbState)) {
+                return missingState(envelope);
+            }
+            return verifyClimb(
+                    envelope, player, climb, climbState);
         }
         if (envelope.action() instanceof StopAction) {
             if (!(state instanceof StopState stopState)) {
@@ -548,6 +585,45 @@ public final class MinecraftActionBackend implements ActionBackend {
                 "Jump");
     }
 
+    private BackendResult startClimb(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            ClimbInputAction climb,
+            long currentTick) {
+        if (!player.onClimbable()) {
+            return BackendResult.failed(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    List.of(),
+                    "Climb input requires a vanilla climbable position");
+        }
+        PlayerInputOwner owner = PlayerInputOwner.from(envelope);
+        long expiresAtTick = leaseExpiry(envelope, currentTick);
+        ClimbState state = new ClimbState(
+                owner,
+                currentTick,
+                expiresAtTick,
+                player.getX(),
+                player.getY(),
+                player.getZ());
+        BackendResult claimFailure = claimInput(
+                envelope,
+                owner,
+                climb.inputState(),
+                currentTick,
+                expiresAtTick);
+        if (claimFailure != null) {
+            return claimFailure;
+        }
+        states.put(stateKey(envelope), state);
+        return applyInitialInput(
+                envelope,
+                player,
+                climb.inputState(),
+                state,
+                "Climb");
+    }
+
     private BackendResult applyInitialInput(
             ActionEnvelope envelope,
             BotServerPlayer initiallyResolvedPlayer,
@@ -700,6 +776,37 @@ public final class MinecraftActionBackend implements ActionBackend {
         return BackendResult.readyToVerify(envelope);
     }
 
+    private BackendResult tickClimb(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            ClimbInputAction climb,
+            ClimbState state,
+            long currentTick) {
+        if (currentTick < state.startedTick) {
+            return missingState(envelope);
+        }
+        if (!captureMovement(player, state, currentTick)) {
+            return BackendResult.failed(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    List.of(),
+                    "Climb produced a non-finite position");
+        }
+        state.observedClimbable |= player.onClimbable();
+        state.minimumY = Math.min(state.minimumY, player.getY());
+        state.maximumY = Math.max(state.maximumY, player.getY());
+        if (currentTick - state.startedTick < climb.ticks()) {
+            return BackendResult.running(envelope);
+        }
+        BackendResult clearFailure = clearOwnedInput(
+                envelope, player, state, currentTick);
+        if (clearFailure != null) {
+            return clearFailure;
+        }
+        state.completed = true;
+        return BackendResult.readyToVerify(envelope);
+    }
+
     private BackendResult verifyMove(
             ActionEnvelope envelope,
             BotServerPlayer player,
@@ -820,6 +927,52 @@ public final class MinecraftActionBackend implements ActionBackend {
         }
         return BackendResult.succeeded(
                 envelope, evidence, "Jump verified");
+    }
+
+    private BackendResult verifyClimb(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            ClimbInputAction climb,
+            ClimbState state) {
+        if (!state.completed) {
+            return BackendResult.failed(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    List.of(),
+                    "Climb input duration has not completed");
+        }
+        double verticalDelta = player.getY() - state.startY;
+        List<ActionEvidence> evidence = List.of(
+                new ActionEvidence(
+                        "climb.vertical_blocks",
+                        number(verticalDelta)),
+                new ActionEvidence(
+                        "climb.minimum_y",
+                        number(state.minimumY)),
+                new ActionEvidence(
+                        "climb.maximum_y",
+                        number(state.maximumY)),
+                new ActionEvidence(
+                        "climb.observed_climbable",
+                        Boolean.toString(state.observedClimbable)));
+        if (!state.observedClimbable
+                || !climb.hasVerticalProgress(
+                        state.startY, player.getY())) {
+            return BackendResult.failed(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    evidence,
+                    "Climb did not produce the requested vertical progress");
+        }
+        if (!inputIsZero(player)) {
+            return BackendResult.failed(
+                    envelope,
+                    ActionFailureCode.UNSAFE_CONTROL_STATE,
+                    evidence,
+                    "Climb input did not clear after completion");
+        }
+        return BackendResult.succeeded(
+                envelope, evidence, "Climb verified");
     }
 
     private BackendResult claimInput(
@@ -1416,6 +1569,31 @@ public final class MinecraftActionBackend implements ActionBackend {
                     startZ);
             this.startMode = startMode;
             this.maxY = startY;
+        }
+    }
+
+    private static final class ClimbState
+            extends MovementState {
+        private double minimumY;
+        private double maximumY;
+        private boolean observedClimbable;
+
+        private ClimbState(
+                PlayerInputOwner owner,
+                long startedTick,
+                long expiresAtTick,
+                double startX,
+                double startY,
+                double startZ) {
+            super(
+                    owner,
+                    startedTick,
+                    expiresAtTick,
+                    startX,
+                    startY,
+                    startZ);
+            this.minimumY = startY;
+            this.maximumY = startY;
         }
     }
 }

@@ -4,6 +4,7 @@ public enum ActionKind {
    WAIT,
    LOOK_AT,
    MOVE_INPUT,
+   CLIMB_INPUT,
    JUMP,
    SELECT_HOTBAR,
    USE_ITEM,
