@@ -38,6 +38,21 @@ public final class BotPlayerConfig {
     public static final ModConfigSpec.DoubleValue PERCEPTION_CRITICAL_MSPT;
     public static final ModConfigSpec.DoubleValue PERCEPTION_RECOVER_MSPT;
     public static final ModConfigSpec.DoubleValue PERCEPTION_CRITICAL_RECOVER_MSPT;
+    public static final ModConfigSpec.IntValue NAVIGATION_HORIZONTAL_RADIUS;
+    public static final ModConfigSpec.IntValue NAVIGATION_VERTICAL_RADIUS;
+    public static final ModConfigSpec.IntValue NAVIGATION_SNAPSHOT_CELLS_PER_BOT_TICK;
+    public static final ModConfigSpec.IntValue NAVIGATION_SNAPSHOT_GLOBAL_CELLS_PER_TICK;
+    public static final ModConfigSpec.IntValue NAVIGATION_MAXIMUM_SNAPSHOT_TICKS;
+    public static final ModConfigSpec.IntValue NAVIGATION_MAXIMUM_EXPANSIONS;
+    public static final ModConfigSpec.IntValue NAVIGATION_MAXIMUM_CONCURRENT_PLANS;
+    public static final ModConfigSpec.IntValue NAVIGATION_MAXIMUM_QUEUED_PLANS;
+    public static final ModConfigSpec.IntValue NAVIGATION_MAXIMUM_GOAL_DISTANCE;
+    public static final ModConfigSpec.IntValue NAVIGATION_FOLLOWER_INPUT_TICKS;
+    public static final ModConfigSpec.IntValue NAVIGATION_STUCK_WINDOW_TICKS;
+    public static final ModConfigSpec.DoubleValue NAVIGATION_WAYPOINT_TOLERANCE;
+    public static final ModConfigSpec.IntValue NAVIGATION_MINIMUM_SPRINT_FOOD;
+    public static final ModConfigSpec.IntValue NAVIGATION_MINIMUM_TRAVEL_FOOD;
+    public static final ModConfigSpec.DoubleValue NAVIGATION_MINIMUM_TRAVEL_HEALTH;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -148,6 +163,54 @@ public final class BotPlayerConfig {
         PERCEPTION_CRITICAL_RECOVER_MSPT = builder
                 .comment("离开关键感知状态所需的平滑 MSPT。")
                 .defineInRange("criticalRecoverMspt", 45.0D, 1.0D, 199.0D);
+        builder.pop();
+
+        builder.push("navigation");
+        NAVIGATION_HORIZONTAL_RADIUS = builder
+                .comment("单次局部导航快照的水平半径。")
+                .defineInRange("horizontalRadius", 24, 4, 48);
+        NAVIGATION_VERTICAL_RADIUS = builder
+                .comment("单次局部导航快照的垂直半径。")
+                .defineInRange("verticalRadius", 8, 2, 16);
+        NAVIGATION_SNAPSHOT_CELLS_PER_BOT_TICK = builder
+                .comment("单个 bot 每 Tick 最多采样的运动单元格。")
+                .defineInRange("snapshotCellsPerBotTick", 2048, 64, 8192);
+        NAVIGATION_SNAPSHOT_GLOBAL_CELLS_PER_TICK = builder
+                .comment("所有 bot 每 Tick 共享的运动快照采样预算。")
+                .defineInRange("snapshotGlobalCellsPerTick", 8192, 64, 65536);
+        NAVIGATION_MAXIMUM_SNAPSHOT_TICKS = builder
+                .comment("局部运动快照允许跨越的最大 Tick 数。")
+                .defineInRange("maximumSnapshotTicks", 20, 1, 100);
+        NAVIGATION_MAXIMUM_EXPANSIONS = builder
+                .comment("单次有界 A* 允许扩展的最大节点数。")
+                .defineInRange("maximumExpansions", 50000, 100, 250000);
+        NAVIGATION_MAXIMUM_CONCURRENT_PLANS = builder
+                .comment("规划工作池允许同时执行的任务数。")
+                .defineInRange("maximumConcurrentPlans", 2, 1, 8);
+        NAVIGATION_MAXIMUM_QUEUED_PLANS = builder
+                .comment("规划工作池的有界等待队列容量。")
+                .defineInRange("maximumQueuedPlans", 16, 1, 128);
+        NAVIGATION_MAXIMUM_GOAL_DISTANCE = builder
+                .comment("同维度导航目标允许的最大水平距离。")
+                .defineInRange("maximumGoalDistance", 2048, 16, 16384);
+        NAVIGATION_FOLLOWER_INPUT_TICKS = builder
+                .comment("路线 follower 每次提交的短输入租约 Tick 数。")
+                .defineInRange("followerInputTicks", 3, 2, 5);
+        NAVIGATION_STUCK_WINDOW_TICKS = builder
+                .comment("动作后端用于检测无进展的滚动 Tick 窗口。")
+                .defineInRange("stuckWindowTicks", 20, 5, 40);
+        NAVIGATION_WAYPOINT_TOLERANCE = builder
+                .comment("到达路线节点的水平距离容差。")
+                .defineInRange("waypointTolerance", 0.45D, 0.1D, 1.0D);
+        NAVIGATION_MINIMUM_SPRINT_FOOD = builder
+                .comment("允许导航发出疾跑输入的最小食物值。")
+                .defineInRange("minimumSprintFood", 7, 0, 20);
+        NAVIGATION_MINIMUM_TRAVEL_FOOD = builder
+                .comment("允许继续普通远行的最小食物值。")
+                .defineInRange("minimumTravelFood", 5, 0, 20);
+        NAVIGATION_MINIMUM_TRAVEL_HEALTH = builder
+                .comment("允许继续普通远行的最小生命值。")
+                .defineInRange("minimumTravelHealth", 6.0D, 0.0D, 2048.0D);
         builder.pop();
 
         builder.push("permissions");
