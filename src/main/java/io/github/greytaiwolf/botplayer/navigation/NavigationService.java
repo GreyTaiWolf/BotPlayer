@@ -635,6 +635,14 @@ public final class NavigationService implements AutoCloseable {
             Session session,
             BotServerPlayer player,
             RouteNode node) {
+        int movementTicks =
+                node.locomotionMode()
+                                == io.github.greytaiwolf.botplayer
+                                        .navigation.path.LocomotionMode.WATER
+                        ? Math.max(5, settings.followerInputTicks())
+                        : settings.followerInputTicks();
+        int stuckWindowTicks = Math.min(
+                settings.stuckWindowTicks(), movementTicks);
         return switch (node.traversalKind()) {
             case JUMP_UP_ONE, STEP_UP -> new JumpAction(
                     1.0F,
@@ -653,10 +661,8 @@ public final class NavigationService implements AutoCloseable {
                     false,
                     true,
                     false,
-                    settings.followerInputTicks(),
-                    Math.min(
-                            settings.stuckWindowTicks(),
-                            settings.followerInputTicks()));
+                    movementTicks,
+                    stuckWindowTicks);
             case START,
                     WALK_CARDINAL,
                     WALK_DIAGONAL,
@@ -672,10 +678,8 @@ public final class NavigationService implements AutoCloseable {
                                                     .navigation.path
                                                     .LocomotionMode.WATER
                                     && player.isUnderWater(),
-                            settings.followerInputTicks(),
-                            Math.min(
-                                    settings.stuckWindowTicks(),
-                                    settings.followerInputTicks()));
+                            movementTicks,
+                            stuckWindowTicks);
             case OPEN_DOOR ->
                     throw new IllegalArgumentException(
                             "door movement requires an interaction action");
