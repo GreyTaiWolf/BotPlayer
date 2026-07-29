@@ -21,8 +21,12 @@ import net.minecraft.world.Difficulty;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.monster.Zombie;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
@@ -34,6 +38,10 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @PrefixGameTestTemplate(false)
 public final class P4SafetyAcceptanceGameTests {
     private static final String BATCH = "p4_safety";
+    private static final String AGGRO_DAMAGE_BATCH =
+            "p4_aggro_damage";
+    private static final String STARVATION_BATCH =
+            "p4_starvation";
     private static final int TIMEOUT_TICKS = 300;
 
     private P4SafetyAcceptanceGameTests() {}
@@ -135,6 +143,158 @@ public final class P4SafetyAcceptanceGameTests {
                     cleanup.run();
                     helper.succeed();
                 });
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void timedBuffExpiresAndRestoresTheRealAttribute(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4BuffLife",
+                new Vec3(4.5D, 1.0D, 4.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        try {
+            double baseMovementSpeed = bot.player()
+                    .getAttributeValue(Attributes.MOVEMENT_SPEED);
+            bot.player().addEffect(new MobEffectInstance(
+                    MobEffects.MOVEMENT_SPEED, 30, 1));
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    20,
+                    () -> bot.player().getAttributeValue(
+                                            Attributes.MOVEMENT_SPEED)
+                                    > baseMovementSpeed
+                            && bot.manager()
+                                    .latestSafetyFrame(bot.name())
+                                    .filter(frame -> hasEffect(
+                                            frame,
+                                            "minecraft:speed",
+                                            EffectSummary.Category
+                                                    .BENEFICIAL))
+                                    .isPresent(),
+                    "P4 did not observe the live beneficial attribute modifier",
+                    cleanup,
+                    () -> P2GameTestSupport.awaitCondition(
+                            helper,
+                            80,
+                            () -> bot.player()
+                                                    .getEffect(
+                                                            MobEffects
+                                                                    .MOVEMENT_SPEED)
+                                            == null
+                                    && Math.abs(
+                                                    bot.player()
+                                                                    .getAttributeValue(
+                                                                            Attributes
+                                                                                    .MOVEMENT_SPEED)
+                                                            - baseMovementSpeed)
+                                            < 1.0E-9D
+                                    && bot.manager()
+                                            .latestSafetyFrame(
+                                                    bot.name())
+                                            .filter(frame -> !hasEffect(
+                                                    frame,
+                                                    "minecraft:speed",
+                                                    EffectSummary
+                                                            .Category
+                                                            .BENEFICIAL))
+                                            .isPresent(),
+                            "P4 did not observe natural effect expiry and attribute restoration",
+                            cleanup,
+                            () -> {
+                                cleanup.run();
+                                helper.succeed();
+                            }));
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void vanillaArmorReducesDamageOnTheRealBodies(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot naked = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4Naked",
+                new Vec3(3.5D, 1.0D, 4.5D),
+                0.0F);
+        TestBot armored = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4Armor",
+                new Vec3(5.5D, 1.0D, 4.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(naked);
+        cleanup.add(() -> P2GameTestSupport.removeBot(
+                armored, "P4 armor GameTest completed"));
+        try {
+            armored.player().setItemSlot(
+                    EquipmentSlot.CHEST,
+                    new ItemStack(Items.DIAMOND_CHESTPLATE));
+            armored.player().setItemSlot(
+                    EquipmentSlot.HEAD,
+                    new ItemStack(Items.DIAMOND_HELMET));
+            helper.runAfterDelay(
+                    65L,
+                    () -> {
+                        try {
+                            naked.player().invulnerableTime = 0;
+                            armored.player().invulnerableTime = 0;
+                            boolean nakedHurt = naked.player().hurt(
+                                    naked.player()
+                                            .damageSources()
+                                            .generic(),
+                                    8.0F);
+                            boolean armoredHurt = armored.player().hurt(
+                                    armored.player()
+                                            .damageSources()
+                                            .generic(),
+                                    8.0F);
+                            P2GameTestSupport.require(
+                                    nakedHurt && armoredHurt,
+                                    "Vanilla armor comparison damage was rejected");
+                            helper.runAfterDelay(
+                                    1L,
+                                    () -> {
+                                        try {
+                                            P2GameTestSupport.require(
+                                                    armored.player()
+                                                                    .getArmorValue()
+                                                            > naked.player()
+                                                                    .getArmorValue(),
+                                                    "Equipped armor was not authoritative on the bot");
+                                            P2GameTestSupport.require(
+                                                    armored.player()
+                                                                    .getHealth()
+                                                            > naked.player()
+                                                                    .getHealth(),
+                                                    "Vanilla armor did not reduce final bot damage");
+                                        } finally {
+                                            cleanup.run();
+                                        }
+                                        helper.succeed();
+                                    });
+                        } catch (RuntimeException | AssertionError exception) {
+                            cleanup.run();
+                            throw exception;
+                        }
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
     }
 
     @GameTest(
@@ -354,6 +514,162 @@ public final class P4SafetyAcceptanceGameTests {
                                         .safetyIncident(bot.name())
                                         .isPresent(),
                                 "Hostile preemption lacked an incident");
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = AGGRO_DAMAGE_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void targetingZombieEventuallyDamagesTheRealBot(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        for (int x = 3; x <= 5; x++) {
+            for (int y = 1; y <= 2; y++) {
+                helper.setBlock(
+                        new BlockPos(x, y, 2), Blocks.STONE);
+                helper.setBlock(
+                        new BlockPos(x, y, 5), Blocks.STONE);
+            }
+        }
+        for (int z = 2; z <= 5; z++) {
+            for (int y = 1; y <= 2; y++) {
+                helper.setBlock(
+                        new BlockPos(3, y, z), Blocks.STONE);
+                helper.setBlock(
+                        new BlockPos(5, y, z), Blocks.STONE);
+            }
+        }
+        Difficulty previousDifficulty =
+                helper.getLevel()
+                        .getServer()
+                        .getWorldData()
+                        .getDifficulty();
+        helper.getLevel()
+                .getServer()
+                .setDifficulty(Difficulty.NORMAL, true);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4MobHit",
+                new Vec3(4.5D, 1.0D, 4.2D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        Zombie zombie = Objects.requireNonNull(
+                EntityType.ZOMBIE.create(helper.getLevel()),
+                "GameTest attacking zombie");
+        cleanup.add(zombie::discard);
+        cleanup.add(() -> helper.getLevel()
+                .getServer()
+                .setDifficulty(previousDifficulty, true));
+        try {
+            zombie.setItemSlot(
+                    EquipmentSlot.HEAD,
+                    new ItemStack(Items.DIAMOND_HELMET));
+            zombie.setPersistenceRequired();
+            zombie.setInvulnerable(true);
+            Vec3 zombiePosition = helper.absoluteVec(
+                    new Vec3(4.5D, 1.0D, 3.2D));
+            zombie.moveTo(
+                    zombiePosition.x,
+                    zombiePosition.y,
+                    zombiePosition.z,
+                    0.0F,
+                    0.0F);
+            zombie.setTarget(bot.player());
+            P2GameTestSupport.require(
+                    helper.getLevel().addFreshEntity(zombie),
+                    "Attacking zombie could not enter the GameTest level");
+            float initialHealth = bot.player().getHealth();
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    240,
+                    () -> zombie.getTarget() == bot.player()
+                            && bot.player().getHealth()
+                                    < initialHealth
+                            && bot.manager()
+                                    .latestSafetyFrame(bot.name())
+                                    .filter(frame ->
+                                            frame.authoritativeVitalLoss()
+                                                            > 0.0F
+                                                    || frame.recentDamage()
+                                                            .isPresent())
+                                    .isPresent(),
+                    "Targeting zombie never dealt real melee damage to the bot",
+                    cleanup,
+                    () -> {
+                        P2GameTestSupport.require(
+                                bot.manager()
+                                        .latestSafetyFrame(bot.name())
+                                        .filter(frame ->
+                                                frame.authoritativeVitalLoss()
+                                                                > 0.0F
+                                                        || frame.recentDamage()
+                                                                .isPresent())
+                                        .isPresent(),
+                                "Real mob damage was absent from the safety plane");
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = STARVATION_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void zeroFoodCausesVanillaStarvationDamage(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        Difficulty previousDifficulty =
+                helper.getLevel()
+                        .getServer()
+                        .getWorldData()
+                        .getDifficulty();
+        helper.getLevel()
+                .getServer()
+                .setDifficulty(Difficulty.HARD, true);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4Starve",
+                new Vec3(4.5D, 1.0D, 4.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        cleanup.add(() -> helper.getLevel()
+                .getServer()
+                .setDifficulty(previousDifficulty, true));
+        try {
+            bot.player().getFoodData().setFoodLevel(0);
+            bot.player().getFoodData().setSaturation(0.0F);
+            bot.player().getFoodData().setExhaustion(6.0F);
+            float initialHealth = bot.player().getHealth();
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    260,
+                    () -> bot.player().getHealth()
+                            < initialHealth,
+                    "FoodData did not apply vanilla starvation damage",
+                    cleanup,
+                    () -> {
+                        P2GameTestSupport.require(
+                                bot.manager()
+                                        .safetyIncident(bot.name())
+                                        .filter(incident ->
+                                                incident.hazardType()
+                                                        == HazardType
+                                                                .FOOD_CRITICAL)
+                                        .isPresent(),
+                                "Starvation damage lacked the critical-food incident");
                         cleanup.run();
                         helper.succeed();
                     });
