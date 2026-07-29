@@ -239,7 +239,24 @@ public final class P4SafetyAcceptanceGameTests {
         P2GameTestSupport.Cleanup cleanup = cleanup(naked);
         cleanup.add(() -> P2GameTestSupport.removeBot(
                 armored, "P4 armor GameTest completed"));
+        Zombie attacker = Objects.requireNonNull(
+                EntityType.ZOMBIE.create(helper.getLevel()),
+                "GameTest armor attacker");
+        attacker.setNoAi(true);
+        attacker.setInvulnerable(true);
+        Vec3 attackerPosition = helper.absoluteVec(
+                new Vec3(4.5D, 1.0D, 2.5D));
+        attacker.moveTo(
+                attackerPosition.x,
+                attackerPosition.y,
+                attackerPosition.z,
+                0.0F,
+                0.0F);
+        cleanup.add(attacker::discard);
         try {
+            P2GameTestSupport.require(
+                    helper.getLevel().addFreshEntity(attacker),
+                    "Armor comparison attacker could not enter the GameTest level");
             armored.player().setItemSlot(
                     EquipmentSlot.CHEST,
                     new ItemStack(Items.DIAMOND_CHESTPLATE));
@@ -253,14 +270,12 @@ public final class P4SafetyAcceptanceGameTests {
                             naked.player().invulnerableTime = 0;
                             armored.player().invulnerableTime = 0;
                             boolean nakedHurt = naked.player().hurt(
-                                    naked.player()
-                                            .damageSources()
-                                            .generic(),
+                                    naked.player().damageSources()
+                                            .mobAttack(attacker),
                                     8.0F);
                             boolean armoredHurt = armored.player().hurt(
-                                    armored.player()
-                                            .damageSources()
-                                            .generic(),
+                                    armored.player().damageSources()
+                                            .mobAttack(attacker),
                                     8.0F);
                             P2GameTestSupport.require(
                                     nakedHurt && armoredHurt,
@@ -655,24 +670,26 @@ public final class P4SafetyAcceptanceGameTests {
             float initialHealth = bot.player().getHealth();
             P2GameTestSupport.awaitCondition(
                     helper,
-                    260,
-                    () -> bot.player().getHealth()
-                            < initialHealth,
-                    "FoodData did not apply vanilla starvation damage",
+                    40,
+                    () -> bot.manager()
+                            .safetyIncident(bot.name())
+                            .filter(incident ->
+                                    incident.hazardType()
+                                            == HazardType.FOOD_CRITICAL)
+                            .isPresent(),
+                    "P4 did not establish a critical-food incident before starvation",
                     cleanup,
-                    () -> {
-                        P2GameTestSupport.require(
-                                bot.manager()
-                                        .safetyIncident(bot.name())
-                                        .filter(incident ->
-                                                incident.hazardType()
-                                                        == HazardType
-                                                                .FOOD_CRITICAL)
-                                        .isPresent(),
-                                "Starvation damage lacked the critical-food incident");
-                        cleanup.run();
-                        helper.succeed();
-                    });
+                    () -> P2GameTestSupport.awaitCondition(
+                            helper,
+                            220,
+                            () -> bot.player().getHealth()
+                                    < initialHealth,
+                            "FoodData did not apply vanilla starvation damage",
+                            cleanup,
+                            () -> {
+                                cleanup.run();
+                                helper.succeed();
+                            }));
         } catch (RuntimeException | AssertionError exception) {
             cleanup.run();
             throw exception;
