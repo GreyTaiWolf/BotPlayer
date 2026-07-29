@@ -630,7 +630,7 @@ public final class NavigationService implements AutoCloseable {
                 ActionPhase.MOVE,
                 ActionPriority.AUTONOMOUS,
                 currentTick,
-                Math.max(12, settings.followerInputTicks() + 5));
+                maximumMovementTicks(movement));
     }
 
     private ActionRequest movementFor(
@@ -693,6 +693,22 @@ public final class NavigationService implements AutoCloseable {
                     throw new IllegalArgumentException(
                             "door movement requires an interaction action");
         };
+    }
+
+    private static int maximumMovementTicks(
+            ActionRequest movement) {
+        int inputTicks;
+        if (movement instanceof MoveInputAction move) {
+            inputTicks = move.ticks();
+        } else if (movement instanceof JumpAction jump) {
+            inputTicks = jump.holdTicks();
+        } else if (movement instanceof ClimbInputAction climb) {
+            inputTicks = climb.ticks();
+        } else {
+            throw new IllegalArgumentException(
+                    "unsupported navigation movement action");
+        }
+        return Math.max(12, inputTicks + 5);
     }
 
     private void submitDoorAction(
