@@ -19,6 +19,7 @@ import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionAction
 import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftActionSnapshot;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.navigation.path.BoundedAStarPlanner;
+import io.github.greytaiwolf.botplayer.navigation.path.NavigationSnapshot;
 import io.github.greytaiwolf.botplayer.navigation.path.RouteNode;
 import io.github.greytaiwolf.botplayer.navigation.path.RoutePlan;
 import io.github.greytaiwolf.botplayer.navigation.path.RoutePlanStatus;
@@ -419,10 +420,21 @@ public final class NavigationService implements AutoCloseable {
 
     private void submitPlanning(
             Session session,
-            io.github.greytaiwolf.botplayer.navigation.path.NavigationSnapshot
-                    snapshot,
+            NavigationSnapshot snapshot,
             GridPoint start,
             long currentTick) {
+        Optional<GridPoint> normalizedStart =
+                normalizePlanningStart(snapshot, start);
+        if (normalizedStart.isEmpty()) {
+            terminate(
+                    session,
+                    NavigationState.FAILED,
+                    NavigationFailure.SNAPSHOT_INCOMPLETE,
+                    currentTick,
+                    "真实脚位及相邻接地层均不在可通行快照中");
+            return;
+        }
+        GridPoint planningStart = normalizedStart.orElseThrow();
         AtomicBoolean cancelled = new AtomicBoolean();
         session.planningCancelled = cancelled;
         session.planningSnapshotId = snapshot.snapshotId();
@@ -440,7 +452,7 @@ public final class NavigationService implements AutoCloseable {
                                     settings.maximumExpansions())
                             .plan(
                                     snapshot,
-                                    start,
+                                    planningStart,
                                     goal,
                                     policy,
                                     cancelled::get);
@@ -465,6 +477,27 @@ public final class NavigationService implements AutoCloseable {
                     currentTick,
                     "路径规划队列已满");
         }
+    }
+
+    /**
+     * 玩家落在负坐标方块边界或刚结束跳跃时，浮点脚位可能短暂映射到支撑方块本身。
+     *
+     * <p>这里只在同一 X/Z 的脚位、上一格和下一格中选择最近可通行单元，不改变玩家位置，也不
+     * 把更远位置冒充起点。
+     */
+    private static Optional<GridPoint> normalizePlanningStart(
+            NavigationSnapshot snapshot, GridPoint liveStart) {
+        for (int verticalOffset : new int[] {0, 1, -1}) {
+            GridPoint candidate = new GridPoint(
+                    liveStart.x(),
+                    liveStart.y() + verticalOffset,
+                    liveStart.z());
+            if (snapshot.contains(candidate)
+                    && snapshot.cell(candidate).traversable()) {
+                return Optional.of(candidate);
+            }
+        }
+        return Optional.empty();
     }
 
     private void drainPlanningResults(long currentTick) {

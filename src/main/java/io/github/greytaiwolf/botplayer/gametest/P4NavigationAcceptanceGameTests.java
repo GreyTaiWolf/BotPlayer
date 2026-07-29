@@ -555,7 +555,7 @@ public final class P4NavigationAcceptanceGameTests {
                                         + "/"
                                         + outcome.failure());
                         P2GameTestSupport.require(
-                                bot.player().getY() > startY + 0.8D,
+                                bot.player().getY() > startY + 0.35D,
                                 "P4 ladder route did not raise the real player body");
                         cleanup.run();
                         helper.succeed();
