@@ -1,6 +1,9 @@
 package io.github.greytaiwolf.botplayer.gametest;
 
 import io.github.greytaiwolf.botplayer.BotPlayer;
+import io.github.greytaiwolf.botplayer.action.ActionOutcome;
+import io.github.greytaiwolf.botplayer.action.ActionState;
+import io.github.greytaiwolf.botplayer.action.MoveInputAction;
 import io.github.greytaiwolf.botplayer.gametest.P2GameTestSupport.TestBot;
 import io.github.greytaiwolf.botplayer.navigation.GridPoint;
 import io.github.greytaiwolf.botplayer.navigation.NavigationState;
@@ -10,6 +13,7 @@ import io.github.greytaiwolf.botplayer.safety.HazardType;
 import io.github.greytaiwolf.botplayer.safety.SafetyFrame;
 import io.github.greytaiwolf.botplayer.safety.SafetyIncidentView;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
@@ -17,6 +21,7 @@ import net.minecraft.world.Difficulty;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.monster.Zombie;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -48,8 +53,8 @@ public final class P4SafetyAcceptanceGameTests {
                 0.0F);
         P2GameTestSupport.Cleanup cleanup = cleanup(bot);
         try {
-            bot.player().addEffect(new MobEffectInstance(
-                    MobEffects.POISON, 120, 0));
+            double baseMovementSpeed = bot.player()
+                    .getAttributeValue(Attributes.MOVEMENT_SPEED);
             P2GameTestSupport.awaitCondition(
                     helper,
                     40,
@@ -58,7 +63,13 @@ public final class P4SafetyAcceptanceGameTests {
                             .isPresent(),
                     "P4 did not establish the pre-damage safety baseline",
                     cleanup,
-                    () -> applyDamageAndAwait(helper, bot, cleanup));
+                    () -> helper.runAfterDelay(
+                            65L,
+                            () -> applyDamageAndAwait(
+                                    helper,
+                                    bot,
+                                    cleanup,
+                                    baseMovementSpeed)));
         } catch (RuntimeException | AssertionError exception) {
             cleanup.run();
             throw exception;
@@ -68,7 +79,12 @@ public final class P4SafetyAcceptanceGameTests {
     private static void applyDamageAndAwait(
             GameTestHelper helper,
             TestBot bot,
-            P2GameTestSupport.Cleanup cleanup) {
+            P2GameTestSupport.Cleanup cleanup,
+            double baseMovementSpeed) {
+        bot.player().addEffect(new MobEffectInstance(
+                MobEffects.POISON, 120, 0));
+        bot.player().addEffect(new MobEffectInstance(
+                MobEffects.MOVEMENT_SPEED, 120, 0));
         float healthBefore = bot.player().getHealth();
         bot.player().invulnerableTime = 0;
         boolean hurt = bot.player().hurt(
@@ -89,7 +105,12 @@ public final class P4SafetyAcceptanceGameTests {
                                                     frame,
                                                     "minecraft:poison",
                                                     EffectSummary.Category
-                                                            .HARMFUL))
+                                                            .HARMFUL)
+                                            && hasEffect(
+                                                    frame,
+                                                    "minecraft:speed",
+                                                    EffectSummary.Category
+                                                            .BENEFICIAL))
                             .isPresent(),
                 "P4 did not correlate real damage and harmful effect state",
                 cleanup,
@@ -106,6 +127,11 @@ public final class P4SafetyAcceptanceGameTests {
                                     .damageTypeId()
                                     .contains("generic"),
                             "Dynamic damage type ID was not retained");
+                    P2GameTestSupport.require(
+                            bot.player().getAttributeValue(
+                                            Attributes.MOVEMENT_SPEED)
+                                    > baseMovementSpeed,
+                            "Beneficial effect did not modify the real player attribute");
                     cleanup.run();
                     helper.succeed();
                 });
@@ -151,6 +177,82 @@ public final class P4SafetyAcceptanceGameTests {
                                                 .runtimeHandle()
                                                 .generation(),
                                 "Food incident was attached to a stale generation");
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void cliffReflexPreemptsForwardMovement(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        for (int x = 3; x <= 5; x++) {
+            for (int z = 5; z <= 8; z++) {
+                for (int y = -4; y <= 0; y++) {
+                    helper.setBlock(
+                            new BlockPos(x, y, z),
+                            net.minecraft.world.level.block.Blocks.AIR);
+                }
+            }
+        }
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4Cliff",
+                new Vec3(4.5D, 1.0D, 4.2D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        try {
+            CompletableFuture<ActionOutcome> movement =
+                    P2GameTestSupport.submit(
+                                    bot,
+                                    new MoveInputAction(
+                                            1.0F,
+                                            0.0F,
+                                            true,
+                                            false,
+                                            false,
+                                            40,
+                                            20),
+                                    80)
+                            .toCompletableFuture();
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    80,
+                    () -> movement.isDone()
+                            && bot.manager()
+                                    .safetyIncident(bot.name())
+                                    .filter(incident ->
+                                            incident.hazardType()
+                                                    == HazardType
+                                                            .FALL_IMMINENT)
+                                    .isPresent(),
+                    "P4 cliff reflex did not preempt forward input",
+                    cleanup,
+                    () -> {
+                        ActionOutcome outcome = movement.join();
+                        P2GameTestSupport.require(
+                                outcome.state()
+                                                == ActionState.PREEMPTED
+                                        || outcome.state()
+                                                == ActionState.CANCELLED,
+                                "Forward movement was not preempted by L0");
+                        BlockPos edge = helper.absolutePos(
+                                new BlockPos(4, 1, 5));
+                        P2GameTestSupport.require(
+                                bot.player().getZ()
+                                        < edge.getZ() + 0.2D,
+                                "Bot crossed the prepared cliff edge");
+                        P2GameTestSupport.require(
+                                !bot.player().isDeadOrDying(),
+                                "Cliff reflex allowed a fatal fall");
                         cleanup.run();
                         helper.succeed();
                     });

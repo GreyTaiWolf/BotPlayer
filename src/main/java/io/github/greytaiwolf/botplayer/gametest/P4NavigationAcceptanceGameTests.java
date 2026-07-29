@@ -43,6 +43,8 @@ public final class P4NavigationAcceptanceGameTests {
         P2GameTestSupport.Cleanup cleanup = cleanup(bot);
         try {
             double startZ = bot.player().getZ();
+            long teleportAcknowledgementsBeforeNavigation =
+                    teleportAcknowledgements(bot);
             BlockPos target =
                     helper.absolutePos(new BlockPos(4, 1, 7));
             NavigationSubmission submission =
@@ -70,7 +72,8 @@ public final class P4NavigationAcceptanceGameTests {
                             bot,
                             completion.join(),
                             target,
-                            startZ));
+                            startZ,
+                            teleportAcknowledgementsBeforeNavigation));
         } catch (RuntimeException | AssertionError exception) {
             cleanup.run();
             throw exception;
@@ -95,6 +98,8 @@ public final class P4NavigationAcceptanceGameTests {
         P2GameTestSupport.Cleanup cleanup = cleanup(bot);
         try {
             double startZ = bot.player().getZ();
+            long teleportAcknowledgementsBeforeNavigation =
+                    teleportAcknowledgements(bot);
             BlockPos target =
                     helper.absolutePos(new BlockPos(4, 1, 7));
             NavigationSubmission submission =
@@ -122,7 +127,8 @@ public final class P4NavigationAcceptanceGameTests {
                             bot,
                             completion.join(),
                             target,
-                            startZ));
+                            startZ,
+                            teleportAcknowledgementsBeforeNavigation));
         } catch (RuntimeException | AssertionError exception) {
             cleanup.run();
             throw exception;
@@ -135,7 +141,8 @@ public final class P4NavigationAcceptanceGameTests {
             TestBot bot,
             NavigationOutcome outcome,
             BlockPos target,
-            double minimumStartZ) {
+            double minimumStartZ,
+            long teleportAcknowledgementsBeforeNavigation) {
         P2GameTestSupport.require(
                 outcome.state() == NavigationState.SUCCEEDED,
                 "P4 navigation ended as "
@@ -162,11 +169,23 @@ public final class P4NavigationAcceptanceGameTests {
             P2GameTestSupport.require(
                     connection.snapshot()
                                     .teleportAcknowledgementCount()
-                            == 0L,
+                            == teleportAcknowledgementsBeforeNavigation,
                     "P4 navigation used a teleport acknowledgement");
         }
         cleanup.run();
         helper.succeed();
+    }
+
+    private static long teleportAcknowledgements(TestBot bot) {
+        if (bot.player()
+                        .connection
+                        .getConnection()
+                instanceof BotConnection connection) {
+            return connection.snapshot()
+                    .teleportAcknowledgementCount();
+        }
+        throw new IllegalStateException(
+                "P4 navigation bot has no virtual BotConnection");
     }
 
     private static P2GameTestSupport.Cleanup cleanup(
