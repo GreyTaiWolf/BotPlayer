@@ -663,11 +663,21 @@ public final class NavigationService implements AutoCloseable {
                     false,
                     movementTicks,
                     stuckWindowTicks);
+            case SWIM_HORIZONTAL -> player.isUnderWater()
+                    ? new MoveInputAction(
+                            1.0F,
+                            0.0F,
+                            false,
+                            false,
+                            true,
+                            movementTicks,
+                            stuckWindowTicks)
+                    : new JumpAction(
+                            1.0F, 0.0F, false, 4);
             case START,
                     WALK_CARDINAL,
                     WALK_DIAGONAL,
                     DROP_SAFE,
-                    SWIM_HORIZONTAL,
                     WAIT_FOR_OBSTACLE -> new MoveInputAction(
                             1.0F,
                             0.0F,
