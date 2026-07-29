@@ -57,6 +57,8 @@ public final class NavigationService implements AutoCloseable {
     private static final int RESULT_INBOX_CAPACITY = 512;
     private static final int TERMINAL_SESSION_CAPACITY = 1_024;
     private static final int MAXIMUM_WAYPOINT_ATTEMPTS = 12;
+    private static final int WATER_HORIZONTAL_INPUT_TICKS = 16;
+    private static final int WATER_HORIZONTAL_STUCK_TICKS = 8;
 
     private final NavigationSettings settings;
     private final NavigationSnapshotBuilder snapshotBuilder;
@@ -663,17 +665,14 @@ public final class NavigationService implements AutoCloseable {
                     false,
                     movementTicks,
                     stuckWindowTicks);
-            case SWIM_HORIZONTAL -> player.isUnderWater()
-                    ? new MoveInputAction(
-                            1.0F,
-                            0.0F,
-                            false,
-                            false,
-                            true,
-                            movementTicks,
-                            stuckWindowTicks)
-                    : new JumpAction(
-                            1.0F, 0.0F, false, 4);
+            case SWIM_HORIZONTAL -> new MoveInputAction(
+                    1.0F,
+                    0.0F,
+                    false,
+                    false,
+                    true,
+                    WATER_HORIZONTAL_INPUT_TICKS,
+                    WATER_HORIZONTAL_STUCK_TICKS);
             case START,
                     WALK_CARDINAL,
                     WALK_DIAGONAL,
