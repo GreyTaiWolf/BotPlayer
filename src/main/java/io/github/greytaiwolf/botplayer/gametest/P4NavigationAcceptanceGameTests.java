@@ -507,7 +507,7 @@ public final class P4NavigationAcceptanceGameTests {
         for (int y = 1; y <= 4; y++) {
             helper.setBlock(new BlockPos(4, y, 5), Blocks.STONE);
         }
-        for (int y = 1; y <= 3; y++) {
+        for (int y = 1; y <= 4; y++) {
             helper.setBlock(
                     new BlockPos(4, y, 4),
                     Blocks.LADDER
@@ -527,7 +527,7 @@ public final class P4NavigationAcceptanceGameTests {
         try {
             double startY = bot.player().getY();
             BlockPos target =
-                    helper.absolutePos(new BlockPos(4, 3, 4));
+                    helper.absolutePos(new BlockPos(4, 4, 4));
             NavigationSubmission submission =
                     bot.manager().startNavigation(
                             bot.name(), GridPoint.from(target));
@@ -555,7 +555,7 @@ public final class P4NavigationAcceptanceGameTests {
                                         + "/"
                                         + outcome.failure());
                         P2GameTestSupport.require(
-                                bot.player().getY() > startY + 0.35D,
+                                bot.player().getY() > startY + 0.8D,
                                 "P4 ladder route did not raise the real player body");
                         cleanup.run();
                         helper.succeed();

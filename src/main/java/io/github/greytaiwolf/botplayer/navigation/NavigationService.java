@@ -668,8 +668,10 @@ public final class NavigationService implements AutoCloseable {
                             sprintAllowed(session, player, node),
                             false,
                             node.locomotionMode()
-                                    == io.github.greytaiwolf.botplayer
-                                            .navigation.path.LocomotionMode.WATER,
+                                            == io.github.greytaiwolf.botplayer
+                                                    .navigation.path
+                                                    .LocomotionMode.WATER
+                                    && player.isUnderWater(),
                             settings.followerInputTicks(),
                             Math.min(
                                     settings.stuckWindowTicks(),
