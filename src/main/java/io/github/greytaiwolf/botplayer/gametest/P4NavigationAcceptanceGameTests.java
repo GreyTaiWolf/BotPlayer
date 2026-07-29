@@ -36,6 +36,8 @@ public final class P4NavigationAcceptanceGameTests {
             "p4_terrain_place";
     private static final String TERRAIN_POLICY_BATCH =
             "p4_terrain_policy";
+    private static final String LIFECYCLE_BATCH =
+            "p4_navigation_lifecycle";
     private static final int TIMEOUT_TICKS = 400;
 
     private P4NavigationAcceptanceGameTests() {}
@@ -404,6 +406,95 @@ public final class P4NavigationAcceptanceGameTests {
                     "Rejected low-supply travel created a navigation session");
             cleanup.run();
             helper.succeed();
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = LIFECYCLE_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void deathClosesNavigationBeforeReplacementGeneration(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        boolean previousAutoRespawn =
+                BotPlayerConfig.AUTO_RESPAWN.get();
+        int previousRespawnDelay =
+                BotPlayerConfig.RESPAWN_DELAY_TICKS.get();
+        BotPlayerConfig.AUTO_RESPAWN.set(true);
+        BotPlayerConfig.RESPAWN_DELAY_TICKS.set(0);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4NavLife",
+                new Vec3(4.5D, 1.0D, 2.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        cleanup.add(() -> {
+            BotPlayerConfig.AUTO_RESPAWN
+                    .set(previousAutoRespawn);
+            BotPlayerConfig.RESPAWN_DELAY_TICKS
+                    .set(previousRespawnDelay);
+        });
+        try {
+            long oldGeneration = bot.player()
+                    .runtimeHandle()
+                    .generation();
+            BlockPos target =
+                    helper.absolutePos(new BlockPos(4, 1, 7));
+            NavigationSubmission submission =
+                    bot.manager().startNavigation(
+                            bot.name(), GridPoint.from(target));
+            P2GameTestSupport.require(
+                    submission.status()
+                            == NavigationSubmission.Status.ENQUEUED,
+                    "Lifecycle navigation setup was rejected");
+            CompletableFuture<NavigationOutcome> completion =
+                    submission.completion()
+                            .orElseThrow()
+                            .toCompletableFuture();
+            bot.player().kill();
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    100,
+                    () -> completion.isDone()
+                            && bot.manager()
+                                    .resolveActionTarget(
+                                            bot.player().getUUID(),
+                                            oldGeneration + 1L)
+                                    .isPresent()
+                            && bot.manager()
+                                    .latestSafetyFrame(bot.name())
+                                    .filter(frame ->
+                                            frame.botGeneration()
+                                                    == oldGeneration
+                                                            + 1L)
+                                    .isPresent(),
+                    "P4 navigation or safety state crossed the respawn generation boundary",
+                    cleanup,
+                    () -> {
+                        NavigationOutcome outcome =
+                                completion.join();
+                        P2GameTestSupport.require(
+                                outcome.state()
+                                                == NavigationState.STALE
+                                        && outcome.failure()
+                                                == NavigationFailure
+                                                        .STALE_GENERATION,
+                                "Old navigation did not terminate as STALE_GENERATION");
+                        P2GameTestSupport.require(
+                                bot.manager()
+                                        .safetyIncident(bot.name())
+                                        .filter(incident ->
+                                                incident.botGeneration()
+                                                        == oldGeneration)
+                                        .isEmpty(),
+                                "Old safety incident survived into the replacement body");
+                        cleanup.run();
+                        helper.succeed();
+                    });
         } catch (RuntimeException | AssertionError exception) {
             cleanup.run();
             throw exception;

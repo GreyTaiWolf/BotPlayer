@@ -12,6 +12,7 @@ import io.github.greytaiwolf.botplayer.safety.EffectSummary;
 import io.github.greytaiwolf.botplayer.safety.HazardType;
 import io.github.greytaiwolf.botplayer.safety.SafetyFrame;
 import io.github.greytaiwolf.botplayer.safety.SafetyIncidentView;
+import io.github.greytaiwolf.botplayer.safety.SafetyIntervention;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import net.minecraft.core.BlockPos;
@@ -29,7 +30,9 @@ import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.item.PrimedTnt;
 import net.minecraft.world.entity.monster.Zombie;
+import net.minecraft.world.entity.projectile.Arrow;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
@@ -48,8 +51,14 @@ public final class P4SafetyAcceptanceGameTests {
             "p4_aggro_damage";
     private static final String STARVATION_BATCH =
             "p4_starvation";
+    private static final String HUNGER_ACTIVITY_BATCH =
+            "p4_hunger_activity";
     private static final String COMPATIBILITY_BATCH =
             "p4_compatibility";
+    private static final String ENVIRONMENT_BATCH =
+            "p4_environment";
+    private static final String FAST_THREAT_BATCH =
+            "p4_fast_threats";
     private static final String FIXTURE_ATTRIBUTE_BUFF_TAG =
             "botplayer_p4_fixture_attribute_buff";
     private static final ResourceKey<DamageType>
@@ -706,6 +715,354 @@ public final class P4SafetyAcceptanceGameTests {
                                 cleanup.run();
                                 helper.succeed();
                             }));
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = HUNGER_ACTIVITY_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void realSprintConsumesFoodDataExhaustion(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4Exhaust",
+                new Vec3(4.5D, 1.0D, 2.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        try {
+            bot.player().getFoodData().setFoodLevel(20);
+            bot.player().getFoodData().setSaturation(0.0F);
+            bot.player().getFoodData().setExhaustion(3.9F);
+            double startingZ = bot.player().getZ();
+            CompletableFuture<ActionOutcome> sprint =
+                    P2GameTestSupport.submit(
+                                    bot,
+                                    new MoveInputAction(
+                                            1.0F,
+                                            0.0F,
+                                            true,
+                                            false,
+                                            false,
+                                            20,
+                                            10),
+                                    60)
+                            .toCompletableFuture();
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    80,
+                    () -> sprint.isDone()
+                            && bot.player()
+                                            .getFoodData()
+                                            .getFoodLevel()
+                                    < 20,
+                    "Real sprint input did not cross the vanilla FoodData exhaustion threshold",
+                    cleanup,
+                    () -> {
+                        P2GameTestSupport.require(
+                                sprint.join().state()
+                                        == ActionState.SUCCEEDED,
+                                "Sprint exhaustion action did not complete");
+                        P2GameTestSupport.require(
+                                bot.player().getZ()
+                                        > startingZ + 0.5D,
+                                "Food loss occurred without real sprint displacement");
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = ENVIRONMENT_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void fireContactCreatesARealEscapeIntervention(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4Fire",
+                new Vec3(4.5D, 1.0D, 4.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        BlockPos firePosition =
+                helper.absolutePos(new BlockPos(4, 1, 4));
+        boolean[] observedFire = {false};
+        boolean[] observedEscape = {false};
+        try {
+            helper.setBlock(new BlockPos(4, 1, 4), Blocks.FIRE);
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    100,
+                    () -> {
+                        observedFire[0] |= bot.manager()
+                                .latestSafetyFrame(bot.name())
+                                .filter(SafetyFrame::onFire)
+                                .isPresent()
+                                && bot.manager()
+                                        .safetyIncident(bot.name())
+                                        .filter(incident ->
+                                                incident.hazardType()
+                                                        == HazardType
+                                                                .FIRE_CONTACT)
+                                        .isPresent();
+                        observedEscape[0] |= bot.manager()
+                                .safetyIncident(bot.name())
+                                .flatMap(
+                                        SafetyIncidentView
+                                                ::currentIntervention)
+                                .filter(intervention ->
+                                        intervention
+                                                == SafetyIntervention
+                                                        .MOVE_TO_SAFE_NEIGHBOR)
+                                .isPresent();
+                        return observedFire[0]
+                                && observedEscape[0]
+                                && bot.player()
+                                                .blockPosition()
+                                                .distManhattan(
+                                                        firePosition)
+                                        > 0;
+                    },
+                    "P4 did not turn real fire contact into a physical escape",
+                    cleanup,
+                    () -> {
+                        P2GameTestSupport.require(
+                                bot.player()
+                                                .blockPosition()
+                                                .distManhattan(
+                                                        firePosition)
+                                        > 0,
+                                "Fire intervention did not move the real body away");
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = ENVIRONMENT_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void lowAirWaterColumnTriggersSwimUp(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        for (int x = 3; x <= 5; x++) {
+            for (int z = 3; z <= 5; z++) {
+                for (int y = 1; y <= 2; y++) {
+                    helper.setBlock(
+                            new BlockPos(x, y, z),
+                            Blocks.WATER);
+                }
+            }
+        }
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4Drown",
+                new Vec3(4.5D, 1.0D, 4.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        double startingY = bot.player().getY();
+        boolean[] observedDrowning = {false};
+        boolean[] observedSwim = {false};
+        try {
+            bot.player().setAirSupply(20);
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    100,
+                    () -> {
+                        observedDrowning[0] |= bot.manager()
+                                .safetyIncident(bot.name())
+                                .filter(incident ->
+                                        incident.hazardType()
+                                                == HazardType.DROWNING)
+                                .isPresent();
+                        observedSwim[0] |= bot.manager()
+                                .safetyIncident(bot.name())
+                                .flatMap(
+                                        SafetyIncidentView
+                                                ::currentIntervention)
+                                .filter(intervention ->
+                                        intervention
+                                                == SafetyIntervention
+                                                        .SWIM_UP)
+                                .isPresent();
+                        return observedDrowning[0]
+                                && observedSwim[0]
+                                && bot.player().getY()
+                                        > startingY + 0.05D;
+                    },
+                    "P4 did not convert low underwater air into upward movement",
+                    cleanup,
+                    () -> {
+                        P2GameTestSupport.require(
+                                bot.player().getY()
+                                        > startingY + 0.05D,
+                                "Drowning intervention did not move the real body upward");
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = FAST_THREAT_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void approachingArrowPreemptsOrdinaryMovement(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4Arrow",
+                new Vec3(4.5D, 1.0D, 4.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        Arrow arrow = Objects.requireNonNull(
+                EntityType.ARROW.create(helper.getLevel()),
+                "GameTest arrow");
+        cleanup.add(arrow::discard);
+        try {
+            CompletableFuture<ActionOutcome> movement =
+                    P2GameTestSupport.submit(
+                                    bot,
+                                    new MoveInputAction(
+                                            1.0F,
+                                            0.0F,
+                                            false,
+                                            false,
+                                            false,
+                                            60,
+                                            20),
+                                    100)
+                            .toCompletableFuture();
+            Vec3 arrowPosition = helper.absoluteVec(
+                    new Vec3(4.5D, 2.2D, 1.5D));
+            arrow.moveTo(
+                    arrowPosition.x,
+                    arrowPosition.y,
+                    arrowPosition.z,
+                    0.0F,
+                    0.0F);
+            arrow.setNoGravity(true);
+            arrow.setDeltaMovement(0.0D, 0.0D, 0.08D);
+            P2GameTestSupport.require(
+                    helper.getLevel().addFreshEntity(arrow),
+                    "Approaching arrow could not enter the GameTest level");
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    100,
+                    () -> movement.isDone()
+                            && bot.manager()
+                                    .safetyIncident(bot.name())
+                                    .filter(incident ->
+                                            incident.hazardType()
+                                                            == HazardType
+                                                                    .PROJECTILE_IMPACT
+                                                    && incident
+                                                            .currentIntervention()
+                                                            .filter(
+                                                                    intervention ->
+                                                                            intervention
+                                                                                    == SafetyIntervention
+                                                                                            .DODGE_PROJECTILE)
+                                                            .isPresent())
+                                    .isPresent(),
+                    "P4 did not preempt ordinary input for an approaching projectile",
+                    cleanup,
+                    () -> {
+                        ActionOutcome outcome = movement.join();
+                        P2GameTestSupport.require(
+                                outcome.state()
+                                                == ActionState.PREEMPTED
+                                        || outcome.state()
+                                                == ActionState.CANCELLED,
+                                "Projectile emergency did not preempt ordinary movement");
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = FAST_THREAT_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void primedTntTriggersExplosionRetreat(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4Tnt",
+                new Vec3(4.5D, 1.0D, 4.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        PrimedTnt tnt = Objects.requireNonNull(
+                EntityType.TNT.create(helper.getLevel()),
+                "GameTest primed TNT");
+        cleanup.add(tnt::discard);
+        try {
+            Vec3 tntPosition = helper.absoluteVec(
+                    new Vec3(4.5D, 1.0D, 2.5D));
+            tnt.moveTo(
+                    tntPosition.x,
+                    tntPosition.y,
+                    tntPosition.z,
+                    0.0F,
+                    0.0F);
+            tnt.setFuse(200);
+            P2GameTestSupport.require(
+                    helper.getLevel().addFreshEntity(tnt),
+                    "Primed TNT could not enter the GameTest level");
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    80,
+                    () -> bot.manager()
+                            .safetyIncident(bot.name())
+                            .filter(incident ->
+                                    incident.hazardType()
+                                                    == HazardType
+                                                            .EXPLOSION_IMMINENT
+                                            && incident
+                                                    .currentIntervention()
+                                                    .filter(
+                                                            intervention ->
+                                                                    intervention
+                                                                            == SafetyIntervention
+                                                                                    .MOVE_AWAY_FROM_EXPLOSION)
+                                                    .isPresent())
+                            .isPresent(),
+                    "P4 did not convert primed TNT into an explosion retreat",
+                    cleanup,
+                    () -> {
+                        P2GameTestSupport.require(
+                                tnt.isAlive(),
+                                "TNT exploded before the safety response was observed");
+                        cleanup.run();
+                        helper.succeed();
+                    });
         } catch (RuntimeException | AssertionError exception) {
             cleanup.run();
             throw exception;
