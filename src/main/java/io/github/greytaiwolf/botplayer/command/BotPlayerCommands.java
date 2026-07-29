@@ -4,11 +4,17 @@ import static net.minecraft.commands.Commands.argument;
 import static net.minecraft.commands.Commands.literal;
 
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import io.github.greytaiwolf.botplayer.config.BotPlayerConfig;
 import io.github.greytaiwolf.botplayer.lifecycle.BotPlayerManagers;
 import io.github.greytaiwolf.botplayer.lifecycle.BotSnapshot;
+import io.github.greytaiwolf.botplayer.navigation.GridPoint;
+import io.github.greytaiwolf.botplayer.navigation.NavigationSessionView;
+import io.github.greytaiwolf.botplayer.navigation.NavigationSubmission;
 import io.github.greytaiwolf.botplayer.perception.ObservationSnapshot;
+import io.github.greytaiwolf.botplayer.safety.SafetyFrame;
+import io.github.greytaiwolf.botplayer.safety.SafetyIncidentView;
 import io.github.greytaiwolf.botplayer.worldmodel.ActivityReportFormatter;
 import io.github.greytaiwolf.botplayer.worldmodel.WorldFact;
 import java.util.List;
@@ -47,6 +53,85 @@ public final class BotPlayerCommands {
                         .requires(source -> source.hasPermission(
                                 BotPlayerConfig.COMMAND_PERMISSION_LEVEL.get()))
                         .executes(context -> list(context.getSource())))
+                .then(literal("navigation")
+                        .requires(source -> source.hasPermission(2))
+                        .then(literal("go")
+                                .then(argument(
+                                                "name",
+                                                StringArgumentType.word())
+                                        .then(argument(
+                                                        "x",
+                                                        IntegerArgumentType
+                                                                .integer(
+                                                                        -30_000_000,
+                                                                        30_000_000))
+                                                .then(argument(
+                                                                "y",
+                                                                IntegerArgumentType
+                                                                        .integer(
+                                                                                -2_048,
+                                                                                2_048))
+                                                        .then(argument(
+                                                                        "z",
+                                                                        IntegerArgumentType
+                                                                                .integer(
+                                                                                        -30_000_000,
+                                                                                        30_000_000))
+                                                                .executes(context ->
+                                                                        startNavigation(
+                                                                                context
+                                                                                        .getSource(),
+                                                                                StringArgumentType
+                                                                                        .getString(
+                                                                                                context,
+                                                                                                "name"),
+                                                                                IntegerArgumentType
+                                                                                        .getInteger(
+                                                                                                context,
+                                                                                                "x"),
+                                                                                IntegerArgumentType
+                                                                                        .getInteger(
+                                                                                                context,
+                                                                                                "y"),
+                                                                                IntegerArgumentType
+                                                                                        .getInteger(
+                                                                                                context,
+                                                                                                "z"))))))))
+                        .then(literal("stop")
+                                .then(argument(
+                                                "name",
+                                                StringArgumentType.word())
+                                        .executes(context ->
+                                                stopNavigation(
+                                                        context.getSource(),
+                                                        StringArgumentType
+                                                                .getString(
+                                                                        context,
+                                                                        "name")))))
+                        .then(literal("inspect")
+                                .then(argument(
+                                                "name",
+                                                StringArgumentType.word())
+                                        .executes(context ->
+                                                inspectNavigation(
+                                                        context.getSource(),
+                                                        StringArgumentType
+                                                                .getString(
+                                                                        context,
+                                                                        "name"))))))
+                .then(literal("safety")
+                        .requires(source -> source.hasPermission(2))
+                        .then(literal("inspect")
+                                .then(argument(
+                                                "name",
+                                                StringArgumentType.word())
+                                        .executes(context ->
+                                                inspectSafety(
+                                                        context.getSource(),
+                                                        StringArgumentType
+                                                                .getString(
+                                                                        context,
+                                                                        "name"))))))
                 .then(literal("perception")
                         /*
                          * 感知快照属于 bot 本地知识，调试入口固定为管理权限，
@@ -85,6 +170,160 @@ public final class BotPlayerCommands {
                                                                                 .getString(
                                                                                         context,
                                                                                         "activity")))))))));
+    }
+
+    private static int startNavigation(
+            CommandSourceStack source,
+            String name,
+            int x,
+            int y,
+            int z) {
+        var manager = BotPlayerManagers.get(source.getServer());
+        NavigationSubmission submission = manager.startNavigation(
+                name, new GridPoint(x, y, z));
+        if (submission.status()
+                != NavigationSubmission.Status.ENQUEUED) {
+            source.sendFailure(Component.literal(
+                    "P4 导航拒绝："
+                            + submission.status().name()
+                            + " "
+                            + submission.safeSummary()));
+            return 0;
+        }
+        NavigationSessionView view =
+                manager.navigationSession(name).orElseThrow();
+        source.sendSuccess(
+                () -> Component.literal(
+                        "P4 导航已启动："
+                                + name
+                                + " id="
+                                + view.navigationId()
+                                + " target="
+                                + x
+                                + ","
+                                + y
+                                + ","
+                                + z),
+                true);
+        return 1;
+    }
+
+    private static int stopNavigation(
+            CommandSourceStack source, String name) {
+        if (!BotPlayerManagers.get(source.getServer())
+                .stopNavigation(name)) {
+            source.sendFailure(Component.literal(
+                    "没有可取消的 P4 导航：" + name));
+            return 0;
+        }
+        source.sendSuccess(
+                () -> Component.literal(
+                        "已取消 P4 导航：" + name),
+                true);
+        return 1;
+    }
+
+    private static int inspectNavigation(
+            CommandSourceStack source, String name) {
+        NavigationSessionView view = BotPlayerManagers
+                .get(source.getServer())
+                .navigationSession(name)
+                .orElse(null);
+        if (view == null) {
+            source.sendFailure(Component.literal(
+                    "没有 P4 导航记录：" + name));
+            return 0;
+        }
+        source.sendSuccess(
+                () -> Component.literal(
+                        "P4 导航 "
+                                + name
+                                + " id="
+                                + view.navigationId()
+                                + " state="
+                                + view.state().name()
+                                + " route="
+                                + view.routeIndex()
+                                + "/"
+                                + view.routeSize()
+                                + " segments="
+                                + view.segmentsCompleted()
+                                + " replans="
+                                + view.replans()
+                                + " recoveries="
+                                + view.recoveryAttempts()
+                                + " break="
+                                + view.blocksBroken()
+                                + " place="
+                                + view.blocksPlaced()
+                                + " summary="
+                                + view.safeSummary()),
+                false);
+        return 1;
+    }
+
+    private static int inspectSafety(
+            CommandSourceStack source, String name) {
+        var manager = BotPlayerManagers.get(source.getServer());
+        SafetyIncidentView incident =
+                manager.safetyIncident(name).orElse(null);
+        SafetyFrame frame =
+                manager.latestSafetyFrame(name).orElse(null);
+        if (incident == null && frame == null) {
+            source.sendFailure(Component.literal(
+                    "没有 P4 安全帧：" + name));
+            return 0;
+        }
+        if (incident != null) {
+            source.sendSuccess(
+                    () -> Component.literal(
+                            "P4 安全 incident="
+                                    + incident.incidentId()
+                                    + " state="
+                                    + incident.state().name()
+                                    + " hazard="
+                                    + incident.hazardType().name()
+                                    + "/"
+                                    + incident.severity().name()
+                                    + " attempts="
+                                    + incident.interventions()
+                                    + " stable="
+                                    + incident.clearStableTicks()
+                                    + " evidence="
+                                    + incident.evidence()),
+                    false);
+        }
+        if (frame != null) {
+            source.sendSuccess(
+                    () -> Component.literal(
+                            "P4 安全帧 tick="
+                                    + frame.gameTick()
+                                    + " hp="
+                                    + frame.health()
+                                    + "+"
+                                    + frame.absorption()
+                                    + " food="
+                                    + frame.food()
+                                    + " air="
+                                    + frame.air()
+                                    + " effects="
+                                    + frame.effects().size()
+                                    + (frame.effectsTruncated()
+                                            ? "+"
+                                            : "")
+                                    + " threats="
+                                    + frame.threats().size()
+                                    + (frame.threatCoverageIncomplete()
+                                            ? "+"
+                                            : "")
+                                    + " lastDamage="
+                                    + frame.recentDamage()
+                                            .map(value ->
+                                                    value.damageTypeId())
+                                            .orElse("none")),
+                    false);
+        }
+        return 1;
     }
 
     private static int spawn(CommandSourceStack source, String name) {

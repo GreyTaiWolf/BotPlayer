@@ -38,6 +38,39 @@ public final class BotPlayerConfig {
     public static final ModConfigSpec.DoubleValue PERCEPTION_CRITICAL_MSPT;
     public static final ModConfigSpec.DoubleValue PERCEPTION_RECOVER_MSPT;
     public static final ModConfigSpec.DoubleValue PERCEPTION_CRITICAL_RECOVER_MSPT;
+    public static final ModConfigSpec.IntValue NAVIGATION_HORIZONTAL_RADIUS;
+    public static final ModConfigSpec.IntValue NAVIGATION_VERTICAL_RADIUS;
+    public static final ModConfigSpec.IntValue NAVIGATION_SNAPSHOT_CELLS_PER_BOT_TICK;
+    public static final ModConfigSpec.IntValue NAVIGATION_SNAPSHOT_GLOBAL_CELLS_PER_TICK;
+    public static final ModConfigSpec.IntValue NAVIGATION_MAXIMUM_SNAPSHOT_TICKS;
+    public static final ModConfigSpec.IntValue NAVIGATION_MAXIMUM_EXPANSIONS;
+    public static final ModConfigSpec.IntValue NAVIGATION_MAXIMUM_CONCURRENT_PLANS;
+    public static final ModConfigSpec.IntValue NAVIGATION_MAXIMUM_QUEUED_PLANS;
+    public static final ModConfigSpec.IntValue NAVIGATION_MAXIMUM_GOAL_DISTANCE;
+    public static final ModConfigSpec.IntValue NAVIGATION_FOLLOWER_INPUT_TICKS;
+    public static final ModConfigSpec.IntValue NAVIGATION_STUCK_WINDOW_TICKS;
+    public static final ModConfigSpec.DoubleValue NAVIGATION_WAYPOINT_TOLERANCE;
+    public static final ModConfigSpec.IntValue NAVIGATION_MINIMUM_SPRINT_FOOD;
+    public static final ModConfigSpec.IntValue NAVIGATION_MINIMUM_TRAVEL_FOOD;
+    public static final ModConfigSpec.DoubleValue NAVIGATION_MINIMUM_TRAVEL_HEALTH;
+    public static final ModConfigSpec.BooleanValue NAVIGATION_ALLOW_TERRAIN_BREAK;
+    public static final ModConfigSpec.IntValue NAVIGATION_MAXIMUM_TERRAIN_BLOCKS_BROKEN;
+    public static final ModConfigSpec.BooleanValue NAVIGATION_ALLOW_TERRAIN_PLACE;
+    public static final ModConfigSpec.IntValue NAVIGATION_MAXIMUM_TERRAIN_BLOCKS_PLACED;
+    public static final ModConfigSpec.DoubleValue SAFETY_CRITICAL_HEALTH;
+    public static final ModConfigSpec.IntValue SAFETY_CRITICAL_FOOD;
+    public static final ModConfigSpec.IntValue SAFETY_CRITICAL_AIR;
+    public static final ModConfigSpec.IntValue SAFETY_CRITICAL_FROZEN_TICKS;
+    public static final ModConfigSpec.DoubleValue SAFETY_ENTITY_RADIUS;
+    public static final ModConfigSpec.DoubleValue SAFETY_HOSTILE_RADIUS;
+    public static final ModConfigSpec.DoubleValue SAFETY_PROJECTILE_RADIUS;
+    public static final ModConfigSpec.DoubleValue SAFETY_EXPLOSION_RADIUS;
+    public static final ModConfigSpec.IntValue SAFETY_MAXIMUM_ENTITY_READS;
+    public static final ModConfigSpec.IntValue SAFETY_MAXIMUM_RAW_ENTITY_READS;
+    public static final ModConfigSpec.IntValue SAFETY_CLEAR_STABLE_TICKS;
+    public static final ModConfigSpec.IntValue SAFETY_MAXIMUM_INTERVENTIONS;
+    public static final ModConfigSpec.IntValue SAFETY_RETREAT_INPUT_TICKS;
+    public static final ModConfigSpec.IntValue SAFETY_MAXIMUM_SAFE_DROP;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -148,6 +181,111 @@ public final class BotPlayerConfig {
         PERCEPTION_CRITICAL_RECOVER_MSPT = builder
                 .comment("离开关键感知状态所需的平滑 MSPT。")
                 .defineInRange("criticalRecoverMspt", 45.0D, 1.0D, 199.0D);
+        builder.pop();
+
+        builder.push("safety");
+        SAFETY_CRITICAL_HEALTH = builder
+                .comment("L0 停止普通任务并进入保守避险的生命阈值。")
+                .defineInRange("criticalHealth", 4.0D, 0.0D, 2048.0D);
+        SAFETY_CRITICAL_FOOD = builder
+                .comment("L0 禁止继续消耗型远行的食物阈值。")
+                .defineInRange("criticalFood", 4, 0, 20);
+        SAFETY_CRITICAL_AIR = builder
+                .comment("L0 开始水下换气干预的空气阈值。")
+                .defineInRange("criticalAir", 40, 0, 300);
+        SAFETY_CRITICAL_FROZEN_TICKS = builder
+                .comment("L0 将冻结视为紧急环境伤害的 Tick 阈值。")
+                .defineInRange("criticalFrozenTicks", 100, 0, 1000);
+        SAFETY_ENTITY_RADIUS = builder
+                .comment("L0 每 Tick 有界读取近场威胁的最大半径。")
+                .defineInRange("entityRadius", 12.0D, 1.0D, 32.0D);
+        SAFETY_HOSTILE_RADIUS = builder
+                .comment("已锁定 bot 的敌对生物触发撤退的半径。")
+                .defineInRange("hostileRadius", 10.0D, 1.0D, 32.0D);
+        SAFETY_PROJECTILE_RADIUS = builder
+                .comment("来袭弹射物触发闪避的半径。")
+                .defineInRange("projectileRadius", 10.0D, 1.0D, 32.0D);
+        SAFETY_EXPLOSION_RADIUS = builder
+                .comment("已点燃爆炸物触发撤退的半径。")
+                .defineInRange("explosionRadius", 12.0D, 1.0D, 32.0D);
+        SAFETY_MAXIMUM_ENTITY_READS = builder
+                .comment("单个 bot 每 Tick 最多接受的 L0 威胁实体数。")
+                .defineInRange("maximumEntityReads", 32, 1, 128);
+        SAFETY_MAXIMUM_RAW_ENTITY_READS = builder
+                .comment("单个 bot 每 Tick 最多扫描的 L0 原始实体候选数。")
+                .defineInRange("maximumRawEntityReads", 256, 1, 2048);
+        SAFETY_CLEAR_STABLE_TICKS = builder
+                .comment("危险消失后恢复导航前要求连续安全的 Tick 数。")
+                .defineInRange("clearStableTicks", 20, 1, 100);
+        SAFETY_MAXIMUM_INTERVENTIONS = builder
+                .comment("同一安全 incident 允许的最大物理干预次数。")
+                .defineInRange("maximumInterventions", 6, 1, 16);
+        SAFETY_RETREAT_INPUT_TICKS = builder
+                .comment("L0 每次后退、侧移或上浮输入的短租约 Tick 数。")
+                .defineInRange("retreatInputTicks", 3, 2, 5);
+        SAFETY_MAXIMUM_SAFE_DROP = builder
+                .comment("L0 认定前方仍有稳定支撑的最大落差。")
+                .defineInRange("maximumSafeDrop", 3, 0, 4);
+        builder.pop();
+
+        builder.push("navigation");
+        NAVIGATION_HORIZONTAL_RADIUS = builder
+                .comment("单次局部导航快照的水平半径。")
+                .defineInRange("horizontalRadius", 24, 4, 48);
+        NAVIGATION_VERTICAL_RADIUS = builder
+                .comment("单次局部导航快照的垂直半径。")
+                .defineInRange("verticalRadius", 8, 2, 16);
+        NAVIGATION_SNAPSHOT_CELLS_PER_BOT_TICK = builder
+                .comment("单个 bot 每 Tick 最多采样的运动单元格。")
+                .defineInRange("snapshotCellsPerBotTick", 2048, 64, 8192);
+        NAVIGATION_SNAPSHOT_GLOBAL_CELLS_PER_TICK = builder
+                .comment("所有 bot 每 Tick 共享的运动快照采样预算。")
+                .defineInRange("snapshotGlobalCellsPerTick", 8192, 64, 65536);
+        NAVIGATION_MAXIMUM_SNAPSHOT_TICKS = builder
+                .comment("局部运动快照允许跨越的最大 Tick 数。")
+                .defineInRange("maximumSnapshotTicks", 20, 1, 100);
+        NAVIGATION_MAXIMUM_EXPANSIONS = builder
+                .comment("单次有界 A* 允许扩展的最大节点数。")
+                .defineInRange("maximumExpansions", 50000, 100, 250000);
+        NAVIGATION_MAXIMUM_CONCURRENT_PLANS = builder
+                .comment("规划工作池允许同时执行的任务数。")
+                .defineInRange("maximumConcurrentPlans", 2, 1, 8);
+        NAVIGATION_MAXIMUM_QUEUED_PLANS = builder
+                .comment("规划工作池的有界等待队列容量。")
+                .defineInRange("maximumQueuedPlans", 16, 1, 128);
+        NAVIGATION_MAXIMUM_GOAL_DISTANCE = builder
+                .comment("同维度导航目标允许的最大水平距离。")
+                .defineInRange("maximumGoalDistance", 2048, 16, 16384);
+        NAVIGATION_FOLLOWER_INPUT_TICKS = builder
+                .comment("路线 follower 每次提交的短输入租约 Tick 数。")
+                .defineInRange("followerInputTicks", 3, 2, 5);
+        NAVIGATION_STUCK_WINDOW_TICKS = builder
+                .comment("动作后端用于检测无进展的滚动 Tick 窗口。")
+                .defineInRange("stuckWindowTicks", 20, 5, 40);
+        NAVIGATION_WAYPOINT_TOLERANCE = builder
+                .comment("到达路线节点的水平距离容差。")
+                .defineInRange("waypointTolerance", 0.45D, 0.1D, 1.0D);
+        NAVIGATION_MINIMUM_SPRINT_FOOD = builder
+                .comment("允许导航发出疾跑输入的最小食物值。")
+                .defineInRange("minimumSprintFood", 7, 0, 20);
+        NAVIGATION_MINIMUM_TRAVEL_FOOD = builder
+                .comment("允许继续普通远行的最小食物值。")
+                .defineInRange("minimumTravelFood", 5, 0, 20);
+        NAVIGATION_MINIMUM_TRAVEL_HEALTH = builder
+                .comment("允许继续普通远行的最小生命值。")
+                .defineInRange("minimumTravelHealth", 6.0D, 0.0D, 2048.0D);
+        NAVIGATION_ALLOW_TERRAIN_BREAK = builder
+                .comment("服务端是否允许显式授权的 P4 局部通道挖掘；默认关闭。")
+                .define("allowTerrainBreak", false);
+        NAVIGATION_MAXIMUM_TERRAIN_BLOCKS_BROKEN = builder
+                .comment("单次导航可由 Terrain Assist 破坏的方块硬上限。")
+                .defineInRange("maximumTerrainBlocksBroken", 4, 0, 8);
+        NAVIGATION_ALLOW_TERRAIN_PLACE = builder
+                .comment("服务端是否允许显式授权的 P4 简单搭桥；默认关闭。")
+                .define("allowTerrainPlace", false);
+        NAVIGATION_MAXIMUM_TERRAIN_BLOCKS_PLACED = builder
+                .comment("单次导航可由 Terrain Assist 放置的桥面方块硬上限。")
+                .defineInRange("maximumTerrainBlocksPlaced", 4, 0, 8);
         builder.pop();
 
         builder.push("permissions");

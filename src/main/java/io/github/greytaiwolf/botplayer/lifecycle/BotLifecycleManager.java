@@ -24,6 +24,15 @@ import io.github.greytaiwolf.botplayer.kernel.BotRuntimeHandle;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.network.payload.AgentBindingStatus;
 import io.github.greytaiwolf.botplayer.network.payload.OpenCredentialScreenPayload;
+import io.github.greytaiwolf.botplayer.navigation.GridPoint;
+import io.github.greytaiwolf.botplayer.navigation.NavigationGoal;
+import io.github.greytaiwolf.botplayer.navigation.NavigationPolicy;
+import io.github.greytaiwolf.botplayer.navigation.NavigationRequest;
+import io.github.greytaiwolf.botplayer.navigation.NavigationService;
+import io.github.greytaiwolf.botplayer.navigation.NavigationSessionView;
+import io.github.greytaiwolf.botplayer.navigation.NavigationSettings;
+import io.github.greytaiwolf.botplayer.navigation.NavigationSubmission;
+import io.github.greytaiwolf.botplayer.navigation.TerrainAssistSettings;
 import io.github.greytaiwolf.botplayer.persistence.BotRosterSavedData;
 import io.github.greytaiwolf.botplayer.perception.AuthorityEventCollector;
 import io.github.greytaiwolf.botplayer.perception.ObservationSnapshot;
@@ -31,6 +40,11 @@ import io.github.greytaiwolf.botplayer.perception.PerceptionService;
 import io.github.greytaiwolf.botplayer.perception.PerceptionSettings;
 import io.github.greytaiwolf.botplayer.perception.SoundObservationCandidate;
 import io.github.greytaiwolf.botplayer.profile.BotProfile;
+import io.github.greytaiwolf.botplayer.safety.DamageCandidate;
+import io.github.greytaiwolf.botplayer.safety.SafetyFrame;
+import io.github.greytaiwolf.botplayer.safety.SafetyIncidentView;
+import io.github.greytaiwolf.botplayer.safety.SafetyService;
+import io.github.greytaiwolf.botplayer.safety.SafetySettings;
 import io.github.greytaiwolf.botplayer.worldmodel.WorldFact;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -57,6 +71,8 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.CommonListenerCookie;
 import net.minecraft.world.SimpleMenuProvider;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.storage.LevelResource;
 import net.minecraft.world.phys.Vec2;
 import net.minecraft.world.phys.Vec3;
@@ -80,6 +96,8 @@ public final class BotLifecycleManager {
     private final PlayerInputController inputController;
     private final PerceptionService perceptionService;
     private final BotActionRuntime actionRuntime;
+    private final NavigationService navigationService;
+    private final SafetyService safetyService;
     private final Map<UUID, RuntimeEntry> runtimes = new LinkedHashMap<>();
     private final Map<UUID, BotRuntimeHandle> handlesByBot = new LinkedHashMap<>();
     private final Map<UUID, UUID> activeAgentByBot = new LinkedHashMap<>();
@@ -110,6 +128,21 @@ public final class BotLifecycleManager {
                 BotPlayerConfig.ACTION_ACTIVE_CAPACITY.get(),
                 BotPlayerConfig.ACTION_COMPLETION_CAPACITY.get(),
                 perceptionService.actionOutcomeSink());
+        this.navigationService = new NavigationService(
+                NavigationSettings.fromConfig(),
+                TerrainAssistSettings::fromConfig,
+                this::resolveActive,
+                this::submitAction,
+                this::cancelAction);
+        this.safetyService = new SafetyService(
+                SafetySettings.fromConfig(),
+                navigationService,
+                this::submitAction,
+                (botId, generation) ->
+                        forceCloseInventory(
+                                botId,
+                                generation,
+                                InventoryCloseReason.DANGER));
     }
 
     public void beginServerTick() {
@@ -135,6 +168,36 @@ public final class BotLifecycleManager {
     public ActionMailbox.Cancellation cancelAction(
             UUID botId, UUID actionId, ActionCancellationReason reason) {
         return actionRuntime.cancel(botId, actionId, reason);
+    }
+
+    public void recordSafetyDamage(
+            BotServerPlayer player,
+            DamageSource source,
+            float finalDamage,
+            long currentTick) {
+        requireServerThread();
+        Objects.requireNonNull(player, "player");
+        Objects.requireNonNull(source, "source");
+        RuntimeEntry runtime = runtimes.get(player.getUUID());
+        if (runtime == null
+                || runtime.state != BotLifecycleState.ACTIVE
+                || runtime.handle.player().orElse(null) != player) {
+            return;
+        }
+        String damageTypeId = source.typeHolder()
+                .unwrapKey()
+                .map(key -> key.location().toString())
+                .orElse(source.getMsgId());
+        safetyService.recordDamage(new DamageCandidate(
+                player.getUUID(),
+                runtime.handle.generation(),
+                currentTick,
+                damageTypeId,
+                Optional.ofNullable(source.getDirectEntity())
+                        .map(Entity::getUUID),
+                Optional.ofNullable(source.getEntity())
+                        .map(Entity::getUUID),
+                finalDamage));
     }
 
     /**
@@ -415,6 +478,91 @@ public final class BotLifecycleManager {
                 .toList();
     }
 
+    public NavigationSubmission startNavigation(
+            String name, GridPoint target) {
+        return startNavigation(
+                name, target, NavigationPolicy.safeDefault());
+    }
+
+    public NavigationSubmission startNavigation(
+            String name,
+            GridPoint target,
+            NavigationPolicy policy) {
+        requireServerThread();
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(policy, "policy");
+        RuntimeEntry runtime = findByName(name);
+        if (runtime == null
+                || runtime.state != BotLifecycleState.ACTIVE) {
+            return NavigationSubmission.rejected(
+                    NavigationSubmission.Status.BOT_NOT_ACTIVE,
+                    "没有活动 BotPlayer：" + name);
+        }
+        BotServerPlayer player =
+                runtime.handle.player().orElseThrow();
+        long currentTick = server.getTickCount();
+        UUID navigationId = UUID.randomUUID();
+        NavigationRequest request = new NavigationRequest(
+                navigationId,
+                runtime.handle.botId(),
+                runtime.handle.generation(),
+                new NavigationGoal.ExactPosition(
+                        player.serverLevel()
+                                .dimension()
+                                .location()
+                                .toString(),
+                        target,
+                        0,
+                        1),
+                policy,
+                currentTick + 12_000L,
+                12_000,
+                "command:" + navigationId);
+        return navigationService.submit(request, currentTick);
+    }
+
+    public boolean stopNavigation(String name) {
+        requireServerThread();
+        RuntimeEntry runtime = findByName(name);
+        if (runtime == null) {
+            return false;
+        }
+        NavigationSessionView view = navigationService
+                .inspect(runtime.handle.botId())
+                .orElse(null);
+        return view != null
+                && navigationService.cancel(
+                        view.navigationId(),
+                        server.getTickCount(),
+                        "由管理命令取消");
+    }
+
+    public Optional<NavigationSessionView> navigationSession(
+            String name) {
+        requireServerThread();
+        RuntimeEntry runtime = findByName(name);
+        return runtime == null
+                ? Optional.empty()
+                : navigationService.inspect(runtime.handle.botId());
+    }
+
+    public Optional<SafetyIncidentView> safetyIncident(
+            String name) {
+        requireServerThread();
+        RuntimeEntry runtime = findByName(name);
+        return runtime == null
+                ? Optional.empty()
+                : safetyService.inspect(runtime.handle.botId());
+    }
+
+    public Optional<SafetyFrame> latestSafetyFrame(String name) {
+        requireServerThread();
+        RuntimeEntry runtime = findByName(name);
+        return runtime == null
+                ? Optional.empty()
+                : safetyService.latestFrame(runtime.handle.botId());
+    }
+
     public Optional<ObservationSnapshot> latestPerception(
             String name) {
         requireServerThread();
@@ -616,6 +764,8 @@ public final class BotLifecycleManager {
                 runtime.handle.botId(), oldGeneration);
         MinecraftPlayerInputAdapter.clear(player);
         perceptionService.closeGeneration(
+                runtime.handle.botId(), oldGeneration);
+        closeP4Generation(
                 runtime.handle.botId(), oldGeneration);
         runtime.handle.rotateGeneration(player);
         perceptionService.activate(
@@ -861,6 +1011,8 @@ public final class BotLifecycleManager {
                 ActionCancellationReason.LIFECYCLE);
         perceptionService.closeGeneration(
                 runtime.handle.botId(), generation);
+        closeP4Generation(
+                runtime.handle.botId(), generation);
         clearPlayerInput(runtime, false);
         transition(runtime, BotLifecycleState.DEAD);
         runtime.respawnCandidate = null;
@@ -933,6 +1085,8 @@ public final class BotLifecycleManager {
         MinecraftPlayerInputAdapter.clear(oldPlayer);
         perceptionService.closeGeneration(
                 runtime.handle.botId(), oldGeneration);
+        closeP4Generation(
+                runtime.handle.botId(), oldGeneration);
         runtime.handle.attach(replacement);
         MinecraftPlayerInputAdapter.clear(replacement);
         perceptionService.activate(
@@ -956,6 +1110,9 @@ public final class BotLifecycleManager {
                     runtime.handle.generation(),
                     ActionCancellationReason.LIFECYCLE);
             perceptionService.closeBot(player.getUUID());
+            closeP4Generation(
+                    player.getUUID(),
+                    runtime.handle.generation());
             clearPlayerInput(runtime, true);
             clearAgentBinding(player.getUUID());
             runtime.handle.detach(player);
@@ -1039,6 +1196,22 @@ public final class BotLifecycleManager {
             }
         }
         revalidateInventorySessions();
+        for (RuntimeEntry runtime :
+                List.copyOf(runtimes.values())) {
+            if (runtime.state != BotLifecycleState.ACTIVE) {
+                continue;
+            }
+            BotServerPlayer player =
+                    runtime.handle.player().orElse(null);
+            if (player != null
+                    && isListenerAuthority(player)) {
+                safetyService.tickBot(
+                        player,
+                        runtime.handle.generation(),
+                        currentTick);
+            }
+        }
+        navigationService.tick(currentTick);
         actionRuntime.tick(currentTick);
         perceptionService.tick(currentTick);
         if (tickStartedNanos >= 0L) {
@@ -1055,6 +1228,8 @@ public final class BotLifecycleManager {
             return;
         }
         closeAllInventories(InventoryCloseReason.SERVER_STOPPING);
+        safetyService.shutdown();
+        navigationService.close();
         actionRuntime.shutdown(server.getTickCount());
         stopping = true;
         try {
@@ -1088,6 +1263,9 @@ public final class BotLifecycleManager {
         perceptionService.closeGeneration(
                 runtime.handle.botId(),
                 runtime.handle.generation());
+        closeP4Generation(
+                runtime.handle.botId(),
+                runtime.handle.generation());
         clearPlayerInput(runtime, false);
         transition(runtime, BotLifecycleState.DESPAWNING);
         runtime.respawnAtTick = -1;
@@ -1111,6 +1289,9 @@ public final class BotLifecycleManager {
         }
         connection.markClosed();
         perceptionService.closeBot(runtime.handle.botId());
+        closeP4Generation(
+                runtime.handle.botId(),
+                runtime.handle.generation());
         clearPlayerInput(runtime, true);
         runtime.handle.detach(player);
         runtimes.remove(runtime.handle.botId());
@@ -1134,6 +1315,9 @@ public final class BotLifecycleManager {
                     fallbackFailure);
         } finally {
             perceptionService.closeBot(runtime.handle.botId());
+            closeP4Generation(
+                    runtime.handle.botId(),
+                    runtime.handle.generation());
             clearPlayerInput(runtime, true);
             if (player.connection != null
                     && player.connection.getConnection() instanceof BotConnection botConnection) {
@@ -1398,6 +1582,18 @@ public final class BotLifecycleManager {
                 throughGeneration,
                 reason,
                 server.getTickCount());
+    }
+
+    private void closeP4Generation(
+            UUID botId, long generation) {
+        if (generation <= 0L) {
+            return;
+        }
+        long currentTick = server.getTickCount();
+        navigationService.closeGeneration(
+                botId, generation, currentTick);
+        safetyService.closeGeneration(
+                botId, generation, currentTick);
     }
 
     private void clearPlayerInput(

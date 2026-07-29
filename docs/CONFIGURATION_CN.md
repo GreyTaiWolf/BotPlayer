@@ -2,9 +2,10 @@
 
 本文描述当前 server 配置和客户端本地凭据存储。P2 提供动作运行时容量与 bot 自身背包
 查看距离；P3 实现新增有限感知的范围、读取预算、事件/事实容量和 MSPT 降级阈值。
-P3 配置已通过 Build #28 自动化退出门；AI Provider、模型调用、寻路、技能和记忆配置
-仍不可用。实时状态见 [当前实现状态](IMPLEMENTATION_STATUS_CN.md)，P3 验收边界见
-[P3 完成验收报告](P3_COMPLETION_REPORT_CN.md)。
+P4 新增导航快照/A*、安全反射和默认关闭的 Terrain Assist 配置。P3、P4 配置分别通过
+Build #28、Build #97 自动化门；AI Provider、模型调用、技能和记忆配置仍不可用。实时
+状态见 [当前实现状态](IMPLEMENTATION_STATUS_CN.md)，P4 边界见
+[P4 完成验收报告](P4_COMPLETION_REPORT_CN.md)。
 
 ## 配置文件
 
@@ -62,7 +63,40 @@ NeoForge 默认从物理端配置目录加载：客户端为 `.minecraft/config`
 | `perception.criticalMspt` | 浮点数 | `50.0` | `5.0..200.0` | EWMA MSPT 达到该值时进入临界感知 |
 | `perception.recoverMspt` | 浮点数 | `38.0` | `1.0..199.0` | 降级/临界恢复到正常所需的低水位 |
 | `perception.criticalRecoverMspt` | 浮点数 | `45.0` | `1.0..199.0` | 离开临界感知所需水位 |
-| `permissions.commandPermissionLevel` | 整数 | `2` | `0..4` | 使用 `spawn/list/remove` 所需权限等级；P3 `perception` 固定要求等级 2 |
+| `safety.criticalHealth` | 浮点数 | `4.0` | `0.0..2048.0` | L0 停止普通任务的生命阈值 |
+| `safety.criticalFood` | 整数 | `4` | `0..20` | L0 停跑并阻塞消耗型远行的食物阈值 |
+| `safety.criticalAir` | 整数 | `40` | `0..300` | 水下上浮干预阈值 |
+| `safety.criticalFrozenTicks` | 整数 | `100` | `0..1000` | 冻结风险阈值 |
+| `safety.entityRadius` | 浮点数 | `12.0` | `1.0..32.0` | 每 Tick 有界近场实体读取半径 |
+| `safety.hostileRadius` | 浮点数 | `10.0` | `1.0..entityRadius` | 已锁定 Bot 的敌对生物撤退半径 |
+| `safety.projectileRadius` | 浮点数 | `10.0` | `1.0..entityRadius` | 来袭弹射物闪避半径 |
+| `safety.explosionRadius` | 浮点数 | `12.0` | `1.0..entityRadius` | 已点燃爆炸物撤离半径 |
+| `safety.maximumEntityReads` | 整数 | `32` | `1..128` | 每 Bot 每 Tick 接受的威胁摘要上限 |
+| `safety.maximumRawEntityReads` | 整数 | `256` | `maximumEntityReads..2048` | 每 Bot 每 Tick 原始实体回调上限 |
+| `safety.clearStableTicks` | 整数 | `20` | `1..100` | 危险解除后恢复导航所需连续安全 Tick |
+| `safety.maximumInterventions` | 整数 | `6` | `1..16` | 单个 incident 的物理干预上限 |
+| `safety.retreatInputTicks` | 整数 | `3` | `2..5` | 每次逃生输入短租约 |
+| `safety.maximumSafeDrop` | 整数 | `3` | `0..4` | L0 认为前方仍安全的最大落差 |
+| `navigation.horizontalRadius` | 整数 | `24` | `4..48` | 单次局部运动快照水平半径 |
+| `navigation.verticalRadius` | 整数 | `8` | `2..16` | 单次局部运动快照垂直半径 |
+| `navigation.snapshotCellsPerBotTick` | 整数 | `2048` | `64..8192` | 单 Bot 每 Tick 快照采样上限 |
+| `navigation.snapshotGlobalCellsPerTick` | 整数 | `8192` | `snapshotCellsPerBotTick..65536` | 所有 Bot 共享的每 Tick 快照预算 |
+| `navigation.maximumSnapshotTicks` | 整数 | `20` | `1..100` | 单个快照构造期限 |
+| `navigation.maximumExpansions` | 整数 | `50000` | `100..250000` | 单次 A* 节点扩展上限 |
+| `navigation.maximumConcurrentPlans` | 整数 | `2` | `1..8` | 后台规划并发上限 |
+| `navigation.maximumQueuedPlans` | 整数 | `16` | `1..128` | 后台规划等待队列上限 |
+| `navigation.maximumGoalDistance` | 整数 | `2048` | `16..16384` | 同维度目标最大水平距离 |
+| `navigation.followerInputTicks` | 整数 | `3` | `2..5` | follower 每次普通输入租约 |
+| `navigation.stuckWindowTicks` | 整数 | `20` | `5..40` | 动作后端无进展检测窗口 |
+| `navigation.waypointTolerance` | 浮点数 | `0.45` | `0.1..1.0` | 水平 waypoint 容差；垂直节点另做严格复核 |
+| `navigation.minimumSprintFood` | 整数 | `7` | `minimumTravelFood..20` | 允许 follower 发 sprint 的最小食物值 |
+| `navigation.minimumTravelFood` | 整数 | `5` | `0..20` | 允许继续普通远行的最小食物值 |
+| `navigation.minimumTravelHealth` | 浮点数 | `6.0` | `0.0..2048.0` | 允许继续普通远行的最小生命值 |
+| `navigation.allowTerrainBreak` | 布尔 | `false` | `true/false` | 服务端是否允许请求显式授权的局部通道挖掘 |
+| `navigation.maximumTerrainBlocksBroken` | 整数 | `4` | `0..8` | 单次导航 Terrain Assist 破坏硬上限 |
+| `navigation.allowTerrainPlace` | 布尔 | `false` | `true/false` | 服务端是否允许请求显式授权的简单搭桥 |
+| `navigation.maximumTerrainBlocksPlaced` | 整数 | `4` | `0..8` | 单次导航 Terrain Assist 放置硬上限 |
+| `permissions.commandPermissionLevel` | 整数 | `2` | `0..4` | 使用 `spawn/list/remove` 所需权限等级；P3/P4 管理诊断固定要求等级 2 |
 
 ## 当前 server TOML 示例
 
@@ -106,6 +140,43 @@ degradeMspt = 45.0
 criticalMspt = 50.0
 recoverMspt = 38.0
 criticalRecoverMspt = 45.0
+
+[safety]
+criticalHealth = 4.0
+criticalFood = 4
+criticalAir = 40
+criticalFrozenTicks = 100
+entityRadius = 12.0
+hostileRadius = 10.0
+projectileRadius = 10.0
+explosionRadius = 12.0
+maximumEntityReads = 32
+maximumRawEntityReads = 256
+clearStableTicks = 20
+maximumInterventions = 6
+retreatInputTicks = 3
+maximumSafeDrop = 3
+
+[navigation]
+horizontalRadius = 24
+verticalRadius = 8
+snapshotCellsPerBotTick = 2048
+snapshotGlobalCellsPerTick = 8192
+maximumSnapshotTicks = 20
+maximumExpansions = 50000
+maximumConcurrentPlans = 2
+maximumQueuedPlans = 16
+maximumGoalDistance = 2048
+followerInputTicks = 3
+stuckWindowTicks = 20
+waypointTolerance = 0.45
+minimumSprintFood = 7
+minimumTravelFood = 5
+minimumTravelHealth = 6.0
+allowTerrainBreak = false
+maximumTerrainBlocksBroken = 4
+allowTerrainPlace = false
+maximumTerrainBlocksPlaced = 4
 
 [permissions]
 commandPermissionLevel = 2
@@ -260,6 +331,29 @@ recoverMspt <= criticalRecoverMspt < criticalMspt
 滞回，避免单个慢 Tick 让传感器频率来回抖动。`CRITICAL` 会暂停局部方块和普通实体等
 非关键扫描；预算与降级代码存在不等于已经通过多 bot 性能门。
 
+### `safety.*`
+
+L0 每 Tick 运行，不依赖 P3 传感器频率。三个具体威胁半径都受 `entityRadius` 总边界
+约束；`maximumRawEntityReads` 不能小于 `maximumEntityReads`。调大半径或原始回调数会
+直接增加每 Bot 每 Tick 工作量，未取得多 Bot soak 证据前不要提高。
+
+临界生命、食物、空气和冻结值是保守抢占阈值，不是药水/食物技能策略。P4 在这些阈值下
+可以停止、上浮或撤退，但不会主动进食、喝药、换甲或战斗。
+
+### `navigation.*`
+
+`horizontalRadius/verticalRadius` 控制单个不可变局部快照；远目标由滚动 frontier 分段，
+不会因提高 `maximumGoalDistance` 自动加载未知区块。单 Bot 快照预算不得高于全局预算。
+规划工作池和队列满时请求以 `SERVER_OVERLOADED` 失败，不会无限堆积。
+
+`minimumSprintFood` 必须不低于 `minimumTravelFood`。低于 sprint 阈值时 follower 改用
+普通移动；低生命或低食物的长距离请求返回 `SUPPLY_REQUIRED`。这些门不等于 P5 的补给技能。
+
+Terrain Assist 的两个 `allow*` 默认必须保持 `false`。即使服务端打开，请求 policy 仍须
+逐次显式允许，实际数量取请求预算与服务端预算的较小值。`navigation go` 管理命令使用
+`safeDefault()`，不会开启 Terrain Assist。保护事件拒绝或结果不匹配时动作终止，不靠
+自动重试绕过保护。
+
 ### `commandPermissionLevel`
 
 原版等级大致为：
@@ -273,8 +367,8 @@ recoverMspt <= criticalRecoverMspt < criticalMspt
 | 4 | 最高管理权限 |
 
 生产服务器不要为了方便将它设为 `0`。当前这个值只控制 `spawn`、`list` 和 `remove`；
-`perception inspect` 与 `perception correct` 为避免局部知识和诊断信息泄露，固定要求
-原版权限等级 `2`，不随该配置降级。
+`perception inspect/correct`、`navigation go/stop/inspect` 与 `safety inspect` 为避免
+局部知识、世界修改和诊断信息泄露，固定要求原版权限等级 `2`，不随该配置降级。
 `/botplayer settings <name>` 不读取这个值：它只允许真实玩家，并精确比较 roster 中
 持久 owner；提高 OP 等级或降低该配置都不能打开别人的凭据界面。trusted/observer ACL
 尚未实现。
@@ -285,8 +379,8 @@ recoverMspt <= criticalRecoverMspt < criticalMspt
 
 - DeepSeek provider、模型、API URL、超时和预算；
 - owner、trusted、observer 和动作 ACL；
-- 挖掘、放置、PVP、搭桥和高风险确认；
-- 路径节点、导航代价和安全反射 Tick 预算；
+- 面向普通玩家的逐请求挖掘/搭桥授权、PVP 和高风险确认；
+- 自定义导航代价 profile、跨维度路线和多 Bot 动态 MSPT 导航降级；
 - 通用世界容器、工作站和模组 menu 的距离、事务和适配策略；
 - 长期记忆、聊天保存和数据保留；
 - 自动加载 roster 和每 bot 独立策略。

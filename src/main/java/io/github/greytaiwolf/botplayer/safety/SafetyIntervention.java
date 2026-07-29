@@ -1,0 +1,17 @@
+package io.github.greytaiwolf.botplayer.safety;
+
+public enum SafetyIntervention {
+    STOP_AND_CLEAR_INPUT,
+    CLOSE_INVENTORY,
+    DISABLE_SPRINT,
+    BACK_AWAY,
+    SIDESTEP,
+    MOVE_TO_SAFE_NEIGHBOR,
+    SWIM_UP,
+    MOVE_AWAY_FROM_EXPLOSION,
+    DODGE_PROJECTILE,
+    RETREAT_FROM_HOSTILE,
+    HOLD_POSITION,
+    SUSPEND_NAVIGATION,
+    RESUME_WITH_REPLAN
+}
