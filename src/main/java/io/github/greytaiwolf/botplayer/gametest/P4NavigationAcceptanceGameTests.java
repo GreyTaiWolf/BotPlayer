@@ -1,11 +1,13 @@
 package io.github.greytaiwolf.botplayer.gametest;
 
 import io.github.greytaiwolf.botplayer.BotPlayer;
+import io.github.greytaiwolf.botplayer.config.BotPlayerConfig;
 import io.github.greytaiwolf.botplayer.gametest.P2GameTestSupport.TestBot;
 import io.github.greytaiwolf.botplayer.kernel.BotConnection;
 import io.github.greytaiwolf.botplayer.navigation.GridPoint;
 import io.github.greytaiwolf.botplayer.navigation.NavigationFailure;
 import io.github.greytaiwolf.botplayer.navigation.NavigationOutcome;
+import io.github.greytaiwolf.botplayer.navigation.NavigationPolicy;
 import io.github.greytaiwolf.botplayer.navigation.NavigationState;
 import io.github.greytaiwolf.botplayer.navigation.NavigationSubmission;
 import java.util.concurrent.CompletableFuture;
@@ -13,6 +15,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.phys.Vec3;
@@ -26,6 +30,12 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @PrefixGameTestTemplate(false)
 public final class P4NavigationAcceptanceGameTests {
     private static final String BATCH = "p4_navigation";
+    private static final String TERRAIN_BREAK_BATCH =
+            "p4_terrain_break";
+    private static final String TERRAIN_PLACE_BATCH =
+            "p4_terrain_place";
+    private static final String TERRAIN_POLICY_BATCH =
+            "p4_terrain_policy";
     private static final int TIMEOUT_TICKS = 400;
 
     private P4NavigationAcceptanceGameTests() {}
@@ -652,6 +662,294 @@ public final class P4NavigationAcceptanceGameTests {
                         P2GameTestSupport.require(
                                 bot.player().getY() > startY + 0.8D,
                                 "P4 ladder route did not raise the real player body");
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = TERRAIN_BREAK_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void explicitTerrainBreakClearsOnlyTheBodyCorridor(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        for (int x = 0; x <= 8; x++) {
+            helper.setBlock(new BlockPos(x, 1, 3), Blocks.STONE);
+            helper.setBlock(new BlockPos(x, 2, 3), Blocks.STONE);
+        }
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4AssistBreak",
+                new Vec3(4.5D, 1.0D, 2.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        boolean previousAllow =
+                BotPlayerConfig.NAVIGATION_ALLOW_TERRAIN_BREAK.get();
+        int previousMaximum = BotPlayerConfig
+                .NAVIGATION_MAXIMUM_TERRAIN_BLOCKS_BROKEN
+                .get();
+        cleanup.add(() -> {
+            BotPlayerConfig.NAVIGATION_ALLOW_TERRAIN_BREAK
+                    .set(previousAllow);
+            BotPlayerConfig
+                    .NAVIGATION_MAXIMUM_TERRAIN_BLOCKS_BROKEN
+                    .set(previousMaximum);
+        });
+        try {
+            BotPlayerConfig.NAVIGATION_ALLOW_TERRAIN_BREAK.set(true);
+            BotPlayerConfig
+                    .NAVIGATION_MAXIMUM_TERRAIN_BLOCKS_BROKEN
+                    .set(2);
+            bot.player().getInventory().selected = 0;
+            bot.player().getInventory().setItem(
+                    0, new ItemStack(Items.DIAMOND_PICKAXE));
+            BlockPos lower =
+                    helper.absolutePos(new BlockPos(4, 1, 3));
+            BlockPos upper = lower.above();
+            BlockPos target =
+                    helper.absolutePos(new BlockPos(4, 1, 7));
+            long teleportsBefore = teleportAcknowledgements(bot);
+            NavigationSubmission submission =
+                    bot.manager().startNavigation(
+                            bot.name(),
+                            GridPoint.from(target),
+                            NavigationPolicy.safeDefault()
+                                    .withTerrainAssist(
+                                            true,
+                                            2,
+                                            false,
+                                            0));
+            P2GameTestSupport.require(
+                    submission.status()
+                            == NavigationSubmission.Status.ENQUEUED,
+                    "Explicit break navigation was rejected");
+            CompletableFuture<NavigationOutcome> completion =
+                    submission.completion()
+                            .orElseThrow()
+                            .toCompletableFuture();
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    TIMEOUT_TICKS - 20,
+                    completion::isDone,
+                    "P4 terrain break navigation did not finish",
+                    cleanup,
+                    () -> {
+                        NavigationOutcome outcome = completion.join();
+                        P2GameTestSupport.require(
+                                outcome.state()
+                                                == NavigationState.SUCCEEDED
+                                        && outcome.blocksBroken() == 2
+                                        && outcome.blocksPlaced() == 0,
+                                "P4 terrain break outcome was "
+                                        + outcome.state()
+                                        + "/"
+                                        + outcome.failure()
+                                        + " break="
+                                        + outcome.blocksBroken());
+                        P2GameTestSupport.require(
+                                bot.player()
+                                                .serverLevel()
+                                                .getBlockState(lower)
+                                                .isAir()
+                                        && bot.player()
+                                                .serverLevel()
+                                                .getBlockState(upper)
+                                                .isAir(),
+                                "Terrain Assist did not clear exactly the two body blocks");
+                        P2GameTestSupport.require(
+                                teleportAcknowledgements(bot)
+                                        == teleportsBefore,
+                                "Terrain Assist break used teleportation");
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = TERRAIN_PLACE_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void explicitTerrainPlaceBuildsOneVerifiedBridgeBlock(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        for (int x = 0; x <= 8; x++) {
+            helper.setBlock(new BlockPos(x, 0, 3), Blocks.AIR);
+            helper.setBlock(new BlockPos(x, -4, 3), Blocks.STONE);
+        }
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4AssistPlace",
+                new Vec3(4.5D, 1.0D, 2.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        boolean previousAllow =
+                BotPlayerConfig.NAVIGATION_ALLOW_TERRAIN_PLACE.get();
+        int previousMaximum = BotPlayerConfig
+                .NAVIGATION_MAXIMUM_TERRAIN_BLOCKS_PLACED
+                .get();
+        cleanup.add(() -> {
+            BotPlayerConfig.NAVIGATION_ALLOW_TERRAIN_PLACE
+                    .set(previousAllow);
+            BotPlayerConfig
+                    .NAVIGATION_MAXIMUM_TERRAIN_BLOCKS_PLACED
+                    .set(previousMaximum);
+        });
+        try {
+            BotPlayerConfig.NAVIGATION_ALLOW_TERRAIN_PLACE.set(true);
+            BotPlayerConfig
+                    .NAVIGATION_MAXIMUM_TERRAIN_BLOCKS_PLACED
+                    .set(1);
+            bot.player().getInventory().selected = 0;
+            bot.player().getInventory().setItem(
+                    0, new ItemStack(Items.COBBLESTONE, 3));
+            BlockPos bridge =
+                    helper.absolutePos(new BlockPos(4, 0, 3));
+            BlockPos target =
+                    helper.absolutePos(new BlockPos(4, 1, 7));
+            NavigationSubmission submission =
+                    bot.manager().startNavigation(
+                            bot.name(),
+                            GridPoint.from(target),
+                            NavigationPolicy.safeDefault()
+                                    .withTerrainAssist(
+                                            false,
+                                            0,
+                                            true,
+                                            1));
+            P2GameTestSupport.require(
+                    submission.status()
+                            == NavigationSubmission.Status.ENQUEUED,
+                    "Explicit bridge navigation was rejected");
+            CompletableFuture<NavigationOutcome> completion =
+                    submission.completion()
+                            .orElseThrow()
+                            .toCompletableFuture();
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    TIMEOUT_TICKS - 20,
+                    completion::isDone,
+                    "P4 terrain bridge navigation did not finish",
+                    cleanup,
+                    () -> {
+                        NavigationOutcome outcome = completion.join();
+                        P2GameTestSupport.require(
+                                outcome.state()
+                                                == NavigationState.SUCCEEDED
+                                        && outcome.blocksPlaced() == 1
+                                        && outcome.blocksBroken() == 0,
+                                "P4 terrain place outcome was "
+                                        + outcome.state()
+                                        + "/"
+                                        + outcome.failure()
+                                        + " place="
+                                        + outcome.blocksPlaced());
+                        P2GameTestSupport.require(
+                                bot.player()
+                                        .serverLevel()
+                                        .getBlockState(bridge)
+                                        .is(Blocks.COBBLESTONE),
+                                "Terrain Assist did not place the declared bridge block");
+                        P2GameTestSupport.require(
+                                bot.player()
+                                                .getInventory()
+                                                .getSelected()
+                                                .getCount()
+                                        == 2,
+                                "Terrain Assist bridge did not conserve inventory");
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = TERRAIN_POLICY_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void serverGateRejectsRequestedBreakWithoutMutation(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        for (int x = 0; x <= 8; x++) {
+            helper.setBlock(new BlockPos(x, 1, 3), Blocks.STONE);
+            helper.setBlock(new BlockPos(x, 2, 3), Blocks.STONE);
+        }
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4AssistGate",
+                new Vec3(4.5D, 1.0D, 2.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        boolean previousAllow =
+                BotPlayerConfig.NAVIGATION_ALLOW_TERRAIN_BREAK.get();
+        cleanup.add(() -> BotPlayerConfig
+                .NAVIGATION_ALLOW_TERRAIN_BREAK
+                .set(previousAllow));
+        try {
+            BotPlayerConfig.NAVIGATION_ALLOW_TERRAIN_BREAK.set(false);
+            bot.player().getInventory().selected = 0;
+            bot.player().getInventory().setItem(
+                    0, new ItemStack(Items.DIAMOND_PICKAXE));
+            BlockPos lower =
+                    helper.absolutePos(new BlockPos(4, 1, 3));
+            BlockPos target =
+                    helper.absolutePos(new BlockPos(4, 1, 7));
+            NavigationSubmission submission =
+                    bot.manager().startNavigation(
+                            bot.name(),
+                            GridPoint.from(target),
+                            NavigationPolicy.safeDefault()
+                                    .withTerrainAssist(
+                                            true,
+                                            2,
+                                            false,
+                                            0));
+            P2GameTestSupport.require(
+                    submission.status()
+                            == NavigationSubmission.Status.ENQUEUED,
+                    "Server-gated terrain request was rejected before policy evaluation");
+            CompletableFuture<NavigationOutcome> completion =
+                    submission.completion()
+                            .orElseThrow()
+                            .toCompletableFuture();
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    180,
+                    completion::isDone,
+                    "P4 server terrain gate did not terminate the request",
+                    cleanup,
+                    () -> {
+                        NavigationOutcome outcome = completion.join();
+                        P2GameTestSupport.require(
+                                outcome.state()
+                                                == NavigationState.FAILED
+                                        && outcome.failure()
+                                                == NavigationFailure
+                                                        .POLICY_BLOCKED,
+                                "Server terrain gate returned "
+                                        + outcome.state()
+                                        + "/"
+                                        + outcome.failure());
+                        P2GameTestSupport.require(
+                                bot.player()
+                                        .serverLevel()
+                                        .getBlockState(lower)
+                                        .is(Blocks.STONE),
+                                "Server-disabled Terrain Assist mutated the wall");
                         cleanup.run();
                         helper.succeed();
                     });
