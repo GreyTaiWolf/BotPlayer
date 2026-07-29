@@ -50,19 +50,37 @@ public final class P4SafetyAcceptanceGameTests {
         try {
             bot.player().addEffect(new MobEffectInstance(
                     MobEffects.POISON, 120, 0));
-            float healthBefore = bot.player().getHealth();
-            bot.player().invulnerableTime = 0;
-            boolean hurt = bot.player().hurt(
-                    bot.player().damageSources().generic(), 3.0F);
-            P2GameTestSupport.require(
-                    hurt,
-                    "Vanilla generic damage was unexpectedly rejected");
-
             P2GameTestSupport.awaitCondition(
                     helper,
-                    80,
+                    40,
                     () -> bot.manager()
                             .latestSafetyFrame(bot.name())
+                            .isPresent(),
+                    "P4 did not establish the pre-damage safety baseline",
+                    cleanup,
+                    () -> applyDamageAndAwait(helper, bot, cleanup));
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    private static void applyDamageAndAwait(
+            GameTestHelper helper,
+            TestBot bot,
+            P2GameTestSupport.Cleanup cleanup) {
+        float healthBefore = bot.player().getHealth();
+        bot.player().invulnerableTime = 0;
+        boolean hurt = bot.player().hurt(
+                bot.player().damageSources().generic(), 3.0F);
+        P2GameTestSupport.require(
+                hurt,
+                "Vanilla generic damage was unexpectedly rejected");
+        P2GameTestSupport.awaitCondition(
+                helper,
+                80,
+                () -> bot.manager()
+                        .latestSafetyFrame(bot.name())
                             .filter(frame ->
                                     frame.recentDamage().isPresent()
                                             && frame.authoritativeVitalLoss()
@@ -73,28 +91,24 @@ public final class P4SafetyAcceptanceGameTests {
                                                     EffectSummary.Category
                                                             .HARMFUL))
                             .isPresent(),
-                    "P4 did not correlate real damage and harmful effect state",
-                    cleanup,
-                    () -> {
-                        SafetyFrame frame = bot.manager()
-                                .latestSafetyFrame(bot.name())
-                                .orElseThrow();
-                        P2GameTestSupport.require(
-                                bot.player().getHealth() < healthBefore,
-                                "Damage observation existed without real body damage");
-                        P2GameTestSupport.require(
-                                frame.recentDamage()
-                                        .orElseThrow()
-                                        .damageTypeId()
-                                        .contains("generic"),
-                                "Dynamic damage type ID was not retained");
-                        cleanup.run();
-                        helper.succeed();
-                    });
-        } catch (RuntimeException | AssertionError exception) {
-            cleanup.run();
-            throw exception;
-        }
+                "P4 did not correlate real damage and harmful effect state",
+                cleanup,
+                () -> {
+                    SafetyFrame frame = bot.manager()
+                            .latestSafetyFrame(bot.name())
+                            .orElseThrow();
+                    P2GameTestSupport.require(
+                            bot.player().getHealth() < healthBefore,
+                            "Damage observation existed without real body damage");
+                    P2GameTestSupport.require(
+                            frame.recentDamage()
+                                    .orElseThrow()
+                                    .damageTypeId()
+                                    .contains("generic"),
+                            "Dynamic damage type ID was not retained");
+                    cleanup.run();
+                    helper.succeed();
+                });
     }
 
     @GameTest(
