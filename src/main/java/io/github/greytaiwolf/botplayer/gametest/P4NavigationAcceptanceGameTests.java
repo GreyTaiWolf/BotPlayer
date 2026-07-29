@@ -835,12 +835,21 @@ public final class P4NavigationAcceptanceGameTests {
                     bot.manager().startNavigation(
                             bot.name(),
                             GridPoint.from(target),
-                            NavigationPolicy.safeDefault()
-                                    .withTerrainAssist(
-                                            false,
-                                            0,
-                                            true,
-                                            4));
+                            new NavigationPolicy(
+                                    false,
+                                    false,
+                                    false,
+                                    false,
+                                    false,
+                                    false,
+                                    0,
+                                    true,
+                                    4,
+                                    0,
+                                    5,
+                                    6.0F,
+                                    16,
+                                    5));
             P2GameTestSupport.require(
                     submission.status()
                             == NavigationSubmission.Status.ENQUEUED,
