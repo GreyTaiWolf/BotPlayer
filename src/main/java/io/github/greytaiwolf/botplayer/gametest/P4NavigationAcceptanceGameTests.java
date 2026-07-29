@@ -799,6 +799,8 @@ public final class P4NavigationAcceptanceGameTests {
                 helper.setBlock(
                         new BlockPos(5, y, z), Blocks.STONE);
             }
+            helper.setBlock(
+                    new BlockPos(4, 3, z), Blocks.STONE);
         }
         TestBot bot = P2GameTestSupport.spawnBot(
                 helper,
