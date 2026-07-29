@@ -56,6 +56,28 @@ public record NavigationPolicy(
                 5);
     }
 
+    public NavigationPolicy withTerrainAssist(
+            boolean breakAllowed,
+            int blocksBroken,
+            boolean placeAllowed,
+            int blocksPlaced) {
+        return new NavigationPolicy(
+                allowSprint,
+                allowSwim,
+                allowClimb,
+                allowOpenWoodenDoor,
+                closeDoorAfterPass,
+                breakAllowed,
+                blocksBroken,
+                placeAllowed,
+                blocksPlaced,
+                maximumSafeDrop,
+                minimumFoodToContinue,
+                minimumHealthToContinue,
+                maximumReplans,
+                maximumRecoveryAttempts);
+    }
+
     private static void requireRange(
             int value, int minimum, int maximum, String name) {
         if (value < minimum || value > maximum) {

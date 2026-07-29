@@ -53,6 +53,10 @@ public final class BotPlayerConfig {
     public static final ModConfigSpec.IntValue NAVIGATION_MINIMUM_SPRINT_FOOD;
     public static final ModConfigSpec.IntValue NAVIGATION_MINIMUM_TRAVEL_FOOD;
     public static final ModConfigSpec.DoubleValue NAVIGATION_MINIMUM_TRAVEL_HEALTH;
+    public static final ModConfigSpec.BooleanValue NAVIGATION_ALLOW_TERRAIN_BREAK;
+    public static final ModConfigSpec.IntValue NAVIGATION_MAXIMUM_TERRAIN_BLOCKS_BROKEN;
+    public static final ModConfigSpec.BooleanValue NAVIGATION_ALLOW_TERRAIN_PLACE;
+    public static final ModConfigSpec.IntValue NAVIGATION_MAXIMUM_TERRAIN_BLOCKS_PLACED;
     public static final ModConfigSpec.DoubleValue SAFETY_CRITICAL_HEALTH;
     public static final ModConfigSpec.IntValue SAFETY_CRITICAL_FOOD;
     public static final ModConfigSpec.IntValue SAFETY_CRITICAL_AIR;
@@ -270,6 +274,18 @@ public final class BotPlayerConfig {
         NAVIGATION_MINIMUM_TRAVEL_HEALTH = builder
                 .comment("允许继续普通远行的最小生命值。")
                 .defineInRange("minimumTravelHealth", 6.0D, 0.0D, 2048.0D);
+        NAVIGATION_ALLOW_TERRAIN_BREAK = builder
+                .comment("服务端是否允许显式授权的 P4 局部通道挖掘；默认关闭。")
+                .define("allowTerrainBreak", false);
+        NAVIGATION_MAXIMUM_TERRAIN_BLOCKS_BROKEN = builder
+                .comment("单次导航可由 Terrain Assist 破坏的方块硬上限。")
+                .defineInRange("maximumTerrainBlocksBroken", 4, 0, 8);
+        NAVIGATION_ALLOW_TERRAIN_PLACE = builder
+                .comment("服务端是否允许显式授权的 P4 简单搭桥；默认关闭。")
+                .define("allowTerrainPlace", false);
+        NAVIGATION_MAXIMUM_TERRAIN_BLOCKS_PLACED = builder
+                .comment("单次导航可由 Terrain Assist 放置的桥面方块硬上限。")
+                .defineInRange("maximumTerrainBlocksPlaced", 4, 0, 8);
         builder.pop();
 
         builder.push("permissions");

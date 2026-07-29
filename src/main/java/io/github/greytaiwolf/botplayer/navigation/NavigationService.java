@@ -43,6 +43,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiFunction;
+import java.util.function.Supplier;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.phys.BlockHitResult;
@@ -62,6 +63,10 @@ public final class NavigationService implements AutoCloseable {
 
     private final NavigationSettings settings;
     private final NavigationSnapshotBuilder snapshotBuilder;
+    private final TerrainAssistController terrainAssistController =
+            new TerrainAssistController();
+    private final Supplier<TerrainAssistSettings>
+            terrainAssistSettings;
     private final BiFunction<UUID, Long, Optional<BotServerPlayer>>
             activeBotResolver;
     private final ActionSubmitter actionSubmitter;
@@ -81,12 +86,15 @@ public final class NavigationService implements AutoCloseable {
 
     public NavigationService(
             NavigationSettings settings,
+            Supplier<TerrainAssistSettings> terrainAssistSettings,
             BiFunction<UUID, Long, Optional<BotServerPlayer>>
                     activeBotResolver,
             ActionSubmitter actionSubmitter,
             ActionCanceller actionCanceller) {
         this.settings = Objects.requireNonNull(settings, "settings");
         this.snapshotBuilder = new NavigationSnapshotBuilder(settings);
+        this.terrainAssistSettings = Objects.requireNonNull(
+                terrainAssistSettings, "terrainAssistSettings");
         this.activeBotResolver =
                 Objects.requireNonNull(activeBotResolver, "activeBotResolver");
         this.actionSubmitter =
@@ -551,6 +559,11 @@ public final class NavigationService implements AutoCloseable {
             session.lastStateTick = currentTick;
             return;
         }
+        if (plan.status() == RoutePlanStatus.NO_PATH
+                && !plan.touchedUnknownBoundary()
+                && tryTerrainAssist(session, currentTick)) {
+            return;
+        }
         NavigationFailure failure = switch (plan.status()) {
             case NO_PATH -> plan.touchedUnknownBoundary()
                     ? NavigationFailure.UNLOADED_FRONTIER_TIMEOUT
@@ -570,6 +583,70 @@ public final class NavigationService implements AutoCloseable {
                 failure,
                 currentTick,
                 "局部路径规划未产生可执行路线");
+    }
+
+    private boolean tryTerrainAssist(
+            Session session, long currentTick) {
+        Optional<BotServerPlayer> resolved =
+                activeBotResolver.apply(
+                        session.request.botId(),
+                        session.request.botGeneration());
+        if (resolved.isEmpty()) {
+            terminate(
+                    session,
+                    NavigationState.STALE,
+                    NavigationFailure.STALE_GENERATION,
+                    currentTick,
+                    "Terrain Assist 执行前 bot generation 已失效");
+            return true;
+        }
+        TerrainAssistEvaluation evaluation =
+                terrainAssistController.evaluate(
+                        resolved.orElseThrow(),
+                        session.request.goal(),
+                        session.request.policy(),
+                        terrainAssistSettings.get(),
+                        session.blocksBroken,
+                        session.blocksPlaced);
+        return switch (evaluation.status()) {
+            case ACTION -> {
+                TerrainAssistEvaluation.Decision decision =
+                        evaluation.decision().orElseThrow();
+                session.pendingTerrainMutation =
+                        decision.mutation();
+                boolean enqueued = submitAction(
+                        session,
+                        decision.action(),
+                        ActionPhase.INTERACT,
+                        ActionPriority.AUTONOMOUS,
+                        currentTick,
+                        decision.maximumTicks());
+                if (enqueued) {
+                    session.state = NavigationState.INTERACTING;
+                    session.safeSummary = decision.safeSummary();
+                }
+                yield true;
+            }
+            case SERVER_POLICY_BLOCKED -> {
+                terminate(
+                        session,
+                        NavigationState.FAILED,
+                        NavigationFailure.POLICY_BLOCKED,
+                        currentTick,
+                        evaluation.safeSummary());
+                yield true;
+            }
+            case BUDGET_EXHAUSTED -> {
+                terminate(
+                        session,
+                        NavigationState.FAILED,
+                        NavigationFailure.BUDGET_EXHAUSTED,
+                        currentTick,
+                        evaluation.safeSummary());
+                yield true;
+            }
+            case NOT_REQUESTED, NO_SAFE_EPISODE -> false;
+        };
     }
 
     private void follow(
@@ -734,17 +811,18 @@ public final class NavigationService implements AutoCloseable {
                         WorldInteractionActionSpec.Hand.MAIN_HAND,
                         hit,
                         MinecraftActionSnapshot.selectedItem(player)));
-        submitAction(
+        if (submitAction(
                 session,
                 action,
                 ActionPhase.INTERACT,
                 ActionPriority.AUTONOMOUS,
                 currentTick,
-                20);
-        session.state = NavigationState.INTERACTING;
+                20)) {
+            session.state = NavigationState.INTERACTING;
+        }
     }
 
-    private void submitAction(
+    private boolean submitAction(
             Session session,
             ActionRequest action,
             ActionPhase purpose,
@@ -773,12 +851,23 @@ public final class NavigationService implements AutoCloseable {
                 actionSubmitter.submit(envelope, priority);
         if (submission.status()
                 != ActionMailbox.SubmissionStatus.ENQUEUED) {
-            recoverOrFail(
-                    session,
-                    currentTick,
-                    "原子动作未进入运行期："
-                            + submission.status().name());
-            return;
+            if (session.pendingTerrainMutation != null) {
+                session.pendingTerrainMutation = null;
+                terminate(
+                        session,
+                        NavigationState.FAILED,
+                        NavigationFailure.ACTION_FAILED,
+                        currentTick,
+                        "Terrain Assist 动作未进入运行期："
+                                + submission.status().name());
+            } else {
+                recoverOrFail(
+                        session,
+                        currentTick,
+                        "原子动作未进入运行期："
+                                + submission.status().name());
+            }
+            return false;
         }
         session.activeActionId = actionId;
         session.activeActionPurpose = purpose;
@@ -790,6 +879,7 @@ public final class NavigationService implements AutoCloseable {
                                 actionId,
                                 Optional.ofNullable(outcome),
                                 throwable != null)));
+        return true;
     }
 
     private void drainActionResults(long currentTick) {
@@ -805,8 +895,22 @@ public final class NavigationService implements AutoCloseable {
             session.activeActionId = null;
             session.activeActionPurpose = null;
             if (result.callbackFailed() || result.outcome().isEmpty()) {
-                recoverOrFail(
-                        session, currentTick, "原子动作完成回调失败");
+                TerrainAssistEvaluation.Mutation mutation =
+                        session.pendingTerrainMutation;
+                session.pendingTerrainMutation = null;
+                if (mutation != null) {
+                    terminate(
+                            session,
+                            NavigationState.FAILED,
+                            NavigationFailure.ACTION_FAILED,
+                            currentTick,
+                            "Terrain Assist 动作完成回调失败");
+                } else {
+                    recoverOrFail(
+                            session,
+                            currentTick,
+                            "原子动作完成回调失败");
+                }
                 continue;
             }
             ActionOutcome outcome = result.outcome().orElseThrow();
@@ -817,14 +921,30 @@ public final class NavigationService implements AutoCloseable {
                             == NavigationState.SUSPENDED_BY_SAFETY) {
                 session.safeSummary = "导航动作已由安全反射抢占";
             } else {
-                recoverOrFail(
-                        session,
-                        currentTick,
-                        "原子动作失败："
-                                + outcome.failureCode().name()
-                                + "（"
-                                + outcome.safeSummary()
-                                + "）");
+                TerrainAssistEvaluation.Mutation mutation =
+                        session.pendingTerrainMutation;
+                session.pendingTerrainMutation = null;
+                if (mutation != null) {
+                    terminate(
+                            session,
+                            NavigationState.FAILED,
+                            NavigationFailure.ACTION_FAILED,
+                            currentTick,
+                            "Terrain Assist 被原版/保护事件拒绝："
+                                    + outcome.failureCode().name()
+                                    + "（"
+                                    + outcome.safeSummary()
+                                    + "）");
+                } else {
+                    recoverOrFail(
+                            session,
+                            currentTick,
+                            "原子动作失败："
+                                    + outcome.failureCode().name()
+                                    + "（"
+                                    + outcome.safeSummary()
+                                    + "）");
+                }
             }
         }
     }
@@ -842,11 +962,24 @@ public final class NavigationService implements AutoCloseable {
                 session.state = NavigationState.FOLLOWING;
             }
             case INTERACT -> {
+                TerrainAssistEvaluation.Mutation mutation =
+                        session.pendingTerrainMutation;
+                session.pendingTerrainMutation = null;
+                if (mutation != null) {
+                    if (mutation.kind()
+                            == TerrainAssistEvaluation.Kind.BREAK) {
+                        session.blocksBroken++;
+                    } else {
+                        session.blocksPlaced++;
+                    }
+                }
                 session.replans++;
                 session.route = List.of();
                 session.routeIndex = 0;
                 session.state = NavigationState.REPLANNING;
-                session.safeSummary = "世界交互完成，重新采样真实方块状态";
+                session.safeSummary = mutation == null
+                        ? "世界交互完成，重新采样真实方块状态"
+                        : "Terrain Assist 已验证真实世界变化，重新采样";
             }
         }
         session.lastStateTick = currentTick;
@@ -919,6 +1052,8 @@ public final class NavigationService implements AutoCloseable {
                 session.replans,
                 session.recoveryAttempts,
                 session.expandedNodes,
+                session.blocksBroken,
+                session.blocksPlaced,
                 summary);
         session.completion.complete(outcome);
         terminalSessionOrder.addLast(session.request.navigationId());
@@ -998,6 +1133,7 @@ public final class NavigationService implements AutoCloseable {
 
     private void cancelActiveAction(Session session) {
         if (session.activeActionId == null) {
+            session.pendingTerrainMutation = null;
             return;
         }
         actionCanceller.cancel(
@@ -1006,6 +1142,7 @@ public final class NavigationService implements AutoCloseable {
                 ActionCancellationReason.REQUESTED);
         session.activeActionId = null;
         session.activeActionPurpose = null;
+        session.pendingTerrainMutation = null;
     }
 
     private static SnapshotBuildCursor cancelCursor(
@@ -1113,10 +1250,14 @@ public final class NavigationService implements AutoCloseable {
         private int replans;
         private int recoveryAttempts;
         private long expandedNodes;
+        private int blocksBroken;
+        private int blocksPlaced;
         private int waypointAttempts;
         private long actionSequence;
         private UUID activeActionId;
         private ActionPhase activeActionPurpose;
+        private TerrainAssistEvaluation.Mutation
+                pendingTerrainMutation;
         private ActionPhase actionPhase = ActionPhase.LOOK;
         private long lastStateTick;
         private String safeSummary = "导航会话已创建";
@@ -1148,6 +1289,8 @@ public final class NavigationService implements AutoCloseable {
                     segmentsCompleted,
                     replans,
                     recoveryAttempts,
+                    blocksBroken,
+                    blocksPlaced,
                     state.isTerminal()
                             ? Optional.of(failure)
                             : Optional.empty(),

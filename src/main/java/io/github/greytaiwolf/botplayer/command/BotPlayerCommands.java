@@ -252,6 +252,10 @@ public final class BotPlayerCommands {
                                 + view.replans()
                                 + " recoveries="
                                 + view.recoveryAttempts()
+                                + " break="
+                                + view.blocksBroken()
+                                + " place="
+                                + view.blocksPlaced()
                                 + " summary="
                                 + view.safeSummary()),
                 false);

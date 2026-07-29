@@ -16,6 +16,8 @@ public record NavigationSessionView(
         int segmentsCompleted,
         int replans,
         int recoveryAttempts,
+        int blocksBroken,
+        int blocksPlaced,
         Optional<NavigationFailure> terminalFailure,
         String safeSummary) {
     public NavigationSessionView {
@@ -32,7 +34,9 @@ public record NavigationSessionView(
                 || routeIndex > routeSize
                 || segmentsCompleted < 0
                 || replans < 0
-                || recoveryAttempts < 0) {
+                || recoveryAttempts < 0
+                || blocksBroken < 0
+                || blocksPlaced < 0) {
             throw new IllegalArgumentException(
                     "navigation session view contains an invalid bound");
         }

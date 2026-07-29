@@ -14,6 +14,8 @@ public record NavigationOutcome(
         int replans,
         int recoveryAttempts,
         long expandedNodes,
+        int blocksBroken,
+        int blocksPlaced,
         String safeSummary) {
     public NavigationOutcome {
         Objects.requireNonNull(navigationId, "navigationId");
@@ -35,7 +37,9 @@ public record NavigationOutcome(
         if (segmentsCompleted < 0
                 || replans < 0
                 || recoveryAttempts < 0
-                || expandedNodes < 0L) {
+                || expandedNodes < 0L
+                || blocksBroken < 0
+                || blocksPlaced < 0) {
             throw new IllegalArgumentException(
                     "outcome counters must not be negative");
         }

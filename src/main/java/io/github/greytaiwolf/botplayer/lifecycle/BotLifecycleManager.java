@@ -32,6 +32,7 @@ import io.github.greytaiwolf.botplayer.navigation.NavigationService;
 import io.github.greytaiwolf.botplayer.navigation.NavigationSessionView;
 import io.github.greytaiwolf.botplayer.navigation.NavigationSettings;
 import io.github.greytaiwolf.botplayer.navigation.NavigationSubmission;
+import io.github.greytaiwolf.botplayer.navigation.TerrainAssistSettings;
 import io.github.greytaiwolf.botplayer.persistence.BotRosterSavedData;
 import io.github.greytaiwolf.botplayer.perception.AuthorityEventCollector;
 import io.github.greytaiwolf.botplayer.perception.ObservationSnapshot;
@@ -129,6 +130,7 @@ public final class BotLifecycleManager {
                 perceptionService.actionOutcomeSink());
         this.navigationService = new NavigationService(
                 NavigationSettings.fromConfig(),
+                TerrainAssistSettings::fromConfig,
                 this::resolveActive,
                 this::submitAction,
                 this::cancelAction);
@@ -478,8 +480,17 @@ public final class BotLifecycleManager {
 
     public NavigationSubmission startNavigation(
             String name, GridPoint target) {
+        return startNavigation(
+                name, target, NavigationPolicy.safeDefault());
+    }
+
+    public NavigationSubmission startNavigation(
+            String name,
+            GridPoint target,
+            NavigationPolicy policy) {
         requireServerThread();
         Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(policy, "policy");
         RuntimeEntry runtime = findByName(name);
         if (runtime == null
                 || runtime.state != BotLifecycleState.ACTIVE) {
@@ -503,7 +514,7 @@ public final class BotLifecycleManager {
                         target,
                         0,
                         1),
-                NavigationPolicy.safeDefault(),
+                policy,
                 currentTick + 12_000L,
                 12_000,
                 "command:" + navigationId);
