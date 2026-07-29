@@ -10,6 +10,7 @@ import io.github.greytaiwolf.botplayer.navigation.NavigationState;
 import io.github.greytaiwolf.botplayer.navigation.NavigationSubmission;
 import java.util.concurrent.CompletableFuture;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.level.block.Blocks;
@@ -351,6 +352,211 @@ public final class P4NavigationAcceptanceGameTests {
                                         "Default P4 navigation modified the sealed wall");
                             }
                         }
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void forcedOneBlockStepUsesRealJumpPhysics(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        for (int z = 2; z <= 7; z++) {
+            for (int y = 1; y <= 2; y++) {
+                helper.setBlock(new BlockPos(3, y, z), Blocks.STONE);
+                helper.setBlock(new BlockPos(5, y, z), Blocks.STONE);
+            }
+        }
+        helper.setBlock(new BlockPos(4, 1, 5), Blocks.STONE);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4Jump",
+                new Vec3(4.5D, 1.0D, 2.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        try {
+            double startY = bot.player().getY();
+            boolean[] observedRise = {false};
+            BlockPos target =
+                    helper.absolutePos(new BlockPos(4, 1, 7));
+            NavigationSubmission submission =
+                    bot.manager().startNavigation(
+                            bot.name(), GridPoint.from(target));
+            P2GameTestSupport.require(
+                    submission.status()
+                            == NavigationSubmission.Status.ENQUEUED,
+                    "P4 forced-jump navigation was rejected");
+            CompletableFuture<NavigationOutcome> completion =
+                    submission.completion()
+                            .orElseThrow()
+                            .toCompletableFuture();
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    260,
+                    () -> {
+                        observedRise[0] |=
+                                bot.player().getY() > startY + 0.45D;
+                        return completion.isDone();
+                    },
+                    "P4 did not finish the forced one-block step",
+                    cleanup,
+                    () -> {
+                        NavigationOutcome outcome = completion.join();
+                        P2GameTestSupport.require(
+                                outcome.state()
+                                        == NavigationState.SUCCEEDED,
+                                "P4 forced jump ended as "
+                                        + outcome.state()
+                                        + "/"
+                                        + outcome.failure());
+                        P2GameTestSupport.require(
+                                observedRise[0],
+                                "P4 crossed the step without observable jump physics");
+                        P2GameTestSupport.require(
+                                nearGoal(bot, target),
+                                "P4 jump route did not reach its target");
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void shallowWaterRouteUsesRealSwimmingState(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        for (int z = 4; z <= 6; z++) {
+            helper.setBlock(new BlockPos(4, 1, z), Blocks.WATER);
+        }
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4Water",
+                new Vec3(4.5D, 1.0D, 2.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        try {
+            boolean[] observedWater = {false};
+            BlockPos target =
+                    helper.absolutePos(new BlockPos(4, 1, 7));
+            NavigationSubmission submission =
+                    bot.manager().startNavigation(
+                            bot.name(), GridPoint.from(target));
+            P2GameTestSupport.require(
+                    submission.status()
+                            == NavigationSubmission.Status.ENQUEUED,
+                    "P4 shallow-water navigation was rejected");
+            CompletableFuture<NavigationOutcome> completion =
+                    submission.completion()
+                            .orElseThrow()
+                            .toCompletableFuture();
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    260,
+                    () -> {
+                        observedWater[0] |= bot.player().isInWater();
+                        return completion.isDone();
+                    },
+                    "P4 did not finish the shallow-water route",
+                    cleanup,
+                    () -> {
+                        NavigationOutcome outcome = completion.join();
+                        P2GameTestSupport.require(
+                                outcome.state()
+                                        == NavigationState.SUCCEEDED,
+                                "P4 water route ended as "
+                                        + outcome.state()
+                                        + "/"
+                                        + outcome.failure());
+                        P2GameTestSupport.require(
+                                observedWater[0],
+                                "P4 route never entered authoritative water state");
+                        P2GameTestSupport.require(
+                                nearGoal(bot, target),
+                                "P4 water route did not reach its target");
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void ladderRouteRaisesTheRealPlayerBody(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        for (int y = 1; y <= 4; y++) {
+            helper.setBlock(new BlockPos(4, y, 5), Blocks.STONE);
+        }
+        for (int y = 1; y <= 3; y++) {
+            helper.setBlock(
+                    new BlockPos(4, y, 4),
+                    Blocks.LADDER
+                            .defaultBlockState()
+                            .setValue(
+                                    BlockStateProperties
+                                            .HORIZONTAL_FACING,
+                                    Direction.NORTH));
+        }
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4Ladder",
+                new Vec3(4.5D, 1.0D, 4.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        try {
+            double startY = bot.player().getY();
+            BlockPos target =
+                    helper.absolutePos(new BlockPos(4, 3, 4));
+            NavigationSubmission submission =
+                    bot.manager().startNavigation(
+                            bot.name(), GridPoint.from(target));
+            P2GameTestSupport.require(
+                    submission.status()
+                            == NavigationSubmission.Status.ENQUEUED,
+                    "P4 ladder navigation was rejected");
+            CompletableFuture<NavigationOutcome> completion =
+                    submission.completion()
+                            .orElseThrow()
+                            .toCompletableFuture();
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    260,
+                    completion::isDone,
+                    "P4 did not finish the ladder route",
+                    cleanup,
+                    () -> {
+                        NavigationOutcome outcome = completion.join();
+                        P2GameTestSupport.require(
+                                outcome.state()
+                                        == NavigationState.SUCCEEDED,
+                                "P4 ladder route ended as "
+                                        + outcome.state()
+                                        + "/"
+                                        + outcome.failure());
+                        P2GameTestSupport.require(
+                                bot.player().getY() > startY + 0.8D,
+                                "P4 ladder route did not raise the real player body");
                         cleanup.run();
                         helper.succeed();
                     });
