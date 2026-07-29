@@ -592,7 +592,7 @@ public final class NavigationService implements AutoCloseable {
         }
 
         RouteNode node = session.route.get(session.routeIndex);
-        if (waypointReached(player, node.point())) {
+        if (waypointReached(player, node)) {
             session.routeIndex++;
             session.waypointAttempts = 0;
             session.actionPhase = ActionPhase.LOOK;
@@ -967,13 +967,33 @@ public final class NavigationService implements AutoCloseable {
     }
 
     private boolean waypointReached(
-            BotServerPlayer player, GridPoint point) {
+            BotServerPlayer player, RouteNode node) {
+        GridPoint point = node.point();
         double dx = player.getX() - (point.x() + 0.5D);
         double dz = player.getZ() - (point.z() + 0.5D);
-        return dx * dx + dz * dz
-                        <= settings.waypointTolerance()
-                                * settings.waypointTolerance()
-                && Math.abs(player.getY() - point.y()) <= 1.1D;
+        if (dx * dx + dz * dz
+                > settings.waypointTolerance()
+                        * settings.waypointTolerance()) {
+            return false;
+        }
+        return switch (node.traversalKind()) {
+            /*
+             * 垂直节点必须由真实脚部方块层确认。通用的 1.1 格容差会在玩家仍处于
+             * 下一层时提前跳过梯子、游泳和跳跃节点，随后只能在终点复核阶段反复重算。
+             */
+            case JUMP_UP_ONE, STEP_UP, CLIMB_UP, SWIM_UP ->
+                    player.blockPosition().getY() >= point.y();
+            case CLIMB_DOWN, SWIM_DOWN ->
+                    player.blockPosition().getY() <= point.y();
+            case START,
+                    WALK_CARDINAL,
+                    WALK_DIAGONAL,
+                    DROP_SAFE,
+                    OPEN_DOOR,
+                    SWIM_HORIZONTAL,
+                    WAIT_FOR_OBSTACLE ->
+                    Math.abs(player.getY() - point.y()) <= 1.1D;
+        };
     }
 
     private void cancelActiveAction(Session session) {
