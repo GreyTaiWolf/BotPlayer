@@ -464,37 +464,82 @@ public final class P4NavigationAcceptanceGameTests {
                     submission.completion()
                             .orElseThrow()
                             .toCompletableFuture();
-            P2GameTestSupport.awaitCondition(
+            awaitWaterRoute(
                     helper,
-                    260,
-                    () -> {
-                        observedWater[0] |= bot.player().isInWater();
-                        return completion.isDone();
-                    },
-                    "P4 did not finish the shallow-water route",
+                    bot,
+                    target,
+                    completion,
+                    observedWater,
                     cleanup,
-                    () -> {
-                        NavigationOutcome outcome = completion.join();
-                        P2GameTestSupport.require(
-                                outcome.state()
-                                        == NavigationState.SUCCEEDED,
-                                "P4 water route ended as "
-                                        + outcome.state()
-                                        + "/"
-                                        + outcome.failure());
-                        P2GameTestSupport.require(
-                                observedWater[0],
-                                "P4 route never entered authoritative water state");
-                        P2GameTestSupport.require(
-                                nearGoal(bot, target),
-                                "P4 water route did not reach its target");
-                        cleanup.run();
-                        helper.succeed();
-                    });
+                    360);
         } catch (RuntimeException | AssertionError exception) {
             cleanup.run();
             throw exception;
         }
+    }
+
+    private static void awaitWaterRoute(
+            GameTestHelper helper,
+            TestBot bot,
+            BlockPos target,
+            CompletableFuture<NavigationOutcome> completion,
+            boolean[] observedWater,
+            P2GameTestSupport.Cleanup cleanup,
+            int remainingTicks) {
+        observedWater[0] |= bot.player().isInWater();
+        if (completion.isDone()) {
+            NavigationOutcome outcome = completion.join();
+            P2GameTestSupport.require(
+                    outcome.state() == NavigationState.SUCCEEDED,
+                    "P4 water route ended as "
+                            + outcome.state()
+                            + "/"
+                            + outcome.failure()
+                            + ": "
+                            + outcome.safeSummary());
+            P2GameTestSupport.require(
+                    observedWater[0],
+                    "P4 route never entered authoritative water state");
+            P2GameTestSupport.require(
+                    nearGoal(bot, target),
+                    "P4 water route did not reach its target");
+            cleanup.run();
+            helper.succeed();
+            return;
+        }
+        if (remainingTicks <= 0) {
+            String session = bot.manager()
+                    .navigationSession(bot.name())
+                    .map(view ->
+                            view.state()
+                                    + "/"
+                                    + view.terminalFailure()
+                                    + " summary="
+                                    + view.safeSummary()
+                                    + " position="
+                                    + GridPoint.from(
+                                            bot.player()
+                                                    .blockPosition())
+                                    + " replans="
+                                    + view.replans()
+                                    + " recoveries="
+                                    + view.recoveryAttempts())
+                    .orElse("missing-session");
+            cleanup.run();
+            helper.fail(
+                    "P4 shallow-water route timed out: " + session);
+            return;
+        }
+        helper.runAfterDelay(
+                1L,
+                () -> awaitWaterRoute(
+                        helper,
+                        bot,
+                        target,
+                        completion,
+                        observedWater,
+                        cleanup,
+                        remainingTicks - 1));
     }
 
     @GameTest(
