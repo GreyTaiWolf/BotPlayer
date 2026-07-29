@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-更新日期：2026-07-28
+更新日期：2026-07-29
 
 ## 当前代码来源声明
 
@@ -23,7 +23,8 @@ revision、事实与活动推断均为 clean-room Java 实现，本轮没有新�
 | [Mineflayer](https://github.com/PrismarineJS/mineflayer) | 2026-07-26 访问默认分支 | 能力分类、插件和任务边界 | Node.js 代码不进入核心 |
 | [Mineflayer API](https://github.com/PrismarineJS/mineflayer/blob/master/docs/api.md) | 2026-07-28 访问公开 API 文档 | 事件驱动观察和能力模块边界 | 只研究公开接口；未复制代码 |
 | [prismarine-world API](https://github.com/PrismarineJS/prismarine-world/blob/master/docs/API.md) | 2026-07-28 访问公开 API 文档 | 未知/未加载世界表达和增量读取 | 只借鉴语义；Node.js 代码不进入核心 |
-| [Baritone](https://github.com/cabaletta/baritone) | 2026-07-26 访问默认分支 | 分层寻路、成本和动态重算 | 不内嵌其源码 |
+| [Baritone](https://github.com/cabaletta/baritone/tree/1.19.4) | 2026-07-29 访问 `1.19.4` 分支的公开功能、使用与 LGPL-3.0 说明 | 分段 A*、目标/路径分离、移动成本、部分路径和危险约束 | 只研究公开行为；ADR-0009 保持，不内嵌或复制其源码 |
+| [Mineflayer Pathfinder](https://github.com/PrismarineJS/mineflayer-pathfinder) | 2026-07-29 访问默认分支 README/API 与 MIT 说明 | 静态/动态目标、movement profile、实体成本、部分路径和重算原因 | 只研究公开接口与行为；未复制 Node.js 源码 |
 | [Voyager](https://github.com/MineDojo/Voyager) | 2026-07-26 访问论文与公开仓库 | 技能库、反馈和验证循环 | 不执行模型生成脚本 |
 | [Voyager 论文](https://arxiv.org/abs/2305.16291) | 2026-07-28 访问论文 | 时序环境反馈与自验证 | 不复制提示、代码或训练资产 |
 | [STEVE-1](https://arxiv.org/abs/2306.00937) | 2026-07-28 访问论文 | 时序观察对活动理解的价值 | 不引入源码、模型权重或训练数据 |
@@ -34,8 +35,12 @@ revision、事实与活动推断均为 clean-room Java 实现，本轮没有新�
 | [W3C PROV-DM](https://www.w3.org/TR/prov-dm/) | 2026-07-28 访问公开规范 | 事实来源、证据和派生关系 | 只借鉴公开概念与术语 |
 | [NeoForge 1.21.1 Events](https://docs.neoforged.net/docs/1.21.1/concepts/events) | 2026-07-28 访问官方文档 | 事件总线、取消与逻辑端语义 | 依目标 API 独立实现 |
 | [NeoForge GameTest](https://docs.neoforged.net/docs/1.21.1/misc/gametest/) | 2026-07-28 访问官方文档 | P3 世界内验收设计 | 仅使用官方开发接口 |
+| [NeoForge 1.21.1 Damage Types & Damage Sources](https://docs.neoforged.net/docs/1.21.1/resources/server/damagetypes) | 2026-07-29 访问官方文档 | 动态伤害类型、来源实体、数据包注册与伤害语义 | P4 仅使用官方接口设计兼容验收 |
+| [NeoForge 1.21.1 Mob Effects & Potions](https://docs.neoforged.net/docs/1.21.1/items/mobeffects) | 2026-07-29 访问官方文档 | 效果注册、实例时长/等级、瞬时与周期效果 | P4 仅使用官方接口设计兼容验收 |
 | [Minecraft `GameEvent` Javadoc](https://nekoyue.github.io/ForgeJavaDocs-NG/javadoc/1.21.x-neoforge/net/minecraft/world/level/gameevent/GameEvent.html) | 2026-07-28 访问公开 API 文档 | 区分游戏语义事件与某个 bot 的实际认知 | 未复制实现代码 |
 | [DynamicGameEventListener Javadoc](https://nekoyue.github.io/ForgeJavaDocs-NG/javadoc/1.21.x-neoforge/net/minecraft/world/level/gameevent/DynamicGameEventListener.html) | 2026-07-28 访问公开 API 文档 | 动态监听与已加载区块边界 | 当前 P3 不直接采用该监听器 |
+| [A* 原始论文](https://ieeexplore.ieee.org/document/4082128/) | 2026-07-29 访问论文入口，DOI `10.1109/TSSC.1968.300136` | 启发式最小成本图搜索的形式基础 | P4 只采用公开算法思想并独立实现 |
+| [D* Lite 原始论文](https://aaai.org/Papers/AAAI/2002/AAAI02-072.pdf) | 2026-07-29 访问 AAAI 论文 | 动态边成本下的增量重规划 | P4 首版不实现；保留为有性能证据后的候选 |
 
 完整研究边界见
 [架构文档第 22 节](docs/ARCHITECTURE_AND_ROADMAP_CN.md#22-许可证与参考边界)。

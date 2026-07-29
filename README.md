@@ -225,6 +225,7 @@ GUI 以完整原版玩家背包风格在上方展示 bot 的 41 格真实库存�
 - [P2 完成验收报告](docs/P2_COMPLETION_REPORT_CN.md)
 - [P3 感知与世界模型调研设计](docs/AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md)
 - [P3 完成验收报告](docs/P3_COMPLETION_REPORT_CN.md)
+- [P4 导航与安全反射调研设计](docs/AI_PLAYER_RESEARCH_AND_P4_DESIGN_CN.md)
 - [完整架构与 P0–P10 路线图](docs/ARCHITECTURE_AND_ROADMAP_CN.md)
 - [原版玩法能力矩阵与发布门槛](docs/VANILLA_CAPABILITY_MATRIX_CN.md)
 - [安装与当前用法](docs/INSTALLATION_AND_USAGE_CN.md)
