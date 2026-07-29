@@ -15,9 +15,15 @@ import io.github.greytaiwolf.botplayer.safety.SafetyIncidentView;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Registry;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.Difficulty;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.damagesource.DamageType;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.EntityType;
@@ -42,6 +48,16 @@ public final class P4SafetyAcceptanceGameTests {
             "p4_aggro_damage";
     private static final String STARVATION_BATCH =
             "p4_starvation";
+    private static final String COMPATIBILITY_BATCH =
+            "p4_compatibility";
+    private static final String FIXTURE_ATTRIBUTE_BUFF_TAG =
+            "botplayer_p4_fixture_attribute_buff";
+    private static final ResourceKey<DamageType>
+            COMPATIBILITY_PROBE_DAMAGE = ResourceKey.create(
+                    Registries.DAMAGE_TYPE,
+                    ResourceLocation.fromNamespaceAndPath(
+                            BotPlayer.MOD_ID,
+                            "compatibility_probe"));
     private static final int TIMEOUT_TICKS = 300;
 
     private P4SafetyAcceptanceGameTests() {}
@@ -690,6 +706,134 @@ public final class P4SafetyAcceptanceGameTests {
                                 cleanup.run();
                                 helper.succeed();
                             }));
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = COMPATIBILITY_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void dynamicDamageTypeReachesAndIsObservedOnTheRealBot(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4DynDamage",
+                new Vec3(4.5D, 1.0D, 4.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        try {
+            helper.runAfterDelay(
+                    65L,
+                    () -> {
+                        try {
+                            Registry<DamageType> damageTypes =
+                                    helper.getLevel()
+                                            .registryAccess()
+                                            .registryOrThrow(
+                                                    Registries
+                                                            .DAMAGE_TYPE);
+                            DamageSource source = new DamageSource(
+                                    damageTypes.getHolderOrThrow(
+                                            COMPATIBILITY_PROBE_DAMAGE));
+                            float healthBefore =
+                                    bot.player().getHealth();
+                            bot.player().invulnerableTime = 0;
+                            P2GameTestSupport.require(
+                                    bot.player().hurt(source, 4.0F),
+                                    "Dynamic GameTest damage type was rejected");
+                            P2GameTestSupport.awaitCondition(
+                                    helper,
+                                    60,
+                                    () -> bot.player().getHealth()
+                                                    < healthBefore
+                                            && bot.manager()
+                                                    .latestSafetyFrame(
+                                                            bot.name())
+                                                    .filter(frame ->
+                                                            frame.recentDamage()
+                                                                    .filter(
+                                                                            damage ->
+                                                                                    damage.damageTypeId()
+                                                                                            .equals(
+                                                                                                    "botplayer:compatibility_probe"))
+                                                                    .isPresent()
+                                                                    && frame.authoritativeVitalLoss()
+                                                                            > 0.0F)
+                                                    .isPresent(),
+                                    "P4 lost the dynamic damage ID or real body loss",
+                                    cleanup,
+                                    () -> {
+                                        cleanup.run();
+                                        helper.succeed();
+                                    });
+                        } catch (RuntimeException | AssertionError exception) {
+                            cleanup.run();
+                            throw exception;
+                        }
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = COMPATIBILITY_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void playerTickFixtureModifiesAndRestoresTheRealAttribute(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4TickBuff",
+                new Vec3(4.5D, 1.0D, 4.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        try {
+            double baseMovementSpeed = bot.player()
+                    .getAttributeValue(Attributes.MOVEMENT_SPEED);
+            P2GameTestSupport.require(
+                    bot.player().addTag(
+                            FIXTURE_ATTRIBUTE_BUFF_TAG),
+                    "PlayerTick fixture marker could not be added");
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    40,
+                    () -> bot.player()
+                                    .getAttributeValue(
+                                            Attributes.MOVEMENT_SPEED)
+                            > baseMovementSpeed,
+                    "Standard PlayerTickEvent did not modify the real bot attribute",
+                    cleanup,
+                    () -> {
+                        P2GameTestSupport.require(
+                                bot.player().removeTag(
+                                        FIXTURE_ATTRIBUTE_BUFF_TAG),
+                                "PlayerTick fixture marker could not be removed");
+                        P2GameTestSupport.awaitCondition(
+                                helper,
+                                40,
+                                () -> Math.abs(
+                                                bot.player()
+                                                                .getAttributeValue(
+                                                                        Attributes
+                                                                                .MOVEMENT_SPEED)
+                                                        - baseMovementSpeed)
+                                        < 1.0E-9D,
+                                "PlayerTick fixture attribute did not restore",
+                                cleanup,
+                                () -> {
+                                    cleanup.run();
+                                    helper.succeed();
+                                });
+                    });
         } catch (RuntimeException | AssertionError exception) {
             cleanup.run();
             throw exception;
