@@ -785,14 +785,14 @@ public final class P4NavigationAcceptanceGameTests {
             GameTestHelper helper) {
         P2GameTestSupport.prepareEmptyFloor(helper);
         for (int x = 0; x <= 8; x++) {
-            for (int z = 3; z <= 5; z++) {
+            for (int z = 3; z <= 6; z++) {
                 helper.setBlock(
                         new BlockPos(x, 0, z), Blocks.AIR);
                 helper.setBlock(
                         new BlockPos(x, -4, z), Blocks.STONE);
             }
         }
-        for (int z = 1; z <= 8; z++) {
+        for (int z = 1; z <= 9; z++) {
             for (int y = 1; y <= 2; y++) {
                 helper.setBlock(
                         new BlockPos(3, y, z), Blocks.STONE);
@@ -823,12 +823,12 @@ public final class P4NavigationAcceptanceGameTests {
             BotPlayerConfig.NAVIGATION_ALLOW_TERRAIN_PLACE.set(true);
             BotPlayerConfig
                     .NAVIGATION_MAXIMUM_TERRAIN_BLOCKS_PLACED
-                    .set(3);
+                    .set(4);
             bot.player().getInventory().selected = 0;
             bot.player().getInventory().setItem(
-                    0, new ItemStack(Items.COBBLESTONE, 5));
+                    0, new ItemStack(Items.COBBLESTONE, 6));
             BlockPos target =
-                    helper.absolutePos(new BlockPos(4, 1, 7));
+                    helper.absolutePos(new BlockPos(4, 1, 8));
             NavigationSubmission submission =
                     bot.manager().startNavigation(
                             bot.name(),
@@ -838,7 +838,7 @@ public final class P4NavigationAcceptanceGameTests {
                                             false,
                                             0,
                                             true,
-                                            3));
+                                            4));
             P2GameTestSupport.require(
                     submission.status()
                             == NavigationSubmission.Status.ENQUEUED,
@@ -858,7 +858,7 @@ public final class P4NavigationAcceptanceGameTests {
                         P2GameTestSupport.require(
                                 outcome.state()
                                                 == NavigationState.SUCCEEDED
-                                        && outcome.blocksPlaced() == 3
+                                        && outcome.blocksPlaced() == 4
                                         && outcome.blocksBroken() == 0,
                                 "P4 terrain place outcome was "
                                         + outcome.state()
@@ -868,7 +868,7 @@ public final class P4NavigationAcceptanceGameTests {
                                         + outcome.blocksPlaced()
                                         + ": "
                                         + outcome.safeSummary());
-                        for (int z = 3; z <= 5; z++) {
+                        for (int z = 3; z <= 6; z++) {
                             BlockPos bridge = helper.absolutePos(
                                     new BlockPos(4, 0, z));
                             P2GameTestSupport.require(
