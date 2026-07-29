@@ -751,7 +751,9 @@ public final class P4NavigationAcceptanceGameTests {
                                         + "/"
                                         + outcome.failure()
                                         + " break="
-                                        + outcome.blocksBroken());
+                                        + outcome.blocksBroken()
+                                        + ": "
+                                        + outcome.safeSummary());
                         P2GameTestSupport.require(
                                 bot.player()
                                                 .serverLevel()
@@ -785,6 +787,14 @@ public final class P4NavigationAcceptanceGameTests {
         for (int x = 0; x <= 8; x++) {
             helper.setBlock(new BlockPos(x, 0, 3), Blocks.AIR);
             helper.setBlock(new BlockPos(x, -4, 3), Blocks.STONE);
+        }
+        for (int z = 1; z <= 8; z++) {
+            for (int y = 1; y <= 2; y++) {
+                helper.setBlock(
+                        new BlockPos(3, y, z), Blocks.STONE);
+                helper.setBlock(
+                        new BlockPos(5, y, z), Blocks.STONE);
+            }
         }
         TestBot bot = P2GameTestSupport.spawnBot(
                 helper,
@@ -853,7 +863,9 @@ public final class P4NavigationAcceptanceGameTests {
                                         + "/"
                                         + outcome.failure()
                                         + " place="
-                                        + outcome.blocksPlaced());
+                                        + outcome.blocksPlaced()
+                                        + ": "
+                                        + outcome.safeSummary());
                         P2GameTestSupport.require(
                                 bot.player()
                                         .serverLevel()

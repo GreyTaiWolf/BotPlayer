@@ -121,7 +121,7 @@ public final class TerrainAssistController {
         BlockHitTarget hit = MinecraftActionSnapshot.blockHit(
                 player,
                 new BlockHitResult(
-                        Vec3.atCenterOf(target),
+                        surfaceCenter(target, face),
                         face,
                         target,
                         false));
@@ -182,7 +182,7 @@ public final class TerrainAssistController {
         BlockHitTarget hit = MinecraftActionSnapshot.blockHit(
                 player,
                 new BlockHitResult(
-                        Vec3.atCenterOf(currentSupport),
+                        surfaceCenter(currentSupport, forward),
                         forward,
                         currentSupport,
                         false));
@@ -336,5 +336,13 @@ public final class TerrainAssistController {
         }
         return Optional.of(
                 dz >= 0 ? Direction.SOUTH : Direction.NORTH);
+    }
+
+    private static Vec3 surfaceCenter(
+            BlockPos position, Direction face) {
+        return Vec3.atCenterOf(position).add(
+                face.getStepX() * 0.5D,
+                face.getStepY() * 0.5D,
+                face.getStepZ() * 0.5D);
     }
 }
