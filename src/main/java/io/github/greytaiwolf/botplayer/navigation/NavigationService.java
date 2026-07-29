@@ -803,7 +803,10 @@ public final class NavigationService implements AutoCloseable {
                         session,
                         currentTick,
                         "原子动作失败："
-                                + outcome.failureCode().name());
+                                + outcome.failureCode().name()
+                                + "（"
+                                + outcome.safeSummary()
+                                + "）");
             }
         }
     }
