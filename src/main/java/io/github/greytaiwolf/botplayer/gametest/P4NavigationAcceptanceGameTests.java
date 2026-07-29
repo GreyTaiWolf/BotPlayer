@@ -4,6 +4,7 @@ import io.github.greytaiwolf.botplayer.BotPlayer;
 import io.github.greytaiwolf.botplayer.gametest.P2GameTestSupport.TestBot;
 import io.github.greytaiwolf.botplayer.kernel.BotConnection;
 import io.github.greytaiwolf.botplayer.navigation.GridPoint;
+import io.github.greytaiwolf.botplayer.navigation.NavigationFailure;
 import io.github.greytaiwolf.botplayer.navigation.NavigationOutcome;
 import io.github.greytaiwolf.botplayer.navigation.NavigationState;
 import io.github.greytaiwolf.botplayer.navigation.NavigationSubmission;
@@ -12,6 +13,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
@@ -135,6 +137,229 @@ public final class P4NavigationAcceptanceGameTests {
         }
     }
 
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void dynamicWallInvalidatesTheOldRoute(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4Dynamic",
+                new Vec3(4.5D, 1.0D, 2.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        try {
+            BlockPos target =
+                    helper.absolutePos(new BlockPos(4, 1, 7));
+            NavigationSubmission submission =
+                    bot.manager().startNavigation(
+                            bot.name(), GridPoint.from(target));
+            P2GameTestSupport.require(
+                    submission.status()
+                            == NavigationSubmission.Status.ENQUEUED,
+                    "P4 dynamic navigation was rejected");
+            CompletableFuture<NavigationOutcome> completion =
+                    submission.completion()
+                            .orElseThrow()
+                            .toCompletableFuture();
+
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    100,
+                    () -> bot.manager()
+                            .navigationSession(bot.name())
+                            .filter(view ->
+                                    view.state()
+                                            == NavigationState.FOLLOWING)
+                            .isPresent(),
+                    "P4 route never entered FOLLOWING before mutation",
+                    cleanup,
+                    () -> {
+                        helper.setBlock(
+                                new BlockPos(4, 1, 5), Blocks.STONE);
+                        helper.setBlock(
+                                new BlockPos(4, 2, 5), Blocks.STONE);
+                        P2GameTestSupport.awaitCondition(
+                                helper,
+                                220,
+                                completion::isDone,
+                                "P4 did not recover after a dynamic wall",
+                                cleanup,
+                                () -> {
+                                    NavigationOutcome outcome =
+                                            completion.join();
+                                    P2GameTestSupport.require(
+                                            outcome.state()
+                                                    == NavigationState
+                                                            .SUCCEEDED,
+                                            "P4 dynamic wall ended as "
+                                                    + outcome.state()
+                                                    + "/"
+                                                    + outcome.failure());
+                                    P2GameTestSupport.require(
+                                            outcome.replans() > 0
+                                                    || outcome.recoveryAttempts()
+                                                            > 0,
+                                            "Dynamic wall did not invalidate the old route");
+                                    P2GameTestSupport.require(
+                                            nearGoal(bot, target),
+                                            "Bot did not physically reach the dynamic target");
+                                    cleanup.run();
+                                    helper.succeed();
+                                });
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void woodenDoorUsesVanillaInteractionBeforePassage(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        helper.setBlock(new BlockPos(4, 1, 5), Blocks.OAK_DOOR);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4Door",
+                new Vec3(4.5D, 1.0D, 2.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        try {
+            BlockPos target =
+                    helper.absolutePos(new BlockPos(4, 1, 7));
+            NavigationSubmission submission =
+                    bot.manager().startNavigation(
+                            bot.name(), GridPoint.from(target));
+            P2GameTestSupport.require(
+                    submission.status()
+                            == NavigationSubmission.Status.ENQUEUED,
+                    "P4 wooden-door navigation was rejected");
+            CompletableFuture<NavigationOutcome> completion =
+                    submission.completion()
+                            .orElseThrow()
+                            .toCompletableFuture();
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    240,
+                    completion::isDone,
+                    "P4 did not complete the wooden-door route",
+                    cleanup,
+                    () -> {
+                        NavigationOutcome outcome = completion.join();
+                        P2GameTestSupport.require(
+                                outcome.state()
+                                        == NavigationState.SUCCEEDED,
+                                "P4 door route ended as "
+                                        + outcome.state()
+                                        + "/"
+                                        + outcome.failure());
+                        P2GameTestSupport.require(
+                                helper.getBlockState(
+                                                new BlockPos(4, 1, 5))
+                                        .getValue(BlockStateProperties.OPEN),
+                                "Wooden door was not opened through vanilla use");
+                        P2GameTestSupport.require(
+                                bot.player().getZ()
+                                        > helper.absolutePos(
+                                                        new BlockPos(
+                                                                4, 1, 5))
+                                                .getZ()
+                                                + 0.5D,
+                                "Bot did not physically pass the opened door");
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void sealedStartReturnsNoPathWithoutWorldMutation(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        for (int x = 3; x <= 5; x++) {
+            for (int z = 3; z <= 5; z++) {
+                if (x == 4 && z == 4) {
+                    continue;
+                }
+                helper.setBlock(new BlockPos(x, 1, z), Blocks.STONE);
+                helper.setBlock(new BlockPos(x, 2, z), Blocks.STONE);
+            }
+        }
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4NoPath",
+                new Vec3(4.5D, 1.0D, 4.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        try {
+            NavigationSubmission submission =
+                    bot.manager().startNavigation(
+                            bot.name(),
+                            GridPoint.from(helper.absolutePos(
+                                    new BlockPos(7, 1, 4))));
+            P2GameTestSupport.require(
+                    submission.status()
+                            == NavigationSubmission.Status.ENQUEUED,
+                    "P4 sealed navigation was rejected before planning");
+            CompletableFuture<NavigationOutcome> completion =
+                    submission.completion()
+                            .orElseThrow()
+                            .toCompletableFuture();
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    160,
+                    completion::isDone,
+                    "P4 sealed route did not terminate within its bound",
+                    cleanup,
+                    () -> {
+                        NavigationOutcome outcome = completion.join();
+                        P2GameTestSupport.require(
+                                outcome.state()
+                                                == NavigationState.FAILED
+                                        && outcome.failure()
+                                                == NavigationFailure
+                                                        .NO_PATH,
+                                "P4 sealed route did not return honest NO_PATH: "
+                                        + outcome.state()
+                                        + "/"
+                                        + outcome.failure());
+                        for (int x = 3; x <= 5; x++) {
+                            for (int z = 3; z <= 5; z++) {
+                                if (x == 4 && z == 4) {
+                                    continue;
+                                }
+                                P2GameTestSupport.require(
+                                        helper.getBlockState(
+                                                        new BlockPos(
+                                                                x, 1, z))
+                                                .is(Blocks.STONE),
+                                        "Default P4 navigation modified the sealed wall");
+                            }
+                        }
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
     private static void verifyNavigation(
             GameTestHelper helper,
             P2GameTestSupport.Cleanup cleanup,
@@ -174,6 +399,17 @@ public final class P4NavigationAcceptanceGameTests {
         }
         cleanup.run();
         helper.succeed();
+    }
+
+    private static boolean nearGoal(TestBot bot, BlockPos target) {
+        return Math.abs(
+                                bot.player().getX()
+                                        - (target.getX() + 0.5D))
+                        <= 1.0D
+                && Math.abs(
+                                bot.player().getZ()
+                                        - (target.getZ() + 0.5D))
+                        <= 1.0D;
     }
 
     private static long teleportAcknowledgements(TestBot bot) {
