@@ -57,8 +57,8 @@ public final class NavigationService implements AutoCloseable {
     private static final int RESULT_INBOX_CAPACITY = 512;
     private static final int TERMINAL_SESSION_CAPACITY = 1_024;
     private static final int MAXIMUM_WAYPOINT_ATTEMPTS = 12;
-    private static final int WATER_HORIZONTAL_INPUT_TICKS = 16;
-    private static final int WATER_HORIZONTAL_STUCK_TICKS = 8;
+    private static final int WATER_HORIZONTAL_INPUT_TICKS = 8;
+    private static final int WATER_HORIZONTAL_STUCK_TICKS = 4;
 
     private final NavigationSettings settings;
     private final NavigationSnapshotBuilder snapshotBuilder;

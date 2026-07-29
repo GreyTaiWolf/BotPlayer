@@ -564,6 +564,12 @@ public final class P4NavigationAcceptanceGameTests {
                                     + GridPoint.from(
                                             bot.player()
                                                     .blockPosition())
+                                    + " next="
+                                    + view.nextWaypoint()
+                                    + " route="
+                                    + view.routeIndex()
+                                    + "/"
+                                    + view.routeSize()
                                     + " replans="
                                     + view.replans()
                                     + " recoveries="
