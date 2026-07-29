@@ -781,12 +781,16 @@ public final class P4NavigationAcceptanceGameTests {
             template = P2GameTestSupport.TEMPLATE,
             batch = TERRAIN_PLACE_BATCH,
             timeoutTicks = TIMEOUT_TICKS)
-    public static void explicitTerrainPlaceBuildsOneVerifiedBridgeBlock(
+    public static void explicitTerrainPlaceBuildsVerifiedShortBridge(
             GameTestHelper helper) {
         P2GameTestSupport.prepareEmptyFloor(helper);
         for (int x = 0; x <= 8; x++) {
-            helper.setBlock(new BlockPos(x, 0, 3), Blocks.AIR);
-            helper.setBlock(new BlockPos(x, -4, 3), Blocks.STONE);
+            for (int z = 3; z <= 5; z++) {
+                helper.setBlock(
+                        new BlockPos(x, 0, z), Blocks.AIR);
+                helper.setBlock(
+                        new BlockPos(x, -4, z), Blocks.STONE);
+            }
         }
         for (int z = 1; z <= 8; z++) {
             for (int y = 1; y <= 2; y++) {
@@ -819,12 +823,10 @@ public final class P4NavigationAcceptanceGameTests {
             BotPlayerConfig.NAVIGATION_ALLOW_TERRAIN_PLACE.set(true);
             BotPlayerConfig
                     .NAVIGATION_MAXIMUM_TERRAIN_BLOCKS_PLACED
-                    .set(1);
+                    .set(3);
             bot.player().getInventory().selected = 0;
             bot.player().getInventory().setItem(
-                    0, new ItemStack(Items.COBBLESTONE, 3));
-            BlockPos bridge =
-                    helper.absolutePos(new BlockPos(4, 0, 3));
+                    0, new ItemStack(Items.COBBLESTONE, 5));
             BlockPos target =
                     helper.absolutePos(new BlockPos(4, 1, 7));
             NavigationSubmission submission =
@@ -836,7 +838,7 @@ public final class P4NavigationAcceptanceGameTests {
                                             false,
                                             0,
                                             true,
-                                            1));
+                                            3));
             P2GameTestSupport.require(
                     submission.status()
                             == NavigationSubmission.Status.ENQUEUED,
@@ -856,7 +858,7 @@ public final class P4NavigationAcceptanceGameTests {
                         P2GameTestSupport.require(
                                 outcome.state()
                                                 == NavigationState.SUCCEEDED
-                                        && outcome.blocksPlaced() == 1
+                                        && outcome.blocksPlaced() == 3
                                         && outcome.blocksBroken() == 0,
                                 "P4 terrain place outcome was "
                                         + outcome.state()
@@ -866,12 +868,17 @@ public final class P4NavigationAcceptanceGameTests {
                                         + outcome.blocksPlaced()
                                         + ": "
                                         + outcome.safeSummary());
-                        P2GameTestSupport.require(
-                                bot.player()
-                                        .serverLevel()
-                                        .getBlockState(bridge)
-                                        .is(Blocks.COBBLESTONE),
-                                "Terrain Assist did not place the declared bridge block");
+                        for (int z = 3; z <= 5; z++) {
+                            BlockPos bridge = helper.absolutePos(
+                                    new BlockPos(4, 0, z));
+                            P2GameTestSupport.require(
+                                    bot.player()
+                                            .serverLevel()
+                                            .getBlockState(bridge)
+                                            .is(Blocks.COBBLESTONE),
+                                    "Terrain Assist missed bridge block z="
+                                            + z);
+                        }
                         P2GameTestSupport.require(
                                 bot.player()
                                                 .getInventory()

@@ -27,6 +27,7 @@ import net.minecraft.world.phys.Vec3;
  */
 public final class TerrainAssistController {
     private static final int MAXIMUM_BRIDGE_DEPTH = 8;
+    private static final int MAXIMUM_BRIDGE_REACH = 4;
     private static final int BREAK_ACTION_TICKS = 240;
     private static final int PLACE_ACTION_TICKS = 40;
     private static final Set<Block> BREAK_ALLOWLIST = Set.of(
@@ -163,10 +164,10 @@ public final class TerrainAssistController {
         }
         ServerLevel level = player.serverLevel();
         BlockPos feet = player.blockPosition();
-        BlockPos currentSupport = feet.below();
-        if (!stableSupport(level, currentSupport)
-                || !safeBridgeSpan(
-                        level, feet, forward, remaining)) {
+        Optional<BridgePlacement> bridge =
+                bridgePlacement(
+                        level, feet, forward, remaining);
+        if (bridge.isEmpty()) {
             return TerrainAssistEvaluation.withoutAction(
                     TerrainAssistEvaluation.Status.NO_SAFE_EPISODE,
                     "未发现两端稳定且非流体/虚空的简单桥");
@@ -178,13 +179,15 @@ public final class TerrainAssistController {
                     TerrainAssistEvaluation.Status.NO_SAFE_EPISODE,
                     "主手没有允许的普通桥面材料");
         }
-        BlockPos placed = currentSupport.relative(forward);
+        BridgePlacement placement = bridge.orElseThrow();
         BlockHitTarget hit = MinecraftActionSnapshot.blockHit(
                 player,
                 new BlockHitResult(
-                        surfaceCenter(currentSupport, forward),
+                        surfaceCenter(
+                                placement.supportToClick(),
+                                forward),
                         forward,
-                        currentSupport,
+                        placement.supportToClick(),
                         false));
         WorldInteractionAction action = new WorldInteractionAction(
                 new WorldInteractionActionSpec.UseOnBlock(
@@ -193,7 +196,9 @@ public final class TerrainAssistController {
                         MinecraftActionSnapshot.selectedItem(player)));
         return TerrainAssistEvaluation.action(new Decision(
                 action,
-                new Mutation(Kind.PLACE, GridPoint.from(placed)),
+                new Mutation(
+                        Kind.PLACE,
+                        GridPoint.from(placement.placed())),
                 PLACE_ACTION_TICKS,
                 "放置一个受限桥面方块并重新规划"));
     }
@@ -244,28 +249,57 @@ public final class TerrainAssistController {
         return true;
     }
 
-    private static boolean safeBridgeSpan(
+    private static Optional<BridgePlacement> bridgePlacement(
             ServerLevel level,
             BlockPos feet,
             Direction forward,
             int maximumPlacements) {
+        BlockPos currentSupport = feet.below();
+        if (!stableSupport(level, currentSupport)) {
+            return Optional.empty();
+        }
+        int firstGapDistance = -1;
+        int gapCount = 0;
+        int maximumScan =
+                MAXIMUM_BRIDGE_REACH + maximumPlacements + 1;
         for (int distance = 1;
-                distance <= maximumPlacements;
+                distance <= maximumScan;
                 distance++) {
             BlockPos body = feet.relative(forward, distance);
             BlockPos support = body.below();
-            if (!bodyClear(level, body)
+            if (!bodyClear(level, body)) {
+                return Optional.empty();
+            }
+            if (stableSupport(level, support)) {
+                if (firstGapDistance < 0) {
+                    continue;
+                }
+                BlockPos supportToClick = feet
+                        .relative(
+                                forward,
+                                firstGapDistance - 1)
+                        .below();
+                BlockPos placed = feet
+                        .relative(forward, firstGapDistance)
+                        .below();
+                return Optional.of(new BridgePlacement(
+                        supportToClick.immutable(),
+                        placed.immutable()));
+            }
+            if (firstGapDistance < 0) {
+                firstGapDistance = distance;
+                if (firstGapDistance > MAXIMUM_BRIDGE_REACH) {
+                    return Optional.empty();
+                }
+            }
+            gapCount++;
+            if (gapCount > maximumPlacements
                     || !replaceableBridgeCell(level, support)
                     || !hasKnownSafeDepth(level, support)) {
-                return false;
-            }
-            BlockPos farSupport = support.relative(forward);
-            if (stableSupport(level, farSupport)
-                    && bodyClear(level, body.relative(forward))) {
-                return true;
+                return Optional.empty();
             }
         }
-        return false;
+        return Optional.empty();
     }
 
     private static boolean replaceableBridgeCell(
@@ -345,4 +379,7 @@ public final class TerrainAssistController {
                 face.getStepY() * 0.5D,
                 face.getStepZ() * 0.5D);
     }
+
+    private record BridgePlacement(
+            BlockPos supportToClick, BlockPos placed) {}
 }

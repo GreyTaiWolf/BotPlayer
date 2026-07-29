@@ -245,9 +245,7 @@ public final class BoundedAStarPlanner implements RoutePlanner {
                 && bestHeuristic < startHeuristic
                 && snapshot.cell(snapshot.point(bestIndex)).traversable()
                 && (touchedUnknown
-                        || !snapshot.contains(goal.center())
-                        || policy.allowBreak()
-                        || policy.allowPlace())) {
+                        || !snapshot.contains(goal.center()))) {
             return route(
                     snapshot,
                     RoutePlanStatus.PARTIAL_FRONTIER,
