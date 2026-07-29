@@ -1,0 +1,20 @@
+package io.github.greytaiwolf.botplayer.safety;
+
+public enum HazardType {
+    VOID_EXPOSURE,
+    FALL_IMMINENT,
+    UNSAFE_NEXT_STEP,
+    LAVA_CONTACT,
+    FIRE_CONTACT,
+    DROWNING,
+    SUFFOCATING,
+    FREEZING,
+    EXPLOSION_IMMINENT,
+    PROJECTILE_IMPACT,
+    HOSTILE_TARGETING,
+    ONGOING_DAMAGE,
+    HARMFUL_EFFECT,
+    UNKNOWN_DAMAGE,
+    HEALTH_CRITICAL,
+    FOOD_CRITICAL
+}

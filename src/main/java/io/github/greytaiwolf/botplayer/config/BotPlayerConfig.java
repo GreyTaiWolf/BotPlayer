@@ -53,6 +53,20 @@ public final class BotPlayerConfig {
     public static final ModConfigSpec.IntValue NAVIGATION_MINIMUM_SPRINT_FOOD;
     public static final ModConfigSpec.IntValue NAVIGATION_MINIMUM_TRAVEL_FOOD;
     public static final ModConfigSpec.DoubleValue NAVIGATION_MINIMUM_TRAVEL_HEALTH;
+    public static final ModConfigSpec.DoubleValue SAFETY_CRITICAL_HEALTH;
+    public static final ModConfigSpec.IntValue SAFETY_CRITICAL_FOOD;
+    public static final ModConfigSpec.IntValue SAFETY_CRITICAL_AIR;
+    public static final ModConfigSpec.IntValue SAFETY_CRITICAL_FROZEN_TICKS;
+    public static final ModConfigSpec.DoubleValue SAFETY_ENTITY_RADIUS;
+    public static final ModConfigSpec.DoubleValue SAFETY_HOSTILE_RADIUS;
+    public static final ModConfigSpec.DoubleValue SAFETY_PROJECTILE_RADIUS;
+    public static final ModConfigSpec.DoubleValue SAFETY_EXPLOSION_RADIUS;
+    public static final ModConfigSpec.IntValue SAFETY_MAXIMUM_ENTITY_READS;
+    public static final ModConfigSpec.IntValue SAFETY_MAXIMUM_RAW_ENTITY_READS;
+    public static final ModConfigSpec.IntValue SAFETY_CLEAR_STABLE_TICKS;
+    public static final ModConfigSpec.IntValue SAFETY_MAXIMUM_INTERVENTIONS;
+    public static final ModConfigSpec.IntValue SAFETY_RETREAT_INPUT_TICKS;
+    public static final ModConfigSpec.IntValue SAFETY_MAXIMUM_SAFE_DROP;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -163,6 +177,51 @@ public final class BotPlayerConfig {
         PERCEPTION_CRITICAL_RECOVER_MSPT = builder
                 .comment("离开关键感知状态所需的平滑 MSPT。")
                 .defineInRange("criticalRecoverMspt", 45.0D, 1.0D, 199.0D);
+        builder.pop();
+
+        builder.push("safety");
+        SAFETY_CRITICAL_HEALTH = builder
+                .comment("L0 停止普通任务并进入保守避险的生命阈值。")
+                .defineInRange("criticalHealth", 4.0D, 0.0D, 2048.0D);
+        SAFETY_CRITICAL_FOOD = builder
+                .comment("L0 禁止继续消耗型远行的食物阈值。")
+                .defineInRange("criticalFood", 4, 0, 20);
+        SAFETY_CRITICAL_AIR = builder
+                .comment("L0 开始水下换气干预的空气阈值。")
+                .defineInRange("criticalAir", 40, 0, 300);
+        SAFETY_CRITICAL_FROZEN_TICKS = builder
+                .comment("L0 将冻结视为紧急环境伤害的 Tick 阈值。")
+                .defineInRange("criticalFrozenTicks", 100, 0, 1000);
+        SAFETY_ENTITY_RADIUS = builder
+                .comment("L0 每 Tick 有界读取近场威胁的最大半径。")
+                .defineInRange("entityRadius", 12.0D, 1.0D, 32.0D);
+        SAFETY_HOSTILE_RADIUS = builder
+                .comment("已锁定 bot 的敌对生物触发撤退的半径。")
+                .defineInRange("hostileRadius", 10.0D, 1.0D, 32.0D);
+        SAFETY_PROJECTILE_RADIUS = builder
+                .comment("来袭弹射物触发闪避的半径。")
+                .defineInRange("projectileRadius", 10.0D, 1.0D, 32.0D);
+        SAFETY_EXPLOSION_RADIUS = builder
+                .comment("已点燃爆炸物触发撤退的半径。")
+                .defineInRange("explosionRadius", 12.0D, 1.0D, 32.0D);
+        SAFETY_MAXIMUM_ENTITY_READS = builder
+                .comment("单个 bot 每 Tick 最多接受的 L0 威胁实体数。")
+                .defineInRange("maximumEntityReads", 32, 1, 128);
+        SAFETY_MAXIMUM_RAW_ENTITY_READS = builder
+                .comment("单个 bot 每 Tick 最多扫描的 L0 原始实体候选数。")
+                .defineInRange("maximumRawEntityReads", 256, 1, 2048);
+        SAFETY_CLEAR_STABLE_TICKS = builder
+                .comment("危险消失后恢复导航前要求连续安全的 Tick 数。")
+                .defineInRange("clearStableTicks", 20, 1, 100);
+        SAFETY_MAXIMUM_INTERVENTIONS = builder
+                .comment("同一安全 incident 允许的最大物理干预次数。")
+                .defineInRange("maximumInterventions", 6, 1, 16);
+        SAFETY_RETREAT_INPUT_TICKS = builder
+                .comment("L0 每次后退、侧移或上浮输入的短租约 Tick 数。")
+                .defineInRange("retreatInputTicks", 3, 2, 5);
+        SAFETY_MAXIMUM_SAFE_DROP = builder
+                .comment("L0 认定前方仍有稳定支撑的最大落差。")
+                .defineInRange("maximumSafeDrop", 3, 0, 4);
         builder.pop();
 
         builder.push("navigation");

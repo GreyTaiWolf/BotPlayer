@@ -1,6 +1,7 @@
 package io.github.greytaiwolf.botplayer.event;
 
 import io.github.greytaiwolf.botplayer.BotPlayer;
+import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.lifecycle.BotPlayerManagers;
 import io.github.greytaiwolf.botplayer.perception.AuthorityEventCollector;
 import java.util.concurrent.atomic.AtomicLong;
@@ -101,6 +102,17 @@ public final class BotPerceptionEvents {
                     event.getSource().getEntity(),
                     event.getNewDamage(),
                     level.getServer().getTickCount()));
+            if (event.getEntity()
+                    instanceof BotServerPlayer bot) {
+                BotPlayerManagers.find(level.getServer())
+                        .ifPresent(manager ->
+                                manager.recordSafetyDamage(
+                                        bot,
+                                        event.getSource(),
+                                        event.getNewDamage(),
+                                        level.getServer()
+                                                .getTickCount()));
+            }
         });
     }
 
