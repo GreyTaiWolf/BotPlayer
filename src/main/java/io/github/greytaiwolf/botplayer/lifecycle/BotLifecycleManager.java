@@ -84,6 +84,7 @@ import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.storage.LevelResource;
 import net.minecraft.world.phys.Vec2;
 import net.minecraft.world.phys.Vec3;
@@ -1512,7 +1513,7 @@ public final class BotLifecycleManager {
         ServerPlayer listedPlayer =
                 server.getPlayerList()
                         .getPlayer(player.getUUID());
-        ServerPlayer levelPlayer =
+        Player levelPlayer =
                 player.serverLevel()
                         .getPlayerByUUID(
                                 player.getUUID());
