@@ -4,10 +4,12 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 public final class BotActionRuntime {
@@ -15,6 +17,8 @@ public final class BotActionRuntime {
    public static final int MAX_ACTIVE_ACTIONS = 16384;
    public static final int MAX_WAITERS_PER_ACTION = 64;
    public static final int TRANSITION_HISTORY_CAPACITY = 512;
+   /** Exact unsafe-generation keys retained before the runtime fails closed. */
+   public static final int MAX_QUARANTINED_GENERATIONS = 4096;
    private final Thread ownerThread;
    private final ActionMailbox mailbox;
    private final ActionLedger ledger;
@@ -25,7 +29,10 @@ public final class BotActionRuntime {
    private final int commandBudget;
    private final int activeCapacity;
    private final Map<BotActionRuntime.ActionKey, BotActionRuntime.Ticket> active = new LinkedHashMap<>();
-   private final Map<UUID, Long> unsafeGenerationByBot = new LinkedHashMap<>();
+   private final Set<BotActionRuntime.GenerationKey> unsafeGenerations = new LinkedHashSet<>();
+   private final Map<BotActionRuntime.GenerationKey, BotActionRuntime.PendingGenerationQuarantine> pendingGenerationQuarantines = new LinkedHashMap<>();
+   private final Set<BotActionRuntime.GenerationKey> quarantinesInProgress = new LinkedHashSet<>();
+   private final List<ActionMailbox.Command> pendingRuntimeFailClosedCommands = new ArrayList<>();
    private final Map<UUID, BotActionRuntime.PendingLifecycleClose> pendingLifecycleCloses = new LinkedHashMap<>();
    private final Deque<ActionTransition> transitionHistory = new ArrayDeque<>(512);
    private long lastTick = -1L;
@@ -33,6 +40,10 @@ public final class BotActionRuntime {
    private long cleanupFailureCount;
    private long outcomeSinkFailureCount;
    private boolean mutating;
+   private boolean quarantineCapacityExhausted;
+   private boolean pendingRuntimeFailClosed;
+   private boolean runtimeFailClosedInProgress;
+   private boolean drainingGenerationQuarantines;
    private boolean drainingLifecycleCloses;
    private boolean shutdown;
 
@@ -93,20 +104,21 @@ public final class BotActionRuntime {
 
             for (ActionMailbox.Command var5 : var10) {
                this.process(var5, var1);
+               this.drainPendingSafeBoundaryWork(var1);
             }
 
-            this.drainPendingLifecycleCloses(var1);
+            this.drainPendingSafeBoundaryWork(var1);
             int var12 = 0;
 
             for (BotActionRuntime.Ticket var6 : List.copyOf(this.active.values())) {
                if (!var6.state.isTerminal()) {
                   this.advance(var6, var1);
                   var12++;
-                  this.drainPendingLifecycleCloses(var1);
+                  this.drainPendingSafeBoundaryWork(var1);
                }
             }
 
-            this.drainPendingLifecycleCloses(var1);
+            this.drainPendingSafeBoundaryWork(var1);
             return new BotActionRuntime.TickReport(false, var10.size(), var12, this.active.size(), this.cleanupFailureCount);
          }
 
@@ -240,6 +252,25 @@ public final class BotActionRuntime {
       }
    }
 
+   private void drainPendingSafeBoundaryWork(long var1) {
+      while (true) {
+         if (!this.runtimeFailClosedInProgress
+            && this.pendingRuntimeFailClosed) {
+            this.drainPendingRuntimeFailClosed(var1);
+         } else if (!this.drainingGenerationQuarantines
+            && !this.pendingGenerationQuarantines.isEmpty()) {
+            this.drainPendingGenerationQuarantines(var1);
+         } else {
+            if (this.drainingLifecycleCloses
+               || this.pendingLifecycleCloses.isEmpty()) {
+               return;
+            }
+
+            this.drainPendingLifecycleCloses(var1);
+         }
+      }
+   }
+
    public BotActionRuntime.GenerationCancellationResult cancelBotGenerationNow(
       UUID var1,
       long var2,
@@ -292,7 +323,11 @@ public final class BotActionRuntime {
                }
             }
 
-            boolean var15 = Objects.equals(this.unsafeGenerationByBot.get(var1), var2);
+            this.drainPendingSafeBoundaryWork(var5);
+            BotActionRuntime.GenerationKey var18 =
+               new BotActionRuntime.GenerationKey(var1, var2);
+            boolean var15 = this.quarantineCapacityExhausted
+               || this.unsafeGenerations.contains(var18);
             boolean var16 = this.active.values().stream()
                .anyMatch(var3 -> var3.envelope.botId().equals(var1)
                   && var3.envelope.botGeneration() == var2
@@ -323,8 +358,13 @@ public final class BotActionRuntime {
 
          boolean var9;
          try {
-            Long var6 = this.unsafeGenerationByBot.get(var1);
-            if (var6 == null || var6 != var2) {
+            if (this.quarantineCapacityExhausted) {
+               return false;
+            }
+
+            BotActionRuntime.GenerationKey var6 =
+               new BotActionRuntime.GenerationKey(var1, var2);
+            if (!this.unsafeGenerations.contains(var6)) {
                return true;
             }
 
@@ -332,7 +372,10 @@ public final class BotActionRuntime {
                .values()
                .stream()
                .anyMatch(var3 -> var3.envelope.botId().equals(var1) && var3.envelope.botGeneration() == var2 && !var3.state.isTerminal());
-            if (var7 || this.arbiter.hasLease(var1, var2)) {
+            if (var7
+               || this.arbiter.hasLease(var1, var2)
+               || this.pendingGenerationQuarantines.containsKey(var6)
+               || this.quarantinesInProgress.contains(var6)) {
                return false;
             }
 
@@ -344,7 +387,7 @@ public final class BotActionRuntime {
             }
 
             if (var8) {
-               this.unsafeGenerationByBot.remove(var1, var2);
+               this.unsafeGenerations.remove(var6);
                this.mailbox.recoverBotGeneration(var1, var2);
             }
 
@@ -354,6 +397,71 @@ public final class BotActionRuntime {
          }
 
          return var9;
+      }
+   }
+
+   /**
+    * 隔离一个已被上层事务判定为无法安全补偿的 generation。
+    *
+    * <p>这条入口与 backend cleanup 失败使用同一隔离路径：终结同 generation
+    * 的活动/排队动作，并拒绝后续动作，直到显式安全恢复。
+    * 若 exact 隔离集合耗尽，runtime 会全局 fail-closed，而不会退化为 generation
+    * 高水位语义。
+    */
+   public BotActionRuntime.GenerationQuarantineResult quarantineBotGenerationNow(
+      UUID var1,
+      long var2,
+      long var4
+   ) {
+      this.assertOwnerThread();
+      ActionEnvelope.requireNonZero(var1, "botId");
+      if (var2 <= 0L) {
+         throw new IllegalArgumentException("botGeneration must be positive");
+      } else {
+         BotActionRuntime.GenerationKey var6 =
+            new BotActionRuntime.GenerationKey(var1, var2);
+         if (this.mutating) {
+            if (var4 != this.lastMutationTick) {
+               throw new IllegalArgumentException(
+                  "A reentrant generation quarantine must use the current runtime tick"
+               );
+            }
+
+            int var7 = this.requestGenerationQuarantine(var6);
+            return this.generationQuarantineResult(var6, var7);
+         }
+
+         this.beginMutation(var4);
+
+         BotActionRuntime.GenerationQuarantineResult var8;
+         try {
+            int var7 = this.requestGenerationQuarantine(var6);
+            this.drainPendingSafeBoundaryWork(var4);
+            var8 = this.generationQuarantineResult(var6, var7);
+         } finally {
+            this.endMutation();
+         }
+
+         return var8;
+      }
+   }
+
+   public boolean isGenerationSafe(UUID var1, long var2) {
+      this.assertOwnerThread();
+      ActionEnvelope.requireNonZero(var1, "botId");
+      if (var2 <= 0L) {
+         throw new IllegalArgumentException("botGeneration must be positive");
+      } else {
+         BotActionRuntime.GenerationKey var4 =
+            new BotActionRuntime.GenerationKey(var1, var2);
+         return !this.quarantineCapacityExhausted
+            && !this.unsafeGenerations.contains(var4)
+            && !this.pendingRuntimeFailClosed
+            && !this.runtimeFailClosedInProgress
+            && !this.pendingGenerationQuarantines.containsKey(var4)
+            && !this.quarantinesInProgress.contains(var4)
+            && !this.hasActiveGeneration(var4)
+            && !this.arbiter.hasLease(var1, var2);
       }
    }
 
@@ -483,26 +591,28 @@ public final class BotActionRuntime {
 
    private void startTicket(ActionMailbox.SubmitCommand var1, long var2) {
       ActionEnvelope var4 = var1.envelope();
-      if (this.active.size() >= this.activeCapacity) {
+      BotActionRuntime.GenerationKey var5 =
+         new BotActionRuntime.GenerationKey(
+            var4.botId(), var4.botGeneration()
+         );
+      if (this.quarantineCapacityExhausted
+         || this.unsafeGenerations.contains(var5)) {
+         ActionOutcome var9 = this.rejectedOutcome(
+            var4, var2, ActionFailureCode.UNSAFE_CONTROL_STATE, "Bot controls are quarantined after an unsafe cleanup"
+         );
+         this.ledger.complete(var4, var9);
+         this.publishOutcome(var4, var9);
+         this.publish(var1.completion(), var9);
+      } else if (this.active.size() >= this.activeCapacity) {
          ActionOutcome var8 = this.rejectedOutcome(var4, var2, ActionFailureCode.RUNTIME_CAPACITY_EXCEEDED, "Active action capacity is exhausted");
          this.ledger.complete(var4, var8);
          this.publishOutcome(var4, var8);
          this.publish(var1.completion(), var8);
       } else {
-         Long var5 = this.unsafeGenerationByBot.get(var4.botId());
-         if (var5 != null && var5 == var4.botGeneration()) {
-            ActionOutcome var9 = this.rejectedOutcome(
-               var4, var2, ActionFailureCode.UNSAFE_CONTROL_STATE, "Bot controls are quarantined after an unsafe cleanup"
-            );
-            this.ledger.complete(var4, var9);
-            this.publishOutcome(var4, var9);
-            this.publish(var1.completion(), var9);
-         } else {
-            BotActionRuntime.Ticket var6 = new BotActionRuntime.Ticket(var4, var1.priority(), var2, var1.completion());
-            BotActionRuntime.Ticket var7 = this.active.put(new BotActionRuntime.ActionKey(var4.botId(), var4.actionId()), var6);
-            if (var7 != null) {
-               throw new IllegalStateException("Duplicate active action id");
-            }
+         BotActionRuntime.Ticket var6 = new BotActionRuntime.Ticket(var4, var1.priority(), var2, var1.completion());
+         BotActionRuntime.Ticket var7 = this.active.put(new BotActionRuntime.ActionKey(var4.botId(), var4.actionId()), var6);
+         if (var7 != null) {
+            throw new IllegalStateException("Duplicate active action id");
          }
       }
    }
@@ -624,12 +734,18 @@ public final class BotActionRuntime {
                   ActionCleanupReason.PREEMPTED,
                   var2
                );
+               this.drainPendingSafeBoundaryWork(var2);
             }
          }
 
          if (!var1.state.isTerminal()) {
-            Long var8 = this.unsafeGenerationByBot.get(var1.envelope.botId());
-            if (var8 != null && var8 == var1.envelope.botGeneration()) {
+            BotActionRuntime.GenerationKey var8 =
+               new BotActionRuntime.GenerationKey(
+                  var1.envelope.botId(),
+                  var1.envelope.botGeneration()
+               );
+            if (this.quarantineCapacityExhausted
+               || this.unsafeGenerations.contains(var8)) {
                this.finish(
                   var1,
                   ActionState.FAILED,
@@ -706,14 +822,14 @@ public final class BotActionRuntime {
             case VERIFY -> this.backend.verify(var1.envelope, var3);
          }, "backend result");
       } catch (RuntimeException var6) {
-         this.drainPendingLifecycleCloses(var3);
+         this.drainPendingSafeBoundaryWork(var3);
          if (!var1.state.isTerminal()) {
             this.finish(var1, ActionState.FAILED, ActionFailureCode.INTERNAL_ERROR, List.of(), "Action backend failed", ActionCleanupReason.FAILED, var3);
          }
          return ActionBackend.BackendResult.failed(var1.envelope, ActionFailureCode.INTERNAL_ERROR, List.of(), "Action backend failed");
       }
 
-      this.drainPendingLifecycleCloses(var3);
+      this.drainPendingSafeBoundaryWork(var3);
       return var5;
    }
 
@@ -783,7 +899,7 @@ public final class BotActionRuntime {
                }
 
                if (!var14) {
-                  this.quarantineGeneration(var1, var7);
+                  this.quarantineGeneration(var1);
                }
             } finally {
                this.arbiter.release(var1.lease);
@@ -814,33 +930,222 @@ public final class BotActionRuntime {
       }
    }
 
-   private void quarantineGeneration(BotActionRuntime.Ticket var1, long var2) {
-      UUID var4 = var1.envelope.botId();
-      long var5 = var1.envelope.botGeneration();
-      Long var7 = this.unsafeGenerationByBot.get(var4);
-      if (var7 == null || var7 < var5) {
-         this.unsafeGenerationByBot.put(var4, var5);
-         List<ActionMailbox.SubmitCommand> var8 =
-            this.mailbox.quarantineBotGeneration(var4, var5);
+   private void quarantineGeneration(BotActionRuntime.Ticket var1) {
+      this.requestGenerationQuarantine(
+         new BotActionRuntime.GenerationKey(
+            var1.envelope.botId(),
+            var1.envelope.botGeneration()
+         )
+      );
+   }
 
-         for (BotActionRuntime.Ticket var10 : List.copyOf(this.active.values())) {
-            if (var10 != var1 && var10.envelope.botId().equals(var4) && var10.envelope.botGeneration() <= var5 && !var10.state.isTerminal()) {
-               this.finish(
-                  var10,
-                  ActionState.FAILED,
-                  ActionFailureCode.UNSAFE_CONTROL_STATE,
-                  List.of(),
-                  "Bot controls were quarantined after cleanup failed",
-                  ActionCleanupReason.FAILED,
-                  var2
-               );
-            }
-         }
+   private int requestGenerationQuarantine(
+      BotActionRuntime.GenerationKey var1
+   ) {
+      if (this.quarantineCapacityExhausted
+         || (!this.unsafeGenerations.contains(var1)
+            && this.unsafeGenerations.size()
+               >= MAX_QUARANTINED_GENERATIONS)) {
+         return this.requestRuntimeFailClosed(var1);
+      }
 
-         for (ActionMailbox.SubmitCommand var12 : var8) {
-            this.completeQueuedFailure(var12, ActionFailureCode.UNSAFE_CONTROL_STATE, "Bot controls were quarantined before the action started", var2);
+      List<ActionMailbox.SubmitCommand> var2 =
+         this.mailbox.quarantineBotGeneration(var1.botId(), var1.generation());
+      this.unsafeGenerations.add(var1);
+      int var3 = this.countActiveGeneration(var1) + var2.size();
+      if (!this.quarantinesInProgress.contains(var1)
+         || !var2.isEmpty()) {
+         this.pendingGenerationQuarantines
+            .computeIfAbsent(
+               var1,
+               var0 -> new BotActionRuntime.PendingGenerationQuarantine()
+            )
+            .queued
+            .addAll(var2);
+      }
+
+      return var3;
+   }
+
+   private int requestRuntimeFailClosed(
+      BotActionRuntime.GenerationKey var1
+   ) {
+      this.mailbox.close();
+      this.quarantineCapacityExhausted = true;
+      List<ActionMailbox.Command> var2 = this.mailbox.drainAll();
+      int var3 = this.countActiveGeneration(var1);
+
+      for (ActionMailbox.Command var5 : var2) {
+         if (var5 instanceof ActionMailbox.SubmitCommand var6
+            && targetsGeneration(var6, var1)) {
+            var3++;
+         } else if (var5 instanceof ActionMailbox.CancelCommand var7
+            && var7.queuedSubmission().filter(
+               var2x -> targetsGeneration(var2x, var1)
+            ).isPresent()) {
+            var3++;
          }
       }
+
+      this.pendingRuntimeFailClosedCommands.addAll(var2);
+      if (!this.runtimeFailClosedInProgress) {
+         this.pendingRuntimeFailClosed = true;
+      }
+
+      return var3;
+   }
+
+   private void drainPendingRuntimeFailClosed(long var1) {
+      if (!this.runtimeFailClosedInProgress
+         && this.pendingRuntimeFailClosed) {
+         this.pendingRuntimeFailClosed = false;
+         this.runtimeFailClosedInProgress = true;
+
+         try {
+            List<ActionMailbox.Command> var3 =
+               List.copyOf(this.pendingRuntimeFailClosedCommands);
+            this.pendingRuntimeFailClosedCommands.clear();
+
+            for (ActionMailbox.Command var5 : var3) {
+               switch (var5) {
+                  case ActionMailbox.SubmitCommand var6 ->
+                     this.completeQueuedFailure(
+                        var6,
+                        ActionFailureCode.UNSAFE_CONTROL_STATE,
+                        "Action runtime failed closed after quarantine capacity was exhausted",
+                        var1
+                     );
+                  case ActionMailbox.CancelCommand var7 ->
+                     this.processCancellation(var7, var1);
+               }
+            }
+
+            for (BotActionRuntime.Ticket var4 : List.copyOf(this.active.values())) {
+               if (!var4.state.isTerminal()) {
+                  this.finish(
+                     var4,
+                     ActionState.FAILED,
+                     ActionFailureCode.UNSAFE_CONTROL_STATE,
+                     List.of(),
+                     "Action runtime failed closed after quarantine capacity was exhausted",
+                     ActionCleanupReason.FAILED,
+                     var1
+                  );
+               }
+            }
+         } finally {
+            this.runtimeFailClosedInProgress = false;
+         }
+      }
+   }
+
+   private static boolean targetsGeneration(
+      ActionMailbox.SubmitCommand var0,
+      BotActionRuntime.GenerationKey var1
+   ) {
+      return var0.envelope().botId().equals(var1.botId())
+         && var0.envelope().botGeneration() == var1.generation();
+   }
+
+   private int countActiveGeneration(
+      BotActionRuntime.GenerationKey var1
+   ) {
+      return Math.toIntExact(
+         this.active.values().stream()
+            .filter(var2 -> !var2.state.isTerminal()
+               && var2.envelope.botId().equals(var1.botId())
+               && var2.envelope.botGeneration() == var1.generation())
+            .count()
+      );
+   }
+
+   private boolean hasActiveGeneration(
+      BotActionRuntime.GenerationKey var1
+   ) {
+      return this.active.values().stream()
+         .anyMatch(var2 -> !var2.state.isTerminal()
+            && var2.envelope.botId().equals(var1.botId())
+            && var2.envelope.botGeneration() == var1.generation());
+   }
+
+   private void drainPendingGenerationQuarantines(long var1) {
+      if (!this.drainingGenerationQuarantines
+         && !this.pendingGenerationQuarantines.isEmpty()) {
+         this.drainingGenerationQuarantines = true;
+
+         try {
+            while (!this.pendingGenerationQuarantines.isEmpty()) {
+               List<Map.Entry<BotActionRuntime.GenerationKey, BotActionRuntime.PendingGenerationQuarantine>> var3 =
+                  List.copyOf(this.pendingGenerationQuarantines.entrySet());
+               this.pendingGenerationQuarantines.clear();
+
+               for (Map.Entry<BotActionRuntime.GenerationKey, BotActionRuntime.PendingGenerationQuarantine> var5 : var3) {
+                  BotActionRuntime.GenerationKey var6 = var5.getKey();
+                  this.quarantinesInProgress.add(var6);
+
+                  try {
+                     this.quarantineGenerationAtSafeBoundary(
+                        var6, var5.getValue().queued, var1
+                     );
+                  } finally {
+                     this.quarantinesInProgress.remove(var6);
+                  }
+               }
+            }
+         } finally {
+            this.drainingGenerationQuarantines = false;
+         }
+      }
+   }
+
+   private void quarantineGenerationAtSafeBoundary(
+      BotActionRuntime.GenerationKey var1,
+      List<ActionMailbox.SubmitCommand> var2,
+      long var3
+   ) {
+      for (BotActionRuntime.Ticket var5 : List.copyOf(this.active.values())) {
+         if (!var5.state.isTerminal()
+            && var5.envelope.botId().equals(var1.botId())
+            && var5.envelope.botGeneration() == var1.generation()) {
+            this.finish(
+               var5,
+               ActionState.FAILED,
+               ActionFailureCode.UNSAFE_CONTROL_STATE,
+               List.of(),
+               "Bot controls were quarantined after unsafe transaction recovery",
+               ActionCleanupReason.FAILED,
+               var3
+            );
+         }
+      }
+
+      for (ActionMailbox.SubmitCommand var4 : var2) {
+         this.completeQueuedFailure(
+            var4,
+            ActionFailureCode.UNSAFE_CONTROL_STATE,
+            "Bot controls were quarantined before the action started",
+            var3
+         );
+      }
+   }
+
+   private BotActionRuntime.GenerationQuarantineResult generationQuarantineResult(
+      BotActionRuntime.GenerationKey var1,
+      int var2
+   ) {
+      return new BotActionRuntime.GenerationQuarantineResult(
+         var2,
+         this.mailbox.isGenerationIngressClosed(
+            var1.botId(), var1.generation()
+         ),
+         this.quarantineCapacityExhausted,
+         this.pendingRuntimeFailClosed
+            || this.runtimeFailClosedInProgress
+            || this.pendingGenerationQuarantines.containsKey(var1)
+            || this.quarantinesInProgress.contains(var1),
+         this.hasActiveGeneration(var1),
+         this.arbiter.hasLease(var1.botId(), var1.generation())
+      );
    }
 
    private void completeQueuedFailure(ActionMailbox.SubmitCommand var1, ActionFailureCode var2, String var3, long var4) {
@@ -1019,7 +1324,7 @@ public final class BotActionRuntime {
          throw new IllegalStateException("BotActionRuntime mutation is not in progress");
       } else {
          try {
-            this.drainPendingLifecycleCloses(this.lastMutationTick);
+            this.drainPendingSafeBoundaryWork(this.lastMutationTick);
          } finally {
             this.mutating = false;
          }
@@ -1041,6 +1346,9 @@ public final class BotActionRuntime {
    private static record ActionKey(UUID botId, UUID actionId) {
    }
 
+   private static record GenerationKey(UUID botId, long generation) {
+   }
+
    private static enum BackendCall {
       VALIDATE,
       START,
@@ -1059,6 +1367,44 @@ public final class BotActionRuntime {
          } else {
             throw new IllegalArgumentException("Tick report counters must not be negative");
          }
+      }
+   }
+
+   public static record GenerationQuarantineResult(
+      int targetedActions,
+      boolean ingressClosed,
+      boolean runtimeFailClosed,
+      boolean pending,
+      boolean ticketRemaining,
+      boolean leaseRemaining
+   ) {
+      public GenerationQuarantineResult(
+         int targetedActions,
+         boolean ingressClosed,
+         boolean runtimeFailClosed,
+         boolean pending,
+         boolean ticketRemaining,
+         boolean leaseRemaining
+      ) {
+         if (targetedActions < 0) {
+            throw new IllegalArgumentException(
+               "targetedActions must not be negative"
+            );
+         }
+
+         this.targetedActions = targetedActions;
+         this.ingressClosed = ingressClosed;
+         this.runtimeFailClosed = runtimeFailClosed;
+         this.pending = pending;
+         this.ticketRemaining = ticketRemaining;
+         this.leaseRemaining = leaseRemaining;
+      }
+
+      public boolean containmentConfirmed() {
+         return this.ingressClosed
+            && !this.pending
+            && !this.ticketRemaining
+            && !this.leaseRemaining;
       }
    }
 
@@ -1095,6 +1441,11 @@ public final class BotActionRuntime {
             && !this.ticketRemaining
             && !this.leaseRemaining;
       }
+   }
+
+   private static final class PendingGenerationQuarantine {
+      private final List<ActionMailbox.SubmitCommand> queued =
+         new ArrayList<>();
    }
 
    private static final class PendingLifecycleClose {

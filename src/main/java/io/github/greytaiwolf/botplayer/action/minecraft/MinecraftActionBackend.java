@@ -15,6 +15,9 @@ import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
 import io.github.greytaiwolf.botplayer.action.input.PlayerInputController;
 import io.github.greytaiwolf.botplayer.action.input.PlayerInputOwner;
 import io.github.greytaiwolf.botplayer.action.input.PlayerInputState;
+import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanupRequest;
+import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanupResult;
+import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanupLease;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.lifecycle.BotActionTarget;
 import io.github.greytaiwolf.botplayer.lifecycle.BotActionTargetStatus;
@@ -61,6 +64,46 @@ public final class MinecraftActionBackend implements ActionBackend {
                         inputController, "inputController");
         this.worldInteractionBackend =
                 new MinecraftWorldInteractionBackend(lifecycleManager);
+    }
+
+    /**
+     * Arms the one-shot generation fence before a skill can own inventory
+     * layout state.
+     */
+    public boolean openSkillInventoryLayout(
+            UUID botId,
+            long botGeneration,
+            InventoryLayoutCleanupLease layoutLease) {
+        return worldInteractionBackend.openSkillInventoryLayout(
+                botId, botGeneration, layoutLease);
+    }
+
+    /**
+     * Reconciles a completed skill's temporary inventory layout after the
+     * action runtime has synchronously closed that generation.
+     */
+    public InventoryLayoutCleanupResult cleanupSkillInventoryLayout(
+            UUID botId,
+            long botGeneration,
+            InventoryLayoutCleanupRequest request) {
+        return worldInteractionBackend.cleanupSkillInventoryLayout(
+                botId, botGeneration, request);
+    }
+
+    public void releaseSkillInventoryLayout(
+            UUID botId, long botGeneration, UUID runId) {
+        worldInteractionBackend.releaseSkillInventoryLayout(
+                botId, botGeneration, runId);
+    }
+
+    public void closeSkillInventoryGeneration(
+            UUID botId, long botGeneration) {
+        worldInteractionBackend.closeSkillInventoryGeneration(
+                botId, botGeneration);
+    }
+
+    public void closeSkillInventoryFences() {
+        worldInteractionBackend.closeSkillInventoryFences();
     }
 
     @Override

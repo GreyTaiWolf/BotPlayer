@@ -582,6 +582,60 @@ class BotActionRuntimeTest {
    }
 
    @Test
+   void lifecycleCloseDoesNotEraseQuarantineRaisedByItsCleanup() {
+      BotActionRuntimeTest.ScriptedBackend backend =
+         new BotActionRuntimeTest.ScriptedBackend();
+      backend.forceResetSucceeds = false;
+      BotActionRuntime runtime = runtime(backend);
+      ActionEnvelope active = envelope(
+         FIRST_BOT,
+         1L,
+         91L,
+         "lifecycle-cleanup-quarantine",
+         new WaitAction(20),
+         100L,
+         20
+      );
+      backend.runForever(active.actionId());
+      backend.failCleanupFor(active.actionId());
+      ActionMailbox.Submission submission =
+         runtime.submit(active, ActionPriority.OWNER_TASK);
+      runtime.tick(1L);
+
+      Assertions.assertEquals(
+         1,
+         runtime.cancelBotNow(
+            FIRST_BOT,
+            1L,
+            ActionCancellationReason.LIFECYCLE,
+            2L
+         )
+      );
+
+      Assertions.assertEquals(
+         ActionFailureCode.INTERNAL_ERROR, outcome(submission).failureCode()
+      );
+      Assertions.assertFalse(runtime.isGenerationSafe(FIRST_BOT, 1L));
+      Assertions.assertEquals(0, runtime.activeActionCount());
+      Assertions.assertEquals(0, runtime.activeLeaseCount());
+      Assertions.assertEquals(
+         ActionMailbox.SubmissionStatus.BOT_GENERATION_CLOSED,
+         runtime.submit(
+            envelope(
+               FIRST_BOT,
+               1L,
+               92L,
+               "lifecycle-cleanup-stays-closed",
+               new StopAction(),
+               100L,
+               5
+            ),
+            ActionPriority.OWNER_CONTROL
+         ).status()
+      );
+   }
+
+   @Test
    void shutdownClosesIngressAndCompletesQueuedOrActiveActions() {
       BotActionRuntimeTest.ScriptedBackend var1 = new BotActionRuntimeTest.ScriptedBackend();
       BotActionRuntime var2 = runtime(var1);
@@ -689,6 +743,389 @@ class BotActionRuntimeTest {
       Assertions.assertEquals(ActionMailbox.SubmissionStatus.ENQUEUED, var15.status());
       var4.tick(5L);
       Assertions.assertEquals(ActionState.SUCCEEDED, outcome(var15).state());
+   }
+
+   @Test
+   void upperLayerCanQuarantineAnUnrecoverableTransaction() {
+      BotActionRuntimeTest.ScriptedBackend var1 = new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime var2 = runtime(var1);
+      ActionEnvelope var3 = envelope(FIRST_BOT, 1L, "unsafe-transaction-active", new WaitAction(20), 100L, 20);
+      var1.runForever(var3.actionId());
+      ActionMailbox.Submission var4 = var2.submit(var3, ActionPriority.SURVIVAL);
+      var2.tick(1L);
+      ActionEnvelope var5 = envelope(FIRST_BOT, 2L, "unsafe-transaction-queued", new StopAction(), 100L, 5);
+      ActionMailbox.Submission var6 = var2.submit(var5, ActionPriority.BACKGROUND);
+
+      BotActionRuntime.GenerationQuarantineResult quarantine =
+         var2.quarantineBotGenerationNow(FIRST_BOT, 1L, 2L);
+
+      Assertions.assertEquals(2, quarantine.targetedActions());
+      Assertions.assertTrue(quarantine.ingressClosed());
+      Assertions.assertTrue(quarantine.containmentConfirmed());
+      Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(var4).failureCode());
+      Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(var6).failureCode());
+      Assertions.assertEquals(0, var2.activeActionCount());
+      Assertions.assertEquals(0, var2.activeLeaseCount());
+      Assertions.assertFalse(var2.isGenerationSafe(FIRST_BOT, 1L));
+      ActionEnvelope var7 = envelope(FIRST_BOT, 3L, "unsafe-transaction-rejected", new StopAction(), 100L, 5);
+      ActionMailbox.Submission var8 = var2.submit(var7, ActionPriority.OWNER_CONTROL);
+      Assertions.assertEquals(ActionMailbox.SubmissionStatus.BOT_GENERATION_CLOSED, var8.status());
+      Assertions.assertEquals(0, var1.startCount(var7.actionId()));
+   }
+
+   @Test
+   void quarantinesExactGenerationsIndependentlyInReverseOrder() {
+      BotActionRuntimeTest.ScriptedBackend backend =
+         new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime runtime = runtime(backend);
+      ActionEnvelope generationOneActive = envelope(
+         FIRST_BOT,
+         1L,
+         101L,
+         "exact-generation-one-active",
+         new WaitAction(20),
+         100L,
+         20
+      );
+      ActionEnvelope generationTwoActive = envelope(
+         FIRST_BOT,
+         2L,
+         102L,
+         "exact-generation-two-active",
+         new LookAtAction(1.0, 2.0, 3.0),
+         100L,
+         20
+      );
+      backend.runForever(generationOneActive.actionId());
+      backend.runForever(generationTwoActive.actionId());
+      ActionMailbox.Submission generationOneActiveSubmission =
+         runtime.submit(generationOneActive, ActionPriority.OWNER_TASK);
+      ActionMailbox.Submission generationTwoActiveSubmission =
+         runtime.submit(generationTwoActive, ActionPriority.OWNER_TASK);
+      runtime.tick(1L);
+
+      ActionEnvelope generationOneQueued = envelope(
+         FIRST_BOT,
+         1L,
+         103L,
+         "exact-generation-one-queued",
+         new StopAction(),
+         100L,
+         5
+      );
+      ActionEnvelope generationTwoQueued = envelope(
+         FIRST_BOT,
+         2L,
+         104L,
+         "exact-generation-two-queued",
+         new StopAction(),
+         100L,
+         5
+      );
+      ActionEnvelope generationThree = envelope(
+         FIRST_BOT,
+         3L,
+         105L,
+         "exact-generation-three",
+         new StopAction(),
+         100L,
+         5
+      );
+      ActionEnvelope otherBot = envelope(
+         SECOND_BOT,
+         1L,
+         106L,
+         "exact-generation-other-bot",
+         new StopAction(),
+         100L,
+         5
+      );
+      ActionMailbox.Submission generationOneQueuedSubmission =
+         runtime.submit(generationOneQueued, ActionPriority.BACKGROUND);
+      ActionMailbox.Submission generationTwoQueuedSubmission =
+         runtime.submit(generationTwoQueued, ActionPriority.BACKGROUND);
+      ActionMailbox.Submission generationThreeSubmission =
+         runtime.submit(generationThree, ActionPriority.OWNER_CONTROL);
+      ActionMailbox.Submission otherBotSubmission =
+         runtime.submit(otherBot, ActionPriority.OWNER_CONTROL);
+
+      BotActionRuntime.GenerationQuarantineResult generationTwoResult =
+         runtime.quarantineBotGenerationNow(FIRST_BOT, 2L, 2L);
+
+      Assertions.assertEquals(2, generationTwoResult.targetedActions());
+      Assertions.assertTrue(generationTwoResult.containmentConfirmed());
+      Assertions.assertEquals(
+         ActionFailureCode.UNSAFE_CONTROL_STATE,
+         outcome(generationTwoActiveSubmission).failureCode()
+      );
+      Assertions.assertEquals(
+         ActionFailureCode.UNSAFE_CONTROL_STATE,
+         outcome(generationTwoQueuedSubmission).failureCode()
+      );
+      Assertions.assertFalse(
+         future(generationOneActiveSubmission).toCompletableFuture().isDone()
+      );
+      Assertions.assertFalse(
+         future(generationOneQueuedSubmission).toCompletableFuture().isDone()
+      );
+      Assertions.assertFalse(runtime.isGenerationSafe(FIRST_BOT, 1L));
+
+      BotActionRuntime.GenerationQuarantineResult generationOneResult =
+         runtime.quarantineBotGenerationNow(FIRST_BOT, 1L, 2L);
+
+      Assertions.assertEquals(2, generationOneResult.targetedActions());
+      Assertions.assertTrue(generationOneResult.containmentConfirmed());
+      Assertions.assertEquals(
+         ActionFailureCode.UNSAFE_CONTROL_STATE,
+         outcome(generationOneActiveSubmission).failureCode()
+      );
+      Assertions.assertEquals(
+         ActionFailureCode.UNSAFE_CONTROL_STATE,
+         outcome(generationOneQueuedSubmission).failureCode()
+      );
+      Assertions.assertEquals(
+         ActionMailbox.SubmissionStatus.BOT_GENERATION_CLOSED,
+         runtime.submit(
+            envelope(
+               FIRST_BOT,
+               1L,
+               107L,
+               "exact-generation-one-rejected",
+               new StopAction(),
+               100L,
+               5
+            ),
+            ActionPriority.OWNER_CONTROL
+         ).status()
+      );
+      Assertions.assertEquals(
+         ActionMailbox.SubmissionStatus.BOT_GENERATION_CLOSED,
+         runtime.submit(
+            envelope(
+               FIRST_BOT,
+               2L,
+               108L,
+               "exact-generation-two-rejected",
+               new StopAction(),
+               100L,
+               5
+            ),
+            ActionPriority.OWNER_CONTROL
+         ).status()
+      );
+
+      runtime.tick(3L);
+
+      Assertions.assertEquals(
+         ActionState.SUCCEEDED, outcome(generationThreeSubmission).state()
+      );
+      Assertions.assertEquals(
+         ActionState.SUCCEEDED, outcome(otherBotSubmission).state()
+      );
+      Assertions.assertFalse(runtime.isGenerationSafe(FIRST_BOT, 1L));
+      Assertions.assertFalse(runtime.isGenerationSafe(FIRST_BOT, 2L));
+      Assertions.assertTrue(runtime.isGenerationSafe(FIRST_BOT, 3L));
+      Assertions.assertTrue(runtime.isGenerationSafe(SECOND_BOT, 1L));
+   }
+
+   @Test
+   void quarantineCapacityOverflowFailsTheWholeRuntimeClosed() {
+      BotActionRuntimeTest.ScriptedBackend backend =
+         new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime runtime = runtime(backend);
+      ActionEnvelope unrelatedActive = envelope(
+         SECOND_BOT,
+         1L,
+         151L,
+         "quarantine-capacity-active",
+         new WaitAction(20),
+         100L,
+         20
+      );
+      backend.runForever(unrelatedActive.actionId());
+      ActionMailbox.Submission unrelatedSubmission =
+         runtime.submit(unrelatedActive, ActionPriority.OWNER_TASK);
+      runtime.tick(1L);
+
+      BotActionRuntime.GenerationQuarantineResult lastBounded = null;
+      for (long generation = 1L;
+           generation <= BotActionRuntime.MAX_QUARANTINED_GENERATIONS;
+           generation++) {
+         lastBounded = runtime.quarantineBotGenerationNow(
+            FIRST_BOT, generation, 2L
+         );
+      }
+
+      Assertions.assertFalse(lastBounded.runtimeFailClosed());
+      BotActionRuntime.GenerationQuarantineResult overflow =
+         runtime.quarantineBotGenerationNow(
+            FIRST_BOT,
+            BotActionRuntime.MAX_QUARANTINED_GENERATIONS + 1L,
+            2L
+         );
+
+      Assertions.assertTrue(overflow.runtimeFailClosed());
+      Assertions.assertTrue(overflow.ingressClosed());
+      Assertions.assertTrue(overflow.containmentConfirmed());
+      Assertions.assertEquals(
+         ActionFailureCode.UNSAFE_CONTROL_STATE,
+         outcome(unrelatedSubmission).failureCode()
+      );
+      Assertions.assertEquals(0, runtime.activeActionCount());
+      Assertions.assertEquals(0, runtime.activeLeaseCount());
+      Assertions.assertFalse(
+         runtime.isGenerationSafe(FIRST_BOT, 5000L)
+      );
+      Assertions.assertFalse(
+         runtime.isGenerationSafe(SECOND_BOT, 1L)
+      );
+      Assertions.assertFalse(
+         runtime.recoverBotSafety(FIRST_BOT, 1L, 3L)
+      );
+      Assertions.assertEquals(
+         ActionMailbox.SubmissionStatus.RUNTIME_CLOSED,
+         runtime.submit(
+            envelope(
+               SECOND_BOT,
+               2L,
+               152L,
+               "quarantine-capacity-rejected",
+               new StopAction(),
+               100L,
+               5
+            ),
+            ActionPriority.OWNER_CONTROL
+         ).status()
+      );
+   }
+
+   @Test
+   void reentrantQuarantineClosesIngressBeforeSafeBoundaryContainment() {
+      BotActionRuntimeTest.ScriptedBackend backend =
+         new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime runtime = runtime(backend);
+      ActionEnvelope sibling = envelope(
+         FIRST_BOT,
+         1L,
+         201L,
+         "reentrant-quarantine-sibling",
+         new WaitAction(20),
+         100L,
+         20
+      );
+      backend.runForever(sibling.actionId());
+      ActionMailbox.Submission siblingSubmission =
+         runtime.submit(sibling, ActionPriority.OWNER_TASK);
+      runtime.tick(1L);
+
+      ActionEnvelope trigger = envelope(
+         FIRST_BOT,
+         1L,
+         202L,
+         "reentrant-quarantine-trigger",
+         new LookAtAction(1.0, 2.0, 3.0),
+         100L,
+         20
+      );
+      ActionEnvelope exactQueued = envelope(
+         FIRST_BOT,
+         1L,
+         203L,
+         "reentrant-quarantine-queued",
+         new StopAction(),
+         100L,
+         5
+      );
+      ActionEnvelope newerGeneration = envelope(
+         FIRST_BOT,
+         2L,
+         204L,
+         "reentrant-quarantine-newer",
+         new StopAction(),
+         100L,
+         5
+      );
+      ActionMailbox.Submission triggerSubmission =
+         runtime.submit(trigger, ActionPriority.OWNER_TASK);
+      ActionMailbox.Submission exactQueuedSubmission =
+         runtime.submit(exactQueued, ActionPriority.BACKGROUND);
+      ActionMailbox.Submission newerGenerationSubmission =
+         runtime.submit(newerGeneration, ActionPriority.OWNER_CONTROL);
+      AtomicReference<BotActionRuntime.GenerationQuarantineResult> callbackReceipt =
+         new AtomicReference<>();
+      AtomicReference<ActionMailbox.SubmissionStatus> callbackSubmission =
+         new AtomicReference<>();
+      AtomicReference<Boolean> callbackSafety = new AtomicReference<>();
+      AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+      backend.onStart(trigger.actionId(), () -> {
+         try {
+            callbackReceipt.set(
+               runtime.quarantineBotGenerationNow(FIRST_BOT, 1L, 2L)
+            );
+            callbackSubmission.set(
+               runtime.submit(
+                  envelope(
+                     FIRST_BOT,
+                     1L,
+                     205L,
+                     "reentrant-quarantine-rejected",
+                     new StopAction(),
+                     100L,
+                     5
+                  ),
+                  ActionPriority.OWNER_CONTROL
+               ).status()
+            );
+            callbackSafety.set(runtime.isGenerationSafe(FIRST_BOT, 1L));
+         } catch (Throwable failure) {
+            callbackFailure.set(failure);
+         }
+      });
+
+      runtime.tick(2L);
+
+      Assertions.assertEquals(null, callbackFailure.get());
+      BotActionRuntime.GenerationQuarantineResult reentrantResult =
+         callbackReceipt.get();
+      Assertions.assertEquals(3, reentrantResult.targetedActions());
+      Assertions.assertTrue(reentrantResult.ingressClosed());
+      Assertions.assertTrue(reentrantResult.pending());
+      Assertions.assertTrue(reentrantResult.ticketRemaining());
+      Assertions.assertTrue(reentrantResult.leaseRemaining());
+      Assertions.assertFalse(reentrantResult.containmentConfirmed());
+      Assertions.assertEquals(
+         ActionMailbox.SubmissionStatus.BOT_GENERATION_CLOSED,
+         callbackSubmission.get()
+      );
+      Assertions.assertFalse(callbackSafety.get());
+      Assertions.assertEquals(
+         ActionFailureCode.UNSAFE_CONTROL_STATE,
+         outcome(siblingSubmission).failureCode()
+      );
+      Assertions.assertEquals(
+         ActionFailureCode.UNSAFE_CONTROL_STATE,
+         outcome(triggerSubmission).failureCode()
+      );
+      Assertions.assertEquals(
+         ActionFailureCode.UNSAFE_CONTROL_STATE,
+         outcome(exactQueuedSubmission).failureCode()
+      );
+      Assertions.assertEquals(
+         ActionState.SUCCEEDED, outcome(newerGenerationSubmission).state()
+      );
+      Assertions.assertEquals(0, runtime.activeActionCount());
+      Assertions.assertEquals(0, runtime.activeLeaseCount());
+      Assertions.assertEquals(1, backend.cleanupCount(sibling.actionId()));
+      Assertions.assertEquals(1, backend.cleanupCount(trigger.actionId()));
+      Assertions.assertEquals(0, backend.startCount(exactQueued.actionId()));
+
+      BotActionRuntime.GenerationQuarantineResult contained =
+         runtime.quarantineBotGenerationNow(FIRST_BOT, 1L, 2L);
+      Assertions.assertEquals(0, contained.targetedActions());
+      Assertions.assertTrue(contained.containmentConfirmed());
+      Assertions.assertFalse(runtime.isGenerationSafe(FIRST_BOT, 1L));
+      Assertions.assertTrue(runtime.recoverBotSafety(FIRST_BOT, 1L, 3L));
+      Assertions.assertTrue(runtime.isGenerationSafe(FIRST_BOT, 1L));
    }
 
    @Test
@@ -869,8 +1306,15 @@ class BotActionRuntimeTest {
       BotActionRuntime var2 = runtime(var1);
       AtomicReference<Throwable> var3 = new AtomicReference<>();
       AtomicReference<ActionMailbox.SubmissionStatus> var4 = new AtomicReference<>();
+      AtomicReference<Throwable> safetyFailure = new AtomicReference<>();
       Thread var5 = new Thread(() -> {
          var4.set(var2.submit(envelope(FIRST_BOT, 1L, "threaded", new LookAtAction(1.0, 2.0, 3.0), 100L, 10), ActionPriority.OWNER_TASK).status());
+
+         try {
+            var2.isGenerationSafe(FIRST_BOT, 1L);
+         } catch (Throwable failure) {
+            safetyFailure.set(failure);
+         }
 
          try {
             var2.tick(1L);
@@ -882,6 +1326,7 @@ class BotActionRuntimeTest {
       var5.join();
       Assertions.assertEquals(ActionMailbox.SubmissionStatus.ENQUEUED, var4.get());
       Assertions.assertTrue(var3.get() instanceof IllegalStateException);
+      Assertions.assertTrue(safetyFailure.get() instanceof IllegalStateException);
       var2.tick(1L);
       Assertions.assertEquals(1, var1.totalStarts());
    }

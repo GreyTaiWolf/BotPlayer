@@ -1,6 +1,7 @@
 package io.github.greytaiwolf.botplayer.kernel;
 
 import io.github.greytaiwolf.botplayer.BotPlayer;
+import io.github.greytaiwolf.botplayer.lifecycle.BotLifecycleManager.ListenerDisconnectDecision;
 import io.github.greytaiwolf.botplayer.lifecycle.BotPlayerManagers;
 import io.github.greytaiwolf.botplayer.perception.SoundObservationCandidate;
 import io.github.greytaiwolf.botplayer.perception.event.SpatialPoint;
@@ -19,6 +20,7 @@ import net.minecraft.network.protocol.game.ClientboundSoundEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundSoundPacket;
 import net.minecraft.network.protocol.game.ServerboundAcceptTeleportationPacket;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.TickTask;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.CommonListenerCookie;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
@@ -31,7 +33,12 @@ import org.jetbrains.annotations.Nullable;
  * Executes serverbound player actions locally and intentionally discards clientbound packets.
  */
 public final class BotGamePacketListener extends ServerGamePacketListenerImpl {
+    private static final int MAX_DISCONNECT_DEFERRALS =
+            1;
+    private final AtomicBoolean disconnectRequested =
+            new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private int disconnectDeferrals;
 
     public BotGamePacketListener(
             MinecraftServer server,
@@ -76,10 +83,24 @@ public final class BotGamePacketListener extends ServerGamePacketListenerImpl {
             throw new IllegalStateException(
                     "BotPlayer virtual protocol must run on the server thread");
         }
-        if (closed.get()) {
+        if (disconnectRequested.get()
+                || closed.get()) {
             return;
         }
         refreshChunkTracking();
+    }
+
+    /**
+     * Reports whether this listener may still authorize generation-bound
+     * runtime work.
+     */
+    public boolean acceptsRuntimeAuthority() {
+        return !disconnectRequested.get()
+                && !closed.get();
+    }
+
+    public boolean disconnectRequested() {
+        return disconnectRequested.get();
     }
 
     @Override
@@ -94,7 +115,9 @@ public final class BotGamePacketListener extends ServerGamePacketListenerImpl {
 
     @Override
     public void onDisconnect(@NotNull DisconnectionDetails details) {
-        if (closed.get()) {
+        if (closed.get()
+                || !disconnectRequested.compareAndSet(
+                        false, true)) {
             return;
         }
 
@@ -107,6 +130,55 @@ public final class BotGamePacketListener extends ServerGamePacketListenerImpl {
     }
 
     private void closeOnServerThread(DisconnectionDetails details) {
+        if (closed.get()) {
+            return;
+        }
+        ListenerDisconnectDecision decision =
+                player instanceof BotServerPlayer botPlayer
+                        ? BotPlayerManagers.find(server)
+                                .map(manager ->
+                                        manager.onDisconnecting(
+                                                botPlayer,
+                                                this,
+                                                connection))
+                                .orElse(
+                                        ListenerDisconnectDecision
+                                                .PROCEED)
+                        : ListenerDisconnectDecision
+                                .PROCEED;
+        if (decision
+                == ListenerDisconnectDecision.RETRY) {
+            if (disconnectDeferrals++
+                            >= MAX_DISCONNECT_DEFERRALS
+                    && player
+                            instanceof BotServerPlayer
+                                    botPlayer
+                    && BotPlayerManagers.find(server)
+                            .map(manager ->
+                                    manager.onDisconnectRetryExhausted(
+                                            botPlayer,
+                                            this,
+                                            connection))
+                            .orElse(true)) {
+                closeWithoutVanillaDisconnect();
+                return;
+            }
+            /*
+             * A lifecycle retirement or vanilla replacement stack already
+             * owns this body. ProcessorHandle#tell always appends a concrete
+             * TickTask; Executor#execute-style helpers may run inline on the
+             * server thread and recurse before that owner can finish.
+             */
+            server.tell(new TickTask(
+                    server.getTickCount(),
+                    () -> closeOnServerThread(details)));
+            return;
+        }
+        if (decision
+                == ListenerDisconnectDecision.ABORTED) {
+            closeWithoutVanillaDisconnect();
+            return;
+        }
         if (!closed.compareAndSet(false, true)) {
             return;
         }
@@ -119,8 +191,22 @@ public final class BotGamePacketListener extends ServerGamePacketListenerImpl {
             }
             if (player instanceof BotServerPlayer botPlayer) {
                 BotPlayerManagers.find(server)
-                        .ifPresent(manager -> manager.onDisconnected(botPlayer));
+                        .ifPresent(manager ->
+                                manager.onDisconnected(
+                                        botPlayer,
+                                        this,
+                                        connection));
             }
+        }
+    }
+
+    private void closeWithoutVanillaDisconnect() {
+        closed.set(true);
+        if (connection
+                instanceof BotConnection botConnection) {
+            botConnection.markClosed(
+                    BotConnectionCloseReason
+                            .LISTENER_DISCONNECT);
         }
     }
 

@@ -54,6 +54,21 @@
   库存、保护事件、精确结果和单次预算约束的短通道挖掘与简单短桥；
 - 新增 `/botplayer safety inspect <name>` 与 P4 完成验收报告；Build #97 已通过全仓
   55/55 GameTest，其中 P4 直接场景 28 个，但尚未正式发布。
+- 冻结 P5A-0 的有界 Skill、DAG、Safety handoff、菜单事务、checkpoint 与资源预留
+  合同；首批源码加入有界核心、TTL 预留、背包到快捷栏交换原语、`skill inspect` 和主动
+  进食开发切片，并为失败/取消/抢占增加补偿窗口、一次性布局租约、结构化物品守恒、
+  独立生命周期背包回执与无法恢复时的 generation 隔离；换维度、死亡复活与
+  `ServerPlayer` replacement 只有在动作和物理背包布局两张回执均安全后才允许激活新
+  generation；断线请求会立即冻结 listener 权威，并在原版保存/移除前用精确
+  body/listener/connection/generation 与不可升级的旧代回执完成布局补偿，避免把临时
+  选槽持久化；replacement/respawn 未收敛时只允许一次排队重试，异常身份则通过一次性
+  no-save removal 门闩隔离，不能由 `PlayerList.remove` 把未验证布局写盘。
+- 新增确定性基础装备策略和只扫描热栏的盔甲规划器，拒绝零耐久、目标绑定与装备后会
+  绑定的候选；新增原生 `InventoryMenu` 41 槽完整快照和单击可逆 `SWAP` 动作，按精确
+  stateId/layout、动态槽权限、物品多重集与 generation/replacement 回执验证并补偿。
+  `/botplayer skill equip-armor <name>` 可启动最多四个装备槽的逐件重规划运行。
+  该切片尚未通过 P5A 退出门；生产后端仍拒绝主背包换甲所需的多步计划，工具/副手、
+  有限自卫、checkpoint 与生产链仍未实现。
 
 ### 加固
 

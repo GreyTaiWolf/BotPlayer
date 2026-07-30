@@ -62,4 +62,25 @@ public abstract class PlayerListMixin {
         }
         return original.call(server, level, profile, clientInformation);
     }
+
+    @WrapOperation(
+            method = "remove",
+            require = 1,
+            at =
+                    @At(
+                            value = "INVOKE",
+                            target =
+                                    "Lnet/minecraft/server/players/PlayerList;save(Lnet/minecraft/server/level/ServerPlayer;)V"))
+    private void botplayer$suppressUnsafePlayerDataSave(
+            PlayerList playerList,
+            ServerPlayer player,
+            Operation<Void> original) {
+        if (player
+                        instanceof BotServerPlayer botPlayer
+                && botPlayer
+                        .consumePlayerDataSaveSuppression()) {
+            return;
+        }
+        original.call(playerList, player);
+    }
 }

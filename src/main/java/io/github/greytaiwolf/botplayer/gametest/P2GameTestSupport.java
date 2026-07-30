@@ -51,12 +51,35 @@ final class P2GameTestSupport {
             String name,
             Vec3 relativePosition,
             float yaw) {
+        return spawnBotWithName(
+                helper,
+                owner,
+                uniqueBotName(name),
+                relativePosition,
+                yaw);
+    }
+
+    static TestBot spawnBotWithExactName(
+            GameTestHelper helper,
+            ServerPlayer owner,
+            String name,
+            Vec3 relativePosition,
+            float yaw) {
+        return spawnBotWithName(
+                helper, owner, name, relativePosition, yaw);
+    }
+
+    private static TestBot spawnBotWithName(
+            GameTestHelper helper,
+            ServerPlayer owner,
+            String name,
+            Vec3 relativePosition,
+            float yaw) {
         Objects.requireNonNull(helper, "helper");
         Objects.requireNonNull(name, "name");
         ServerLevel level = helper.getLevel();
         Vec3 position = helper.absoluteVec(relativePosition);
         BotLifecycleManager manager = BotPlayerManagers.get(level.getServer());
-        String uniqueName = uniqueBotName(name);
         BotServerPlayer player = manager.spawn(
                 (owner == null
                                 ? level.getServer().createCommandSourceStack()
@@ -64,7 +87,7 @@ final class P2GameTestSupport {
                         .withLevel(level)
                         .withPosition(position)
                         .withRotation(new Vec2(0.0F, yaw)),
-                uniqueName);
+                name);
 
         player.setGameMode(GameType.SURVIVAL);
         player.getInventory().clearContent();
@@ -79,7 +102,7 @@ final class P2GameTestSupport {
         player.setJumping(false);
         player.stopUsingItem();
         placePlayer(player, level, position, yaw);
-        return new TestBot(uniqueName, manager, player);
+        return new TestBot(name, manager, player);
     }
 
     @SuppressWarnings("removal")

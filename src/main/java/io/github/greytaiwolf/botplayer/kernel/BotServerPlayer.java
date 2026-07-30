@@ -23,6 +23,7 @@ import org.jetbrains.annotations.Nullable;
 public final class BotServerPlayer extends ServerPlayer {
     private final BotRuntimeHandle runtimeHandle;
     private int lastClientlessConnectionTick = Integer.MIN_VALUE;
+    private boolean suppressNextPlayerDataSave;
 
     public BotServerPlayer(
             MinecraftServer server,
@@ -46,6 +47,26 @@ public final class BotServerPlayer extends ServerPlayer {
 
     public BotRuntimeHandle runtimeHandle() {
         return runtimeHandle;
+    }
+
+    /**
+     * Arms a one-shot guard used only by lifecycle fail-closed removal when
+     * persisting this body could commit an unverified temporary inventory
+     * layout.
+     */
+    public void suppressNextPlayerDataSave() {
+        suppressNextPlayerDataSave = true;
+    }
+
+    public boolean consumePlayerDataSaveSuppression() {
+        boolean suppressed =
+                suppressNextPlayerDataSave;
+        suppressNextPlayerDataSave = false;
+        return suppressed;
+    }
+
+    public void clearPlayerDataSaveSuppression() {
+        suppressNextPlayerDataSave = false;
     }
 
     @Override

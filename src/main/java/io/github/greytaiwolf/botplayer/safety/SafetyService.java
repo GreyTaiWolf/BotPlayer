@@ -56,6 +56,7 @@ public final class SafetyService {
     private final NavigationService navigationService;
     private final ActionSubmitter actionSubmitter;
     private final InventoryCloser inventoryCloser;
+    private final SafetyHandoff safetyHandoff;
     private final Map<UUID, BotSafetyState> states =
             new LinkedHashMap<>();
     private final ArrayBlockingQueue<CompletedAction> actionResults =
@@ -66,6 +67,20 @@ public final class SafetyService {
             NavigationService navigationService,
             ActionSubmitter actionSubmitter,
             InventoryCloser inventoryCloser) {
+        this(
+                settings,
+                navigationService,
+                actionSubmitter,
+                inventoryCloser,
+                SafetyHandoff.unavailable());
+    }
+
+    public SafetyService(
+            SafetySettings settings,
+            NavigationService navigationService,
+            ActionSubmitter actionSubmitter,
+            InventoryCloser inventoryCloser,
+            SafetyHandoff safetyHandoff) {
         this.settings = Objects.requireNonNull(settings, "settings");
         this.evaluator = new HazardEvaluator(settings);
         this.navigationService =
@@ -75,6 +90,8 @@ public final class SafetyService {
                 Objects.requireNonNull(actionSubmitter, "actionSubmitter");
         this.inventoryCloser =
                 Objects.requireNonNull(inventoryCloser, "inventoryCloser");
+        this.safetyHandoff =
+                Objects.requireNonNull(safetyHandoff, "safetyHandoff");
     }
 
     public void recordDamage(DamageCandidate candidate) {
@@ -415,6 +432,9 @@ public final class SafetyService {
                     5);
             return;
         }
+        if (offerSkillHandoff(state, incident, frame, currentTick)) {
+            return;
+        }
         if (incident.interventions
                 >= settings.maximumInterventions()) {
             incident.state = SafetyState.BLOCKED;
@@ -439,6 +459,48 @@ public final class SafetyService {
                 hazard.severity(),
                 currentTick,
                 plan.maximumTicks());
+    }
+
+    private boolean offerSkillHandoff(
+            BotSafetyState state,
+            SafetyIncident incident,
+            SafetyFrame frame,
+            long currentTick) {
+        HazardType type = incident.hazard.type();
+        boolean recoveryOnly = type == HazardType.FOOD_CRITICAL
+                || type == HazardType.HEALTH_CRITICAL
+                || type == HazardType.HARMFUL_EFFECT;
+        if (!recoveryOnly && type != HazardType.HOSTILE_TARGETING) {
+            return false;
+        }
+
+        SafetyHandoffDecision decision;
+        try {
+            decision = Objects.requireNonNull(
+                    safetyHandoff.request(new SafetyHandoffRequest(
+                            incident.incidentId,
+                            state.botId,
+                            state.generation,
+                            currentTick,
+                            incident.hazard,
+                            frame)),
+                    "safetyHandoff result");
+        } catch (RuntimeException exception) {
+            decision = SafetyHandoffDecision.FALLBACK;
+        }
+        if (decision.delegated()) {
+            incident.state = SafetyState.DELEGATED;
+            incident.currentIntervention =
+                    SafetyIntervention.DELEGATE_TO_SURVIVAL_SKILL;
+            return true;
+        }
+        if (recoveryOnly) {
+            incident.state = SafetyState.BLOCKED;
+            incident.currentIntervention =
+                    SafetyIntervention.HOLD_POSITION;
+            return true;
+        }
+        return false;
     }
 
     private ActionPlan chooseIntervention(

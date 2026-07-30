@@ -1,6 +1,8 @@
 package io.github.greytaiwolf.botplayer.action.interaction;
 
 import io.github.greytaiwolf.botplayer.action.ActionChannel;
+import io.github.greytaiwolf.botplayer.action.ActionKind;
+import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -21,6 +23,39 @@ class WorldInteractionActionSpecTest {
       Assertions.assertThrows(UnsupportedOperationException.class, () -> var1.channels().remove(ActionChannel.INVENTORY));
       Assertions.assertThrows(IllegalArgumentException.class, () -> new WorldInteractionActionSpec.SelectHotbar(-1, EMPTY));
       Assertions.assertThrows(IllegalArgumentException.class, () -> new WorldInteractionActionSpec.SelectHotbar(9, EMPTY));
+   }
+
+   @Test
+   void inventoryHotbarSwapHasStrictSlotsFingerprintsAndChannels() {
+      WorldInteractionActionSpec.SwapInventoryHotbar var1 = new WorldInteractionActionSpec.SwapInventoryHotbar(9, 8, STICK, EMPTY);
+      Assertions.assertEquals(WorldInteractionActionSpec.Kind.SWAP_INVENTORY_HOTBAR, var1.kind());
+      Assertions.assertEquals(ActionKind.SWAP_INVENTORY_HOTBAR, new WorldInteractionAction(var1).kind());
+      Assertions.assertEquals(Set.of(ActionChannel.INVENTORY, ActionChannel.MAIN_HAND), var1.channels());
+      Assertions.assertEquals(STICK, var1.expectedSource());
+      Assertions.assertEquals(EMPTY, var1.expectedTarget());
+      Assertions.assertThrows(UnsupportedOperationException.class, () -> var1.channels().remove(ActionChannel.INVENTORY));
+      Assertions.assertDoesNotThrow(() -> new WorldInteractionActionSpec.SwapInventoryHotbar(35, 0, EMPTY, STICK));
+      Assertions.assertThrows(
+         IllegalArgumentException.class, () -> new WorldInteractionActionSpec.SwapInventoryHotbar(8, 0, STICK, EMPTY)
+      );
+      Assertions.assertThrows(
+         IllegalArgumentException.class, () -> new WorldInteractionActionSpec.SwapInventoryHotbar(36, 0, STICK, EMPTY)
+      );
+      Assertions.assertThrows(
+         IllegalArgumentException.class, () -> new WorldInteractionActionSpec.SwapInventoryHotbar(9, -1, STICK, EMPTY)
+      );
+      Assertions.assertThrows(
+         IllegalArgumentException.class, () -> new WorldInteractionActionSpec.SwapInventoryHotbar(9, 9, STICK, EMPTY)
+      );
+      Assertions.assertThrows(
+         NullPointerException.class, () -> new WorldInteractionActionSpec.SwapInventoryHotbar(9, 0, null, EMPTY)
+      );
+      Assertions.assertThrows(
+         NullPointerException.class, () -> new WorldInteractionActionSpec.SwapInventoryHotbar(9, 0, STICK, null)
+      );
+      Assertions.assertThrows(
+         IllegalArgumentException.class, () -> new WorldInteractionActionSpec.SwapInventoryHotbar(9, 0, STICK, STICK)
+      );
    }
 
    @Test

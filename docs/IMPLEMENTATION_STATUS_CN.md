@@ -1,10 +1,10 @@
 # BotPlayer 当前实现状态
 
-> 更新日期：2026-07-29
+> 更新日期：2026-07-30
 >
-> 验收载体：[PR #5](https://github.com/GreyTaiWolf/BotPlayer/pull/5)
+> P4 验收载体：[PR #5](https://github.com/GreyTaiWolf/BotPlayer/pull/5)；P5 当前无远端验收载体
 >
-> 当前阶段：P2-A～P2-E、P3 与 P4 自动化退出门已通过
+> 当前阶段：P2-A～P2-E、P3 与 P4 自动化退出门已通过；P5A-0 设计冻结，当前切片开发中
 >
 > 发布状态：尚未发布，不建议用于重要存档
 
@@ -16,7 +16,42 @@ P2 最终验证结果见 [P2_COMPLETION_REPORT_CN.md](P2_COMPLETION_REPORT_CN.md
 [AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md](AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md) 和
 [P3_COMPLETION_REPORT_CN.md](P3_COMPLETION_REPORT_CN.md)。P4 的设计与最终实现边界见
 [AI_PLAYER_RESEARCH_AND_P4_DESIGN_CN.md](AI_PLAYER_RESEARCH_AND_P4_DESIGN_CN.md) 和
-[P4_COMPLETION_REPORT_CN.md](P4_COMPLETION_REPORT_CN.md)。
+[P4_COMPLETION_REPORT_CN.md](P4_COMPLETION_REPORT_CN.md)。P5A-0 的范围、运行时合同与
+退出门见
+[AI_PLAYER_RESEARCH_AND_P5_DESIGN_CN.md](AI_PLAYER_RESEARCH_AND_P5_DESIGN_CN.md)。
+
+## P5 当前开发切片
+
+当前分支把有界 Skill 核心、局部 DAG 校验、TTL 预留原型、主动进食，以及只扫描热栏的
+基础盔甲升级记为“已编码”。原生 `InventoryMenu` 适配器会冻结 41 槽、cursor、选择槽和
+stateId，只开放单击可逆 `SWAP`，并以动态槽权限、完整布局与物品多重集验证/补偿；
+主背包换甲所需的 2～3 步计划目前只有纯模型，生产后端明确返回 `UNSUPPORTED`。
+这不是 P5A 退出门计数：有限自卫、可恢复的统一多步 menu FSM、`Checkpoint`、工具/
+副手、工作台/熔炉/3×9 单箱适配及木头到铁镐生产链仍未实现。相关能力成熟度不提升，
+Java 21/NeoForge 与真实 GameTest 完成前也不标记任何 P5A 纵切片通过。
+
+主动进食当前只接受无剩余容器、无声明有害效果且无自定义完成逻辑的原版基础 `Item`
+食物；可疑炖菜、紫颂果、蜂蜜瓶和模组食物保守拒绝，不能据此宣称通用食物支持。
+业务成功由 `UseItem` 验证完成当刻冻结的 item count / food level 证据判定，不依赖下一
+Tick 可能受 exhaustion 或拾取影响的活状态。
+业务动作与补偿动作使用分离时限；失败、取消或抢占必须先恢复临时槽位和快捷栏选择，
+原槽被可解释的外部插入占用时不搬未知物并以 `WORLD_CHANGED` 失败；只有物品守恒无法
+解释或无法证明补偿安全时才隔离整个 generation。死亡、换维度、卸载和停服还要求动作
+清理与背包布局两张独立回执；布局回执由一次性 run 租约与全背包结构化计数约束，食物
+只能减少零或一个且非目标物必须严格守恒，不能把无活动 ticket 或无动作的补偿调用误当成
+临时交换已恢复。一次性 fence 绑定完整布局 payload 并拒绝已消费 run 重放；换维度、
+死亡复活和 replacement 激活都受两张回执约束，无法取得安全布局回执时不会把同一物理
+背包带入新的活动 generation。断线 listener 使用跨越 pre-save / vanilla remove /
+post-finalize 的精确 pending 记录；请求一出现即撤销动作与 handoff 权威，物理补偿必须
+在原版写玩家数据之前完成，同 generation 的 unsafe 回执不可被后续重试升级；post 阶段
+只消费预关闭回执并做幂等 teardown。replacement/respawn 只允许一次真实排队重试；
+身份仍不收敛时用一次性 no-save 门闩绕过 `PlayerList.remove` 内部保存并隔离。相关
+GameTest 源码存在不等于当前分支已通过 Java 21/NeoForge 运行门。
+
+热栏盔甲切片使用确定性 `ArmorItem` 防御/韧性/剩余耐久比较，按头、胸、腿、脚固定顺序
+逐件重新规划；拒绝零耐久、不可装备、当前槽绑定和装备后会绑定的候选。每件升级都提交为
+独立原生菜单动作，最多四件，可由 `/botplayer skill equip-armor <name>` 手动启动。
+当前不扫描主背包，不选择工具或副手，也不把盾牌格挡计入基础装备。
 
 ## 状态含义
 
@@ -115,7 +150,7 @@ P3 的生产路径已编码并通过 Build #28 自动化退出门；这表示提
 | P4 管理命令 | 已编码 | `navigation go/stop/inspect` 与 `safety inspect` 固定要求权限等级 2 |
 | P4 GameTest | 28/28 通过 | 全仓 55/55；完整清单见 P4 完成报告 |
 | 长距离/性能发布门 | 部分完成 | 滚动局部 frontier 已编码；平地 200 格直接 GameTest、多 Bot MSPT/内存 soak 尚未完成 |
-| 自主生存/战斗 | 未实现 | 不会找食物、主动吃药、换甲、持盾或反击；属于 P5A/P5C |
+| 自主生存/战斗 | P5A-0 开发中；退出门未计数 | 当前只计有界核心/DAG/TTL 预留、主动进食与热栏基础盔甲源码切片；有限自卫、统一多步 menu 事务、工具/副手、checkpoint 和生产链仍未实现 |
 
 P4 自动化门证明了“受控导航、安全反射和真实玩家规则底座”，不证明所有原版移动组合、
 所有伤害/效果或所有模组兼容，更不等于完整生存 AI。具体边界见
@@ -279,7 +314,7 @@ screen、独立专用服和长时间 soak 是明确保留的专项验证，不�
 |---|---|---|
 | P3 | 感知、语义事件、世界模型、玩家活动理解 | 自动化退出门已通过；客户端、独立专用服与 soak 未验证 |
 | P4 | 导航、安全反射、动态重规划、玩家规则兼容 | 自动化退出门已通过；复杂移动、专用服、保护模组与 soak 未验证 |
-| P5A | 技能 FSM、首条生存闭环、最小原版世界容器驱动 | 未实现 |
+| P5A | 技能 FSM、首条生存闭环、最小原版世界容器驱动 | 首批核心/DAG/TTL 预留、主动进食、单击原生菜单与热栏基础盔甲切片已编码；有限自卫、统一多步 menu、工具/副手、checkpoint、生产链及全部退出门未完成 |
 | P5B | 广泛原版容器/工作站、制作、生产和日常生活 | 未实现 |
 | P5C | 运输、游戏进程和高级战斗 | 未实现 |
 | P5D | 建筑与红石 | 未实现 |
@@ -291,11 +326,13 @@ screen、独立专用服和长时间 soak 是明确保留的专项验证，不�
 
 ## 下一道门
 
-1. P5A 建立技能 FSM、最小容器驱动和首条“补给—采集—制作—存放”闭环；
+1. 按 P5A-0 冻结合同建立 Skill FSM/DAG、Safety handoff、有限 TaskSensor、统一 menu
+   事务、检查点与预留，再完成首条“补给—采集—制作—存放”闭环；
 2. 补 P4 保留的 200 格、实体阻挡、stuck、熔岩/窒息/冰冻与喷溅药水专项场景；
 3. 在保护/领地模组上验证 Terrain Assist 拒绝后不重试、不伪装成功；
 4. 继续保留客户端、独立专用服与多 Bot soak 的未验证边界；
-5. 在 P5 之前不把 P4 通用避险宣传成会吃饭、会用药或会战斗；
+5. 在对应 P5 纵切片验收前，不把 P4 通用避险宣传成会吃饭、会用药或会战斗；主动药物
+   固定在 P5B；
 6. 在 P5 之前不把 P3 方块观察宣传成容器内容读取；
 7. 在 P6 之前不把客户端凭据宣传成 DeepSeek 已接通。
 

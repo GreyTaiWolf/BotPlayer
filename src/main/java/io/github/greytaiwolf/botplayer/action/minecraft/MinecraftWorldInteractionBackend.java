@@ -6,13 +6,26 @@ import io.github.greytaiwolf.botplayer.action.ActionCleanupReason;
 import io.github.greytaiwolf.botplayer.action.ActionEnvelope;
 import io.github.greytaiwolf.botplayer.action.ActionEvidence;
 import io.github.greytaiwolf.botplayer.action.ActionFailureCode;
+import io.github.greytaiwolf.botplayer.action.ResourceIdEvidence;
 import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockHitTarget;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockTargetFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.EntityLocalHit;
 import io.github.greytaiwolf.botplayer.action.interaction.EntityTargetFingerprint;
+import io.github.greytaiwolf.botplayer.action.interaction.InventoryContentsSnapshot;
+import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanupFence;
+import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanupLease;
+import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanupPolicy;
+import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanupRequest;
+import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanupResult;
 import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuClickStep;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSnapshot;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSwapPlan;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuTransaction;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuTransactionState;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.PlayerInventoryMenuLayout;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.lifecycle.BotLifecycleManager;
 import java.util.LinkedHashMap;
@@ -32,20 +45,26 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.inventory.ClickType;
+import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.enchantment.EnchantmentEffectComponents;
+import net.minecraft.world.item.enchantment.EnchantmentHelper;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
 /**
- * Executes P2-C through the same serverbound packet listener entry points as a physical player.
+ * 通过真人玩家使用的服务端入口执行 P2-C 与 P5A 世界交互。
  *
- * <p>All state is short-lived, generation-scoped and confined to the server thread. A state entry
- * is installed before its first side effect so runtime cleanup can always undo held use or block
- * breaking when a packet handler re-enters lifecycle code.
+ * <p>全部状态均为短生命周期、generation 隔离并限制在服务器主线程。第一次副作用前先登记
+ * 状态，使 packet handler 重入生命周期逻辑时，运行时清理仍能撤销持续使用或方块破坏。
  */
 final class MinecraftWorldInteractionBackend implements ActionBackend {
     private final BotLifecycleManager lifecycleManager;
     private final Map<ActionKey, InteractionState> active = new LinkedHashMap<>();
+    private final InventoryLayoutCleanupFence
+            inventoryLayoutCleanupFence =
+                    new InventoryLayoutCleanupFence();
     private int packetSequence;
 
     MinecraftWorldInteractionBackend(BotLifecycleManager lifecycleManager) {
@@ -93,9 +112,43 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         }
 
         BotServerPlayer player = resolved.orElseThrow();
+        if (action.spec()
+                instanceof WorldInteractionActionSpec
+                        .SwapInventoryHotbar
+                || action.spec()
+                        instanceof WorldInteractionActionSpec
+                                .InventoryMenuSwap) {
+            if (!lifecycleManager.mayActionMutateInventory(
+                    envelope.botId(), envelope.botGeneration())) {
+                return failure(
+                        envelope,
+                        ActionFailureCode.CHANNEL_BUSY,
+                        "Bot inventory is write-locked by an open viewer");
+            }
+        }
+        if (action.spec()
+                        instanceof WorldInteractionActionSpec
+                                .SwapInventoryHotbar
+                || action.spec()
+                        instanceof WorldInteractionActionSpec
+                                .InventoryMenuSwap
+                || action.spec()
+                        instanceof WorldInteractionActionSpec
+                                .SelectHotbar) {
+            BackendResult revalidated =
+                    validateSpec(envelope, player, action.spec());
+            if (revalidated.step() != BackendStep.ACCEPTED) {
+                return revalidated;
+            }
+        }
         ActionKey key = ActionKey.from(envelope);
         InteractionState state =
-                InteractionState.capture(player, action.spec(), currentTick);
+                InteractionState.capture(
+                        player,
+                        action.spec(),
+                        currentTick,
+                        envelope.botId(),
+                        envelope.botGeneration());
         if (active.putIfAbsent(key, state) != null) {
             return failure(
                     envelope,
@@ -103,7 +156,15 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     "World action was started more than once");
         }
 
-        dispatchStart(player, state);
+        try {
+            dispatchStart(player, state);
+        } catch (MenuPreconditionChangedException exception) {
+            state.sideEffectDispatched = false;
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Inventory menu transaction precondition changed before click");
+        }
         return requiresTicks(state.spec)
                 ? BackendResult.running(envelope)
                 : BackendResult.readyToVerify(envelope);
@@ -148,6 +209,12 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                             state,
                             pickupWait,
                             currentTick);
+            case WorldInteractionActionSpec.InventoryMenuSwap menuSwap ->
+                    tickMenuSwap(
+                            envelope,
+                            player,
+                            state,
+                            menuSwap);
             default -> BackendResult.readyToVerify(envelope);
         };
     }
@@ -171,6 +238,10 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         return switch (state.spec) {
             case WorldInteractionActionSpec.SelectHotbar selectHotbar ->
                     verifySelect(envelope, player, selectHotbar);
+            case WorldInteractionActionSpec.SwapInventoryHotbar swap ->
+                    verifySwap(envelope, player, state, swap);
+            case WorldInteractionActionSpec.InventoryMenuSwap menuSwap ->
+                    verifyMenuSwap(envelope, player, state, menuSwap);
             case WorldInteractionActionSpec.UseItem useItem ->
                     verifyUse(envelope, player, state, useItem);
             case WorldInteractionActionSpec.ReleaseUse releaseUse ->
@@ -207,7 +278,18 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         envelope.botId(), envelope.botGeneration());
         if (resolved.isPresent()) {
             BotServerPlayer player = resolved.orElseThrow();
-            cleanupPlayerState(player, state);
+            cleanupPlayerState(
+                    player,
+                    state,
+                    reason,
+                    lifecycleManager
+                            .isStagedReplacementCleanupTarget(
+                                    envelope.botId(),
+                                    envelope.botGeneration(),
+                                    player));
+        } else if (requiresResolvedCleanupTarget(state, reason)) {
+            throw new IllegalStateException(
+                    "Cannot resolve the authoritative player body required for action cleanup");
         }
         active.remove(key, state);
     }
@@ -222,6 +304,12 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         }
 
         BotServerPlayer player = resolved.orElseThrow();
+        boolean replacementInheritor =
+                lifecycleManager
+                        .isStagedReplacementCleanupTarget(
+                                botId,
+                                botGeneration,
+                                player);
         try {
             player.stopUsingItem();
             for (Map.Entry<ActionKey, InteractionState> entry :
@@ -229,7 +317,11 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 ActionKey key = entry.getKey();
                 if (key.botId.equals(botId)
                         && key.botGeneration == botGeneration) {
-                    cleanupPlayerState(player, entry.getValue());
+                    cleanupPlayerState(
+                            player,
+                            entry.getValue(),
+                            ActionCleanupReason.FAILED,
+                            replacementInheritor);
                     active.remove(key, entry.getValue());
                 }
             }
@@ -237,6 +329,271 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         } catch (RuntimeException exception) {
             return false;
         }
+    }
+
+    boolean openSkillInventoryLayout(
+            UUID botId,
+            long botGeneration,
+            InventoryLayoutCleanupLease layoutLease) {
+        if (lifecycleManager
+                .resolveActionTarget(
+                        botId, botGeneration)
+                .isEmpty()) {
+            return false;
+        }
+        InventoryLayoutCleanupFence.ArmResult result =
+                inventoryLayoutCleanupFence.arm(
+                        botId,
+                        botGeneration,
+                        layoutLease);
+        return result
+                        == InventoryLayoutCleanupFence
+                                .ArmResult.ARMED
+                || result
+                        == InventoryLayoutCleanupFence
+                                .ArmResult.ALREADY_ARMED;
+    }
+
+    void releaseSkillInventoryLayout(
+            UUID botId, long botGeneration, UUID runId) {
+        inventoryLayoutCleanupFence.release(
+                botId, botGeneration, runId);
+    }
+
+    void closeSkillInventoryGeneration(
+            UUID botId, long botGeneration) {
+        inventoryLayoutCleanupFence.closeGeneration(
+                botId, botGeneration);
+    }
+
+    void closeSkillInventoryFences() {
+        inventoryLayoutCleanupFence.clear();
+    }
+
+    InventoryLayoutCleanupResult cleanupSkillInventoryLayout(
+            UUID botId,
+            long botGeneration,
+            InventoryLayoutCleanupRequest request) {
+        Objects.requireNonNull(request, "request");
+        if (inventoryLayoutCleanupFence.begin(
+                        botId,
+                        botGeneration,
+                        request.lease())
+                != InventoryLayoutCleanupFence.StartResult
+                        .STARTED) {
+            return InventoryLayoutCleanupResult.STALE;
+        }
+        InventoryLayoutCleanupResult result;
+        try {
+            result = cleanupSkillInventoryLayoutStarted(
+                    botId, botGeneration, request);
+        } catch (RuntimeException exception) {
+            result = InventoryLayoutCleanupResult.UNSAFE;
+        }
+        if (!inventoryLayoutCleanupFence.complete(
+                botId,
+                botGeneration,
+                request.runId())) {
+            return InventoryLayoutCleanupResult.UNSAFE;
+        }
+        return result;
+    }
+
+    private InventoryLayoutCleanupResult
+            cleanupSkillInventoryLayoutStarted(
+                    UUID botId,
+                    long botGeneration,
+                    InventoryLayoutCleanupRequest request) {
+        Optional<BotServerPlayer> resolved =
+                lifecycleManager.resolveCleanupTarget(
+                        botId, botGeneration);
+        if (resolved.isEmpty()) {
+            return InventoryLayoutCleanupResult.STALE;
+        }
+
+        BotServerPlayer player = resolved.orElseThrow();
+        if (!lifecycleManager.mayCleanupMutateInventory(
+                        botId, botGeneration)
+                || player.containerMenu != player.inventoryMenu
+                || !player.inventoryMenu.getCarried().isEmpty()
+                || player.isUsingItem()
+                || active.keySet().stream().anyMatch(key ->
+                        key.botId.equals(botId)
+                                && key.botGeneration
+                                        == botGeneration)) {
+            return InventoryLayoutCleanupResult.BLOCKED;
+        }
+        boolean committed = false;
+        boolean restored = false;
+        InventoryContentsSnapshot currentInventory =
+                MinecraftInteractionView.inventoryContents(
+                        player);
+        if (!InventoryLayoutCleanupPolicy
+                .conservesInventory(
+                        request,
+                        currentInventory)) {
+            return InventoryLayoutCleanupResult.UNSAFE;
+        }
+        if (request.checkSwap()) {
+            InventoryLayoutCleanupResult swap =
+                    cleanupSkillSwap(player, request);
+            if (!successfulSkillLayoutCleanup(swap)) {
+                return swap;
+            }
+            committed |= swap
+                    == InventoryLayoutCleanupResult
+                            .SAFE_LAYOUT_COMMITTED;
+            restored |= swap
+                    == InventoryLayoutCleanupResult.RESTORED;
+        }
+        if (request.checkSelection()) {
+            InventoryLayoutCleanupResult selection =
+                    cleanupSkillSelection(player, request);
+            if (!successfulSkillLayoutCleanup(
+                    selection)) {
+                return selection;
+            }
+            committed |= selection
+                    == InventoryLayoutCleanupResult
+                            .SAFE_LAYOUT_COMMITTED;
+            restored |= selection
+                    == InventoryLayoutCleanupResult.RESTORED;
+        }
+        if (committed) {
+            return InventoryLayoutCleanupResult
+                    .SAFE_LAYOUT_COMMITTED;
+        }
+        return restored
+                ? InventoryLayoutCleanupResult.RESTORED
+                : InventoryLayoutCleanupResult.ALREADY_SAFE;
+    }
+
+    private InventoryLayoutCleanupResult cleanupSkillSwap(
+            BotServerPlayer player,
+            InventoryLayoutCleanupRequest request) {
+        ItemStackFingerprint source = inventoryItem(
+                player, request.sourceInventorySlot());
+        ItemStackFingerprint temporary = inventoryItem(
+                player, request.temporaryHotbarSlot());
+        InventoryContentsSnapshot contentsBefore =
+                MinecraftInteractionView.inventoryContents(
+                        player);
+        InventoryLayoutCleanupPolicy.Assessment assessment =
+                InventoryLayoutCleanupPolicy.assess(
+                        request,
+                        source,
+                        temporary,
+                        contentsBefore);
+        switch (assessment.decision()) {
+            case ALREADY_SAFE -> {
+                return InventoryLayoutCleanupResult.ALREADY_SAFE;
+            }
+            case SAFE_LAYOUT_COMMITTED -> {
+                return InventoryLayoutCleanupResult
+                        .SAFE_LAYOUT_COMMITTED;
+            }
+            case UNSAFE -> {
+                return InventoryLayoutCleanupResult.UNSAFE;
+            }
+            case TEMPORARY_LAYOUT -> {
+                // Continue with the single exact compensating swap.
+            }
+        }
+
+        try {
+            player.inventoryMenu.clicked(
+                    request.sourceInventorySlot(),
+                    request.temporaryHotbarSlot(),
+                    ClickType.SWAP,
+                    player);
+            player.inventoryMenu.broadcastChanges();
+        } catch (RuntimeException exception) {
+            // Verify the actual post-call state below: a vanilla handler may
+            // mutate before throwing.
+        }
+
+        ItemStackFingerprint sourceAfter = inventoryItem(
+                player, request.sourceInventorySlot());
+        ItemStackFingerprint temporaryAfter = inventoryItem(
+                player, request.temporaryHotbarSlot());
+        InventoryContentsSnapshot contentsAfter =
+                MinecraftInteractionView.inventoryContents(
+                        player);
+        if (isExpectedFoodRemainder(
+                        sourceAfter,
+                        request.expectedFood(),
+                        assessment
+                                .expectedRemainderCount())
+                && temporaryAfter.isEmpty()
+                && contentsAfter.equals(
+                        contentsBefore)) {
+            return InventoryLayoutCleanupResult.RESTORED;
+        }
+        if (sourceAfter.equals(source)
+                && temporaryAfter.equals(temporary)
+                && contentsAfter.equals(
+                        contentsBefore)) {
+            return InventoryLayoutCleanupResult.BLOCKED;
+        }
+        return InventoryLayoutCleanupResult.UNSAFE;
+    }
+
+    private InventoryLayoutCleanupResult cleanupSkillSelection(
+            BotServerPlayer player,
+            InventoryLayoutCleanupRequest request) {
+        int current = player.getInventory().selected;
+        if (current == request.previousSelectedSlot()) {
+            return InventoryLayoutCleanupResult.ALREADY_SAFE;
+        }
+        if (current != request.temporaryHotbarSlot()) {
+            return InventoryLayoutCleanupResult
+                    .SAFE_LAYOUT_COMMITTED;
+        }
+        try {
+            player.connection.handleSetCarriedItem(
+                    new ServerboundSetCarriedItemPacket(
+                            request.previousSelectedSlot()));
+        } catch (RuntimeException exception) {
+            // Inspect the authoritative selected slot after a handler error.
+        }
+        int selectedAfter =
+                player.getInventory().selected;
+        if (selectedAfter
+                == request.previousSelectedSlot()) {
+            return InventoryLayoutCleanupResult.RESTORED;
+        }
+        if (selectedAfter
+                == request.temporaryHotbarSlot()) {
+            return InventoryLayoutCleanupResult.BLOCKED;
+        }
+        return InventoryLayoutCleanupResult.UNSAFE;
+    }
+
+    private static boolean successfulSkillLayoutCleanup(
+            InventoryLayoutCleanupResult result) {
+        return result == InventoryLayoutCleanupResult.RESTORED
+                || result
+                        == InventoryLayoutCleanupResult.ALREADY_SAFE
+                || result
+                        == InventoryLayoutCleanupResult
+                                .SAFE_LAYOUT_COMMITTED;
+    }
+
+    private static ItemStackFingerprint inventoryItem(
+            BotServerPlayer player, int slot) {
+        return MinecraftInteractionView.itemFingerprint(
+                player, player.getInventory().getItem(slot));
+    }
+
+    private static boolean isExpectedFoodRemainder(
+            ItemStackFingerprint actual,
+            ItemStackFingerprint expectedFood,
+            int expectedCount) {
+        return InventoryLayoutCleanupPolicy
+                .matchesRemainder(
+                        actual,
+                        expectedFood,
+                        expectedCount);
     }
 
     private BackendResult validateSpec(
@@ -252,14 +609,12 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
 
         return switch (spec) {
             case WorldInteractionActionSpec.SelectHotbar selectHotbar ->
-                    requireFingerprint(
-                            envelope,
-                            MinecraftInteractionView.itemFingerprint(
-                                    player,
-                                    player.getInventory()
-                                            .getItem(selectHotbar.slot())),
-                            selectHotbar.expectedSlotItem(),
-                            "Selected hotbar precondition changed");
+                    validateSelect(
+                            envelope, player, selectHotbar);
+            case WorldInteractionActionSpec.SwapInventoryHotbar swap ->
+                    validateSwap(envelope, player, swap);
+            case WorldInteractionActionSpec.InventoryMenuSwap menuSwap ->
+                    validateMenuSwap(envelope, player, menuSwap);
             case WorldInteractionActionSpec.UseItem useItem ->
                     validateHeldUse(envelope, player, useItem);
             case WorldInteractionActionSpec.ReleaseUse releaseUse ->
@@ -303,10 +658,244 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         };
     }
 
+    private BackendResult validateSelect(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            WorldInteractionActionSpec.SelectHotbar selectHotbar) {
+        if (player.getInventory().selected
+                == selectHotbar.slot()) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Requested hotbar slot is already selected");
+        }
+        return requireFingerprint(
+                envelope,
+                MinecraftInteractionView.itemFingerprint(
+                        player,
+                        player.getInventory()
+                                .getItem(selectHotbar.slot())),
+                selectHotbar.expectedSlotItem(),
+                "Selected hotbar precondition changed");
+    }
+
+    private BackendResult validateSwap(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            WorldInteractionActionSpec.SwapInventoryHotbar swap) {
+        if (player.containerMenu != player.inventoryMenu) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Bot inventory menu is not the active menu");
+        }
+        BackendResult source = requireFingerprint(
+                envelope,
+                MinecraftInteractionView.itemFingerprint(
+                        player,
+                        player.getInventory()
+                                .getItem(swap.sourceInventorySlot())),
+                swap.expectedSource(),
+                "Source inventory stack changed before swap");
+        if (source.step() == BackendStep.FAILED) {
+            return source;
+        }
+        return requireFingerprint(
+                envelope,
+                MinecraftInteractionView.itemFingerprint(
+                        player,
+                        player.getInventory()
+                                .getItem(swap.targetHotbarSlot())),
+                swap.expectedTarget(),
+                "Target hotbar stack changed before swap");
+    }
+
+    private BackendResult validateMenuSwap(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            WorldInteractionActionSpec.InventoryMenuSwap menuSwap) {
+        if (player.containerMenu != player.inventoryMenu) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Bot native inventory menu is not active");
+        }
+        InventoryMenuSwapPlan plan = menuSwap.plan();
+        if (plan.orderedSteps().size() != 1) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.UNSUPPORTED,
+                    "Runtime menu adapter currently accepts only one-click reversible plans");
+        }
+        InventoryMenuSnapshot actual =
+                MinecraftActionSnapshot.inventoryMenu(player);
+        if (!actual.equals(plan.initialSnapshot())) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Inventory menu snapshot changed before transaction");
+        }
+        if (!nativeCraftSlotsEmpty(player)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Inventory crafting slots must be empty for a menu transaction");
+        }
+        if (!menuPlanHasReversiblePermissions(player, plan)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PERMISSION_DENIED,
+                    "Inventory menu transaction is not safely reversible");
+        }
+        return BackendResult.accepted(envelope);
+    }
+
+    private static boolean menuPlanHasReversiblePermissions(
+            BotServerPlayer player, InventoryMenuSwapPlan plan) {
+        InventoryMenuSnapshot initial = plan.initialSnapshot();
+        for (int inventorySlot : plan.touchedInventorySlots()) {
+            Slot slot = player.inventoryMenu.getSlot(
+                    PlayerInventoryMenuLayout
+                            .menuSlotForInventorySlot(inventorySlot));
+            ItemStack original =
+                    player.getInventory().getItem(inventorySlot);
+            if (!original.isEmpty()
+                    && (!slot.mayPickup(player)
+                            || !mayPlaceCompleteStack(
+                                    slot, original))) {
+                return false;
+            }
+        }
+        for (InventoryMenuClickStep step : plan.orderedSteps()) {
+            Slot clicked =
+                    player.inventoryMenu.getSlot(step.menuSlot());
+            Slot hotbar = player.inventoryMenu.getSlot(
+                    PlayerInventoryMenuLayout
+                            .menuSlotForInventorySlot(
+                                    step.hotbarButton()));
+            ItemStack clickedIncoming = stackForFingerprint(
+                    player,
+                    initial,
+                    step.before().itemAt(step.hotbarButton()));
+            ItemStack hotbarIncoming = stackForFingerprint(
+                    player,
+                    initial,
+                    step.before().itemAt(
+                            step.clickedInventorySlot()));
+            ItemStack clickedOriginal = stackForFingerprint(
+                    player,
+                    initial,
+                    step.before().itemAt(
+                            step.clickedInventorySlot()));
+            ItemStack hotbarOriginal = stackForFingerprint(
+                    player,
+                    initial,
+                    step.before().itemAt(
+                            step.hotbarButton()));
+            if (clickedIncoming == null
+                    || hotbarIncoming == null
+                    || clickedOriginal == null
+                    || hotbarOriginal == null
+                    || !mayPlaceCompleteStack(
+                            clicked, clickedIncoming)
+                    || !mayPlaceCompleteStack(
+                            hotbar, hotbarIncoming)
+                    || !mayPlaceCompleteStack(
+                            clicked, clickedOriginal)
+                    || !mayPlaceCompleteStack(
+                            hotbar, hotbarOriginal)) {
+                return false;
+            }
+        }
+        if ((plan.operation()
+                                == InventoryMenuSwapPlan.Operation
+                                        .MAIN_TO_EQUIPMENT
+                        || plan.operation()
+                                == InventoryMenuSwapPlan.Operation
+                                        .HOTBAR_TO_EQUIPMENT)
+                && !player.isCreative()) {
+            int equipmentSlot = plan.orderedSteps().stream()
+                    .mapToInt(
+                            InventoryMenuClickStep::
+                                    clickedInventorySlot)
+                    .filter(
+                            PlayerInventoryMenuLayout::
+                                    isArmorInventorySlot)
+                    .findFirst()
+                    .orElse(-1);
+            if (equipmentSlot >= 0) {
+                ItemStack equipped =
+                        stackForFingerprint(
+                                player,
+                                initial,
+                                plan.finalSnapshot()
+                                        .itemAt(equipmentSlot));
+                if (equipped == null
+                        || EnchantmentHelper.has(
+                                equipped,
+                                EnchantmentEffectComponents
+                                        .PREVENT_ARMOR_CHANGE)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private static boolean mayPlaceCompleteStack(
+            Slot slot, ItemStack stack) {
+        return stack.isEmpty()
+                || (slot.mayPlace(stack)
+                        && stack.getCount()
+                                <= Math.min(
+                                        slot.getMaxStackSize(),
+                                        stack.getMaxStackSize()));
+    }
+
+    private static ItemStack stackForFingerprint(
+            BotServerPlayer player,
+            InventoryMenuSnapshot initial,
+            ItemStackFingerprint fingerprint) {
+        if (fingerprint.isEmpty()) {
+            return ItemStack.EMPTY;
+        }
+        for (int inventorySlot = 0;
+                inventorySlot
+                        < PlayerInventoryMenuLayout
+                                .INVENTORY_SLOT_COUNT;
+                inventorySlot++) {
+            if (initial.itemAt(inventorySlot).equals(fingerprint)) {
+                return player.getInventory()
+                        .getItem(inventorySlot)
+                        .copy();
+            }
+        }
+        return null;
+    }
+
+    private static boolean nativeCraftSlotsEmpty(
+            BotServerPlayer player) {
+        for (int menuSlot = 0; menuSlot <= 4; menuSlot++) {
+            if (!player.inventoryMenu
+                    .getSlot(menuSlot)
+                    .getItem()
+                    .isEmpty()) {
+                return false;
+            }
+        }
+        return player.inventoryMenu.getCarried().isEmpty();
+    }
+
     private BackendResult validateHeldUse(
             ActionEnvelope envelope,
             BotServerPlayer player,
             WorldInteractionActionSpec.UseItem useItem) {
+        if (player.isUsingItem()) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Bot is already using an item");
+        }
         ItemStack stack =
                 player.getItemInHand(
                         MinecraftInteractionView.hand(useItem.hand()));
@@ -469,11 +1058,25 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
 
     private void dispatchStart(
             BotServerPlayer player, InteractionState state) {
+        // Mark the operation as possibly applied before calling a packet/menu
+        // entry point: handlers may mutate state and then throw.
+        state.sideEffectDispatched = true;
         switch (state.spec) {
             case WorldInteractionActionSpec.SelectHotbar selectHotbar ->
                     player.connection.handleSetCarriedItem(
                             new ServerboundSetCarriedItemPacket(
                                     selectHotbar.slot()));
+            case WorldInteractionActionSpec.SwapInventoryHotbar swap -> {
+                // 原版 InventoryMenu 的主背包 menu slot 9..35 与 Inventory 索引一致。
+                player.inventoryMenu.clicked(
+                        swap.sourceInventorySlot(),
+                        swap.targetHotbarSlot(),
+                        ClickType.SWAP,
+                        player);
+                player.inventoryMenu.broadcastChanges();
+            }
+            case WorldInteractionActionSpec.InventoryMenuSwap menuSwap ->
+                    dispatchMenuSwap(player, state, menuSwap);
             case WorldInteractionActionSpec.UseItem useItem ->
                     dispatchUseItem(player, useItem);
             case WorldInteractionActionSpec.ReleaseUse ignored ->
@@ -542,8 +1145,108 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 // Pickup remains a normal collision-driven player behavior.
             }
         }
-        state.sideEffectDispatched = true;
-        state.startedUsing = player.isUsingItem();
+        state.startedUsing =
+                state.spec
+                                instanceof WorldInteractionActionSpec
+                                        .UseItem useItem
+                        && player.isUsingItem()
+                        && player.getUsedItemHand()
+                                == MinecraftInteractionView.hand(
+                                        useItem.hand())
+                        && MinecraftInteractionView.itemFingerprint(
+                                        player, player.getUseItem())
+                                .equals(useItem.expectedHeldItem());
+    }
+
+    private void dispatchMenuSwap(
+            BotServerPlayer player,
+            InteractionState state,
+            WorldInteractionActionSpec.InventoryMenuSwap menuSwap) {
+        state.menuTransaction =
+                Objects.requireNonNull(
+                                state.menuTransaction,
+                                "menuTransaction")
+                        .start();
+        if (state.menuTransaction.state()
+                != InventoryMenuTransactionState.RUNNING) {
+            throw new IllegalStateException(
+                    "Inventory menu transaction did not start");
+        }
+        applyNextMenuSwapStep(player, state, menuSwap);
+    }
+
+    private void applyNextMenuSwapStep(
+            BotServerPlayer player,
+            InteractionState state,
+            WorldInteractionActionSpec.InventoryMenuSwap menuSwap) {
+        InventoryMenuTransaction transaction =
+                Objects.requireNonNull(
+                        state.menuTransaction,
+                        "menuTransaction");
+        InventoryMenuClickStep step =
+                transaction.nextClick().orElseThrow(() ->
+                        new IllegalStateException(
+                                "Inventory menu transaction has no next click"));
+        InventoryMenuSnapshot last =
+                Objects.requireNonNull(
+                        state.menuLastSnapshot,
+                        "menuLastSnapshot");
+        InventoryMenuSnapshot before =
+                MinecraftActionSnapshot.inventoryMenu(player);
+        if (!lifecycleManager.mayActionMutateInventory(
+                        state.botId, state.botGeneration)
+                || !isCurrentActionTarget(state, player)
+                || !before.equals(last)
+                || !before.layoutEqualsIgnoringState(
+                        step.before())
+                || !nativeCraftSlotsEmpty(player)
+                || !menuStepAllowedNow(player, step)) {
+            throw new MenuPreconditionChangedException();
+        }
+        state.menuForwardInFlight =
+                transaction.confirmedClicks();
+        player.inventoryMenu.clicked(
+                step.menuSlot(),
+                step.hotbarButton(),
+                ClickType.SWAP,
+                player);
+        player.inventoryMenu.broadcastChanges();
+        if (!isCurrentActionTarget(state, player)) {
+            throw new IllegalStateException(
+                    "Bot generation changed during inventory menu click");
+        }
+        InventoryMenuSnapshot after =
+                MinecraftActionSnapshot.inventoryMenu(player);
+        if (!after.layoutEqualsIgnoringState(step.after())
+                || !nativeCraftSlotsEmpty(player)) {
+            throw new IllegalStateException(
+                    "Inventory menu transaction step was not applied exactly");
+        }
+        state.menuTransaction =
+                transaction.confirmNext(step);
+        state.menuLastSnapshot = after;
+        state.menuForwardInFlight = -1;
+    }
+
+    private static boolean menuStepAllowedNow(
+            BotServerPlayer player,
+            InventoryMenuClickStep step) {
+        Slot clicked =
+                player.inventoryMenu.getSlot(step.menuSlot());
+        Slot hotbar = player.inventoryMenu.getSlot(
+                PlayerInventoryMenuLayout
+                        .menuSlotForInventorySlot(
+                                step.hotbarButton()));
+        ItemStack clickedItem = clicked.getItem();
+        ItemStack hotbarItem = hotbar.getItem();
+        return (clickedItem.isEmpty()
+                        || clicked.mayPickup(player))
+                && (hotbarItem.isEmpty()
+                        || hotbar.mayPickup(player))
+                && mayPlaceCompleteStack(
+                        clicked, hotbarItem)
+                && mayPlaceCompleteStack(
+                        hotbar, clickedItem);
     }
 
     private void dispatchUseItem(
@@ -639,6 +1342,28 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             InteractionState state,
             WorldInteractionActionSpec.UseItem useItem,
             long currentTick) {
+        if (!state.startedUsing
+                && useItem.mode()
+                        != WorldInteractionActionSpec.ItemUseMode
+                                .INSTANT) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Declared item use did not start");
+        }
+        if (player.isUsingItem()
+                && (player.getUsedItemHand()
+                                != MinecraftInteractionView.hand(
+                                        useItem.hand())
+                        || !MinecraftInteractionView.itemFingerprint(
+                                        player, player.getUseItem())
+                                .sameItemAndComponents(
+                                        useItem.expectedHeldItem()))) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Active item use no longer matches the declared hand and stack");
+        }
         return switch (useItem.mode()) {
             case INSTANT -> BackendResult.readyToVerify(envelope);
             case FINISH_NATURALLY -> player.isUsingItem()
@@ -672,6 +1397,53 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 : BackendResult.running(envelope);
     }
 
+    private BackendResult tickMenuSwap(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            InteractionState state,
+            WorldInteractionActionSpec.InventoryMenuSwap menuSwap) {
+        if (!lifecycleManager.mayActionMutateInventory(
+                envelope.botId(), envelope.botGeneration())) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.CHANNEL_BUSY,
+                    "Bot inventory became write-locked during menu transaction");
+        }
+        InventoryMenuTransaction transaction =
+                state.menuTransaction;
+        if (transaction == null) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.INTERNAL_ERROR,
+                    "Inventory menu transaction state is missing");
+        }
+        if (transaction.state()
+                == InventoryMenuTransactionState.VERIFYING) {
+            return BackendResult.readyToVerify(envelope);
+        }
+        if (transaction.state()
+                != InventoryMenuTransactionState.RUNNING) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.INTERNAL_ERROR,
+                    "Inventory menu transaction entered an invalid state");
+        }
+        try {
+            applyNextMenuSwapStep(
+                    player, state, menuSwap);
+        } catch (MenuPreconditionChangedException exception) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Inventory menu transaction precondition changed before click");
+        }
+        return state.menuTransaction.state()
+                        == InventoryMenuTransactionState
+                                .VERIFYING
+                ? BackendResult.readyToVerify(envelope)
+                : BackendResult.running(envelope);
+    }
+
     private BackendResult verifySelect(
             ActionEnvelope envelope,
             BotServerPlayer player,
@@ -699,6 +1471,124 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 "Selected hotbar slot");
     }
 
+    private BackendResult verifySwap(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            InteractionState state,
+            WorldInteractionActionSpec.SwapInventoryHotbar swap) {
+        if (player.containerMenu != player.inventoryMenu) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Bot inventory menu changed during swap");
+        }
+        ItemStackFingerprint sourceAfter =
+                MinecraftInteractionView.itemFingerprint(
+                        player,
+                        player.getInventory()
+                                .getItem(swap.sourceInventorySlot()));
+        ItemStackFingerprint targetAfter =
+                MinecraftInteractionView.itemFingerprint(
+                        player,
+                        player.getInventory()
+                                .getItem(swap.targetHotbarSlot()));
+        if (!sourceAfter.equals(swap.expectedTarget())
+                || !targetAfter.equals(swap.expectedSource())) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Inventory and hotbar stacks were not exactly swapped");
+        }
+        String multisetAfter =
+                MinecraftInteractionView.inventoryMultisetDigest(player);
+        if (!multisetAfter.equals(state.inventoryMultisetBefore)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.UNSAFE_CONTROL_STATE,
+                    "Inventory conservation check failed after swap");
+        }
+        return success(
+                envelope,
+                List.of(
+                        evidence(
+                                "inventory.source_slot",
+                                Integer.toString(
+                                        swap.sourceInventorySlot())),
+                        evidence(
+                                "inventory.target_hotbar_slot",
+                                Integer.toString(
+                                        swap.targetHotbarSlot())),
+                        evidence(
+                                "inventory.multiset_preserved",
+                                "true")),
+                "Verified inventory hotbar swap");
+    }
+
+    private BackendResult verifyMenuSwap(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            InteractionState state,
+            WorldInteractionActionSpec.InventoryMenuSwap menuSwap) {
+        if (player.containerMenu != player.inventoryMenu
+                || !isCurrentActionTarget(state, player)
+                || !nativeCraftSlotsEmpty(player)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Native inventory menu changed during transaction");
+        }
+        InventoryMenuTransaction transaction =
+                state.menuTransaction;
+        InventoryMenuSnapshot last =
+                state.menuLastSnapshot;
+        InventoryMenuSnapshot actual =
+                MinecraftActionSnapshot.inventoryMenu(player);
+        if (transaction == null
+                || transaction.state()
+                        != InventoryMenuTransactionState
+                                .VERIFYING
+                || last == null
+                || !actual.equals(last)
+                || !actual.layoutEqualsIgnoringState(
+                        menuSwap.plan().finalSnapshot())) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Inventory menu transaction final snapshot changed");
+        }
+        String multisetAfter =
+                MinecraftInteractionView
+                        .inventoryMultisetDigest(player);
+        if (!multisetAfter.equals(
+                state.inventoryMultisetBefore)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.UNSAFE_CONTROL_STATE,
+                    "Inventory conservation check failed after menu transaction");
+        }
+        state.menuTransaction = transaction.commit();
+        return success(
+                envelope,
+                List.of(
+                        evidence(
+                                "menu.container_id",
+                                Integer.toString(
+                                        actual.containerId())),
+                        evidence(
+                                "menu.state_id",
+                                Integer.toString(
+                                        actual.stateId())),
+                        evidence(
+                                "menu.click_count",
+                                Integer.toString(
+                                        transaction
+                                                .confirmedClicks())),
+                        evidence(
+                                "inventory.multiset_preserved",
+                                "true")),
+                "Verified native inventory menu transaction");
+    }
+
     private BackendResult verifyUse(
             ActionEnvelope envelope,
             BotServerPlayer player,
@@ -712,11 +1602,19 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                         useItem.hand())));
         String inventoryAfter =
                 MinecraftInteractionView.inventoryDigest(player);
-        boolean observable =
-                state.startedUsing
-                        || !after.equals(state.heldBefore)
+        int foodLevelAfter =
+                player.getFoodData().getFoodLevel();
+        boolean itemOrInventoryChanged =
+                !after.equals(state.heldBefore)
                         || !inventoryAfter.equals(state.inventoryBefore)
                         || state.releaseSent;
+        boolean observable =
+                itemOrInventoryChanged
+                        || (useItem.mode()
+                                        != WorldInteractionActionSpec
+                                                .ItemUseMode
+                                                .FINISH_NATURALLY
+                                && state.startedUsing);
         if (!observable
                 || (useItem.mode()
                                 != WorldInteractionActionSpec.ItemUseMode
@@ -731,15 +1629,59 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 envelope,
                 List.of(
                         evidence(
+                                "item.before_id",
+                                itemIdentityId(state.heldBefore)),
+                        evidence(
+                                "item.before_damage",
+                                itemIdentityDamage(state.heldBefore)),
+                        evidence(
+                                "item.before_components",
+                                itemIdentityComponents(
+                                        state.heldBefore)),
+                        evidence(
                                 "item.before_count",
                                 Integer.toString(state.heldBefore.count())),
+                        evidence(
+                                "item.after_id",
+                                itemIdentityId(after)),
+                        evidence(
+                                "item.after_damage",
+                                itemIdentityDamage(after)),
+                        evidence(
+                                "item.after_components",
+                                itemIdentityComponents(after)),
                         evidence(
                                 "item.after_count",
                                 Integer.toString(after.count())),
                         evidence(
                                 "item.use_started",
-                                Boolean.toString(state.startedUsing))),
+                                Boolean.toString(state.startedUsing)),
+                        evidence(
+                                "player.food_before",
+                                Integer.toString(state.foodLevelBefore)),
+                        evidence(
+                                "player.food_after",
+                                Integer.toString(foodLevelAfter))),
                 "Verified item use");
+    }
+
+    private static String itemIdentityId(
+            ItemStackFingerprint fingerprint) {
+        return fingerprint.itemId()
+                .map(ResourceIdEvidence::encode)
+                .orElse("empty");
+    }
+
+    private static String itemIdentityDamage(
+            ItemStackFingerprint fingerprint) {
+        return fingerprint.isEmpty()
+                ? "empty"
+                : Integer.toString(fingerprint.damage());
+    }
+
+    private static String itemIdentityComponents(
+            ItemStackFingerprint fingerprint) {
+        return fingerprint.componentsDigest().orElse("empty");
     }
 
     private BackendResult verifyRelease(
@@ -869,10 +1811,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         ? living.getHealth()
                         : state.targetHealthBefore;
         boolean affected =
-                removed
-                        || healthAfter < state.targetHealthBefore
-                        || (entity instanceof LivingEntity living
-                                && living.hurtTime > 0);
+                removed || healthAfter < state.targetHealthBefore;
         if (!affected) {
             return failure(
                     envelope,
@@ -1039,15 +1978,56 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
     }
 
     private void cleanupPlayerState(
-            BotServerPlayer player, InteractionState state) {
-        if (state.spec instanceof WorldInteractionActionSpec.BreakBlock
-                breakBlock) {
+            BotServerPlayer player,
+            InteractionState state,
+            ActionCleanupReason reason,
+            boolean replacementInheritor) {
+        if (reason == ActionCleanupReason.SUCCEEDED
+                && state.spec
+                        instanceof WorldInteractionActionSpec
+                                .InventoryMenuSwap
+                && (state.menuTransaction == null
+                        || state.menuTransaction.state()
+                                != InventoryMenuTransactionState
+                                        .COMMITTED)) {
+            throw new IllegalStateException(
+                    "Successful menu action lacks a committed transaction");
+        }
+        if (reason != ActionCleanupReason.SUCCEEDED
+                && state.sideEffectDispatched) {
+            if (state.spec
+                    instanceof WorldInteractionActionSpec
+                            .SwapInventoryHotbar swap) {
+                rollbackSwap(player, state, swap);
+            } else if (state.spec
+                    instanceof WorldInteractionActionSpec
+                            .InventoryMenuSwap menuSwap) {
+                rollbackMenuSwap(
+                        player, state, menuSwap);
+            } else if (state.spec
+                    instanceof WorldInteractionActionSpec
+                            .SelectHotbar select) {
+                rollbackSelection(player, state, select);
+            }
+        }
+        if (!replacementInheritor
+                && state.spec
+                        instanceof WorldInteractionActionSpec
+                                .BreakBlock breakBlock) {
             dispatchBreak(
                     player,
                     breakBlock,
                     ServerboundPlayerActionPacket.Action
                             .ABORT_DESTROY_BLOCK);
         }
+        /*
+         * A staged replacement is accepted only after the predecessor has
+         * left every ServerLevel and the shared listener owns the new body.
+         * Its gameMode therefore cannot carry the predecessor's destroy
+         * progress. Sending an old-dimension ABORT packet through the new
+         * body would be a cross-world mutation, so that bookkeeping is
+         * discarded without dispatch.
+         */
         if (state.spec instanceof WorldInteractionActionSpec.UseItem
                         || state.spec
                                 instanceof WorldInteractionActionSpec
@@ -1059,10 +2039,271 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         }
     }
 
+    private void rollbackSwap(
+            BotServerPlayer player,
+            InteractionState state,
+            WorldInteractionActionSpec.SwapInventoryHotbar swap) {
+        ItemStackFingerprint source =
+                MinecraftInteractionView.itemFingerprint(
+                        player,
+                        player.getInventory()
+                                .getItem(swap.sourceInventorySlot()));
+        ItemStackFingerprint target =
+                MinecraftInteractionView.itemFingerprint(
+                        player,
+                        player.getInventory()
+                                .getItem(swap.targetHotbarSlot()));
+        if (source.equals(swap.expectedSource())
+                && target.equals(swap.expectedTarget())) {
+            String restoredMultiset =
+                    MinecraftInteractionView.inventoryMultisetDigest(
+                            player);
+            if (!restoredMultiset.equals(
+                    state.inventoryMultisetBefore)) {
+                throw new IllegalStateException(
+                        "Inventory hotbar swap compensation did not restore the original inventory multiset");
+            }
+            return;
+        }
+        if (player.containerMenu != player.inventoryMenu
+                || !source.equals(swap.expectedTarget())
+                || !target.equals(swap.expectedSource())) {
+            throw new IllegalStateException(
+                    "Cannot safely compensate inventory hotbar swap");
+        }
+        player.inventoryMenu.clicked(
+                swap.sourceInventorySlot(),
+                swap.targetHotbarSlot(),
+                ClickType.SWAP,
+                player);
+        player.inventoryMenu.broadcastChanges();
+        ItemStackFingerprint restoredSource =
+                MinecraftInteractionView.itemFingerprint(
+                        player,
+                        player.getInventory()
+                                .getItem(swap.sourceInventorySlot()));
+        ItemStackFingerprint restoredTarget =
+                MinecraftInteractionView.itemFingerprint(
+                        player,
+                        player.getInventory()
+                                .getItem(swap.targetHotbarSlot()));
+        String restoredMultiset =
+                MinecraftInteractionView.inventoryMultisetDigest(player);
+        if (!restoredSource.equals(swap.expectedSource())
+                || !restoredTarget.equals(swap.expectedTarget())
+                || !restoredMultiset.equals(
+                        state.inventoryMultisetBefore)) {
+            throw new IllegalStateException(
+                    "Inventory hotbar swap compensation failed");
+        }
+    }
+
+    private void rollbackMenuSwap(
+            BotServerPlayer player,
+            InteractionState state,
+            WorldInteractionActionSpec.InventoryMenuSwap menuSwap) {
+        if (player.containerMenu != player.inventoryMenu
+                || !isCurrentCleanupTarget(state, player)
+                || !nativeCraftSlotsEmpty(player)) {
+            throw new IllegalStateException(
+                    "Cannot safely compensate a closed or dirty inventory menu");
+        }
+        InventoryMenuSwapPlan plan = menuSwap.plan();
+        if (plan.orderedSteps().size() != 1) {
+            throw new IllegalStateException(
+                    "Cleanup refuses a multi-click inventory menu plan");
+        }
+        InventoryMenuSnapshot actual =
+                MinecraftActionSnapshot.inventoryMenu(player);
+        String multiset =
+                MinecraftInteractionView
+                        .inventoryMultisetDigest(player);
+        if (!multiset.equals(state.inventoryMultisetBefore)) {
+            throw new IllegalStateException(
+                    "Inventory menu transaction changed the inventory multiset");
+        }
+        int appliedPrefix = matchingMenuPrefix(plan, actual);
+        InventoryMenuTransaction transaction =
+                Objects.requireNonNull(
+                        state.menuTransaction,
+                        "menuTransaction");
+        boolean knownPrefix;
+        if (state.menuRollbackRemaining < 0) {
+            int confirmed = transaction.confirmedClicks();
+            knownPrefix = appliedPrefix == confirmed
+                    || (state.menuForwardInFlight == confirmed
+                            && appliedPrefix == confirmed + 1);
+        } else {
+            knownPrefix =
+                    appliedPrefix
+                                    == state
+                                            .menuRollbackRemaining
+                            || (state.menuRollbackInFlight
+                                            == state
+                                                            .menuRollbackRemaining
+                                                    - 1
+                                    && appliedPrefix
+                                            == state
+                                                    .menuRollbackRemaining
+                                                    - 1);
+        }
+        if (appliedPrefix < 0 || !knownPrefix) {
+            throw new IllegalStateException(
+                    "Inventory menu transaction is not at a known rollback prefix");
+        }
+        state.menuForwardInFlight = -1;
+        state.menuRollbackRemaining = appliedPrefix;
+        state.menuRollbackInFlight = -1;
+        for (int index = appliedPrefix - 1;
+                index >= 0;
+                index--) {
+            InventoryMenuClickStep step =
+                    plan.orderedSteps().get(index);
+            InventoryMenuSnapshot before =
+                    MinecraftActionSnapshot
+                            .inventoryMenu(player);
+            if (!isCurrentCleanupTarget(state, player)
+                    || !before.layoutEqualsIgnoringState(
+                            step.after())
+                    || !nativeCraftSlotsEmpty(player)
+                    || !menuStepAllowedNow(player, step)) {
+                throw new IllegalStateException(
+                        "Inventory menu rollback step precondition changed");
+            }
+            state.menuRollbackInFlight = index;
+            player.inventoryMenu.clicked(
+                    step.menuSlot(),
+                    step.hotbarButton(),
+                    ClickType.SWAP,
+                    player);
+            player.inventoryMenu.broadcastChanges();
+            if (!isCurrentCleanupTarget(state, player)) {
+                throw new IllegalStateException(
+                        "Bot cleanup target changed during inventory rollback");
+            }
+            InventoryMenuSnapshot restored =
+                    MinecraftActionSnapshot
+                            .inventoryMenu(player);
+            if (!restored.layoutEqualsIgnoringState(
+                            step.before())
+                    || !nativeCraftSlotsEmpty(player)) {
+                throw new IllegalStateException(
+                        "Inventory menu rollback step failed");
+            }
+            state.menuLastSnapshot = restored;
+            state.menuRollbackRemaining = index;
+            state.menuRollbackInFlight = -1;
+        }
+        InventoryMenuSnapshot restored =
+                MinecraftActionSnapshot.inventoryMenu(player);
+        String restoredMultiset =
+                MinecraftInteractionView
+                        .inventoryMultisetDigest(player);
+        if (!restored.layoutEqualsIgnoringState(
+                        plan.initialSnapshot())
+                || !restoredMultiset.equals(
+                        state.inventoryMultisetBefore)) {
+            throw new IllegalStateException(
+                    "Inventory menu rollback did not restore the initial snapshot");
+        }
+        if (!transaction.state().terminal()) {
+            state.menuTransaction = transaction.cancel();
+        }
+    }
+
+    private static int matchingMenuPrefix(
+            InventoryMenuSwapPlan plan,
+            InventoryMenuSnapshot actual) {
+        int match = plan.initialSnapshot()
+                        .layoutEqualsIgnoringState(actual)
+                ? 0
+                : -1;
+        for (int index = 0;
+                index < plan.orderedSteps().size();
+                index++) {
+            if (!plan.orderedSteps()
+                    .get(index)
+                    .after()
+                    .layoutEqualsIgnoringState(actual)) {
+                continue;
+            }
+            if (match >= 0) {
+                throw new IllegalStateException(
+                        "Inventory menu rollback prefix is ambiguous");
+            }
+            match = index + 1;
+        }
+        return match;
+    }
+
+    private void rollbackSelection(
+            BotServerPlayer player,
+            InteractionState state,
+            WorldInteractionActionSpec.SelectHotbar select) {
+        int current = player.getInventory().selected;
+        if (current == state.selectedBefore) {
+            return;
+        }
+        if (current != select.slot()) {
+            throw new IllegalStateException(
+                    "Cannot safely compensate hotbar selection");
+        }
+        player.connection.handleSetCarriedItem(
+                new ServerboundSetCarriedItemPacket(
+                        state.selectedBefore));
+        if (player.getInventory().selected
+                != state.selectedBefore) {
+            throw new IllegalStateException(
+                    "Hotbar selection compensation failed");
+        }
+    }
+
+    private static boolean requiresResolvedCleanupTarget(
+            InteractionState state, ActionCleanupReason reason) {
+        if (reason == ActionCleanupReason.SUCCEEDED
+                || !state.sideEffectDispatched) {
+            return false;
+        }
+        return state.spec
+                        instanceof WorldInteractionActionSpec
+                                .SwapInventoryHotbar
+                || state.spec
+                        instanceof WorldInteractionActionSpec
+                                .InventoryMenuSwap
+                || state.spec
+                        instanceof WorldInteractionActionSpec
+                                .SelectHotbar
+                || state.spec
+                        instanceof WorldInteractionActionSpec
+                                .BreakBlock
+                || state.spec
+                        instanceof WorldInteractionActionSpec.UseItem
+                || state.spec
+                        instanceof WorldInteractionActionSpec.ReleaseUse;
+    }
+
     private Optional<BotServerPlayer> resolveActive(
             ActionEnvelope envelope) {
         return lifecycleManager.resolveActionTarget(
                 envelope.botId(), envelope.botGeneration());
+    }
+
+    private boolean isCurrentActionTarget(
+            InteractionState state, BotServerPlayer player) {
+        return lifecycleManager
+                .resolveActionTarget(
+                        state.botId, state.botGeneration)
+                .filter(candidate -> candidate == player)
+                .isPresent();
+    }
+
+    private boolean isCurrentCleanupTarget(
+            InteractionState state, BotServerPlayer player) {
+        return lifecycleManager
+                .resolveCleanupTarget(
+                        state.botId, state.botGeneration)
+                .filter(candidate -> candidate == player)
+                .isPresent();
     }
 
     private int nextSequence() {
@@ -1077,6 +2318,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         return switch (spec) {
             case WorldInteractionActionSpec.BreakBlock ignored -> true;
             case WorldInteractionActionSpec.PickupWait ignored -> true;
+            case WorldInteractionActionSpec.InventoryMenuSwap ignored ->
+                    true;
             case WorldInteractionActionSpec.UseItem useItem ->
                     useItem.mode()
                             != WorldInteractionActionSpec.ItemUseMode
@@ -1148,11 +2391,19 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         }
     }
 
+    private static final class MenuPreconditionChangedException
+            extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+    }
+
     private static final class InteractionState {
+        private final UUID botId;
+        private final long botGeneration;
         private final WorldInteractionActionSpec spec;
         private final long startedTick;
         private final ItemStackFingerprint heldBefore;
         private final String inventoryBefore;
+        private final String inventoryMultisetBefore;
         private final BlockTargetFingerprint blockBefore;
         private final int containerIdBefore;
         private final Entity vehicleBefore;
@@ -1160,27 +2411,47 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         private final UUID pickupEntityId;
         private final ItemStackFingerprint pickupItem;
         private final int matchingCountBefore;
+        private final int selectedBefore;
+        private final int foodLevelBefore;
         private boolean sideEffectDispatched;
         private boolean startedUsing;
         private boolean releaseSent;
         private boolean breakStopSent;
+        private InventoryMenuTransaction menuTransaction;
+        private InventoryMenuSnapshot menuLastSnapshot;
+        private int menuForwardInFlight = -1;
+        private int menuRollbackRemaining = -1;
+        private int menuRollbackInFlight = -1;
 
         private InteractionState(
+                UUID botId,
+                long botGeneration,
                 WorldInteractionActionSpec spec,
                 long startedTick,
                 ItemStackFingerprint heldBefore,
                 String inventoryBefore,
+                String inventoryMultisetBefore,
                 BlockTargetFingerprint blockBefore,
                 int containerIdBefore,
                 Entity vehicleBefore,
                 float targetHealthBefore,
                 UUID pickupEntityId,
                 ItemStackFingerprint pickupItem,
-                int matchingCountBefore) {
+                int matchingCountBefore,
+                int selectedBefore,
+                int foodLevelBefore) {
+            this.botId = Objects.requireNonNull(
+                    botId, "botId");
+            if (botGeneration <= 0L) {
+                throw new IllegalArgumentException(
+                        "botGeneration must be positive");
+            }
+            this.botGeneration = botGeneration;
             this.spec = spec;
             this.startedTick = startedTick;
             this.heldBefore = heldBefore;
             this.inventoryBefore = inventoryBefore;
+            this.inventoryMultisetBefore = inventoryMultisetBefore;
             this.blockBefore = blockBefore;
             this.containerIdBefore = containerIdBefore;
             this.vehicleBefore = vehicleBefore;
@@ -1188,12 +2459,25 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             this.pickupEntityId = pickupEntityId;
             this.pickupItem = pickupItem;
             this.matchingCountBefore = matchingCountBefore;
+            this.selectedBefore = selectedBefore;
+            this.foodLevelBefore = foodLevelBefore;
+            if (spec
+                    instanceof WorldInteractionActionSpec
+                            .InventoryMenuSwap menuSwap) {
+                this.menuTransaction =
+                        InventoryMenuTransaction.planned(
+                                menuSwap.plan());
+                this.menuLastSnapshot =
+                        menuSwap.plan().initialSnapshot();
+            }
         }
 
         private static InteractionState capture(
                 BotServerPlayer player,
                 WorldInteractionActionSpec spec,
-                long startedTick) {
+                long startedTick,
+                UUID botId,
+                long botGeneration) {
             InteractionHand hand = switch (spec) {
                 case WorldInteractionActionSpec.UseItem useItem ->
                         MinecraftInteractionView.hand(useItem.hand());
@@ -1263,17 +2547,30 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             }
 
             return new InteractionState(
+                    botId,
+                    botGeneration,
                     spec,
                     startedTick,
                     heldBefore,
                     MinecraftInteractionView.inventoryDigest(player),
+                    spec
+                                    instanceof WorldInteractionActionSpec
+                                            .SwapInventoryHotbar
+                                    || spec
+                                            instanceof WorldInteractionActionSpec
+                                                    .InventoryMenuSwap
+                            ? MinecraftInteractionView
+                                    .inventoryMultisetDigest(player)
+                            : null,
                     blockBefore,
                     player.containerMenu.containerId,
                     player.getVehicle(),
                     targetHealthBefore,
                     pickupEntityId,
                     pickupItem,
-                    matchingCountBefore);
+                    matchingCountBefore,
+                    player.getInventory().selected,
+                    player.getFoodData().getFoodLevel());
         }
     }
 }

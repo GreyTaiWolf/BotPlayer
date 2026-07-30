@@ -71,6 +71,9 @@ rg -n '^#{1,4} ' docs/ARCHITECTURE_AND_ROADMAP_CN.md
 - 普通世界变化必须经过玩家动作、原版/NeoForge 校验与结果验证；不得直接改方块、背包、
   NBT 或传送来伪造完成。
 - Mixin 保持最小、版本精确且 `require = 1`。新增行为注入需先新增 ADR 和测试。
+- `PlayerListMixin` 当前还精确包装 `PlayerList.remove` 内的一次 `save(player)`：只有
+  P5 异常隔离设置的一次性 no-save 门闩可以抑制该次保存；正常真人与正常卸载必须调用
+  原版保存。
 - 所有队列、扫描、重试、请求、路径、上下文、时间和世界改动量必须有上限、取消与失败路径。
 - 导航只在主线程采样已加载世界并把不可变快照交给异步 planner；路线执行必须走 P2
   输入/交互和真实玩家物理，不得传送或直接改位置/速度。
@@ -79,6 +82,16 @@ rg -n '^#{1,4} ' docs/ARCHITECTURE_AND_ROADMAP_CN.md
 - Bot 必须继承原版/NeoForge 伤害、护甲、饥饿、效果和属性链；不得复制数值或给予特殊免疫。
 - Terrain Assist 默认关闭，必须请求与服务端双门控，并通过 P2 动作、保护事件、结果复核
   和单次预算；请求允许不代表强制修改世界。
+
+## P5 当前开发基线
+
+- 有界 Skill/DAG/TTL 预留、背包到快捷栏交换与主动进食是已编码开发切片；Java 21/
+  NeoForge 运行验证尚未执行，不计入 P5A 退出门。
+- `/botplayer skill inspect <name>` 是权限等级 `2` 的只读诊断，只查看 run，不启动技能。
+- P5 GameTest 通过 `P5GameTestSupport` 显式传入固定 Bot 名字，以便在同一持久测试世界
+  复用 roster 身份与 playerdata；统一 cleanup 只卸载活动 Bot，不删除 roster/profile。
+- 真正的测试 profile 清理仍是测试债。不得为测试向生产 roster 增加永久删除后门；修改
+  `AUTO_RESPAWN`、`keepInventory` 等全局状态的场景必须放入独立 batch 并恢复原值。
 
 ## 客户端 API Key 边界
 
