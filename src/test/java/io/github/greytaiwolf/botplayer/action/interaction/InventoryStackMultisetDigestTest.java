@@ -1,14 +1,12 @@
-package io.github.greytaiwolf.botplayer.action.minecraft;
+package io.github.greytaiwolf.botplayer.action.interaction;
 
-import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
-import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-class MinecraftInteractionViewTest {
+class InventoryStackMultisetDigestTest {
     private static final ItemStackFingerprint EMPTY =
             ItemStackFingerprint.empty();
     private static final ItemStackFingerprint BREAD =
@@ -34,11 +32,11 @@ class MinecraftInteractionViewTest {
         List<ItemStackFingerprint> swapped = new ArrayList<>(before);
         Collections.swap(swapped, 9, 0);
         String digest =
-                MinecraftInteractionView.inventoryMultisetDigest(before);
+                InventoryStackMultisetDigest.sha256(before);
         Assertions.assertEquals(64, digest.length());
         Assertions.assertEquals(
                 digest,
-                MinecraftInteractionView.inventoryMultisetDigest(swapped));
+                InventoryStackMultisetDigest.sha256(swapped));
 
         List<ItemStackFingerprint> countChanged =
                 new ArrayList<>(swapped);
@@ -51,7 +49,7 @@ class MinecraftInteractionViewTest {
                         "1".repeat(64)));
         Assertions.assertNotEquals(
                 digest,
-                MinecraftInteractionView.inventoryMultisetDigest(
+                InventoryStackMultisetDigest.sha256(
                         countChanged));
 
         List<ItemStackFingerprint> componentsChanged =
@@ -65,7 +63,7 @@ class MinecraftInteractionViewTest {
                         "3".repeat(64)));
         Assertions.assertNotEquals(
                 digest,
-                MinecraftInteractionView.inventoryMultisetDigest(
+                InventoryStackMultisetDigest.sha256(
                         componentsChanged));
 
         List<ItemStackFingerprint> damageChanged =
@@ -79,12 +77,12 @@ class MinecraftInteractionViewTest {
                         "2".repeat(64)));
         Assertions.assertNotEquals(
                 digest,
-                MinecraftInteractionView.inventoryMultisetDigest(
+                InventoryStackMultisetDigest.sha256(
                         damageChanged));
 
         Assertions.assertNotEquals(
                 digest,
-                MinecraftInteractionView.inventoryMultisetDigest(
+                InventoryStackMultisetDigest.sha256(
                         swapped.subList(0, 40)));
     }
 
@@ -96,11 +94,11 @@ class MinecraftInteractionViewTest {
         withNull.add(null);
         Assertions.assertThrows(
                 NullPointerException.class,
-                () -> MinecraftInteractionView.inventoryMultisetDigest(
+                () -> InventoryStackMultisetDigest.sha256(
                         missing));
         Assertions.assertThrows(
                 NullPointerException.class,
-                () -> MinecraftInteractionView.inventoryMultisetDigest(
+                () -> InventoryStackMultisetDigest.sha256(
                         withNull));
     }
 }

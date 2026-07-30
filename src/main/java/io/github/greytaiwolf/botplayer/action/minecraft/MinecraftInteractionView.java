@@ -6,6 +6,7 @@ import io.github.greytaiwolf.botplayer.action.interaction.BlockStateFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockTargetFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.EntityTargetFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.InventoryContentsSnapshot;
+import io.github.greytaiwolf.botplayer.action.interaction.InventoryStackMultisetDigest;
 import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
 import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
@@ -14,7 +15,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
@@ -158,7 +158,7 @@ final class MinecraftInteractionView {
      * 生成去除槽位顺序、但保留空槽数和每个完整物品栈字段的背包多重集摘要。
      */
     static String inventoryMultisetDigest(BotServerPlayer player) {
-        return inventoryMultisetDigest(
+        return InventoryStackMultisetDigest.sha256(
                 inventoryStackFingerprints(player));
     }
 
@@ -179,42 +179,6 @@ final class MinecraftInteractionView {
                     player, player.getInventory().getItem(slot)));
         }
         return List.copyOf(fingerprints);
-    }
-
-    static String inventoryMultisetDigest(
-            List<ItemStackFingerprint> fingerprints) {
-        Objects.requireNonNull(fingerprints, "fingerprints");
-        List<ItemStackFingerprint> canonical =
-                new ArrayList<>(fingerprints.size());
-        for (ItemStackFingerprint fingerprint : fingerprints) {
-            canonical.add(Objects.requireNonNull(
-                    fingerprint, "inventory fingerprint"));
-        }
-        canonical.sort(Comparator
-                .comparing((ItemStackFingerprint fingerprint) ->
-                        fingerprint.itemId()
-                                .map(ResourceId::value)
-                                .orElse(""))
-                .thenComparingInt(ItemStackFingerprint::count)
-                .thenComparingInt(ItemStackFingerprint::damage)
-                .thenComparing(fingerprint ->
-                        fingerprint.componentsDigest().orElse("")));
-
-        MessageDigest digest = newDigest();
-        updateInt(digest, canonical.size());
-        for (ItemStackFingerprint fingerprint : canonical) {
-            updateString(
-                    digest,
-                    fingerprint.itemId()
-                            .map(ResourceId::value)
-                            .orElse(""));
-            updateInt(digest, fingerprint.count());
-            updateInt(digest, fingerprint.damage());
-            updateString(
-                    digest,
-                    fingerprint.componentsDigest().orElse(""));
-        }
-        return HexFormat.of().formatHex(digest.digest());
     }
 
     static int inventoryCount(
