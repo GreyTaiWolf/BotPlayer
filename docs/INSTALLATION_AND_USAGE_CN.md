@@ -10,8 +10,9 @@
 
 当前没有正式 Release。`0.2.0-alpha.1` 已通过 Java 21 自动化构建与 55/55 GameTest，但客户端
 手工、独立专用服和多 bot soak 仍未验证；本文用于开发测试，不建议在重要世界中安装。
-P5 主动进食与热栏基础盔甲目前只是已编码的开发切片，尚未执行 Java 21/NeoForge
-运行验证。
+P5 以 [Draft PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 作为远端验收载体；
+Build #109 已通过 Java 21 `clean build`、322 个 JUnit 与 76 个 GameTest，覆盖主背包
+盔甲 2～3 步逐 Tick 切片。
 
 ## 当前安装拓扑
 
@@ -232,9 +233,9 @@ idle moving exploring mining building combat farming crafting smelting none
 固定要求权限等级 `2`。命令显示当前 incident，以及真实身体的生命/吸收、食物、空气、
 效果数量、近场威胁与最近伤害类型。L0 每 Tick 运行并可抢占普通输入；它能停止、后退、
 走向安全邻格、上浮和规避箭/TNT/敌对目标。P4 L0 本身不会吃东西；P5 开发切片可以接收
-临界饥饿 handoff，并尝试真实食用背包中的安全原版基础食物。P5 还编码了一个只扫描热栏
-的基础盔甲升级入口；两条路径都尚未执行 Java 21/NeoForge 运行验证。主动用药、工具/
-副手选择、持盾和反击仍未实现。
+临界饥饿 handoff，并尝试真实食用背包中的安全原版基础食物。P5 还提供扫描 carried
+inventory `0..35` 的基础盔甲升级入口；主动进食，以及热栏和主背包 2～3 步路径已由
+Build #109 运行验证。主动用药、工具/副手选择、持盾和反击仍未实现。
 
 ### P5 生存技能管理与诊断
 
@@ -243,11 +244,13 @@ idle moving exploring mining building combat farming crafting smelting none
 /botplayer skill inspect <name>
 ```
 
-固定要求原版权限等级 `2`。`equip-armor` 手动启动只扫描热栏的基础盔甲升级；候选按
-头、胸、腿、脚固定顺序比较原版防御、韧性和剩余耐久，并拒绝绑定诅咒。它不扫描主背包，
-不选择工具/副手，也不提供盾牌格挡。`inspect` 读取活动 bot 当前或最近一条 P5 生存技能
-run 的 generation、状态、revision、操作序号、失败码和安全摘要。没有 P5 运行记录时会
-失败；命令存在也不表示主动进食或换甲已通过运行验证。
+固定要求原版权限等级 `2`。`equip-armor` 手动启动扫描 carried inventory `0..35` 的
+基础盔甲升级；候选按头、胸、腿、脚固定顺序比较原版防御、韧性和剩余耐久，并拒绝绑定
+诅咒。热栏候选使用一次原生 `SWAP`；主背包候选通过确定性临时热栏槽形成 2～3 步计划，
+每 Tick 最多点击一次，取消时最多一次物理点击完成安全端点收口。这是盔甲专用有界多步
+路径，不选择工具/副手，也不提供盾牌格挡或通用 menu FSM。`inspect` 读取活动 bot 当前
+或最近一条 P5 生存技能 run 的 generation、状态、revision、操作序号、失败码和安全摘要。
+没有 P5 运行记录时会失败；该纵切通过运行门也不表示 P5A 阶段退出门已经完成。
 
 ### 查看/编辑 bot 自身背包（P2）
 
@@ -293,8 +296,8 @@ run 的 generation、状态、revision、操作序号、失败码和安全摘要
   来袭箭、TNT 和锁定 Bot 的敌对生物做通用抢占/撤退；
 - 原版护甲、伤害、饥饿和状态效果，以及标准动态 `DamageType`/玩家 Tick 扩展，都会
   作用在真实 `BotServerPlayer` 身体上；
-- P5 有界 Skill 底座、主动进食与热栏基础盔甲纵切已编码，但尚无 Java 21/NeoForge
-  运行通过证据；
+- P5 有界 Skill 底座、主动进食，以及热栏和主背包基础盔甲路径已由 PR #6 的
+  Build #109 通过 Java 21 `clean build`、322 个 JUnit 与 76 个 GameTest；
 - owner 客户端可以在本地 GUI 创建/替换 credential profile，并为自己的多个 bot
   绑定/解绑；每个 bot 使用独立 agentId。
 
@@ -309,8 +312,8 @@ run 的 generation、状态、revision、操作序号、失败码和安全摘要
 
 - 通过普通玩家任务、技能或 AI 自主选择并执行 P2/P4 动作；
 - 强制加载远方区块、跨维度寻路或维护永久地图/地标；
-- 自动寻找或生产食物；已有主动进食与热栏换甲切片尚未运行验证，也不支持主动使用
-  药水/牛奶/模组解药、从主背包换甲、选择工具/副手或完成正式战斗；
+- 自动寻找或生产食物；主动进食，以及热栏和主背包 2～3 步换甲路径已运行验证；主动
+  使用药水/牛奶/模组解药、选择工具/副手或完成正式战斗仍不支持；
 - 执行砍树、采矿、制作、熔炼、完整战斗策略或建造技能；
 - 操作箱子、工作站或模组自定义 menu；
 - 聊天、连接 DeepSeek 或发起任何模型 HTTP 请求；

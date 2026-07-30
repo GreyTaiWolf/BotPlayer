@@ -63,12 +63,16 @@
   body/listener/connection/generation 与不可升级的旧代回执完成布局补偿，避免把临时
   选槽持久化；replacement/respawn 未收敛时只允许一次排队重试，异常身份则通过一次性
   no-save removal 门闩隔离，不能由 `PlayerList.remove` 把未验证布局写盘。
-- 新增确定性基础装备策略和只扫描热栏的盔甲规划器，拒绝零耐久、目标绑定与装备后会
-  绑定的候选；新增原生 `InventoryMenu` 41 槽完整快照和单击可逆 `SWAP` 动作，按精确
-  stateId/layout、动态槽权限、物品多重集与 generation/replacement 回执验证并补偿。
-  `/botplayer skill equip-armor <name>` 可启动最多四个装备槽的逐件重规划运行。
-  该切片尚未通过 P5A 退出门；生产后端仍拒绝主背包换甲所需的多步计划，工具/副手、
-  有限自卫、checkpoint 与生产链仍未实现。
+- 新增确定性基础装备策略和扫描 carried inventory `0..35` 的盔甲规划器，拒绝零耐久、
+  目标绑定与装备后会绑定的候选；新增原生 `InventoryMenu` 41 槽完整快照，按精确
+  stateId/layout、动态槽权限、物品多重集与 generation/replacement 回执验证。
+  `/botplayer skill equip-armor <name>` 可启动最多四个装备槽的逐件重规划运行：热栏
+  候选使用单击 `SWAP`，主背包首次穿甲使用 2 步、替换已有盔甲使用 3 步，每 Tick 最多
+  执行一次点击；取消或 cleanup 最多执行一次物理点击，把已知计划前缀收口到经证明的
+  初始或最终安全端点。这是盔甲专用有界多步路径，不是通用 menu FSM 或无条件回滚。
+  [PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 的 Build #109 已通过
+  Java 21 `clean build`、322 个 JUnit 与 76 个 GameTest，覆盖热栏和主背包盔甲路径；
+  P5A 退出门仍未通过。工具/副手、有限自卫、Checkpoint、工作站与生产链仍未实现。
 
 ### 加固
 

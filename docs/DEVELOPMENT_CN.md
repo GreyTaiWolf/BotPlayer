@@ -42,9 +42,10 @@ gradlew.bat --no-daemon clean build
 ```
 
 P2 已加入生命周期、移动、交互和库存 GameTest；P3 加入有限感知与世界事实场景；P4
-加入导航、安全、玩家规则兼容与 Terrain Assist 场景；P5 当前有主动进食与热栏基础盔甲
-开发场景，生产代码与测试源码已编码，但尚未执行 Java 21/NeoForge 运行验证，也未通过
-阶段退出门。涉及
+加入导航、安全、玩家规则兼容与 Terrain Assist 场景；P5 以
+[Draft PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 作为远端验收载体，
+Build #109 已在 Java 21 `clean build` 中通过 322 个 JUnit 与 76 个 GameTest，覆盖
+主背包盔甲 2～3 步逐 Tick 切片；P5A 阶段退出门仍未通过。涉及
 Minecraft 行为的提交必须运行：
 
 ```bash
@@ -315,15 +316,16 @@ P4 主线程/异步边界是：
 ## 当前 P5 开发切片规则
 
 P5 当前源码建立有界 Skill 核心、确定性 DAG 校验、TTL 资源预留、Safety handoff、
-主动进食，以及只扫描热栏的基础盔甲升级。主动进食和换甲当前状态都是“已编码、未执行
-Java 21/NeoForge 运行验证”，不能计入 P5A 退出门。管理入口为：
+主动进食，以及扫描 carried inventory `0..35` 的基础盔甲升级。主动进食和热栏换甲
+和主背包盔甲路径已由 Build #109 运行验证，但单条纵切不能据此计入 P5A 退出门。
+管理入口为：
 
 ```text
 /botplayer skill equip-armor <name>
 /botplayer skill inspect <name>
 ```
 
-`equip-armor` 启动热栏换甲，`inspect` 只查看 run 状态。修改这批代码时至少检查：
+`equip-armor` 启动基础盔甲升级，`inspect` 只查看 run 状态。修改这批代码时至少检查：
 
 - 每个运行、异步动作和管理视图都绑定 `botId + generation + runId + revision`；
 - 异步回调只提交不可变信号，世界读取与状态推进留在服务器主线程；
@@ -352,14 +354,19 @@ Java 21/NeoForge 运行验证”，不能计入 P5A 退出门。管理入口为�
   有害效果且无自定义完成逻辑的原版基础 `Item` 食物，可疑炖菜、紫颂果、蜂蜜瓶和模组
   食物默认拒绝；
 - 成功必须观察真实食物值上升，并恢复临时背包布局和原快捷栏选择；
-- 盔甲候选只来自热栏 `0..8`，按 HEAD/CHEST/LEGS/FEET 固定顺序比较原版防御、韧性和
-  剩余耐久；当前槽绑定、候选装备后绑定、零耐久、非 `ArmorItem` 或不可装备都拒绝；
-- 每件盔甲是独立的单击 `InventoryMenu` 事务；动作完成信号进入技能 FSM 后必须再次读取
-  权威 41 槽布局，外部修改以 `WORLD_CHANGED` 失败，不能用冻结计划自证成功；
+- 盔甲候选来自 carried inventory `0..35`，按 HEAD/CHEST/LEGS/FEET 固定顺序比较原版
+  防御、韧性和剩余耐久；当前槽绑定、候选装备后绑定、零耐久、非 `ArmorItem` 或不可
+  装备都拒绝；
+- 热栏候选使用单击计划；主背包候选通过确定性临时热栏槽形成 2～3 步计划，前向执行
+  每 Tick 最多点击一次。取消或 cleanup 只允许最多一次物理点击，把已知计划前缀收口到
+  经证明的初始或最终安全端点；不得在同步清理中循环点击，也不得把它描述为无条件回滚；
+- 每件盔甲仍是独立 `InventoryMenu` 事务；动作完成信号进入技能 FSM 后必须再次读取权威
+  41 槽布局，外部修改以 `WORLD_CHANGED` 失败，不能用冻结计划自证成功；
 - 敌对目标继续走 P4 安全回退，直到有限自卫具备武器、单一威胁、撤退路线、逐击重观察
   和脱战后置条件；
-- 主背包换甲的 2～3 步计划当前只有纯模型；生产后端明确拒绝多步 menu 事务。checkpoint、
-  工具/副手、工作台/熔炉/单箱驱动和木头到铁镐生产链仍未实现。
+- 当前只开放盔甲专用有界多步路径，不表示通用 menu FSM 已完成；主背包 2～3 步生产
+  接线已由 Build #109 运行验证。Checkpoint、工具/副手、有限自卫、工作台/熔炉/单箱
+  驱动和木头到铁镐生产链仍未实现。
 
 完整冻结合同与退出门见
 [P5 调研设计](AI_PLAYER_RESEARCH_AND_P5_DESIGN_CN.md)和
