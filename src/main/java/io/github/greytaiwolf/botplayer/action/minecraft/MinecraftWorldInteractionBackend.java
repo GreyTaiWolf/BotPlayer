@@ -21,6 +21,9 @@ import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanup
 import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuClickStep;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuPrefixAuthority;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSettlementDecision;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSettlementPolicy;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSnapshot;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSwapPlan;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuTransaction;
@@ -721,11 +724,11 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     "Bot native inventory menu is not active");
         }
         InventoryMenuSwapPlan plan = menuSwap.plan();
-        if (plan.orderedSteps().size() != 1) {
+        if (plan.orderedSteps().size() > 3) {
             return failure(
                     envelope,
                     ActionFailureCode.UNSUPPORTED,
-                    "Runtime menu adapter currently accepts only one-click reversible plans");
+                    "Runtime menu adapter accepts at most three bounded clicks");
         }
         InventoryMenuSnapshot actual =
                 MinecraftActionSnapshot.inventoryMenu(player);
@@ -1205,20 +1208,37 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         }
         state.menuForwardInFlight =
                 transaction.confirmedClicks();
-        player.inventoryMenu.clicked(
-                step.menuSlot(),
-                step.hotbarButton(),
-                ClickType.SWAP,
-                player);
-        player.inventoryMenu.broadcastChanges();
-        if (!isCurrentActionTarget(state, player)) {
-            throw new IllegalStateException(
-                    "Bot generation changed during inventory menu click");
+        state.menuForwardTargetSnapshot = null;
+        try {
+            player.inventoryMenu.clicked(
+                    step.menuSlot(),
+                    step.hotbarButton(),
+                    ClickType.SWAP,
+                    player);
+            player.inventoryMenu.broadcastChanges();
+        } catch (RuntimeException exception) {
+            freezeMenuForwardTargetAfterThrow(
+                    player, state, step);
+            throw exception;
         }
         InventoryMenuSnapshot after =
                 MinecraftActionSnapshot.inventoryMenu(player);
-        if (!after.layoutEqualsIgnoringState(step.after())
-                || !nativeCraftSlotsEmpty(player)) {
+        boolean exactTarget =
+                after.layoutEqualsIgnoringState(
+                                step.after())
+                        && nativeCraftSlotsEmpty(player);
+        if (exactTarget) {
+            state.menuForwardTargetSnapshot = after;
+        }
+        if (!lifecycleManager.mayActionMutateInventory(
+                        state.botId, state.botGeneration)
+                || player.containerMenu
+                        != player.inventoryMenu
+                || !isCurrentActionTarget(state, player)) {
+            throw new IllegalStateException(
+                    "Bot action authority changed during inventory menu click");
+        }
+        if (!exactTarget) {
             throw new IllegalStateException(
                     "Inventory menu transaction step was not applied exactly");
         }
@@ -1226,6 +1246,25 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 transaction.confirmNext(step);
         state.menuLastSnapshot = after;
         state.menuForwardInFlight = -1;
+        state.menuForwardTargetSnapshot = null;
+    }
+
+    private static void freezeMenuForwardTargetAfterThrow(
+            BotServerPlayer player,
+            InteractionState state,
+            InventoryMenuClickStep step) {
+        try {
+            InventoryMenuSnapshot after =
+                    MinecraftActionSnapshot
+                            .inventoryMenu(player);
+            if (after.layoutEqualsIgnoringState(
+                    step.after())) {
+                state.menuForwardTargetSnapshot =
+                        after;
+            }
+        } catch (RuntimeException ignored) {
+            // Cleanup will fail closed without a frozen in-flight target.
+        }
     }
 
     private static boolean menuStepAllowedNow(
@@ -2002,8 +2041,11 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             } else if (state.spec
                     instanceof WorldInteractionActionSpec
                             .InventoryMenuSwap menuSwap) {
-                rollbackMenuSwap(
-                        player, state, menuSwap);
+                settleMenuSwap(
+                        player,
+                        state,
+                        menuSwap,
+                        replacementInheritor);
             } else if (state.spec
                     instanceof WorldInteractionActionSpec
                             .SelectHotbar select) {
@@ -2098,21 +2140,20 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         }
     }
 
-    private void rollbackMenuSwap(
+    private void settleMenuSwap(
             BotServerPlayer player,
             InteractionState state,
-            WorldInteractionActionSpec.InventoryMenuSwap menuSwap) {
-        if (player.containerMenu != player.inventoryMenu
+            WorldInteractionActionSpec.InventoryMenuSwap menuSwap,
+            boolean replacementInheritor) {
+        if (!lifecycleManager.mayCleanupMutateInventory(
+                        state.botId, state.botGeneration)
+                || player.containerMenu != player.inventoryMenu
                 || !isCurrentCleanupTarget(state, player)
                 || !nativeCraftSlotsEmpty(player)) {
             throw new IllegalStateException(
-                    "Cannot safely compensate a closed or dirty inventory menu");
+                    "Cannot safely settle a closed, viewed or dirty inventory menu");
         }
         InventoryMenuSwapPlan plan = menuSwap.plan();
-        if (plan.orderedSteps().size() != 1) {
-            throw new IllegalStateException(
-                    "Cleanup refuses a multi-click inventory menu plan");
-        }
         InventoryMenuSnapshot actual =
                 MinecraftActionSnapshot.inventoryMenu(player);
         String multiset =
@@ -2122,118 +2163,306 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             throw new IllegalStateException(
                     "Inventory menu transaction changed the inventory multiset");
         }
-        int appliedPrefix = matchingMenuPrefix(plan, actual);
+        if (!actual.inventoryMultisetEquals(
+                plan.initialSnapshot())) {
+            throw new IllegalStateException(
+                    "Inventory menu transaction changed the structured inventory multiset");
+        }
         InventoryMenuTransaction transaction =
                 Objects.requireNonNull(
                         state.menuTransaction,
                         "menuTransaction");
-        boolean knownPrefix;
-        if (state.menuRollbackRemaining < 0) {
-            int confirmed = transaction.confirmedClicks();
-            knownPrefix = appliedPrefix == confirmed
-                    || (state.menuForwardInFlight == confirmed
-                            && appliedPrefix == confirmed + 1);
-        } else {
-            knownPrefix =
-                    appliedPrefix
-                                    == state
-                                            .menuRollbackRemaining
-                            || (state.menuRollbackInFlight
-                                            == state
-                                                            .menuRollbackRemaining
-                                                    - 1
-                                    && appliedPrefix
-                                            == state
-                                                    .menuRollbackRemaining
-                                                    - 1);
-        }
-        if (appliedPrefix < 0 || !knownPrefix) {
-            throw new IllegalStateException(
-                    "Inventory menu transaction is not at a known rollback prefix");
-        }
-        state.menuForwardInFlight = -1;
-        state.menuRollbackRemaining = appliedPrefix;
-        state.menuRollbackInFlight = -1;
-        for (int index = appliedPrefix - 1;
-                index >= 0;
-                index--) {
-            InventoryMenuClickStep step =
-                    plan.orderedSteps().get(index);
-            InventoryMenuSnapshot before =
-                    MinecraftActionSnapshot
-                            .inventoryMenu(player);
-            if (!isCurrentCleanupTarget(state, player)
-                    || !before.layoutEqualsIgnoringState(
-                            step.after())
-                    || !nativeCraftSlotsEmpty(player)
-                    || !menuStepAllowedNow(player, step)) {
-                throw new IllegalStateException(
-                        "Inventory menu rollback step precondition changed");
+        InventoryMenuPrefixAuthority authority =
+                menuPrefixAuthority(
+                        state,
+                        plan,
+                        transaction,
+                        actual,
+                        replacementInheritor);
+        InventoryMenuSettlementDecision decision =
+                InventoryMenuSettlementPolicy.decide(
+                        plan, actual, authority);
+        switch (decision.outcome()) {
+            case UNSAFE -> throw new IllegalStateException(
+                    "Inventory menu transaction cannot prove a safe settlement");
+            case CLICK_TO_INITIAL, CLICK_TO_FINAL -> {
+                InventoryMenuSnapshot settled =
+                        applyMenuSettlementClick(
+                                player,
+                                state,
+                                plan,
+                                decision);
+                finishMenuSettlement(
+                        state,
+                        plan,
+                        decision.outcome(),
+                        settled);
             }
-            state.menuRollbackInFlight = index;
+            case ALREADY_INITIAL -> finishMenuSettlement(
+                    state,
+                    plan,
+                    decision.outcome(),
+                    actual);
+            case ALREADY_FINAL -> finishMenuSettlement(
+                    state,
+                    plan,
+                    decision.outcome(),
+                    actual);
+            case SAFE_PREFIX_COMMITTED -> {
+                clearMenuSettlementState(state);
+                state.menuForwardInFlight = -1;
+                state.menuForwardTargetSnapshot = null;
+                state.menuLastSnapshot = actual;
+                if (!transaction.state().terminal()) {
+                    state.menuTransaction =
+                            transaction.cancel();
+                }
+            }
+        }
+    }
+
+    private static InventoryMenuPrefixAuthority
+            menuPrefixAuthority(
+                    InteractionState state,
+                    InventoryMenuSwapPlan plan,
+                    InventoryMenuTransaction transaction,
+                    InventoryMenuSnapshot actual,
+                    boolean replacementInheritor) {
+        if (state.menuSettlementSourcePrefix >= 0) {
+            int source = state.menuSettlementSourcePrefix;
+            int target = state.menuSettlementTargetPrefix;
+            InventoryMenuSnapshot sourceSnapshot =
+                    Objects.requireNonNull(
+                            state.menuSettlementSourceSnapshot,
+                            "menuSettlementSourceSnapshot");
+            if (replacementInheritor
+                    && plan.snapshotAtPrefix(source)
+                            .layoutEqualsIgnoringState(actual)) {
+                sourceSnapshot = actual;
+                state.menuSettlementSourceSnapshot =
+                        actual;
+            }
+            InventoryMenuSnapshot targetSnapshot =
+                    state.menuSettlementTargetSnapshot;
+            if (replacementInheritor
+                    && plan.snapshotAtPrefix(target)
+                            .layoutEqualsIgnoringState(actual)) {
+                targetSnapshot = actual;
+                state.menuSettlementTargetSnapshot =
+                        actual;
+            }
+            if (targetSnapshot == null) {
+                targetSnapshot =
+                        plan.snapshotAtPrefix(target);
+            }
+            return InventoryMenuPrefixAuthority.inFlight(
+                    plan,
+                    source,
+                    target,
+                    sourceSnapshot,
+                    targetSnapshot);
+        }
+        int confirmed = transaction.confirmedClicks();
+        InventoryMenuSnapshot confirmedSnapshot =
+                Objects.requireNonNull(
+                        state.menuLastSnapshot,
+                        "menuLastSnapshot");
+        if (replacementInheritor
+                && plan.snapshotAtPrefix(confirmed)
+                        .layoutEqualsIgnoringState(actual)) {
+            confirmedSnapshot = actual;
+            state.menuLastSnapshot = actual;
+        }
+        if (state.menuForwardInFlight == confirmed
+                && confirmed < plan.orderedSteps().size()) {
+            int target = confirmed + 1;
+            InventoryMenuSnapshot targetSnapshot =
+                    state.menuForwardTargetSnapshot;
+            if (replacementInheritor
+                    && plan.snapshotAtPrefix(target)
+                            .layoutEqualsIgnoringState(actual)) {
+                targetSnapshot = actual;
+                state.menuForwardTargetSnapshot =
+                        actual;
+            }
+            if (targetSnapshot == null) {
+                targetSnapshot =
+                        plan.snapshotAtPrefix(target);
+            }
+            return InventoryMenuPrefixAuthority.inFlight(
+                    plan,
+                    confirmed,
+                    target,
+                    confirmedSnapshot,
+                    targetSnapshot);
+        }
+        return InventoryMenuPrefixAuthority.stable(
+                plan, confirmed, confirmedSnapshot);
+    }
+
+    private InventoryMenuSnapshot applyMenuSettlementClick(
+            BotServerPlayer player,
+            InteractionState state,
+            InventoryMenuSwapPlan plan,
+            InventoryMenuSettlementDecision decision) {
+        InventoryMenuClickStep step =
+                decision.click().orElseThrow();
+        InventoryMenuSnapshot before =
+                MinecraftActionSnapshot.inventoryMenu(player);
+        if (!lifecycleManager.mayCleanupMutateInventory(
+                        state.botId, state.botGeneration)
+                || player.containerMenu != player.inventoryMenu
+                || !isCurrentCleanupTarget(state, player)
+                || !before.equals(
+                        decision.observedSnapshot())
+                || !before.layoutEqualsIgnoringState(
+                        step.before())
+                || !before.inventoryMultisetEquals(
+                        plan.initialSnapshot())
+                || !nativeCraftSlotsEmpty(player)
+                || !menuStepAllowedNow(player, step)) {
+            throw new IllegalStateException(
+                    "Inventory menu settlement precondition changed");
+        }
+        int targetPrefix =
+                decision.outcome()
+                                == InventoryMenuSettlementDecision
+                                        .Outcome.CLICK_TO_INITIAL
+                        ? 0
+                        : plan.orderedSteps().size();
+        state.menuSettlementSourcePrefix =
+                decision.observedPrefix();
+        state.menuSettlementTargetPrefix = targetPrefix;
+        state.menuSettlementSourceSnapshot = before;
+        state.menuSettlementTargetSnapshot = null;
+        state.menuForwardInFlight = -1;
+        try {
             player.inventoryMenu.clicked(
                     step.menuSlot(),
                     step.hotbarButton(),
                     ClickType.SWAP,
                     player);
             player.inventoryMenu.broadcastChanges();
-            if (!isCurrentCleanupTarget(state, player)) {
-                throw new IllegalStateException(
-                        "Bot cleanup target changed during inventory rollback");
-            }
-            InventoryMenuSnapshot restored =
-                    MinecraftActionSnapshot
-                            .inventoryMenu(player);
-            if (!restored.layoutEqualsIgnoringState(
-                            step.before())
-                    || !nativeCraftSlotsEmpty(player)) {
-                throw new IllegalStateException(
-                        "Inventory menu rollback step failed");
-            }
-            state.menuLastSnapshot = restored;
-            state.menuRollbackRemaining = index;
-            state.menuRollbackInFlight = -1;
+        } catch (RuntimeException exception) {
+            freezeMenuSettlementTargetAfterThrow(
+                    player, state, plan, step);
+            throw exception;
         }
-        InventoryMenuSnapshot restored =
+        InventoryMenuSnapshot after =
                 MinecraftActionSnapshot.inventoryMenu(player);
-        String restoredMultiset =
+        String multisetAfter =
                 MinecraftInteractionView
                         .inventoryMultisetDigest(player);
-        if (!restored.layoutEqualsIgnoringState(
-                        plan.initialSnapshot())
-                || !restoredMultiset.equals(
-                        state.inventoryMultisetBefore)) {
-            throw new IllegalStateException(
-                    "Inventory menu rollback did not restore the initial snapshot");
+        boolean exactTarget =
+                after.layoutEqualsIgnoringState(step.after())
+                        && after.inventoryMultisetEquals(
+                                plan.initialSnapshot())
+                        && multisetAfter.equals(
+                                state.inventoryMultisetBefore)
+                        && nativeCraftSlotsEmpty(player);
+        if (exactTarget) {
+            state.menuSettlementTargetSnapshot = after;
         }
-        if (!transaction.state().terminal()) {
-            state.menuTransaction = transaction.cancel();
+        if (!lifecycleManager.mayCleanupMutateInventory(
+                        state.botId, state.botGeneration)
+                || player.containerMenu
+                        != player.inventoryMenu
+                || !isCurrentCleanupTarget(state, player)) {
+            throw new IllegalStateException(
+                    "Bot cleanup authority changed during inventory menu settlement");
+        }
+        if (!exactTarget) {
+            throw new IllegalStateException(
+                    "Inventory menu settlement click failed");
+        }
+        state.menuLastSnapshot = after;
+        return after;
+    }
+
+    private static void freezeMenuSettlementTargetAfterThrow(
+            BotServerPlayer player,
+            InteractionState state,
+            InventoryMenuSwapPlan plan,
+            InventoryMenuClickStep step) {
+        try {
+            InventoryMenuSnapshot after =
+                    MinecraftActionSnapshot
+                            .inventoryMenu(player);
+            if (after.layoutEqualsIgnoringState(
+                            step.after())
+                    && after.inventoryMultisetEquals(
+                            plan.initialSnapshot())) {
+                state.menuSettlementTargetSnapshot =
+                        after;
+            }
+        } catch (RuntimeException ignored) {
+            // forceSafeReset will fail closed without a frozen target.
         }
     }
 
-    private static int matchingMenuPrefix(
+    private static void finishMenuSettlement(
+            InteractionState state,
             InventoryMenuSwapPlan plan,
-            InventoryMenuSnapshot actual) {
-        int match = plan.initialSnapshot()
-                        .layoutEqualsIgnoringState(actual)
-                ? 0
-                : -1;
-        for (int index = 0;
-                index < plan.orderedSteps().size();
-                index++) {
-            if (!plan.orderedSteps()
-                    .get(index)
-                    .after()
-                    .layoutEqualsIgnoringState(actual)) {
-                continue;
-            }
-            if (match >= 0) {
+            InventoryMenuSettlementDecision.Outcome outcome,
+            InventoryMenuSnapshot settled) {
+        InventoryMenuTransaction transaction =
+                Objects.requireNonNull(
+                        state.menuTransaction,
+                        "menuTransaction");
+        boolean finalEndpoint =
+                outcome
+                                == InventoryMenuSettlementDecision
+                                        .Outcome.ALREADY_FINAL
+                        || outcome
+                                == InventoryMenuSettlementDecision
+                                        .Outcome.CLICK_TO_FINAL;
+        if (finalEndpoint) {
+            int finalPrefix = plan.orderedSteps().size();
+            int missing =
+                    finalPrefix - transaction.confirmedClicks();
+            boolean authorizedTwoStepGap =
+                    state.menuSettlementSourcePrefix
+                                    == finalPrefix - 1
+                            && state.menuSettlementTargetPrefix
+                                    == finalPrefix
+                            && transaction.confirmedClicks()
+                                    == finalPrefix - 2;
+            int maximumMissing =
+                    authorizedTwoStepGap ? 2 : 1;
+            if (missing < 0 || missing > maximumMissing) {
                 throw new IllegalStateException(
-                        "Inventory menu rollback prefix is ambiguous");
+                        "Final menu settlement is outside its bounded confirmed prefix");
             }
-            match = index + 1;
+            while (transaction.confirmedClicks()
+                    < finalPrefix) {
+                int next = transaction.confirmedClicks();
+                transaction = transaction.confirmNext(
+                        plan.orderedSteps().get(next));
+            }
+            if (transaction.confirmedClicks()
+                            != finalPrefix
+                    || transaction.state()
+                            != InventoryMenuTransactionState
+                                    .VERIFYING) {
+                throw new IllegalStateException(
+                        "Final menu settlement did not reach a verifiable transaction cursor");
+            }
+            state.menuTransaction = transaction.commit();
+        } else if (!transaction.state().terminal()) {
+            state.menuTransaction = transaction.cancel();
         }
-        return match;
+        state.menuLastSnapshot = settled;
+        state.menuForwardInFlight = -1;
+        state.menuForwardTargetSnapshot = null;
+        clearMenuSettlementState(state);
+    }
+
+    private static void clearMenuSettlementState(
+            InteractionState state) {
+        state.menuSettlementSourcePrefix = -1;
+        state.menuSettlementTargetPrefix = -1;
+        state.menuSettlementSourceSnapshot = null;
+        state.menuSettlementTargetSnapshot = null;
     }
 
     private void rollbackSelection(
@@ -2420,8 +2649,14 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         private InventoryMenuTransaction menuTransaction;
         private InventoryMenuSnapshot menuLastSnapshot;
         private int menuForwardInFlight = -1;
-        private int menuRollbackRemaining = -1;
-        private int menuRollbackInFlight = -1;
+        private int menuSettlementSourcePrefix = -1;
+        private int menuSettlementTargetPrefix = -1;
+        private InventoryMenuSnapshot
+                menuSettlementSourceSnapshot;
+        private InventoryMenuSnapshot
+                menuSettlementTargetSnapshot;
+        private InventoryMenuSnapshot
+                menuForwardTargetSnapshot;
 
         private InteractionState(
                 UUID botId,

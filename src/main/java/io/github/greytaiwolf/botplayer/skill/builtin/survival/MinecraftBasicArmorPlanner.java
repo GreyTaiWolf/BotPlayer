@@ -19,8 +19,8 @@ import net.minecraft.world.item.enchantment.EnchantmentHelper;
 /**
  * 从真实玩家背包冻结一条保守、确定性的基础盔甲升级选择。
  *
- * <p>该规划器只识别 {@link ArmorItem} 的原版防御与韧性字段，只扫描热栏
- * 0..8，不处理主背包、工具、副手、模组属性修饰或任何菜单副作用。
+ * <p>该规划器只识别 {@link ArmorItem} 的原版防御与韧性字段，扫描玩家可携带槽
+ * 0..35，不处理工具、副手、模组属性修饰或任何菜单副作用。
  */
 public final class MinecraftBasicArmorPlanner {
     private static final List<ArmorTarget> TARGETS = List.of(
@@ -66,9 +66,9 @@ public final class MinecraftBasicArmorPlanner {
         }
 
         for (int inventorySlot =
-                        ArmorUpgradeSelection.FIRST_HOTBAR_SLOT;
+                        ArmorUpgradeSelection.FIRST_CARRIED_SLOT;
                 inventorySlot
-                        <= ArmorUpgradeSelection.LAST_HOTBAR_SLOT;
+                        <= ArmorUpgradeSelection.LAST_CARRIED_SLOT;
                 inventorySlot++) {
             ItemStack stack = inventory.getItem(inventorySlot);
             ArmorTarget target = targetFor(player, stack);

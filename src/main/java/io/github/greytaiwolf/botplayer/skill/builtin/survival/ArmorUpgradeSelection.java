@@ -5,22 +5,22 @@ import java.util.Objects;
 /**
  * 一次尚未执行的基础盔甲升级选择。
  *
- * <p>源槽是原版玩家热栏 0..8，目标槽是同一 {@code Inventory}
+ * <p>源槽是原版玩家可携带槽 0..35，目标槽是同一 {@code Inventory}
  * 的盔甲槽 36..39。该值只冻结规划结果，不执行菜单点击。
  */
 public record ArmorUpgradeSelection(
         int sourceInventorySlot,
         int targetInventorySlot,
         EquipmentCandidate candidate) {
-    public static final int FIRST_HOTBAR_SLOT = 0;
-    public static final int LAST_HOTBAR_SLOT = 8;
+    public static final int FIRST_CARRIED_SLOT = 0;
+    public static final int LAST_CARRIED_SLOT = 35;
 
     public ArmorUpgradeSelection {
         Objects.requireNonNull(candidate, "candidate");
-        if (sourceInventorySlot < FIRST_HOTBAR_SLOT
-                || sourceInventorySlot > LAST_HOTBAR_SLOT) {
+        if (sourceInventorySlot < FIRST_CARRIED_SLOT
+                || sourceInventorySlot > LAST_CARRIED_SLOT) {
             throw new IllegalArgumentException(
-                    "sourceInventorySlot must be in the hotbar");
+                    "sourceInventorySlot must be in 0..35");
         }
         if (!candidate.targetSlot().isArmorSlot()) {
             throw new IllegalArgumentException(

@@ -17,6 +17,7 @@ import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionAction
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSnapshot;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSwapPlan;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSwapPlanBuilder;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.PlayerInventoryMenuLayout;
 import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftActionSnapshot;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.safety.HazardType;
@@ -56,7 +57,7 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 
 /**
- * P5A 当前已接入的有界生存纵切：安全面移交的临界进食，以及手动启动的热栏基础盔甲升级。
+ * P5A 当前已接入的有界生存纵切：安全面移交的临界进食，以及手动启动的基础盔甲升级。
  *
  * <p>异步动作完成只写入 {@link SkillSignalInbox}；所有世界读取和状态推进都留在服务器主线程。
  */
@@ -260,9 +261,10 @@ public final class SurvivalSkillService implements SafetyHandoff {
     }
 
     /**
-     * 手动启动一条只使用原生背包菜单的热栏基础盔甲升级运行。
+     * 手动启动一条只使用原生背包菜单的基础盔甲升级运行。
      *
-     * <p>首批纵切只扫描热栏，且每件盔甲都是一个已经验证可逆的单击事务。
+     * <p>候选扫描可携带槽 0..35；热栏候选使用单击交换，主背包候选使用
+     * 2/3 步逐 Tick 事务，取消时最多一次点击收敛到安全端点。
      */
     public SurvivalSkillSubmission startBasicArmor(
             BotServerPlayer player, long currentTick) {
@@ -306,7 +308,7 @@ public final class SurvivalSkillService implements SafetyHandoff {
             if (selection == null) {
                 return SurvivalSkillSubmission.rejected(
                         SurvivalSkillSubmission.Status.NO_UPGRADE,
-                        "热栏中没有可安全装备的基础盔甲升级");
+                        "背包中没有可安全装备的基础盔甲升级");
             }
             plan = prepareArmorPlan(
                     player, selection);
@@ -338,7 +340,7 @@ public final class SurvivalSkillService implements SafetyHandoff {
                     run,
                     SkillRunState.PREPARING,
                     currentTick,
-                    "已冻结热栏盔甲升级与原生菜单快照");
+                    "已冻结背包盔甲升级与原生菜单快照");
             transition(
                     run,
                     SkillRunState.RUNNING,
@@ -732,10 +734,26 @@ public final class SurvivalSkillService implements SafetyHandoff {
             throw new IllegalStateException(
                     "armor source changed before menu planning");
         }
-        return InventoryMenuSwapPlanBuilder.hotbarToEquipment(
-                snapshot,
-                selection.sourceInventorySlot(),
-                selection.targetInventorySlot());
+        if (PlayerInventoryMenuLayout
+                .isHotbarInventorySlot(
+                        selection.sourceInventorySlot())) {
+            return InventoryMenuSwapPlanBuilder
+                    .hotbarToEquipment(
+                            snapshot,
+                            selection.sourceInventorySlot(),
+                            selection.targetInventorySlot());
+        }
+        if (PlayerInventoryMenuLayout
+                .isMainInventorySlot(
+                        selection.sourceInventorySlot())) {
+            return InventoryMenuSwapPlanBuilder
+                    .mainToEquipment(
+                            snapshot,
+                            selection.sourceInventorySlot(),
+                            selection.targetInventorySlot());
+        }
+        throw new IllegalStateException(
+                "armor source is outside the carried inventory");
     }
 
     private boolean submitArmorUpgrade(
@@ -746,10 +764,26 @@ public final class SurvivalSkillService implements SafetyHandoff {
             long currentTick) {
         Objects.requireNonNull(selection, "selection");
         Objects.requireNonNull(plan, "plan");
-        if (plan.operation()
-                        != InventoryMenuSwapPlan.Operation
-                                .HOTBAR_TO_EQUIPMENT
-                || plan.orderedSteps().size() != 1
+        boolean hotbarPlan =
+                PlayerInventoryMenuLayout
+                                .isHotbarInventorySlot(
+                                        selection
+                                                .sourceInventorySlot())
+                        && plan.operation()
+                                == InventoryMenuSwapPlan.Operation
+                                        .HOTBAR_TO_EQUIPMENT
+                        && plan.orderedSteps().size() == 1;
+        boolean mainInventoryPlan =
+                PlayerInventoryMenuLayout
+                                .isMainInventorySlot(
+                                        selection
+                                                .sourceInventorySlot())
+                        && plan.operation()
+                                == InventoryMenuSwapPlan.Operation
+                                        .MAIN_TO_EQUIPMENT
+                        && plan.orderedSteps().size() >= 2
+                        && plan.orderedSteps().size() <= 3;
+        if ((!hotbarPlan && !mainInventoryPlan)
                 || !plan.initialSnapshot()
                         .itemAt(selection.sourceInventorySlot())
                         .equals(selection.candidate()
@@ -1385,6 +1419,16 @@ public final class SurvivalSkillService implements SafetyHandoff {
                 ? run.deadlineTick
                 : run.workDeadlineTick;
         if (signal.gameTick() >= actionBoundary) {
+            if (completed == Operation.EQUIP_ARMOR) {
+                /*
+                 * The runtime may have safely settled a multi-step menu
+                 * transaction at FINAL while the business action still
+                 * times out. Preserve the timeout terminal, but do not hide
+                 * the authoritative equipment change.
+                 */
+                reconcileArmorAfterNonSuccess(
+                        player, run);
+            }
             terminateOrRecover(
                     player,
                     run,
@@ -1455,6 +1499,10 @@ public final class SurvivalSkillService implements SafetyHandoff {
                     terminal == SkillRunState.FAILED
                             ? mapFailure(signal)
                             : null;
+            if (completed == Operation.EQUIP_ARMOR) {
+                reconcileArmorAfterNonSuccess(
+                        player, run);
+            }
             terminateOrRecover(
                     player,
                     run,
@@ -1538,10 +1586,17 @@ public final class SurvivalSkillService implements SafetyHandoff {
                         run, currentTick);
             }
             case EQUIP_ARMOR -> {
+                InventoryMenuSwapPlan completedPlan =
+                        Objects.requireNonNull(
+                                run.armorPlan,
+                                "armorPlan");
                 if (!hasEvidence(
                                 signal,
                                 "menu.click_count",
-                                "1")
+                                Integer.toString(
+                                        completedPlan
+                                                .orderedSteps()
+                                                .size()))
                         || !hasEvidence(
                                 signal,
                                 "inventory.multiset_preserved",
@@ -1551,7 +1606,7 @@ public final class SurvivalSkillService implements SafetyHandoff {
                             run,
                             SkillRunState.FAILED,
                             SkillFailureCode.ACTION_FAILED,
-                            "原生菜单回执未证明单击与物品守恒",
+                            "原生菜单回执未证明完整点击计划与物品守恒",
                             currentTick);
                     return;
                 }
@@ -1559,10 +1614,6 @@ public final class SurvivalSkillService implements SafetyHandoff {
                         Objects.requireNonNull(
                                 run.armorSelection,
                                 "armorSelection");
-                InventoryMenuSwapPlan completedPlan =
-                        Objects.requireNonNull(
-                                run.armorPlan,
-                                "armorPlan");
                 if (!completedPlan.initialSnapshot()
                                 .itemAt(selection
                                         .sourceInventorySlot())
@@ -1645,6 +1696,37 @@ public final class SurvivalSkillService implements SafetyHandoff {
                 planAndSubmitNextArmorUpgrade(
                         player, run, currentTick);
             }
+        }
+    }
+
+    private static void reconcileArmorAfterNonSuccess(
+            BotServerPlayer player, ActiveRun run) {
+        ArmorUpgradeSelection selection =
+                run.armorSelection;
+        InventoryMenuSwapPlan plan = run.armorPlan;
+        if (selection == null || plan == null) {
+            return;
+        }
+        try {
+            InventoryMenuSnapshot current =
+                    MinecraftActionSnapshot
+                            .inventoryMenu(player);
+            if (current.layoutEqualsIgnoringState(
+                            plan.finalSnapshot())
+                    && plan.finalSnapshot()
+                            .itemAt(selection
+                                    .targetInventorySlot())
+                            .equals(selection.candidate()
+                                    .itemFingerprint())
+                    && run.equippedArmorTargets.add(
+                            selection.targetInventorySlot())) {
+                run.armorChanges++;
+            }
+        } catch (RuntimeException ignored) {
+            // 动作运行时已经给出终态；这里仅补记可精确证明的 final endpoint。
+        } finally {
+            run.armorSelection = null;
+            run.armorPlan = null;
         }
     }
 
@@ -1927,7 +2009,7 @@ public final class SurvivalSkillService implements SafetyHandoff {
                 SkillRunState.SUCCEEDED,
                 "已通过原生菜单完成 "
                         + run.armorChanges
-                        + " 个热栏盔甲升级",
+                        + " 个背包盔甲升级",
                 currentTick);
     }
 

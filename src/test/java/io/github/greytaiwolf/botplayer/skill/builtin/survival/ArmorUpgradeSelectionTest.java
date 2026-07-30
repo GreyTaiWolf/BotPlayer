@@ -73,20 +73,34 @@ class ArmorUpgradeSelectionTest {
     }
 
     @Test
-    void rejectsMainInventorySource() {
-        EquipmentCandidate mainInventoryCandidate =
-                candidate(
-                        12,
-                        EquipmentSlotKind.CHEST,
-                        false,
-                        false);
-
-        Assertions.assertThrows(
-                IllegalArgumentException.class,
-                () -> new ArmorUpgradeSelection(
-                        12,
-                        38,
-                        mainInventoryCandidate));
+    void acceptsCarriedSlotsAndRejectsEquipmentSources() {
+        for (int source : new int[] {0, 8, 9, 35}) {
+            EquipmentCandidate candidate =
+                    candidate(
+                            source,
+                            EquipmentSlotKind.CHEST,
+                            false,
+                            false);
+            Assertions.assertEquals(
+                    source,
+                    new ArmorUpgradeSelection(
+                                    source, 38, candidate)
+                            .sourceInventorySlot());
+        }
+        for (int source : new int[] {-1, 36, 40}) {
+            Assertions.assertThrows(
+                    IllegalArgumentException.class,
+                    () -> {
+                        EquipmentCandidate candidate =
+                                candidate(
+                                        source,
+                                        EquipmentSlotKind.CHEST,
+                                        false,
+                                        false);
+                        new ArmorUpgradeSelection(
+                                source, 38, candidate);
+                    });
+        }
     }
 
     @Test

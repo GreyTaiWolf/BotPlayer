@@ -1551,6 +1551,18 @@ public final class BotLifecycleManager {
             transition(
                     runtime,
                     BotLifecycleState.DESPAWNING);
+            if (!runtime
+                            .disconnectPreparationSafelyClosed
+                    || runtime
+                                    .disconnectPreparationFailure
+                            != null) {
+                abortUnstableListenerDisconnect(
+                        runtime,
+                        player,
+                        listedPlayer,
+                        "Prepared disconnect did not hold a safe pre-save generation receipt");
+                return ListenerDisconnectDecision.ABORTED;
+            }
             return ListenerDisconnectDecision.PROCEED;
         }
 
@@ -1621,11 +1633,12 @@ public final class BotLifecycleManager {
                         safelyClosed && failure == null,
                         failure));
         if (!safelyClosed || failure != null) {
-            BotPlayer.LOGGER.error(
-                    "BotPlayer {} ({}) is disconnecting after an unsafe pre-save generation closure",
-                    runtime.handle.name(),
-                    runtime.handle.botId(),
-                    failure);
+            abortUnstableListenerDisconnect(
+                    runtime,
+                    player,
+                    listedPlayer,
+                    "Disconnect retirement did not produce a safe pre-save generation receipt");
+            return ListenerDisconnectDecision.ABORTED;
         }
         return ListenerDisconnectDecision.PROCEED;
     }

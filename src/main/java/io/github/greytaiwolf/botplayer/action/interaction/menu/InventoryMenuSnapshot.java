@@ -2,7 +2,9 @@ package io.github.greytaiwolf.botplayer.action.interaction.menu;
 
 import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -62,6 +64,31 @@ public record InventoryMenuSnapshot(
                 && selectedHotbar == other.selectedHotbar
                 && cursor.equals(other.cursor)
                 && inventorySlots.equals(other.inventorySlots);
+    }
+
+    /**
+     * 严格比较 41 槽中的结构化堆叠多重集，不把摘要字符串当作守恒证明。
+     *
+     * <p>该比较有意忽略槽位、stateId、containerId、选中槽和 cursor；调用方必须
+     * 独立核对这些控制面条件。
+     */
+    public boolean inventoryMultisetEquals(
+            InventoryMenuSnapshot other) {
+        return other != null
+                && inventoryMultiset(inventorySlots)
+                        .equals(inventoryMultiset(
+                                other.inventorySlots));
+    }
+
+    private static Map<ItemStackFingerprint, Integer>
+            inventoryMultiset(
+                    List<ItemStackFingerprint> slots) {
+        Map<ItemStackFingerprint, Integer> counts =
+                new HashMap<>();
+        for (ItemStackFingerprint fingerprint : slots) {
+            counts.merge(fingerprint, 1, Integer::sum);
+        }
+        return counts;
     }
 
     InventoryMenuSnapshot swapKeepingState(

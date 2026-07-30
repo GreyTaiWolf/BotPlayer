@@ -365,6 +365,94 @@ class InventoryMenuSwapPlanTest {
                 () -> first.touchedInventorySlots().clear());
     }
 
+    @Test
+    void choosesStableNonSelectedTemporaryHotbarSlot() {
+        InventoryMenuSnapshot withEmpty = snapshot(
+                10, SOURCE,
+                39, TARGET,
+                0, TEMPORARY);
+        InventoryMenuSwapPlan emptyPreferred =
+                InventoryMenuSwapPlanBuilder
+                        .mainToEquipment(
+                                withEmpty, 10, 39);
+
+        Assertions.assertEquals(
+                1,
+                emptyPreferred
+                        .orderedSteps()
+                        .getFirst()
+                        .hotbarButton());
+        Assertions.assertEquals(
+                1,
+                InventoryMenuSwapPlanBuilder
+                        .temporaryHotbarSlot(withEmpty));
+
+        List<ItemStackFingerprint> fullSlots =
+                emptySlots();
+        fullSlots.set(10, SOURCE);
+        fullSlots.set(39, TARGET);
+        for (int hotbar = 0; hotbar <= 8; hotbar++) {
+            fullSlots.set(
+                    hotbar,
+                    item(
+                            "full_hotbar_" + hotbar,
+                            (char) ('0' + hotbar)));
+        }
+        InventoryMenuSnapshot full =
+                new InventoryMenuSnapshot(
+                        0, 17, 0, EMPTY, fullSlots);
+        InventoryMenuSwapPlan fullFallback =
+                InventoryMenuSwapPlanBuilder
+                        .mainToEquipment(
+                                full, 10, 39);
+
+        Assertions.assertEquals(
+                1,
+                fullFallback
+                        .orderedSteps()
+                        .getFirst()
+                        .hotbarButton());
+        Assertions.assertEquals(
+                1,
+                InventoryMenuSwapPlanBuilder
+                        .temporaryHotbarSlot(full));
+    }
+
+    @Test
+    void reversedStepRoundTripsAndRepeatedPrefixIsRejected() {
+        InventoryMenuSnapshot initial = snapshot(
+                10, SOURCE,
+                39, TARGET,
+                2, TEMPORARY);
+        InventoryMenuSwapPlan normal =
+                InventoryMenuSwapPlanBuilder
+                        .mainToEquipment(initial, 10, 39, 2);
+        InventoryMenuClickStep first =
+                normal.orderedSteps().getFirst();
+        InventoryMenuClickStep reversed = first.reversed();
+        InventoryMenuClickStep unrelatedThird =
+                InventoryMenuSwapPlanBuilder
+                        .hotbarToEquipment(initial, 2, 39)
+                        .orderedSteps()
+                        .getFirst();
+
+        Assertions.assertEquals(first, reversed.reversed());
+        Assertions.assertEquals(
+                initial, reversed.after());
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> new InventoryMenuSwapPlan(
+                        InventoryMenuSwapPlan.Operation
+                                .MAIN_TO_EQUIPMENT,
+                        initial,
+                        unrelatedThird.after(),
+                        List.of(
+                                first,
+                                reversed,
+                                unrelatedThird),
+                        InventoryMenuTransactionLimits.defaults()));
+    }
+
     private static InventoryMenuSnapshot snapshot(
             Object... slotAndFingerprintPairs) {
         if (slotAndFingerprintPairs.length % 2 != 0) {

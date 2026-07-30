@@ -81,4 +81,12 @@ public record InventoryMenuClickStep(
                 .inventorySlotForMenuSlot(menuSlot)
                 .orElseThrow();
     }
+
+    /**
+     * {@code SWAP} 是自反操作；交换前后快照即可得到精确逆步骤。
+     */
+    public InventoryMenuClickStep reversed() {
+        return new InventoryMenuClickStep(
+                menuSlot, hotbarButton, after, before);
+    }
 }

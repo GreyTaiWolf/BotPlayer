@@ -19,21 +19,32 @@ class InventoryMenuWorldActionSpecTest {
         for (int index = 0; index < 41; index++) {
             slots.add(ItemStackFingerprint.empty());
         }
-        slots.set(3, ItemStackFingerprint.of(
-                new ResourceId("minecraft:iron_helmet"),
+        slots.set(10, ItemStackFingerprint.of(
+                new ResourceId("minecraft:diamond_helmet"),
                 1,
                 0,
                 "1".repeat(64)));
+        slots.set(39, ItemStackFingerprint.of(
+                new ResourceId("minecraft:iron_helmet"),
+                1,
+                0,
+                "2".repeat(64)));
+        slots.set(3, ItemStackFingerprint.of(
+                new ResourceId("minecraft:torch"),
+                16,
+                0,
+                "3".repeat(64)));
         InventoryMenuSwapPlan plan =
-                InventoryMenuSwapPlanBuilder.hotbarToEquipment(
+                InventoryMenuSwapPlanBuilder.mainToEquipment(
                         new InventoryMenuSnapshot(
                                 0,
                                 3,
                                 0,
                                 ItemStackFingerprint.empty(),
                                 slots),
-                        3,
-                        39);
+                        10,
+                        39,
+                        3);
         WorldInteractionActionSpec.InventoryMenuSwap spec =
                 new WorldInteractionActionSpec.InventoryMenuSwap(plan);
 
@@ -50,6 +61,8 @@ class InventoryMenuWorldActionSpecTest {
                         ActionChannel.OFF_HAND),
                 spec.channels());
         Assertions.assertSame(plan, spec.plan());
+        Assertions.assertEquals(
+                3, spec.plan().orderedSteps().size());
         Assertions.assertThrows(
                 NullPointerException.class,
                 () -> new WorldInteractionActionSpec

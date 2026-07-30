@@ -68,6 +68,20 @@ public final class InventoryMenuSwapPlanBuilder {
                 InventoryMenuTransactionLimits.defaults());
     }
 
+    /**
+     * 选择最低编号的非选中空热栏；若热栏已满，则选择最低编号的非选中槽。
+     */
+    public static InventoryMenuSwapPlan mainToEquipment(
+            InventoryMenuSnapshot initialSnapshot,
+            int sourceMainInventorySlot,
+            int targetEquipmentInventorySlot) {
+        return mainToEquipment(
+                initialSnapshot,
+                sourceMainInventorySlot,
+                targetEquipmentInventorySlot,
+                temporaryHotbarSlot(initialSnapshot));
+    }
+
     public static InventoryMenuSwapPlan hotbarToEquipment(
             InventoryMenuSnapshot initialSnapshot,
             int sourceHotbarSlot,
@@ -189,6 +203,33 @@ public final class InventoryMenuSwapPlanBuilder {
             throw new IllegalArgumentException(
                     "SWAP plan requires an empty initial cursor");
         }
+    }
+
+    static int temporaryHotbarSlot(
+            InventoryMenuSnapshot initialSnapshot) {
+        requireInitial(initialSnapshot);
+        int fallback = -1;
+        for (int inventorySlot = 0;
+                inventorySlot <= 8;
+                inventorySlot++) {
+            if (inventorySlot
+                    == initialSnapshot.selectedHotbar()) {
+                continue;
+            }
+            if (fallback < 0) {
+                fallback = inventorySlot;
+            }
+            if (initialSnapshot
+                    .itemAt(inventorySlot)
+                    .isEmpty()) {
+                return inventorySlot;
+            }
+        }
+        if (fallback < 0) {
+            throw new IllegalStateException(
+                    "no non-selected temporary hotbar slot");
+        }
+        return fallback;
     }
 
     private static void requireMainSlot(int inventorySlot) {

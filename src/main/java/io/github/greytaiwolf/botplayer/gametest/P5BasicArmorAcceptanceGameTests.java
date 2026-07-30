@@ -1,6 +1,11 @@
 package io.github.greytaiwolf.botplayer.gametest;
 
 import io.github.greytaiwolf.botplayer.BotPlayer;
+import io.github.greytaiwolf.botplayer.action.ActionEnvelope;
+import io.github.greytaiwolf.botplayer.action.ActionMailbox;
+import io.github.greytaiwolf.botplayer.action.ActionOrigin;
+import io.github.greytaiwolf.botplayer.action.ActionPriority;
+import io.github.greytaiwolf.botplayer.action.StopAction;
 import io.github.greytaiwolf.botplayer.gametest.P2GameTestSupport.TestBot;
 import io.github.greytaiwolf.botplayer.inventory.BotInventoryMenu;
 import io.github.greytaiwolf.botplayer.inventory.BotInventorySessionManager;
@@ -241,7 +246,7 @@ public final class P5BasicArmorAcceptanceGameTests {
             template = P2GameTestSupport.TEMPLATE,
             batch = BATCH,
             timeoutTicks = TIMEOUT_TICKS)
-    public static void mainInventoryOnlyCandidateDoesNotStart(
+    public static void mainInventoryCandidateUsesEmptyTemporaryHotbar(
             GameTestHelper helper) {
         P2GameTestSupport.prepareEmptyFloor(helper);
         TestBot bot = P5GameTestSupport.spawnFixedBot(
@@ -250,35 +255,259 @@ public final class P5BasicArmorAcceptanceGameTests {
                 P5GameTestSupport.cleanup(bot);
         try {
             prepareHealthy(bot);
+            bot.player().getInventory().selected = 5;
+            bot.player().getInventory().setItem(
+                    5, new ItemStack(Items.STONE));
             bot.player().getInventory().setItem(
                     9, new ItemStack(Items.DIAMOND_HELMET));
 
-            Optional<SurvivalSkillRunView> baselineView =
-                    bot.manager()
-                            .survivalSkillRun(bot.name());
             SurvivalSkillSubmission submission =
                     bot.manager().startBasicArmor(bot.name());
-            requireRejectedWithoutRun(
-                    bot,
-                    submission,
-                    SurvivalSkillSubmission.Status.NO_UPGRADE,
-                    baselineView);
             P2GameTestSupport.require(
-                    bot.player()
+                    submission.accepted(),
+                    "Two-click main-inventory armor upgrade was rejected: "
+                            + submission.status());
+
+            awaitTerminalRun(
+                    helper,
+                    bot,
+                    submission.runId().orElseThrow(),
+                    cleanup,
+                    "Two-click main-inventory armor upgrade did not reach a terminal state",
+                    view -> {
+                        requireSuccessfulArmorRun(view, 1);
+                        P2GameTestSupport.require(
+                                bot.player()
+                                                .getInventory()
+                                                .getItem(39)
+                                                .is(
+                                                        Items
+                                                                .DIAMOND_HELMET)
+                                        && bot.player()
+                                                .getInventory()
+                                                .getItem(9)
+                                                .isEmpty()
+                                        && bot.player()
+                                                .getInventory()
+                                                .getItem(0)
+                                                .isEmpty(),
+                                "Two-click plan did not restore the empty temporary hotbar slot");
+                        for (int slot = 0; slot <= 8; slot++) {
+                            ItemStack stack =
+                                    bot.player()
                                             .getInventory()
-                                            .getItem(9)
-                                            .is(
-                                                    Items
-                                                            .DIAMOND_HELMET)
-                            && bot.player()
-                                    .getInventory()
-                                    .getItem(39)
-                                    .isEmpty()
-                            && count(bot, Items.DIAMOND_HELMET)
-                                    == 1,
-                    "Main-inventory-only rejection changed the inventory");
+                                            .getItem(slot);
+                            P2GameTestSupport.require(
+                                    slot == 5
+                                            ? stack.is(Items.STONE)
+                                            : stack.isEmpty(),
+                                    "Two-click plan changed hotbar slot "
+                                            + slot);
+                        }
+                        P2GameTestSupport.require(
+                                bot.player()
+                                                        .getInventory()
+                                                        .selected
+                                                == 5
+                                        && bot.player()
+                                                .inventoryMenu
+                                                .getCarried()
+                                                .isEmpty()
+                                        && count(
+                                                        bot,
+                                                        Items
+                                                                .DIAMOND_HELMET)
+                                                == 1
+                                        && count(bot, Items.STONE)
+                                                == 1,
+                                "Two-click plan changed selection, cursor, or item counts");
+                    });
+        } catch (RuntimeException | AssertionError exception) {
             cleanup.run();
-            helper.succeed();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void mainInventoryUpgradeCyclesOldArmorThroughFullHotbar(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P5GameTestSupport.spawnFixedBot(
+                helper, "P5ArmorFull");
+        P2GameTestSupport.Cleanup cleanup =
+                P5GameTestSupport.cleanup(bot);
+        try {
+            ItemStack[] expectedHotbar =
+                    prepareThreeClickArmorLayout(bot);
+
+            SurvivalSkillSubmission submission =
+                    bot.manager().startBasicArmor(bot.name());
+            P2GameTestSupport.require(
+                    submission.accepted(),
+                    "Three-click main-inventory armor upgrade was rejected: "
+                            + submission.status());
+
+            awaitTerminalRun(
+                    helper,
+                    bot,
+                    submission.runId().orElseThrow(),
+                    cleanup,
+                    "Three-click main-inventory armor upgrade did not reach a terminal state",
+                    view -> {
+                        requireSuccessfulArmorRun(view, 1);
+                        P2GameTestSupport.require(
+                                bot.player()
+                                                .getInventory()
+                                                .getItem(39)
+                                                .is(
+                                                        Items
+                                                                .DIAMOND_HELMET)
+                                        && bot.player()
+                                                .getInventory()
+                                                .getItem(9)
+                                                .is(
+                                                        Items
+                                                                .IRON_HELMET),
+                                "Three-click plan did not return the old helmet to the source slot");
+                        for (int slot = 0;
+                                slot < expectedHotbar.length;
+                                slot++) {
+                            P2GameTestSupport.require(
+                                    ItemStack.matches(
+                                            expectedHotbar[slot],
+                                            bot.player()
+                                                    .getInventory()
+                                                    .getItem(slot))
+                                            && count(
+                                                            bot,
+                                                            expectedHotbar[
+                                                                    slot]
+                                                                    .getItem())
+                                                    == 1,
+                                    "Three-click plan changed hotbar slot "
+                                            + slot);
+                        }
+                        P2GameTestSupport.require(
+                                bot.player()
+                                                        .getInventory()
+                                                        .selected
+                                                == 8
+                                        && bot.player()
+                                                .inventoryMenu
+                                                .getCarried()
+                                                .isEmpty()
+                                        && count(
+                                                        bot,
+                                                        Items
+                                                                .DIAMOND_HELMET)
+                                                == 1
+                                        && count(
+                                                        bot,
+                                                        Items
+                                                                .IRON_HELMET)
+                                                == 1,
+                                "Three-click plan changed selection, cursor, or armor counts");
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void sameTickEmergencyQueuePreemptsAfterPrefixOne(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P5GameTestSupport.spawnFixedBot(
+                helper, "P5ArmorPre1");
+        P2GameTestSupport.Cleanup cleanup =
+                P5GameTestSupport.cleanup(bot);
+        try {
+            ItemStack[] expectedHotbar =
+                    prepareThreeClickArmorLayout(bot);
+            SurvivalSkillSubmission submission =
+                    bot.manager().startBasicArmor(bot.name());
+            P2GameTestSupport.require(
+                    submission.accepted(),
+                    "Prefix-one preemption armor upgrade was rejected: "
+                            + submission.status());
+
+            /*
+             * 两条命令按 mailbox FIFO 入队；runtime 先 start 菜单 ticket
+             * 并完成第 1 击，再让后入队的 EMERGENCY Stop acquire 通道。
+             */
+            submitEmergencyStop(bot);
+            awaitTerminalRun(
+                    helper,
+                    bot,
+                    submission.runId().orElseThrow(),
+                    cleanup,
+                    "Same-tick emergency queue did not preempt the armor run",
+                    view -> requirePreemptedArmorEndpoint(
+                            bot,
+                            expectedHotbar,
+                            view,
+                            false));
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void emergencyQueuedAtPrefixOnePreemptsAfterPrefixTwo(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P5GameTestSupport.spawnFixedBot(
+                helper, "P5ArmorPre2");
+        P2GameTestSupport.Cleanup cleanup =
+                P5GameTestSupport.cleanup(bot);
+        try {
+            ItemStack[] expectedHotbar =
+                    prepareThreeClickArmorLayout(bot);
+            SurvivalSkillSubmission submission =
+                    bot.manager().startBasicArmor(bot.name());
+            P2GameTestSupport.require(
+                    submission.accepted(),
+                    "Prefix-two preemption armor upgrade was rejected: "
+                            + submission.status());
+            UUID runId = submission.runId().orElseThrow();
+
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    TERMINAL_WAIT_TICKS,
+                    () -> matchesThreeClickPrefixOne(
+                            bot, expectedHotbar),
+                    "Armor run never exposed the exact first menu prefix",
+                    cleanup,
+                    () -> {
+                        /*
+                         * 旧菜单 ticket 在下一 tick 先执行第 2 击；随后
+                         * Stop ticket acquire 并同步把该 prefix 收口到 FINAL。
+                         */
+                        submitEmergencyStop(bot);
+                        awaitTerminalRun(
+                                helper,
+                                bot,
+                                runId,
+                                cleanup,
+                                "Emergency queued at prefix one did not preempt after prefix two",
+                                view ->
+                                        requirePreemptedArmorEndpoint(
+                                                bot,
+                                                expectedHotbar,
+                                                view,
+                                                true));
+                    });
         } catch (RuntimeException | AssertionError exception) {
             cleanup.run();
             throw exception;
@@ -459,6 +688,180 @@ public final class P5BasicArmorAcceptanceGameTests {
             cleanup.run();
             throw exception;
         }
+    }
+
+    private static ItemStack[] prepareThreeClickArmorLayout(
+            TestBot bot) {
+        prepareHealthy(bot);
+        Item[] hotbarItems = {
+            Items.STONE,
+            Items.DIRT,
+            Items.COBBLESTONE,
+            Items.OAK_LOG,
+            Items.STICK,
+            Items.TORCH,
+            Items.APPLE,
+            Items.BREAD,
+            Items.FLINT
+        };
+        ItemStack[] expectedHotbar =
+                new ItemStack[hotbarItems.length];
+        for (int slot = 0;
+                slot < hotbarItems.length;
+                slot++) {
+            expectedHotbar[slot] =
+                    new ItemStack(hotbarItems[slot]);
+            bot.player().getInventory().setItem(
+                    slot, expectedHotbar[slot].copy());
+        }
+        bot.player().getInventory().selected = 8;
+        bot.player().getInventory().setItem(
+                9, new ItemStack(Items.DIAMOND_HELMET));
+        bot.player().getInventory().setItem(
+                39, new ItemStack(Items.IRON_HELMET));
+        return expectedHotbar;
+    }
+
+    private static boolean matchesThreeClickPrefixOne(
+            TestBot bot, ItemStack[] expectedHotbar) {
+        if (!bot.player()
+                        .getInventory()
+                        .getItem(0)
+                        .is(Items.DIAMOND_HELMET)
+                || !ItemStack.matches(
+                        expectedHotbar[0],
+                        bot.player()
+                                .getInventory()
+                                .getItem(9))
+                || !bot.player()
+                        .getInventory()
+                        .getItem(39)
+                        .is(Items.IRON_HELMET)
+                || bot.player()
+                                .getInventory()
+                                .selected
+                        != 8
+                || !bot.player()
+                        .inventoryMenu
+                        .getCarried()
+                        .isEmpty()) {
+            return false;
+        }
+        for (int slot = 1;
+                slot < expectedHotbar.length;
+                slot++) {
+            if (!ItemStack.matches(
+                    expectedHotbar[slot],
+                    bot.player()
+                            .getInventory()
+                            .getItem(slot))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static void requirePreemptedArmorEndpoint(
+            TestBot bot,
+            ItemStack[] expectedHotbar,
+            SurvivalSkillRunView view,
+            boolean finalEndpoint) {
+        P2GameTestSupport.require(
+                view.kind()
+                                        == SurvivalSkillKind
+                                                .EQUIP_BASIC_ARMOR
+                                && view.state()
+                                        == SkillRunState
+                                                .PREEMPTED
+                                && view.failureCode().isEmpty()
+                                && view.operationSequence() == 1,
+                "Preempted armor run exposed an invalid terminal view: "
+                        + view);
+        boolean summaryCommitted =
+                view.safeSummary().contains(
+                        "已安全提交 1 个盔甲升级");
+        P2GameTestSupport.require(
+                summaryCommitted == finalEndpoint,
+                finalEndpoint
+                        ? "Final endpoint was not recorded in the preempted skill summary"
+                        : "Initial endpoint was falsely recorded as an armor upgrade");
+        for (int slot = 0;
+                slot < expectedHotbar.length;
+                slot++) {
+            P2GameTestSupport.require(
+                    ItemStack.matches(
+                                    expectedHotbar[slot],
+                                    bot.player()
+                                            .getInventory()
+                                            .getItem(slot))
+                            && count(
+                                            bot,
+                                            expectedHotbar[slot]
+                                                    .getItem())
+                                    == 1,
+                    "Settled armor transaction changed hotbar slot "
+                            + slot);
+        }
+        P2GameTestSupport.require(
+                bot.player()
+                                .getInventory()
+                                .getItem(9)
+                                .is(
+                                        finalEndpoint
+                                                ? Items.IRON_HELMET
+                                                : Items.DIAMOND_HELMET)
+                        && bot.player()
+                                .getInventory()
+                                .getItem(39)
+                                .is(
+                                        finalEndpoint
+                                                ? Items.DIAMOND_HELMET
+                                                : Items.IRON_HELMET)
+                        && bot.player()
+                                        .getInventory()
+                                        .selected
+                                == 8
+                        && bot.player()
+                                .inventoryMenu
+                                .getCarried()
+                                .isEmpty()
+                        && count(
+                                        bot,
+                                        Items.DIAMOND_HELMET)
+                                == 1
+                        && count(
+                                        bot,
+                                        Items.IRON_HELMET)
+                                == 1,
+                finalEndpoint
+                        ? "Prefix-two preemption did not settle to the exact final endpoint"
+                        : "Prefix-one preemption did not settle to the exact initial endpoint");
+    }
+
+    private static void submitEmergencyStop(TestBot bot) {
+        long currentTick = bot.player()
+                .serverLevel()
+                .getServer()
+                .getTickCount();
+        UUID actionId = UUID.randomUUID();
+        ActionEnvelope envelope = new ActionEnvelope(
+                actionId,
+                bot.player().getUUID(),
+                bot.player().runtimeHandle().generation(),
+                "gametest/p5/armor-preempt/" + actionId,
+                currentTick + 40L,
+                5,
+                new StopAction(),
+                ActionOrigin.none());
+        ActionMailbox.Submission submission =
+                bot.manager().submitAction(
+                        envelope,
+                        ActionPriority.EMERGENCY);
+        P2GameTestSupport.require(
+                submission.status()
+                        == ActionMailbox.SubmissionStatus
+                                .ENQUEUED,
+                "Emergency armor preemption was rejected");
     }
 
     private static void awaitTerminalRun(
