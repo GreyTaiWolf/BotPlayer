@@ -1508,7 +1508,7 @@ public final class BotLifecycleManager {
             }
         }
         for (ServerLevel level : server.getAllLevels()) {
-            ServerPlayer levelPlayer =
+            Player levelPlayer =
                     level.getPlayerByUUID(botId);
             if (levelPlayer instanceof BotServerPlayer successor
                     && successor != predecessor) {
@@ -3312,7 +3312,7 @@ public final class BotLifecycleManager {
         runtime.respawnSuppressed = false;
         runtime.respawnAtTick =
                 BotPlayerConfig.AUTO_RESPAWN.get()
-                        ? currentTick
+                        ? server.getTickCount()
                                 + BotPlayerConfig.RESPAWN_DELAY_TICKS.get()
                         : -1;
         return true;
