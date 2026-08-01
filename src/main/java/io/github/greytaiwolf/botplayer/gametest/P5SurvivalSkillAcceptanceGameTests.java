@@ -14,6 +14,7 @@ import io.github.greytaiwolf.botplayer.kernel.BotGamePacketListener;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.lifecycle.BotActionTargetStatus;
 import io.github.greytaiwolf.botplayer.lifecycle.BotLifecycleManager.ListenerDisconnectDecision;
+import io.github.greytaiwolf.botplayer.mixin.PlayerListAccessor;
 import io.github.greytaiwolf.botplayer.safety.HazardType;
 import io.github.greytaiwolf.botplayer.safety.SafetyIntervention;
 import io.github.greytaiwolf.botplayer.safety.SafetyState;
@@ -499,7 +500,9 @@ public final class P5SurvivalSkillAcceptanceGameTests {
             predecessor.getInventory().selected = 7;
             predecessor.getInventory().setItem(
                     7, new ItemStack(Items.TORCH));
-            server.getPlayerList().save(predecessor);
+            ((PlayerListAccessor)
+                            (Object) server.getPlayerList())
+                    .botplayer$saveExactPlayer(predecessor);
             P2GameTestSupport.require(
                     Files.isRegularFile(playerData),
                     "Shared-listener fixture could not persist its baseline layout");
