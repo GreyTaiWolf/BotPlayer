@@ -207,6 +207,20 @@ public final class BotLifecycleManager {
                     }
 
                     @Override
+                    public InventoryLayoutCleanupResult
+                            consumeVanillaDeath(
+                                    UUID botId,
+                                    long generation,
+                                    InventoryLayoutCleanupLease
+                                            layoutLease) {
+                        return minecraftActionBackend
+                                .consumeVanillaDeathSkillInventoryLayout(
+                                        botId,
+                                        generation,
+                                        layoutLease);
+                    }
+
+                    @Override
                     public void release(
                             UUID botId,
                             long generation,
