@@ -68,11 +68,18 @@
   stateId/layout、动态槽权限、物品多重集与 generation/replacement 回执验证。
   `/botplayer skill equip-armor <name>` 可启动最多四个装备槽的逐件重规划运行：热栏
   候选使用单击 `SWAP`，主背包首次穿甲使用 2 步、替换已有盔甲使用 3 步，每 Tick 最多
-  执行一次点击；取消或 cleanup 最多执行一次物理点击，把已知计划前缀收口到经证明的
-  初始或最终安全端点。这是盔甲专用有界多步路径，不是通用 menu FSM 或无条件回滚。
-  [PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 的 Build #109 已通过
-  Java 21 `clean build`、322 个 JUnit 与 76 个 GameTest，覆盖热栏和主背包盔甲路径；
-  P5A 退出门仍未通过。工具/副手、有限自卫、Checkpoint、工作站与生产链仍未实现。
+  执行一次点击；取消或 cleanup 收口到经证明的初始或最终安全端点。另新增通用
+  `InventoryMenu SWAP_SEQUENCE`：允许 1～16 次点击、最多 8 个槽位，前向与 cleanup
+  每 Tick 只派发一次原生点击，并以跨 Tick `PENDING`、固定端点、双 ticket 阻塞和精确
+  progress revision 收口；generic equipment/offhand 槽仍 `UNSUPPORTED`，盔甲专用路径
+  保持独立。[PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 的
+  [Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812) 已通过
+  Java 21 `clean build`、Gradle `test`、83/83 GameTest 和 JAR 上传；真实五步场景直接
+  覆盖上述通用事务合同。源码静态计数为 379 个 JUnit `@Test` 方法、26 个 P5 GameTest
+  与 353 个 Java 源文件，不冒充 CI 日志逐项执行数。P5A 退出门仍未通过；跨 menu 统一
+  事务、`clicked()` 故障注入、生命周期 `PENDING` continuation、TaskSensor/Reservation
+  生产接线、Checkpoint、工具/副手、自卫、craft/chest/furnace/DAG，以及两次启动、独立
+  专用服和多 Bot soak 仍未完成。
 
 ### 加固
 
@@ -92,6 +99,9 @@
   `176×256` 画布在可用逻辑高度不足时需要降低 GUI Scale；
 - 普通世界交互使用服务端玩家路径，并以方块、实体和物品前后状态验证，不以调用成功代替
   世界成功。
+- 将 GameTest 拆为 25 个 batch，静态 Bot 预算均不超过默认 `server_player.maxBots=8`；
+  Build #133/#135 暴露的 batch 超配已通过定向声音、绑定拒绝和生命周期场景拆批修复，
+  未提高 `maxBots` 掩盖资源合同。
 - P3 事件、快照、事实、revision scope、声音候选、扫描和证据全部有界；死亡、重生、
   换维度、卸载、回滚和停服关闭旧 generation 认知；
 - 定向声音 ingress 按 generation 分队列、限制动态公平份额并 round-robin 抽取；全局

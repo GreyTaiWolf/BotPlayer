@@ -23,19 +23,23 @@ P2 最终验证结果见 [P2_COMPLETION_REPORT_CN.md](P2_COMPLETION_REPORT_CN.md
 
 ## P5 当前开发切片
 
-当前分支把有界 Skill 核心、局部 DAG 校验、TTL 预留原型、主动进食，以及扫描 carried
-inventory `0..35` 的基础盔甲升级记为“已编码”。PR #6 的 Build #109 已通过
-Java 21 `clean build`、322 个 JUnit 与 76 个 GameTest，覆盖有界 Skill、主动进食，
-以及热栏和主背包 2～3 步基础盔甲路径。
+当前分支把有界 Skill 核心、局部 DAG 校验、TTL 预留原型、主动进食、扫描 carried
+inventory `0..35` 的基础盔甲升级，以及通用 `InventoryMenu SWAP_SEQUENCE` 记为“已编码”。
+[PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 的
+[Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812) 已通过 Java 21
+`clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传。源码静态计数为 379 个 JUnit
+`@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件；这些不是 CI 日志逐项执行数。
 
 原生 `InventoryMenu` 适配器会冻结 41 槽、cursor、选择槽和 stateId，并以动态槽权限、
-完整布局与物品多重集验证。热栏候选使用单击 `SWAP`；主背包首次穿甲使用 2 步、替换已有
-盔甲使用 3 步，前向每 Tick 最多执行一次点击。取消或 cleanup 最多执行一次物理点击，
-把已知计划前缀收口到经证明的初始或最终安全端点；无法证明安全时 fail-closed。这是盔甲
-专用有界多步路径，不是通用 menu FSM 或无条件回滚。
+完整布局与物品多重集验证。通用 `SWAP_SEQUENCE` 允许 1～16 次点击、最多 8 个槽位，
+每 Tick 只派发一次点击；真实五步场景验证跨 Tick `PENDING`、固定安全端点、旧 owner/
+新 claimant 双 ticket 阻塞和精确 progress revision。generic equipment/offhand 仍
+`UNSUPPORTED`；盔甲热栏单击及主背包 2～3 步路径保持独立。无法证明安全时 fail-closed，
+这不是无条件回滚，也不表示跨 menu 统一事务完成。
 
-这不是 P5A 退出门计数：有限自卫、通用多步 menu FSM、`Checkpoint`、工具/副手、
-工作台/熔炉/3×9 单箱适配及木头到铁镐生产链仍未实现，相关能力成熟度不提升。
+这不是 P5A 退出门计数：跨 menu 统一事务、`clicked()` 故障注入、生命周期 `PENDING`
+continuation、TaskSensor/Reservation 生产接线、`Checkpoint`、工具/副手、有限自卫、
+craft/chest/furnace/DAG 及生产链仍未实现；两次启动、独立专用服和多 Bot soak 仍未验证。
 
 主动进食当前只接受无剩余容器、无声明有害效果且无自定义完成逻辑的原版基础 `Item`
 食物；可疑炖菜、紫颂果、蜂蜜瓶和模组食物保守拒绝，不能据此宣称通用食物支持。
@@ -52,13 +56,13 @@ Tick 可能受 exhaustion 或拾取影响的活状态。
 post-finalize 的精确 pending 记录；请求一出现即撤销动作与 handoff 权威，物理补偿必须
 在原版写玩家数据之前完成，同 generation 的 unsafe 回执不可被后续重试升级；post 阶段
 只消费预关闭回执并做幂等 teardown。replacement/respawn 只允许一次真实排队重试；
-身份仍不收敛时用一次性 no-save 门闩绕过 `PlayerList.remove` 内部保存并隔离。PR #6
-的 Build #109 已为上述基线和主背包多步切片提供 Java 21/NeoForge 运行证据。
+身份仍不收敛时用一次性 no-save 门闩绕过 `PlayerList.remove` 内部保存并隔离。Build #137
+已为上述基线、通用五步事务和主背包盔甲切片提供 Java 21/NeoForge 运行证据。
 
 基础盔甲切片使用确定性 `ArmorItem` 防御/韧性/剩余耐久比较，按头、胸、腿、脚固定顺序
 逐件重新规划；拒绝零耐久、不可装备、当前槽绑定和装备后会绑定的候选。候选来自 carried
 inventory `0..35`，每件升级提交为独立原生菜单动作，最多四件，可由
-`/botplayer skill equip-armor <name>` 手动启动。主背包多步路径已由 Build #109 运行
+`/botplayer skill equip-armor <name>` 手动启动。盔甲路径保持专用且已由 Build #137 运行
 验证；当前不选择工具或副手，也不把盾牌格挡计入基础装备。
 
 ## 状态含义
@@ -82,18 +86,20 @@ soak 必须分别报告。
 |---|---|---|
 | Minecraft 1.21.1 / NeoForge 21.1.244 / Java 21 | 已编码 | `gradle.properties`、Java toolchain |
 | ModDevGradle 2.0.142 / Gradle 9.2.1 | 已编码 | `build.gradle`、Wrapper |
-| 开发版本 `0.2.0-alpha.1` | 自动化构建已验证 | 尚未正式发布；Build #97 已上传 P4 验收构件 |
+| 开发版本 `0.2.0-alpha.1` | 自动化构建已验证 | 尚未正式发布；Build #137 已上传当前 P5 开发构件 |
 | 模组元数据和 Mixin 配置 | 已编码 | `neoforge.mods.toml` 模板、`botplayer.mixins.json` |
 | P2 严格 Java 编译 | 本地与远端已验证 | `compileJava` / `compileTestJava` 在 `-Xlint:all -Werror` 下通过 |
 | P2 纯 Java 单元测试 | 本地与远端已验证 | 140/140 通过，0 failed、0 skipped |
 | P2 NeoForge GameTest | 本地与远端已验证 | 同一持久世界连续两次 19/19 通过；Build #18 通过 |
-| GitHub Actions | 远端已验证 | P2 Build #18、P3 Build #28 与 P4 Build #97 均执行完整门禁并上传 JAR |
+| GitHub Actions | 远端已验证 | P2 Build #18、P3 Build #28、P4 Build #97 与 P5 Build #137 均执行对应自动化门并上传 JAR |
 | P3 严格编译与单元测试 | 远端已验证 | Build #28 的 Temurin Java 21.0.11 编译与 Gradle `test` 通过；P3 43、全仓 183 是源码静态 `@Test` 计数 |
 | P3 NeoForge GameTest | 远端已验证 | Build #28 日志明确 `All 27 required tests passed`、P3 batch 8；`P3SoundTarget/Other` 与 `P3FactStale` 成功 |
 | P3 clean build / JAR | 远端已验证 | `BUILD SUCCESSFUL in 50s`，JAR upload 通过；artifact `botplayer-neoforge-1.21.1`，ID `8702261459`，`653364` bytes，SHA-256 `90ddf753c58a3f81a4a5d407a6beafd30c08c208345b01dea51fd241156224ac` |
 | P4 严格编译与单元测试 | 远端已验证 | Build #97 使用 Temurin Java 21.0.11；源码静态计数为全仓 200 个 JUnit `@Test` 方法 |
 | P4 NeoForge GameTest | 远端已验证 | Build #97 日志明确 `All 55 required tests passed`；P4 直接场景 28 个 |
 | P4 clean build / JAR | 远端已验证 | `BUILD SUCCESSFUL in 50s`；artifact ID `8721162398`，`838883` bytes，SHA-256 `b36a69f607e4f0e028e2afff15946a03bddd64004638c2d64d479c704706ddcd` |
+| P5 当前自动化门 | 远端已验证 | Build #137：Java 21 `clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传通过；源码静态为 379 个 JUnit `@Test`、26 个 P5 GameTest、353 个 Java 文件，不是日志逐项计数 |
+| GameTest batch Bot 预算 | 远端已验证当前布局 | 25 个 batch 静态需求均不超过默认 8；Build #133/#135 暴露的超配已拆批修复，未提高 `maxBots` |
 | 客户端 screen 手工测试 | 基础场景已验证 | 用户已在真实客户端确认 `176×256` 原版玩家风格视觉修复有效；多语言、资源包与全部 GUI Scale 组合仍未专项验证 |
 | 独立专用服务器 | 未验证 | 当前不宣称纯服务端或版本不一致兼容 |
 | 多 bot soak / 性能 | 未实现 | 没有长时间 MSPT、内存、队列与区块残留证据 |
@@ -158,7 +164,7 @@ P3 的生产路径已编码并通过 Build #28 自动化退出门；这表示提
 | P4 管理命令 | 已编码 | `navigation go/stop/inspect` 与 `safety inspect` 固定要求权限等级 2 |
 | P4 GameTest | 28/28 通过 | 全仓 55/55；完整清单见 P4 完成报告 |
 | 长距离/性能发布门 | 部分完成 | 滚动局部 frontier 已编码；平地 200 格直接 GameTest、多 Bot MSPT/内存 soak 尚未完成 |
-| 自主生存/战斗 | P5A-0 开发中；退出门未计数 | PR #6 Build #109 已通过 322 JUnit 与 76 GameTest，覆盖盔甲专用主背包 2～3 步切片。有限自卫、通用多步 menu FSM、工具/副手、Checkpoint、工作站和生产链仍未实现 |
+| 自主生存/战斗 | P5A-0 开发中；退出门未计数 | Build #137 已验证主动进食、独立盔甲路径及 1～16 步通用 InventoryMenu SWAP 序列。跨 menu 统一事务、故障注入、生命周期 continuation、工具/副手、自卫、Checkpoint、工作站和生产链仍未完成 |
 
 P4 自动化门证明了“受控导航、安全反射和真实玩家规则底座”，不证明所有原版移动组合、
 所有伤害/效果或所有模组兼容，更不等于完整生存 AI。具体边界见
@@ -322,7 +328,7 @@ screen、独立专用服和长时间 soak 是明确保留的专项验证，不�
 |---|---|---|
 | P3 | 感知、语义事件、世界模型、玩家活动理解 | 自动化退出门已通过；客户端、独立专用服与 soak 未验证 |
 | P4 | 导航、安全反射、动态重规划、玩家规则兼容 | 自动化退出门已通过；复杂移动、专用服、保护模组与 soak 未验证 |
-| P5A | 技能 FSM、首条生存闭环、最小原版世界容器驱动 | PR #6 Build #109 已验证核心/DAG/TTL 预留、主动进食，以及热栏和主背包 2～3 步盔甲路径。有限自卫、通用多步 menu、工具/副手、Checkpoint、工作站、生产链及全部退出门未完成 |
+| P5A | 技能 FSM、首条生存闭环、最小原版世界容器驱动 | Build #137 已验证核心/DAG/TTL 原型、主动进食、独立盔甲路径和通用 InventoryMenu SWAP_SEQUENCE。TaskSensor/Reservation 生产接线、跨 menu 事务、工具/副手、自卫、Checkpoint、craft/chest/furnace/DAG、两次启动及全部退出门未完成 |
 | P5B | 广泛原版容器/工作站、制作、生产和日常生活 | 未实现 |
 | P5C | 运输、游戏进程和高级战斗 | 未实现 |
 | P5D | 建筑与红石 | 未实现 |

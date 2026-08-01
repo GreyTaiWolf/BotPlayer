@@ -2,7 +2,7 @@
 
 > 文档状态：验收基线 v1；P3、P4 自动化退出门已通过；P5A-0 开发中
 >
-> 更新日期：2026-07-30
+> 更新日期：2026-08-01
 >
 > 适用游戏：Minecraft Java 1.21.1
 
@@ -33,13 +33,13 @@ P4 达到 `VERIFIED`；只写一个阶段表示首次实现和验证截止相同
 的原版能力扩展子阶段。P10 只做硬化，不能成为任何 REQUIRED 能力的首次实现阶段。
 
 P5A-0 已进入开发，但当前没有 P5 能力仅因“设计、类或首批纵切源码存在”提升成熟度。
-[PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 的 Build #109 已通过
-Java 21 `clean build`、322 个 JUnit 与 76 个 GameTest，覆盖有界 Skill 核心、局部 DAG
-校验、TTL 预留原型、主动进食，以及热栏和主背包基础盔甲路径。主背包候选使用 2～3 步
-逐 Tick 点击，并在取消时最多一次完成安全端点收口；这不构成 P5A 退出门证据。有限自卫、
-通用多步 menu FSM、Checkpoint、工具/
-副手、工作站和木头到铁镐生产链仍未实现。药水、牛奶与治疗物品首次实现固定在 P5B；
-盾牌格挡和高级战斗在 P5C。
+[PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 的
+[Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812) 已通过 Java 21
+`clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传。源码静态计数为 379 个 JUnit
+`@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件，不是 CI 日志逐项计数。通用
+`InventoryMenu SWAP_SEQUENCE` 支持 1～16 次点击、最多 8 个槽位、逐 Tick 一击，并由
+真实五步场景验证跨 Tick `PENDING`、固定端点、双 ticket 阻塞和精确 revision；generic
+equipment/offhand 仍 `UNSUPPORTED`，盔甲路径保持独立。这不构成 P5A 退出门证据。
 
 本文件 A–L 中列出的所有能力 ID 默认都是 `REQUIRED_FOR_1_0`。没有写入矩阵的行为不能
 被默认为已支持；明确不属于 1.0 的边界统一列在“OUT_OF_SCOPE”一节。
@@ -155,14 +155,16 @@ P4 验收说明：
 
 P5A-0 状态说明：
 
-- 有界核心/DAG/TTL 预留、主动进食，以及热栏和主背包 2～3 步基础盔甲路径已由
-  Build #109 运行验证；SURV-02、SURV-07、ACT-06 及其他 P5A 能力均不因单条纵切片
+- 有界核心/DAG/TTL 预留原型、主动进食、独立盔甲路径和通用 InventoryMenu SWAP 序列
+  已由 Build #137 运行验证；SURV-02、SURV-07、ACT-06 及其他 P5A 能力均不因单条纵切片
   提升成熟度；
 - 有限自卫尚未按严格资格门、逐次重观察和脱战验证实现，COMBAT-02/07 不因已有底层攻击
   动作原语提升成熟度；盾牌、远程、多目标和团队战斗仍在 P5C；
-- 生产只开放盔甲专用有界多步路径：主背包前向每 Tick 最多一次点击，取消最多一次点击
-  完成安全端点收口；通用多步 menu FSM、Checkpoint、工具/副手、工作站和木头到铁镐
-  生产链仍未实现，不能计入 P5A 退出门；
+- 当前只开放 `InventoryMenu` 内的通用 SWAP 序列和独立盔甲路径；跨 menu 统一事务、
+  `clicked()` 故障注入、生命周期 `PENDING` continuation、TaskSensor/Reservation 生产
+  接线、Checkpoint、工具/副手、有限自卫、craft/chest/furnace/DAG 和生产链仍未完成；
+- 25 个 GameTest batch 的静态 Bot 预算均不超过默认 8；Build #133/#135 的超配已通过
+  拆批修复。两次启动、独立专用服和多 Bot soak 仍未验证；
 - SURV-06 的主动药物在 P5B 验收；P5A 遇到低生命或有害效果时只能避险、阻塞并报告。
 
 ## E. 方块、物品和容器

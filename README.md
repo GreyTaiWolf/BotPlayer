@@ -14,10 +14,14 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 > 真实玩家伤害/效果兼容基线和默认关闭的受限 Terrain Assist；Build #97 已通过全仓
 > 55/55 GameTest，其中 P4 直接场景 28 个。P5 以
 > [Draft PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 作为远端验收载体；
-> Build #109 已在 Java 21 `clean build` 中通过 322 个 JUnit 与 76 个 GameTest，覆盖有界
-> Skill 底座、主动进食，以及热栏和主背包基础盔甲路径。主背包候选使用 2～3 步逐 Tick
-> 原生点击，取消时最多一次点击收口到已证明安全的端点；这仍是盔甲专用纵切，不能据此
-> 计入 P5A 退出门。项目还没有完整生存技能、通用世界
+> [Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812) 已通过
+> Java 21 `clean build`、Gradle `test`、83/83 NeoForge GameTest 和 JAR 上传。当前源码
+> 静态计数为 379 个 JUnit `@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件；这些是
+> 源码计数，不是 CI 日志逐项报告的测试执行数。通用 `InventoryMenu SWAP_SEQUENCE` 已支持
+> 1～16 次点击、最多 8 个槽位，每 Tick 只执行一次点击；真实五步场景验证了跨 Tick
+> `PENDING`、固定安全端点、旧 owner/新 claimant 双 ticket 阻塞和精确 progress revision。
+> 通用 equipment/offhand 槽仍返回 `UNSUPPORTED`，盔甲继续走独立专用路径，不能据此计入
+> P5A 退出门。项目还没有完整生存技能、跨 menu 统一事务、通用世界
 > 容器、聊天、DeepSeek 或长期记忆。保存 Key 不代表 AI 已经接通，方块观察也不代表能读取
 > 箱子内容。
 > 请以
@@ -69,7 +73,8 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - 客户端可创建/替换凭据 profile、绑定/解绑 bot；每 bot 使用独立 agentId，profile 删除
   尚未实现；
 - `PlayerListMixin` 除登录 listener 与重生类型包装外，还为 P5 异常隔离提供一次性
-  no-save `PlayerList.remove` 保存包装；它不影响正常玩家或正常卸载，运行验证仍待完成；
+  no-save `PlayerList.remove` 保存包装；它不影响正常玩家或正常卸载，当前生命周期路径已由
+  Build #137 的 GameTest 验证，`clicked()` 回调故障注入仍待补；
 - 既有 playerdata 检测与保存位置保留；
 - 服务器线程生命周期管理；
 - 自动重生、维度切换基础路径和区块跟踪刷新；
@@ -81,8 +86,8 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - P5 有界 Skill/DAG/TTL 预留底座、主动进食，以及扫描 carried inventory `0..35` 的
   确定性基础盔甲升级；
 - 原生 `InventoryMenu` 41 槽完整快照、前后指纹、物品多重集守恒与
-  generation/replacement 绑定清理；热栏候选使用单击 `SWAP`，主背包候选使用盔甲专用
-  2～3 步逐 Tick 路径，取消时最多一次物理点击完成安全端点收口；
+  generation/replacement 绑定清理；通用 `SWAP_SEQUENCE` 支持 1～16 次点击、最多 8 个
+  槽位和逐 Tick 一击，盔甲热栏单击及主背包 2～3 步路径保持独立；
 - 空主手、主手右键打开 bot 自身 41 格真实库存，77 槽 menu、单 viewer 写锁、距离和
   lifecycle 校验、动作 mutation gate；
 - 背包 screen 使用 `176×256` 的上下堆叠原版玩家风格：上方是 bot 的盔甲、副手、
@@ -138,8 +143,9 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - 自动恢复、trusted/observer ACL 与完整数据迁移；
 - 背包 screen 的多语言、资源包与 GUI Scale 组合专项验收、独立专用服和多 bot 长时间 soak；
 - 跨未加载区块/维度的长期路线、船/矿车/坐骑/鞘翅、复杂水流、脚手架和藤蔓；
-- 自动寻找/生产食物与完整补给闭环；主动进食，以及热栏和主背包 2～3 步基础盔甲路径
-  已由 Build #109 运行验证；主动用药/解毒、正式反击/持盾、工具/副手仍未实现；
+- 自动寻找/生产食物与完整补给闭环；主动进食、盔甲专用路径和通用
+  `InventoryMenu SWAP_SEQUENCE` 已由 Build #137 运行验证；主动用药/解毒、正式反击/
+  持盾、工具/副手仍未实现；
 - 箱子/木桶/潜影盒等通用世界容器、工作站与制作/熔炼流程；
 - 独立专用服与多 bot 性能验证；
 - 持久世界模型、长期来源化记忆和自然语言“刚才发生了什么”对话；
@@ -253,8 +259,8 @@ JAR upload 均通过；GameTest 日志明确报告 `All 55 required tests passed
 任务或 AI 技能入口。`skill equip-armor` 会手动启动扫描 carried inventory `0..35` 的
 基础盔甲升级；
 `skill inspect` 只显示当前或最近一条 P5 生存技能 run 的 generation、状态、revision、
-操作序号与安全摘要。主动进食，以及热栏和主背包候选的 2～3 步逐 Tick 路径已由
-Build #109 运行验证。
+操作序号与安全摘要。主动进食、盔甲专用路径，以及 1～16 步通用
+`InventoryMenu SWAP_SEQUENCE` 已由 Build #137 运行验证；通用 equipment/offhand 仍拒绝。
 
 名称必须是 1–16 位 ASCII 字母、数字或下划线。现阶段 UUID 由名称的小写形式派生：只改
 字母大小写仍得到同一临时 UUID，其他改名会得到新身份；当前没有重命名约束或迁移工具，
@@ -328,10 +334,12 @@ P0 工程基线
 → P10 硬化与发布
 ```
 
-P2、P3 与 P4 自动化退出门均已关闭。客户端手工、独立专用服和多 bot soak 仍未验证；
-P5 的 PR #6 已由 Build #109 完成 Java 21 `clean build`、322 个 JUnit 与 76 个
-GameTest，覆盖主动进食及热栏/主背包基础盔甲纵切；工具/副手、主动用药、自卫、
-Checkpoint、工作站与生产链继续属于后续 P5，模组自定义 menu 和专用语义属于 P8。
+P2、P3 与 P4 自动化退出门均已关闭。P5 的 PR #6 已由 Build #137 完成 Java 21
+`clean build`、Gradle `test`、83/83 GameTest 和 JAR 上传；25 个 GameTest batch 的静态
+Bot 预算均不超过默认 8，Build #133/#135 暴露的超配已通过拆批修复。P5A 仍缺跨 menu
+统一事务、`clicked()` 故障注入、生命周期 `PENDING` continuation、TaskSensor/Reservation
+生产接线、Checkpoint、工具/副手、自卫、craft/chest/furnace/DAG，以及两次启动、独立
+专用服和多 bot soak；模组自定义 menu 和专用语义属于 P8。
 
 ## License
 

@@ -1,6 +1,6 @@
 # BotPlayer 安装与当前用法
 
-> 适用版本：`0.2.0-alpha.1` P4 Build #97 开发构件
+> 适用版本：`0.2.0-alpha.1` P5 Build #137 开发构件
 >
 > Minecraft：`1.21.1`
 >
@@ -11,8 +11,9 @@
 当前没有正式 Release。`0.2.0-alpha.1` 已通过 Java 21 自动化构建与 55/55 GameTest，但客户端
 手工、独立专用服和多 bot soak 仍未验证；本文用于开发测试，不建议在重要世界中安装。
 P5 以 [Draft PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 作为远端验收载体；
-Build #109 已通过 Java 21 `clean build`、322 个 JUnit 与 76 个 GameTest，覆盖主背包
-盔甲 2～3 步逐 Tick 切片。
+[Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812) 已通过 Java 21
+`clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传。源码静态计数为 379 个 JUnit
+`@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件，不是 CI 日志逐项执行数。
 
 ## 当前安装拓扑
 
@@ -235,7 +236,7 @@ idle moving exploring mining building combat farming crafting smelting none
 走向安全邻格、上浮和规避箭/TNT/敌对目标。P4 L0 本身不会吃东西；P5 开发切片可以接收
 临界饥饿 handoff，并尝试真实食用背包中的安全原版基础食物。P5 还提供扫描 carried
 inventory `0..35` 的基础盔甲升级入口；主动进食，以及热栏和主背包 2～3 步路径已由
-Build #109 运行验证。主动用药、工具/副手选择、持盾和反击仍未实现。
+Build #137 运行验证。主动用药、工具/副手选择、持盾和反击仍未实现。
 
 ### P5 生存技能管理与诊断
 
@@ -247,8 +248,10 @@ Build #109 运行验证。主动用药、工具/副手选择、持盾和反击�
 固定要求原版权限等级 `2`。`equip-armor` 手动启动扫描 carried inventory `0..35` 的
 基础盔甲升级；候选按头、胸、腿、脚固定顺序比较原版防御、韧性和剩余耐久，并拒绝绑定
 诅咒。热栏候选使用一次原生 `SWAP`；主背包候选通过确定性临时热栏槽形成 2～3 步计划，
-每 Tick 最多点击一次，取消时最多一次物理点击完成安全端点收口。这是盔甲专用有界多步
-路径，不选择工具/副手，也不提供盾牌格挡或通用 menu FSM。`inspect` 读取活动 bot 当前
+并保持独立盔甲路径。底层通用 `InventoryMenu SWAP_SEQUENCE` 可执行 1～16 次点击、最多
+8 个槽位，每 Tick 一击；跨 Tick cleanup 保持 `PENDING` 和固定端点，非端点时旧 owner/
+新 claimant 都不会完成。通用 equipment/offhand 仍 `UNSUPPORTED`，因此当前不选择工具/
+副手，也不提供盾牌格挡。`inspect` 读取活动 bot 当前
 或最近一条 P5 生存技能 run 的 generation、状态、revision、操作序号、失败码和安全摘要。
 没有 P5 运行记录时会失败；该纵切通过运行门也不表示 P5A 阶段退出门已经完成。
 
@@ -296,8 +299,9 @@ Build #109 运行验证。主动用药、工具/副手选择、持盾和反击�
   来袭箭、TNT 和锁定 Bot 的敌对生物做通用抢占/撤退；
 - 原版护甲、伤害、饥饿和状态效果，以及标准动态 `DamageType`/玩家 Tick 扩展，都会
   作用在真实 `BotServerPlayer` 身体上；
-- P5 有界 Skill 底座、主动进食，以及热栏和主背包基础盔甲路径已由 PR #6 的
-  Build #109 通过 Java 21 `clean build`、322 个 JUnit 与 76 个 GameTest；
+- P5 有界 Skill 底座、主动进食、独立基础盔甲路径和通用 `InventoryMenu SWAP_SEQUENCE`
+  已由 PR #6 的 Build #137 通过 Java 21 `clean build`、Gradle `test`、83/83 GameTest
+  与 JAR 上传；
 - owner 客户端可以在本地 GUI 创建/替换 credential profile，并为自己的多个 bot
   绑定/解绑；每个 bot 使用独立 agentId。
 
@@ -305,6 +309,10 @@ Build #109 运行验证。主动用药、工具/副手选择、持盾和反击�
 使用 Temurin Java 21.0.11 完成严格编译、Gradle `test`、55/55 GameTest、clean build
 与 JAR upload，其中 P4 直接场景为 28 个。客户端手工、长时间在线、独立专用服、跨维度
 完整矩阵和多 Bot soak 尚无保证。请不要据此假定保护模组、所有维度或大型模组包已经兼容。
+
+Build #137 的 25 个 GameTest batch 静态 Bot 预算均不超过默认 8；Build #133/#135 暴露的
+超配已通过拆批修复，没有提高 `server_player.maxBots`。这仍不验证两次服务器启动、独立
+专用服或多 Bot soak。
 
 ## 当前不能做
 
@@ -316,11 +324,16 @@ Build #109 运行验证。主动用药、工具/副手选择、持盾和反击�
   使用药水/牛奶/模组解药、选择工具/副手或完成正式战斗仍不支持；
 - 执行砍树、采矿、制作、熔炼、完整战斗策略或建造技能；
 - 操作箱子、工作站或模组自定义 menu；
+- 把 `InventoryMenu` 序列扩展为跨 menu 统一事务；当前还没有 `clicked()` 故障注入、
+  生命周期 `PENDING` continuation、TaskSensor/Reservation 生产接线、Checkpoint 或
+  craft/chest/furnace/DAG；
 - 聊天、连接 DeepSeek 或发起任何模型 HTTP 请求；
 - 测试 Key 是否有效，或使用已保存 Key 进行规划；
 - 通过聊天回答附近事件或自主使用活动理解；P3 当前只有管理诊断候选；
 - 保存长期目标、记忆或技能；
 - 自动理解其他模组。
+
+P5A 总验证还缺同一持久状态的两次服务器启动、独立专用服和多 Bot soak。
 
 P2 提供可信身体，P3 提供有限运行时认知，P4 提供确定性导航与通用避险；以上技能和
 高层功能仍必须按 P5–P10 实现和验证。P3/P4 不读取箱子、工作站或模组 menu 内容。

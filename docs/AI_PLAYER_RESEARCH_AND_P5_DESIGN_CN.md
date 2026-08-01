@@ -2,7 +2,7 @@
 
 > 状态：P5A-0 设计已冻结；当前开发切片已编码，退出门未计数
 >
-> 更新日期：2026-07-30
+> 更新日期：2026-08-01
 >
 > 适用版本：Minecraft Java 1.21.1、NeoForge 21.1.x、Java 21
 >
@@ -16,10 +16,13 @@
 
 ## 当前开发切片（本分支）
 
-本分支当前实现计入有界 Skill 核心、局部 DAG 校验、TTL 资源预留原型、主动进食，以及
-扫描 carried inventory `0..35` 的基础盔甲升级。[PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6)
-的 Build #109 已通过 Java 21 `clean build`、322 个 JUnit 与 76 个 GameTest，覆盖
-热栏和主背包 2～3 步盔甲路径。“计入”不表示相关 P5A 能力、测试矩阵或退出门已经完成。
+本分支当前实现计入有界 Skill 核心、局部 DAG 校验、TTL 资源预留原型、主动进食、扫描
+carried inventory `0..35` 的基础盔甲升级，以及通用 `InventoryMenu SWAP_SEQUENCE`。
+[PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 的
+[Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812) 已通过 Java 21
+`clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传。源码静态计数为 379 个 JUnit
+`@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件；这三项不是 CI 日志逐项执行数。
+“计入”不表示相关 P5A 能力、测试矩阵或退出门已经完成。
 
 当前进食切片只接受无 `usingConvertsTo`、无声明有害效果且没有自定义完成逻辑的原版基础
 `Item` 食物；腐肉、可疑炖菜、紫颂果、蜂蜜瓶和模组食物全部 fail-closed。这个保守边界
@@ -55,18 +58,21 @@ body 临时登记为旧 generation 的 cleanup target，不能新建租约，补
 只做幂等 teardown。replacement/respawn 未收敛只能排队重试一次；异常身份移除必须显式
 抑制 `PlayerList.remove` 的玩家数据保存，不能把未验证的临时布局写回磁盘。
 
-原生 `InventoryMenu` 适配器冻结 41 槽、cursor、选中槽与 stateId，并为基础盔甲开放
-专用有界多步路径：热栏候选使用单击 `ClickType.SWAP`；主背包首次穿甲使用 2 步、替换
-已有盔甲使用 3 步，前向每 Tick 最多执行一次点击。取消或 cleanup 最多执行一次物理
-点击，把已知计划前缀收口到经证明的初始或最终安全端点；无法证明端点、权限或布局守恒
-时 fail-closed。这不是无条件回滚，也不表示通用 menu FSM 已完成。换甲按
+原生 `InventoryMenu` 适配器冻结 41 槽、cursor、选中槽与 stateId。通用
+`SWAP_SEQUENCE` 接受 1～16 次点击、最多 8 个槽位，前向和 cleanup 每 Tick 最多派发一次
+原生点击；取消、抢占和异常通过跨 Tick `PENDING` 收口到首次冻结的初始或最终安全端点，
+旧 owner 与新 claimant 两张 ticket 在非端点均保持阻塞，progress revision 对每个精确
+确认的物理前缀只递增一次。Build #137 的真实五步场景已验证这些合同。通用
+equipment/offhand 槽仍 `UNSUPPORTED`；基础盔甲保留独立路径，热栏候选使用单击
+`ClickType.SWAP`，主背包首次穿甲使用 2 步、替换已有盔甲使用 3 步。无法证明端点、权限
+或布局守恒时 fail-closed；这不是无条件回滚，也不表示跨 menu 统一事务已完成。换甲按
 HEAD/CHEST/LEGS/FEET 固定顺序逐件重规划，拒绝零耐久、不可装备、当前槽绑定和装备后
 会绑定的候选，并在异步动作回执进入技能 FSM 后再次读取权威完整布局。
 
-主背包盔甲 2～3 步生产接线已由 Build #109 运行验证；有限自卫仍未按冻结资格门、
-逐次重观察和脱战后置条件实现，`Checkpoint`、工具/副手、工作台/熔炉/3×9 单箱适配和
-木头到铁镐生产链仍未实现。上述未完成内容不得计入第 18 节退出门，能力矩阵成熟度保持
-不变。
+当前仍缺跨 menu 统一事务、`clicked()` 故障注入、生命周期 `PENDING` continuation、
+TaskSensor/Reservation 生产接线、`Checkpoint`、工具/副手、有限自卫、
+craft/chest/furnace/DAG 和完整生产链。两次服务器启动、独立专用服与多 Bot soak 也尚未
+验证。上述未完成内容不得计入第 18 节退出门，能力矩阵成熟度保持不变。
 
 ## 1. 结论
 
@@ -1049,6 +1055,8 @@ P5A 测试支持代码必须：
 - 为修改全局配置/难度/gamerule/listener 的场景使用独立 batch 并恢复原值；
 - fixture-only 自定义 `DamageType/MobEffect` 只进入 `gameTestFixtures`，不进入正式 JAR；
 - 声明并核对 exact required batch/test count，避免“服务器启动成功但少跑测试”；
+- 静态核对每个 batch 的 Bot 需求不超过默认 8；当前 25 个 batch 均满足。Build #133/#135
+  曾暴露超配，已通过拆分定向声音、绑定拒绝和生命周期场景修复，而不是提高 `maxBots`；
 - 同一持久 GameTest 世界连续运行两轮，验证清理和幂等；
 - 把真重启、独立专用服和 soak 与快速 GameTest lane 分开报告。
 

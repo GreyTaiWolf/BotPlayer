@@ -2,15 +2,21 @@
 
 - 状态：Accepted
 - 日期：2026-07-29
-- 实现注记更新：2026-07-30
+- 实现注记更新：2026-08-01
 - 关联：ADR-0006、ADR-0013、ADR-0014
 
-> 当前实现说明：玩家 `InventoryMenu` 已接入盔甲专用有界多步路径。热栏候选使用单击
-> `SWAP`；主背包首次穿甲使用 2 步、替换已有盔甲使用 3 步，前向每 Tick 最多执行一次
-> 点击。取消或 cleanup 最多执行一次物理点击，把已知计划前缀收口到经证明的初始或最终
-> 安全端点；这不是无条件回滚，也不表示通用 menu FSM 已完成。PR #6 的 Build #109 已
-> 通过 Java 21 `clean build`、322 个 JUnit 与 76 个 GameTest，覆盖本轮主背包 2～3 步
-> 切片。
+> 当前实现说明：玩家 `InventoryMenu` 已接入通用 `SWAP_SEQUENCE`，允许 1～16 次点击、
+> 最多 8 个槽位，每 Tick 只派发一次原生点击；跨 Tick cleanup 使用 `PENDING`、首次冻结
+> 的安全端点、旧 owner/新 claimant 双 ticket 阻塞和精确 progress revision。真实五步
+> 场景已验证这些运行时合同。generic equipment/offhand 仍 `UNSUPPORTED`；盔甲热栏单击
+> 和主背包 2～3 步路径保持独立。这不是无条件回滚，也不表示本 ADR 冻结的跨 menu 统一
+> 事务已经完成。[Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812)
+> 已通过 Java 21 `clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传。源码静态计数
+> 为 379 个 JUnit `@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件，不是 CI 日志
+> 逐项计数；25 个 batch 静态 Bot 预算均不超过默认 8，Build #133/#135 的超配已拆批修复。
+> `clicked()` 故障注入、生命周期 `PENDING` continuation、TaskSensor/Reservation 生产
+> 接线、Checkpoint、工具/副手、自卫、craft/chest/furnace/DAG、两次启动、独立专用服和
+> soak 仍未完成，P5A 退出门未关闭。
 
 ## 背景
 
