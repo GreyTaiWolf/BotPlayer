@@ -285,8 +285,8 @@ public final class P5GenericMenuTransactionGameTests {
             P2GameTestSupport.awaitCondition(
                     helper,
                     WAIT_TICKS,
-                    () -> currentPrefix(bot, plan) == 1,
-                    "Direct disconnect fixture never exposed prefix one",
+                    () -> currentPrefix(bot, plan) == 2,
+                    "Direct disconnect fixture never exposed prefix two",
                     cleanup,
                     () -> beginDirectDisconnect(
                             helper,
@@ -336,7 +336,7 @@ public final class P5GenericMenuTransactionGameTests {
                                     .toCompletableFuture()
                                     .isDone()
                             && currentPrefix(bot, plan) == 1,
-                    "Direct listener disconnect did not remain pending at prefix one");
+                    "Direct listener disconnect did not consume exactly one cleanup step and remain pending");
             bot.player().experienceLevel =
                     expectedPersistence.experienceLevel();
 
