@@ -197,9 +197,9 @@ public final class InventoryMenuCleanupSession {
     }
 
     /**
-     * 记录 cleanup 首次观察到的、已在前向调用中发生的相邻目标。
+     * 记录一次已精确确认的前向相邻目标；正常返回与异常后解析只能二选一记账。
      */
-    public void recordObservedForwardProgress() {
+    public void recordConfirmedForwardProgress() {
         progressRevision++;
     }
 

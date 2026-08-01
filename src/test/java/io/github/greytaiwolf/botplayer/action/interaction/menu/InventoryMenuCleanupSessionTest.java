@@ -64,7 +64,7 @@ class InventoryMenuCleanupSessionTest {
         Assertions.assertEquals(
                 InventoryMenuCleanupSession.BeginStatus.NEW_ATTEMPT,
                 session.begin(first).status());
-        session.recordObservedForwardProgress();
+        session.recordConfirmedForwardProgress();
         ActionCleanupReceipt staleRevision =
                 ActionCleanupReceipt.pending(
                         first, 0L, 11L, "旧进度");
@@ -125,7 +125,7 @@ class InventoryMenuCleanupSessionTest {
         Assertions.assertEquals(
                 InventoryMenuCleanupSession.BeginStatus.NEW_ATTEMPT,
                 session.begin(request).status());
-        session.recordObservedForwardProgress();
+        session.recordConfirmedForwardProgress();
         ActionCleanupReceipt complete =
                 ActionCleanupReceipt.complete(
                         request,
@@ -289,6 +289,45 @@ class InventoryMenuCleanupSessionTest {
         session.beginClickDispatch(21L);
         session.endClickDispatch(21L);
         Assertions.assertFalse(session.mayDispatchClickAt(21L));
+    }
+
+    @Test
+    void carriesForwardProgressIntoTheNextCleanupAttempt() {
+        InventoryMenuCleanupSession session =
+                new InventoryMenuCleanupSession();
+        ActionCleanupRequest first = request(CLEANUP);
+        Assertions.assertEquals(
+                InventoryMenuCleanupSession.BeginStatus.NEW_ATTEMPT,
+                session.begin(first).status());
+        ActionCleanupReceipt pending =
+                ActionCleanupReceipt.pending(
+                        first, 0L, 11L, "等待前向调用返回");
+        session.remember(first, pending);
+
+        session.recordConfirmedForwardProgress();
+        InventoryMenuCleanupSession.BeginResult replay =
+                session.begin(first);
+        Assertions.assertEquals(
+                InventoryMenuCleanupSession.BeginStatus.REPLAY,
+                replay.status());
+        Assertions.assertTrue(
+                pending == replay.replayReceipt().orElseThrow());
+        Assertions.assertEquals(0L, pending.progressRevision());
+        Assertions.assertEquals(1L, session.progressRevision());
+
+        ActionCleanupRequest second = pendingRequest(
+                first, pending, 11L);
+        Assertions.assertEquals(
+                InventoryMenuCleanupSession.BeginStatus.NEW_ATTEMPT,
+                session.begin(second).status());
+        ActionCleanupReceipt next =
+                ActionCleanupReceipt.pending(
+                        second,
+                        session.progressRevision(),
+                        12L,
+                        "已接管新进度");
+        Assertions.assertTrue(
+                next == session.remember(second, next));
     }
 
     private static ActionCleanupRequest request(UUID cleanupId) {

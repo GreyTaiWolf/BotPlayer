@@ -599,7 +599,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         state.menuForwardInFlight = -1;
         state.menuForwardTargetSnapshot = null;
         state.menuCleanupSession
-                .recordObservedForwardProgress();
+                .recordConfirmedForwardProgress();
     }
 
     private static boolean consumeReplacementRebind(
@@ -1878,6 +1878,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         }
         state.menuTransaction =
                 transaction.confirmNext(step);
+        state.menuCleanupSession
+                .recordConfirmedForwardProgress();
         state.menuLastSnapshot = after;
         state.menuForwardInFlight = -1;
         state.menuForwardTargetSnapshot = null;
