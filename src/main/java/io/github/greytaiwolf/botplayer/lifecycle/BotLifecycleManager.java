@@ -8,6 +8,7 @@ import io.github.greytaiwolf.botplayer.action.ActionMailbox;
 import io.github.greytaiwolf.botplayer.action.ActionPriority;
 import io.github.greytaiwolf.botplayer.action.ActionTransition;
 import io.github.greytaiwolf.botplayer.action.BotActionRuntime;
+import io.github.greytaiwolf.botplayer.action.GenerationDrainStatus;
 import io.github.greytaiwolf.botplayer.action.input.PlayerInputController;
 import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanupLease;
 import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanupRequest;
@@ -27,6 +28,12 @@ import io.github.greytaiwolf.botplayer.kernel.BotConnection;
 import io.github.greytaiwolf.botplayer.kernel.BotGamePacketListener;
 import io.github.greytaiwolf.botplayer.kernel.BotRuntimeHandle;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
+import io.github.greytaiwolf.botplayer.lifecycle.retirement.GenerationRetirementContinuation;
+import io.github.greytaiwolf.botplayer.lifecycle.retirement.GenerationRetirementKey;
+import io.github.greytaiwolf.botplayer.lifecycle.retirement.GenerationRetirementReceipt;
+import io.github.greytaiwolf.botplayer.lifecycle.retirement.GenerationRetirementSession;
+import io.github.greytaiwolf.botplayer.lifecycle.retirement.GenerationRetirementStatus;
+import io.github.greytaiwolf.botplayer.lifecycle.retirement.GenerationRetirementTicket;
 import io.github.greytaiwolf.botplayer.network.payload.AgentBindingStatus;
 import io.github.greytaiwolf.botplayer.network.payload.OpenCredentialScreenPayload;
 import io.github.greytaiwolf.botplayer.navigation.GridPoint;
@@ -1532,6 +1539,23 @@ public final class BotLifecycleManager {
             return ListenerDisconnectDecision.PROCEED;
         }
 
+        PendingDirectDisconnectRetirement directRetirement =
+                runtime.directDisconnectRetirement;
+        if (directRetirement != null
+                && !directRetirement.matchesBinding(
+                        player,
+                        listener,
+                        connection,
+                        runtime.handle.generation())) {
+            abortUnstableListenerDisconnect(
+                    runtime,
+                    player,
+                    server.getPlayerList()
+                            .getPlayer(player.getUUID()),
+                    "Direct disconnect retirement lost its exact body binding");
+            return ListenerDisconnectDecision.ABORTED;
+        }
+
         BotServerPlayer current =
                 runtime.handle.player().orElse(null);
         boolean stagedReplacement =
@@ -1637,6 +1661,19 @@ public final class BotLifecycleManager {
         transition(
                 runtime,
                 BotLifecycleState.DESPAWNING);
+        boolean directCurrentBody =
+                current == player
+                        && !stagedReplacement
+                        && !unstagedReplacement;
+        if (runtime.directDisconnectRetirement != null
+                || directCurrentBody) {
+            return advanceDirectListenerDisconnect(
+                    runtime,
+                    player,
+                    listener,
+                    connection,
+                    generation);
+        }
         if (runtime.generationRetirementInProgress) {
             return ListenerDisconnectDecision.RETRY;
         }
@@ -1705,6 +1742,18 @@ public final class BotLifecycleManager {
                 || player.runtimeHandle()
                         != runtime.handle) {
             return true;
+        }
+        PendingDirectDisconnectRetirement directRetirement =
+                runtime.directDisconnectRetirement;
+        if (directRetirement != null
+                && directRetirement.matchesBinding(
+                        player,
+                        listener,
+                        connection,
+                        runtime.handle.generation())
+                && directRetirement.status()
+                        == GenerationRetirementStatus.PENDING) {
+            return false;
         }
         if (runtime.generationRetirementInProgress) {
             return false;
@@ -1919,6 +1968,7 @@ public final class BotLifecycleManager {
         survivalSkillService.tick(currentTick);
         navigationService.tick(currentTick);
         actionRuntime.tick(currentTick);
+        advanceDirectDisconnectRetirements(currentTick);
         perceptionService.tick(currentTick);
         if (tickStartedNanos >= 0L) {
             perceptionService.recordTickDurationNanos(
@@ -2077,7 +2127,8 @@ public final class BotLifecycleManager {
         long generation = teardown.retiredGeneration;
         BotServerPlayer player =
                 runtime.handle.player().orElse(null);
-        if (runtimes.get(botId) != runtime
+        if (runtime.directDisconnectRetirement != null
+                || runtimes.get(botId) != runtime
                 || runtime.handle.generation()
                         != generation
                 || player == null
@@ -2237,6 +2288,450 @@ public final class BotLifecycleManager {
         if (failure != null) {
             throw failure;
         }
+    }
+
+    private ListenerDisconnectDecision
+            advanceDirectListenerDisconnect(
+                    RuntimeEntry runtime,
+                    BotServerPlayer player,
+                    ServerGamePacketListenerImpl listener,
+                    Connection connection,
+                    long generation) {
+        PendingDirectDisconnectRetirement pending =
+                runtime.directDisconnectRetirement;
+        boolean opened = false;
+        if (pending == null) {
+            if (generation <= 0L
+                    || runtime.handle.player()
+                                    .orElse(null)
+                            != player) {
+                abortUnstableListenerDisconnect(
+                        runtime,
+                        player,
+                        server.getPlayerList()
+                                .getPlayer(player.getUUID()),
+                        "Direct disconnect could not freeze its authoritative body");
+                return ListenerDisconnectDecision.ABORTED;
+            }
+            long startedTick = server.getTickCount();
+            GenerationRetirementKey key =
+                    new GenerationRetirementKey(
+                            UUID.randomUUID(),
+                            runtime.handle.botId(),
+                            generation,
+                            GenerationRetirementContinuation
+                                    .DISCONNECT_PRE_SAVE);
+            pending = new PendingDirectDisconnectRetirement(
+                    player,
+                    listener,
+                    connection,
+                    generation,
+                    GenerationRetirementSession.open(
+                            key,
+                            startedTick,
+                            boundedRetirementDeadline(
+                                    startedTick)));
+            runtime.directDisconnectRetirement = pending;
+            player.armDisconnectPreSaveFence();
+            opened = true;
+        }
+        if (!isExactDirectDisconnectAuthority(
+                runtime, pending)) {
+            pending.failure = appendFailure(
+                    pending.failure,
+                    new IllegalStateException(
+                            "Direct disconnect authority changed before retirement completed"));
+            abortUnstableListenerDisconnect(
+                    runtime,
+                    player,
+                    server.getPlayerList()
+                            .getPlayer(player.getUUID()),
+                    "Direct disconnect retirement lost exact authority");
+            return ListenerDisconnectDecision.ABORTED;
+        }
+
+        GenerationRetirementStatus status = opened
+                ? advanceDirectDisconnectRetirement(
+                        runtime,
+                        pending,
+                        server.getTickCount())
+                : pending.status();
+        if (runtimes.get(runtime.handle.botId())
+                != runtime) {
+            return ListenerDisconnectDecision.ABORTED;
+        }
+        if (status == GenerationRetirementStatus.PENDING) {
+            return ListenerDisconnectDecision.RETRY;
+        }
+        if (status == GenerationRetirementStatus.UNSAFE
+                || !isExactDirectDisconnectAuthority(
+                        runtime, pending)) {
+            abortUnstableListenerDisconnect(
+                    runtime,
+                    player,
+                    server.getPlayerList()
+                            .getPlayer(player.getUUID()),
+                    "Direct disconnect retirement did not reach a safe pre-save endpoint");
+            return ListenerDisconnectDecision.ABORTED;
+        }
+
+        runtime.disconnectPreparationComplete = true;
+        runtime.disconnectPreparationSafelyClosed = true;
+        runtime.disconnectPreparationFailure = null;
+        if (!player.hasDisconnectPreSaveFence()
+                || !player.releaseDisconnectPreSaveFence()) {
+            pending.failure = appendFailure(
+                    pending.failure,
+                    new IllegalStateException(
+                            "Another save fence remained after direct disconnect retirement"));
+            abortUnstableListenerDisconnect(
+                    runtime,
+                    player,
+                    server.getPlayerList()
+                            .getPlayer(player.getUUID()),
+                    "Direct disconnect could not exclusively release its pre-save fence");
+            return ListenerDisconnectDecision.ABORTED;
+        }
+        return ListenerDisconnectDecision.PROCEED;
+    }
+
+    private void advanceDirectDisconnectRetirements(
+            long currentTick) {
+        for (RuntimeEntry runtime :
+                List.copyOf(runtimes.values())) {
+            PendingDirectDisconnectRetirement pending =
+                    runtime.directDisconnectRetirement;
+            if (pending == null
+                    || pending.status()
+                            != GenerationRetirementStatus.PENDING) {
+                continue;
+            }
+            if (!isExactDirectDisconnectAuthority(
+                    runtime, pending)) {
+                pending.failure = appendFailure(
+                        pending.failure,
+                        new IllegalStateException(
+                                "Direct disconnect authority changed while cleanup was pending"));
+                abortUnstableListenerDisconnect(
+                        runtime,
+                        pending.player,
+                        server.getPlayerList()
+                                .getPlayer(
+                                        pending.player.getUUID()),
+                        "Pending direct disconnect lost exact authority");
+                continue;
+            }
+            GenerationRetirementStatus status =
+                    advanceDirectDisconnectRetirement(
+                            runtime,
+                            pending,
+                            currentTick);
+            if (runtimes.get(runtime.handle.botId())
+                    != runtime) {
+                continue;
+            }
+            if (status == GenerationRetirementStatus.UNSAFE) {
+                abortUnstableListenerDisconnect(
+                        runtime,
+                        pending.player,
+                        server.getPlayerList()
+                                .getPlayer(
+                                        pending.player.getUUID()),
+                        "Pending direct disconnect exhausted its safe cleanup contract");
+            }
+        }
+    }
+
+    private GenerationRetirementStatus
+            advanceDirectDisconnectRetirement(
+                    RuntimeEntry runtime,
+                    PendingDirectDisconnectRetirement pending,
+                    long currentTick) {
+        GenerationRetirementStatus currentStatus =
+                pending.status();
+        if (currentStatus
+                        != GenerationRetirementStatus.PENDING
+                || pending.lastAdvanceTick == currentTick
+                || pending.session.attempt() > 0
+                        && currentTick
+                                < pending.session.nextRetryTick()
+                || runtime.generationRetirementInProgress) {
+            return currentStatus;
+        }
+        pending.lastAdvanceTick = currentTick;
+        runtime.generationRetirementInProgress = true;
+        try {
+            if (!pending.beginAttempted) {
+                pending.beginAttempted = true;
+                pending.failure = appendFailure(
+                        pending.failure,
+                        beginDirectDisconnectRetirement(
+                                runtime, pending));
+            }
+
+            GenerationRetirementStatus observedStatus;
+            if (pending.failure != null) {
+                observedStatus =
+                        GenerationRetirementStatus.UNSAFE;
+            } else {
+                GenerationDrainStatus drainStatus =
+                        actionRuntime.generationDrainStatus(
+                                runtime.handle.botId(),
+                                pending.generation);
+                observedStatus = switch (drainStatus) {
+                    case PENDING ->
+                            GenerationRetirementStatus.PENDING;
+                    case UNSAFE ->
+                            GenerationRetirementStatus.UNSAFE;
+                    case COMPLETE ->
+                            finishDirectDisconnectSurvival(
+                                    runtime, pending)
+                                    ? GenerationRetirementStatus.COMPLETE
+                                    : GenerationRetirementStatus.UNSAFE;
+                };
+                if (drainStatus == GenerationDrainStatus.UNSAFE) {
+                    pending.failure = appendFailure(
+                            pending.failure,
+                            new IllegalStateException(
+                                    "Action generation was quarantined during direct disconnect"));
+                }
+            }
+
+            GenerationRetirementTicket ticket;
+            if (pending.lastTicket == null) {
+                ticket = new GenerationRetirementTicket(
+                        pending.session.key(),
+                        pending.session.startedTick(),
+                        pending.session.deadlineTick(),
+                        currentTick,
+                        1);
+            } else {
+                ticket = pending.lastTicket.next(
+                        Objects.requireNonNull(
+                                pending.lastReceipt,
+                                "lastReceipt"),
+                        currentTick);
+            }
+            long progressRevision =
+                    observedStatus
+                                    == GenerationRetirementStatus.PENDING
+                            ? pending.session.progressRevision()
+                            : incrementRetirementProgress(
+                                    pending.session
+                                            .progressRevision());
+            long nextRetryTick =
+                    observedStatus
+                                    == GenerationRetirementStatus.PENDING
+                            ? nextRetirementTick(currentTick)
+                            : -1L;
+            GenerationRetirementSession.Update update =
+                    pending.session.observe(
+                            ticket,
+                            observedStatus,
+                            progressRevision,
+                            nextRetryTick);
+            pending.session = update.session();
+            pending.lastTicket = ticket;
+            pending.lastReceipt = update.receipt();
+            return pending.status();
+        } catch (RuntimeException exception) {
+            pending.failure = appendFailure(
+                    pending.failure, exception);
+            return GenerationRetirementStatus.UNSAFE;
+        } finally {
+            runtime.generationRetirementInProgress = false;
+        }
+    }
+
+    @Nullable
+    private RuntimeException beginDirectDisconnectRetirement(
+            RuntimeEntry runtime,
+            PendingDirectDisconnectRetirement pending) {
+        RuntimeException failure = null;
+        try {
+            closeBotInventory(
+                    runtime,
+                    InventoryCloseReason.BOT_UNLOADED);
+        } catch (RuntimeException exception) {
+            failure = appendFailure(failure, exception);
+        }
+        failure = appendDirectAuthorityFailure(
+                runtime, pending, failure);
+        if (failure != null) {
+            return failure;
+        }
+        try {
+            cancelBotActions(
+                    runtime,
+                    pending.generation,
+                    ActionCancellationReason.LIFECYCLE);
+        } catch (RuntimeException exception) {
+            failure = appendFailure(failure, exception);
+        }
+        failure = appendDirectAuthorityFailure(
+                runtime, pending, failure);
+        if (failure != null) {
+            return failure;
+        }
+        try {
+            inputController.forceClear(
+                    runtime.handle.botId(),
+                    pending.generation);
+            MinecraftPlayerInputAdapter.clear(
+                    pending.player);
+        } catch (RuntimeException exception) {
+            failure = appendFailure(failure, exception);
+        }
+        failure = appendDirectAuthorityFailure(
+                runtime, pending, failure);
+        if (failure != null) {
+            return failure;
+        }
+        try {
+            perceptionService.closeGeneration(
+                    runtime.handle.botId(),
+                    pending.generation);
+        } catch (RuntimeException exception) {
+            failure = appendFailure(failure, exception);
+        }
+        failure = appendDirectAuthorityFailure(
+                runtime, pending, failure);
+        if (failure != null) {
+            return failure;
+        }
+        long currentTick = server.getTickCount();
+        try {
+            navigationService.closeGeneration(
+                    runtime.handle.botId(),
+                    pending.generation,
+                    currentTick);
+        } catch (RuntimeException exception) {
+            failure = appendFailure(failure, exception);
+        }
+        try {
+            safetyService.closeGeneration(
+                    runtime.handle.botId(),
+                    pending.generation,
+                    currentTick);
+        } catch (RuntimeException exception) {
+            failure = appendFailure(failure, exception);
+        }
+        return appendDirectAuthorityFailure(
+                runtime, pending, failure);
+    }
+
+    private boolean finishDirectDisconnectSurvival(
+            RuntimeEntry runtime,
+            PendingDirectDisconnectRetirement pending) {
+        if (pending.survivalCloseAttempted) {
+            return pending.failure == null;
+        }
+        pending.survivalCloseAttempted = true;
+        try {
+            if (!survivalSkillService.closeGeneration(
+                    runtime.handle.botId(),
+                    pending.generation,
+                    server.getTickCount(),
+                    true)) {
+                pending.failure = appendFailure(
+                        pending.failure,
+                        new IllegalStateException(
+                                "Survival layout did not produce a safe direct-disconnect receipt"));
+            }
+        } catch (RuntimeException exception) {
+            pending.failure = appendFailure(
+                    pending.failure, exception);
+        }
+        pending.failure = appendDirectAuthorityFailure(
+                runtime,
+                pending,
+                pending.failure);
+        return pending.failure == null;
+    }
+
+    @Nullable
+    private RuntimeException appendDirectAuthorityFailure(
+            RuntimeEntry runtime,
+            PendingDirectDisconnectRetirement pending,
+            @Nullable RuntimeException failure) {
+        if (isExactDirectDisconnectAuthority(
+                runtime, pending)) {
+            return failure;
+        }
+        return appendFailure(
+                failure,
+                new IllegalStateException(
+                        "Direct disconnect authority changed during generation retirement"));
+    }
+
+    private boolean isExactDirectDisconnectAuthority(
+            RuntimeEntry runtime,
+            PendingDirectDisconnectRetirement pending) {
+        UUID botId = runtime.handle.botId();
+        return runtimes.get(botId) == runtime
+                && handlesByBot.get(botId)
+                        == runtime.handle
+                && runtime.state
+                        == BotLifecycleState.DESPAWNING
+                && runtime.handle.generation()
+                        == pending.generation
+                && runtime.handle.player()
+                                .orElse(null)
+                        == pending.player
+                && pending.matchesBinding(
+                        pending.player,
+                        pending.listener,
+                        pending.connection,
+                        pending.generation)
+                && runtime.disconnectingPlayer
+                        == pending.player
+                && runtime.disconnectingListener
+                        == pending.listener
+                && runtime.disconnectingConnection
+                        == pending.connection
+                && runtime.disconnectingGeneration
+                        == pending.generation
+                && pending.player.runtimeHandle()
+                        == runtime.handle
+                && pending.player.hasDisconnectPreSaveFence()
+                && pending.player.connection
+                        == pending.listener
+                && pending.listener.player
+                        == pending.player
+                && pending.listener.getConnection()
+                        == pending.connection
+                && server.getPlayerList()
+                                .getPlayer(botId)
+                        == pending.player
+                && pending.player.serverLevel()
+                                .getPlayerByUUID(botId)
+                        == pending.player
+                && isBotConnectionOpen(
+                        pending.player);
+    }
+
+    private static long boundedRetirementDeadline(
+            long startedTick) {
+        return startedTick
+                        > Long.MAX_VALUE
+                                - BotActionRuntime.MAX_CLEANUP_TICKS
+                ? Long.MAX_VALUE
+                : startedTick
+                        + BotActionRuntime.MAX_CLEANUP_TICKS;
+    }
+
+    private static long nextRetirementTick(
+            long currentTick) {
+        return currentTick == Long.MAX_VALUE
+                ? -1L
+                : currentTick + 1L;
+    }
+
+    private static long incrementRetirementProgress(
+            long revision) {
+        return revision == Long.MAX_VALUE
+                ? Long.MAX_VALUE
+                : revision + 1L;
     }
 
     private GenerationRetirement
@@ -2459,6 +2954,7 @@ public final class BotLifecycleManager {
         runtime.rememberedRetirementSafelyClosed =
                 false;
         runtime.rememberedRetirementFailure = null;
+        runtime.directDisconnectRetirement = null;
         runtime.stagedCleanupGeneration = -1L;
         runtime.stagedCleanupPredecessor = null;
         runtime.stagedCleanupPlayer = null;
@@ -3539,7 +4035,8 @@ public final class BotLifecycleManager {
             BotServerPlayer player,
             long generation,
             GenerationRetirement retirement) {
-        if (generation <= 0L
+        if (runtime.directDisconnectRetirement != null
+                || generation <= 0L
                 || runtimes.get(
                                 runtime.handle.botId())
                         != runtime
@@ -3584,6 +4081,9 @@ public final class BotLifecycleManager {
             RuntimeEntry runtime,
             long generation,
             GenerationRetirement retirement) {
+        if (runtime.directDisconnectRetirement != null) {
+            return;
+        }
         BotServerPlayer staged =
                 runtime.stagedCleanupPlayer;
         if (listenerDisconnectRequested(staged)
@@ -3723,6 +4223,9 @@ public final class BotLifecycleManager {
             RuntimeEntry runtime,
             long generation,
             GenerationRetirement retirement) {
+        if (runtime.directDisconnectRetirement != null) {
+            return;
+        }
         if (runtime.disconnectingPlayer == null
                 || runtime.disconnectingGeneration
                         != generation) {
@@ -4259,6 +4762,61 @@ public final class BotLifecycleManager {
         }
     }
 
+    private static final class PendingDirectDisconnectRetirement {
+        private final BotServerPlayer player;
+        private final ServerGamePacketListenerImpl listener;
+        private final Connection connection;
+        private final long generation;
+        private GenerationRetirementSession session;
+        @Nullable
+        private GenerationRetirementTicket lastTicket;
+        @Nullable
+        private GenerationRetirementReceipt lastReceipt;
+        @Nullable
+        private RuntimeException failure;
+        private long lastAdvanceTick = Long.MIN_VALUE;
+        private boolean beginAttempted;
+        private boolean survivalCloseAttempted;
+
+        private PendingDirectDisconnectRetirement(
+                BotServerPlayer player,
+                ServerGamePacketListenerImpl listener,
+                Connection connection,
+                long generation,
+                GenerationRetirementSession session) {
+            this.player = Objects.requireNonNull(
+                    player, "player");
+            this.listener = Objects.requireNonNull(
+                    listener, "listener");
+            this.connection = Objects.requireNonNull(
+                    connection, "connection");
+            if (generation <= 0L) {
+                throw new IllegalArgumentException(
+                        "generation must be positive");
+            }
+            this.generation = generation;
+            this.session = Objects.requireNonNull(
+                    session, "session");
+        }
+
+        private boolean matchesBinding(
+                BotServerPlayer candidatePlayer,
+                ServerGamePacketListenerImpl candidateListener,
+                Connection candidateConnection,
+                long candidateGeneration) {
+            return player == candidatePlayer
+                    && listener == candidateListener
+                    && connection == candidateConnection
+                    && generation == candidateGeneration;
+        }
+
+        private GenerationRetirementStatus status() {
+            return failure == null
+                    ? session.status()
+                    : GenerationRetirementStatus.UNSAFE;
+        }
+    }
+
     private static final class RuntimeEntry {
         private final BotRuntimeHandle handle;
         private BotLifecycleState state;
@@ -4298,6 +4856,9 @@ public final class BotLifecycleManager {
         @Nullable
         private PendingNoSaveTeardown
                 pendingNoSaveTeardown;
+        @Nullable
+        private PendingDirectDisconnectRetirement
+                directDisconnectRetirement;
 
         private RuntimeEntry(BotRuntimeHandle handle, BotLifecycleState state) {
             this.handle = handle;

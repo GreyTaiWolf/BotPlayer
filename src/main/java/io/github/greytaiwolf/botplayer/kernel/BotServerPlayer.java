@@ -25,6 +25,7 @@ public final class BotServerPlayer extends ServerPlayer {
     private int lastClientlessConnectionTick = Integer.MIN_VALUE;
     private boolean suppressNextPlayerDataSave;
     private boolean suppressPlayerDataSaveUntilReleased;
+    private boolean suppressDisconnectPreSave;
 
     public BotServerPlayer(
             MinecraftServer server,
@@ -46,6 +47,9 @@ public final class BotServerPlayer extends ServerPlayer {
                 server, level, profile, clientInformation, oldPlayer.runtimeHandle);
         if (oldPlayer.suppressPlayerDataSaveUntilReleased) {
             replacement.suppressPlayerDataSaveUntilReleased();
+        }
+        if (oldPlayer.suppressDisconnectPreSave) {
+            replacement.armDisconnectPreSaveFence();
         }
         return replacement;
     }
@@ -71,8 +75,30 @@ public final class BotServerPlayer extends ServerPlayer {
         suppressPlayerDataSaveUntilReleased = true;
     }
 
+    /**
+     * 断线事务在跨 Tick 清理期间独占的保存 fence。它与 no-save 隔离 fence
+     * 分账，安全完成时不能顺手释放另一条路径仍持有的保存禁令。
+     */
+    public void armDisconnectPreSaveFence() {
+        suppressDisconnectPreSave = true;
+    }
+
+    public boolean hasDisconnectPreSaveFence() {
+        return suppressDisconnectPreSave;
+    }
+
+    /**
+     * 只释放 direct disconnect 的份额；返回 true 表示没有其他保存 fence。
+     */
+    public boolean releaseDisconnectPreSaveFence() {
+        suppressDisconnectPreSave = false;
+        return !suppressNextPlayerDataSave
+                && !suppressPlayerDataSaveUntilReleased;
+    }
+
     public boolean consumePlayerDataSaveSuppression() {
-        if (suppressPlayerDataSaveUntilReleased) {
+        if (suppressPlayerDataSaveUntilReleased
+                || suppressDisconnectPreSave) {
             return true;
         }
         boolean suppressed =
@@ -89,6 +115,7 @@ public final class BotServerPlayer extends ServerPlayer {
     public void releasePlayerDataSaveSuppression() {
         suppressNextPlayerDataSave = false;
         suppressPlayerDataSaveUntilReleased = false;
+        suppressDisconnectPreSave = false;
     }
 
     @Override

@@ -17,6 +17,14 @@ import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSwap
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSwapPlanBuilder;
 import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftActionSnapshot;
 import io.github.greytaiwolf.botplayer.gametest.P2GameTestSupport.TestBot;
+import io.github.greytaiwolf.botplayer.kernel.BotConnection;
+import io.github.greytaiwolf.botplayer.mixin.PlayerListAccessor;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.OptionalInt;
 import java.util.UUID;
@@ -24,6 +32,13 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.NbtAccounter;
+import net.minecraft.nbt.NbtIo;
+import net.minecraft.nbt.Tag;
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.level.storage.LevelResource;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -37,6 +52,8 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 public final class P5GenericMenuTransactionGameTests {
     private static final String BATCH =
             "p5_generic_menu_transaction";
+    private static final String DISCONNECT_BATCH =
+            "p5_generic_menu_disconnect";
     private static final int TIMEOUT_TICKS = 240;
     private static final int WAIT_TICKS = 180;
 
@@ -201,6 +218,236 @@ public final class P5GenericMenuTransactionGameTests {
         } catch (RuntimeException | AssertionError exception) {
             cleanup.run();
             throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = DISCONNECT_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void directDisconnectWaitsForCrossTickMenuCleanupBeforeSave(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P5GameTestSupport.spawnFixedBot(
+                helper, "P5MenuLeave");
+        P2GameTestSupport.Cleanup cleanup =
+                P5GameTestSupport.cleanup(bot);
+        try {
+            UUID botId = bot.player().getUUID();
+            long generation = bot.player()
+                    .runtimeHandle()
+                    .generation();
+            P2GameTestSupport.require(
+                    bot.player()
+                                    .connection
+                                    .getConnection()
+                            instanceof BotConnection,
+                    "Generic menu disconnect fixture has no BotConnection");
+            BotConnection connection =
+                    (BotConnection)
+                            bot.player()
+                                    .connection
+                                    .getConnection();
+            PlayerListAccessor playerList =
+                    (PlayerListAccessor)
+                            (Object) helper.getLevel()
+                                    .getServer()
+                                    .getPlayerList();
+            Path playerData = helper.getLevel()
+                    .getServer()
+                    .getWorldPath(
+                            LevelResource.PLAYER_DATA_DIR)
+                    .resolve(botId + ".dat");
+
+            InventoryMenuSwapPlan plan =
+                    prepareFiveStepPlan(bot);
+            playerList.botplayer$saveExactPlayer(
+                    bot.player());
+            PersistedInventoryLayout baseline =
+                    savedInventoryLayout(playerData);
+            byte[] baselineBytes = readAllBytes(playerData);
+            int expectedExperienceLevel =
+                    baseline.experienceLevel() + 7;
+            PersistedInventoryLayout expectedPersistence =
+                    new PersistedInventoryLayout(
+                            baseline.selectedSlot(),
+                            expectedExperienceLevel,
+                            baseline.stacks());
+            TrackedSubmission menu = submit(
+                    bot,
+                    new WorldInteractionAction(
+                            new WorldInteractionActionSpec
+                                    .InventoryMenuSwap(plan)),
+                    ActionPriority.OWNER_TASK,
+                    "direct-disconnect",
+                    80);
+
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    WAIT_TICKS,
+                    () -> currentPrefix(bot, plan) == 1,
+                    "Direct disconnect fixture never exposed prefix one",
+                    cleanup,
+                    () -> beginDirectDisconnect(
+                            helper,
+                            bot,
+                            plan,
+                            menu,
+                            connection,
+                            playerList,
+                            playerData,
+                            baseline,
+                            expectedPersistence,
+                            baselineBytes,
+                            botId,
+                            generation,
+                            cleanup));
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    private static void beginDirectDisconnect(
+            GameTestHelper helper,
+            TestBot bot,
+            InventoryMenuSwapPlan plan,
+            TrackedSubmission menu,
+            BotConnection connection,
+            PlayerListAccessor playerList,
+            Path playerData,
+            PersistedInventoryLayout baseline,
+            PersistedInventoryLayout expectedPersistence,
+            byte[] baselineBytes,
+            UUID botId,
+            long generation,
+            P2GameTestSupport.Cleanup cleanup) {
+        try {
+            long disconnectTick = currentTick(bot);
+            bot.player()
+                    .connection
+                    .disconnect(Component.literal(
+                            "P5 generic menu pre-save cleanup fixture"));
+            P2GameTestSupport.require(
+                    connection.snapshot().open()
+                            && bot.player()
+                                    .hasDisconnectPreSaveFence()
+                            && !menu.completion()
+                                    .toCompletableFuture()
+                                    .isDone()
+                            && currentPrefix(bot, plan) == 1,
+                    "Direct listener disconnect did not remain pending at prefix one");
+            bot.player().experienceLevel =
+                    expectedPersistence.experienceLevel();
+
+            playerList.botplayer$saveExactPlayer(
+                    bot.player());
+            P2GameTestSupport.require(
+                    Arrays.equals(
+                            baselineBytes,
+                            readAllBytes(playerData)),
+                    "First exact save crossed the pending disconnect pre-save fence");
+            playerList.botplayer$saveExactPlayer(
+                    bot.player());
+            P2GameTestSupport.require(
+                    Arrays.equals(
+                            baselineBytes,
+                            readAllBytes(playerData))
+                            && savedInventoryLayout(
+                                            playerData)
+                                    .equals(baseline),
+                    "Second exact save changed the persisted baseline while cleanup was pending");
+
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    WAIT_TICKS,
+                    () -> !connection.snapshot().open()
+                            && helper.getLevel()
+                                            .getServer()
+                                            .getPlayerList()
+                                            .getPlayer(botId)
+                                    == null
+                            && helper.getLevel()
+                                            .getPlayerByUUID(botId)
+                                    == null
+                            && Files.isRegularFile(playerData),
+                    "Direct listener disconnect did not finish vanilla save and removal",
+                    cleanup,
+                    () -> verifyDirectDisconnect(
+                            helper,
+                            bot,
+                            plan,
+                            menu,
+                            playerData,
+                            expectedPersistence,
+                            botId,
+                            generation,
+                            disconnectTick,
+                            cleanup));
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            helper.fail(
+                    exception.getMessage() == null
+                            ? exception.toString()
+                            : exception.getMessage());
+        }
+    }
+
+    private static void verifyDirectDisconnect(
+            GameTestHelper helper,
+            TestBot bot,
+            InventoryMenuSwapPlan plan,
+            TrackedSubmission menu,
+            Path playerData,
+            PersistedInventoryLayout expectedPersistence,
+            UUID botId,
+            long generation,
+            long disconnectTick,
+            P2GameTestSupport.Cleanup cleanup) {
+        try {
+            InventoryMenuSnapshot actual =
+                    MinecraftActionSnapshot.inventoryMenu(
+                            bot.player());
+            requireSafeControlPlane(
+                    bot, plan.initialSnapshot(), actual);
+            P2GameTestSupport.require(
+                    plan.initialSnapshot()
+                                    .layoutEqualsIgnoringState(
+                                            actual)
+                            && savedInventoryLayout(playerData)
+                                    .equals(expectedPersistence)
+                            && currentTick(bot) > disconnectTick
+                            && bot.manager()
+                                    .resolveActive(
+                                            botId, generation)
+                                    .isEmpty()
+                            && !bot.player()
+                                    .hasDisconnectPreSaveFence(),
+                    "Direct disconnect did not restore and persist the exact initial menu layout");
+            P2GameTestSupport.awaitOutcome(
+                    helper,
+                    menu.completion(),
+                    WAIT_TICKS,
+                    cleanup,
+                    outcome -> {
+                        P2GameTestSupport.require(
+                                outcome.state()
+                                                == ActionState
+                                                        .CANCELLED
+                                        && outcome.failureCode()
+                                                == ActionFailureCode
+                                                        .CANCELLED,
+                                "Lifecycle retirement did not preserve the menu action cancellation outcome: "
+                                        + outcome);
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            helper.fail(
+                    exception.getMessage() == null
+                            ? exception.toString()
+                            : exception.getMessage());
         }
     }
 
@@ -462,9 +709,54 @@ public final class P5GenericMenuTransactionGameTests {
                 .getTickCount();
     }
 
+    private static byte[] readAllBytes(Path playerData) {
+        try {
+            return Files.readAllBytes(playerData);
+        } catch (IOException exception) {
+            throw new IllegalStateException(
+                    "Could not read persisted generic-menu BotPlayer data",
+                    exception);
+        }
+    }
+
+    private static PersistedInventoryLayout
+            savedInventoryLayout(Path playerData) {
+        try {
+            CompoundTag saved = NbtIo.readCompressed(
+                    playerData,
+                    NbtAccounter.unlimitedHeap());
+            ListTag inventory = saved.getList(
+                    "Inventory", Tag.TAG_COMPOUND);
+            List<CompoundTag> stacks =
+                    new ArrayList<>(inventory.size());
+            for (int index = 0;
+                    index < inventory.size();
+                    index++) {
+                stacks.add(
+                        inventory.getCompound(index).copy());
+            }
+            stacks.sort(Comparator.comparingInt(
+                    stack -> Byte.toUnsignedInt(
+                            stack.getByte("Slot"))));
+            return new PersistedInventoryLayout(
+                    saved.getInt("SelectedItemSlot"),
+                    saved.getInt("XpLevel"),
+                    List.copyOf(stacks));
+        } catch (IOException exception) {
+            throw new IllegalStateException(
+                    "Could not parse persisted generic-menu BotPlayer data",
+                    exception);
+        }
+    }
+
     private record TrackedSubmission(
             UUID actionId,
             CompletionStage<ActionOutcome> completion) {}
+
+    private record PersistedInventoryLayout(
+            int selectedSlot,
+            int experienceLevel,
+            List<CompoundTag> stacks) {}
 
     private static final class SettlementObservation {
         private final long settlementStartedTick;

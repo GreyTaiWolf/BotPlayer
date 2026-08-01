@@ -164,20 +164,24 @@ public final class BotGamePacketListener extends ServerGamePacketListenerImpl {
                                 .PROCEED;
         if (decision
                 == ListenerDisconnectDecision.RETRY) {
+            boolean retryOnNextTick = false;
             if (disconnectDeferrals++
-                            >= MAX_DISCONNECT_DEFERRALS
-                    && player
-                            instanceof BotServerPlayer
-                                    botPlayer
-                    && BotPlayerManagers.find(server)
-                            .map(manager ->
-                                    manager.onDisconnectRetryExhausted(
-                                            botPlayer,
-                                            this,
-                                            connection))
-                            .orElse(true)) {
-                closeWithoutVanillaDisconnect();
-                return;
+                    >= MAX_DISCONNECT_DEFERRALS) {
+                boolean exhausted = player
+                                instanceof BotServerPlayer
+                                        botPlayer
+                        && BotPlayerManagers.find(server)
+                                .map(manager ->
+                                        manager.onDisconnectRetryExhausted(
+                                                botPlayer,
+                                                this,
+                                                connection))
+                                .orElse(true);
+                if (exhausted) {
+                    closeWithoutVanillaDisconnect();
+                    return;
+                }
+                retryOnNextTick = true;
             }
             /*
              * A lifecycle retirement or vanilla replacement stack already
@@ -185,8 +189,13 @@ public final class BotGamePacketListener extends ServerGamePacketListenerImpl {
              * TickTask; Executor#execute-style helpers may run inline on the
              * server thread and recurse before that owner can finish.
              */
+            int scheduledTick = server.getTickCount();
+            if (retryOnNextTick
+                    && scheduledTick < Integer.MAX_VALUE) {
+                scheduledTick++;
+            }
             server.tell(new TickTask(
-                    server.getTickCount(),
+                    scheduledTick,
                     () -> closeOnServerThread(details)));
             return;
         }
