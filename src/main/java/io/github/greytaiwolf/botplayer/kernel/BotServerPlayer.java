@@ -9,6 +9,7 @@ import net.minecraft.server.level.ClientInformation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.level.portal.DimensionTransition;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -26,6 +27,11 @@ public final class BotServerPlayer extends ServerPlayer {
     private boolean suppressNextPlayerDataSave;
     private boolean suppressPlayerDataSaveUntilReleased;
     private boolean suppressDisconnectPreSave;
+    private boolean suppressDeathRetirementSave;
+    private boolean suppressDeathAttemptSave;
+    private int deathInvocationDepth;
+    @Nullable
+    private DeathSaveFenceAttempt deathSaveFenceAttempt;
 
     public BotServerPlayer(
             MinecraftServer server,
@@ -50,6 +56,10 @@ public final class BotServerPlayer extends ServerPlayer {
         }
         if (oldPlayer.suppressDisconnectPreSave) {
             replacement.armDisconnectPreSaveFence();
+        }
+        if (oldPlayer.suppressDeathRetirementSave
+                || oldPlayer.suppressDeathAttemptSave) {
+            replacement.armDeathRetirementSaveFence();
         }
         return replacement;
     }
@@ -93,12 +103,90 @@ public final class BotServerPlayer extends ServerPlayer {
     public boolean releaseDisconnectPreSaveFence() {
         suppressDisconnectPreSave = false;
         return !suppressNextPlayerDataSave
-                && !suppressPlayerDataSaveUntilReleased;
+                && !suppressPlayerDataSaveUntilReleased
+                && !suppressDeathRetirementSave
+                && !suppressDeathAttemptSave;
+    }
+
+    /**
+     * 死亡退役在旧 body 仍可被 saveAll 看见时独占的保存 fence。
+     */
+    public void armDeathRetirementSaveFence() {
+        suppressDeathRetirementSave = true;
+    }
+
+    public boolean hasDeathRetirementSaveFence() {
+        return suppressDeathRetirementSave;
+    }
+
+    /**
+     * 只释放死亡退役自己的份额；返回 true 表示没有其他保存 fence。
+     */
+    public boolean releaseDeathRetirementSaveFence() {
+        suppressDeathRetirementSave = false;
+        return !suppressNextPlayerDataSave
+                && !suppressPlayerDataSaveUntilReleased
+                && !suppressDisconnectPreSave
+                && !suppressDeathAttemptSave;
+    }
+
+    /**
+     * Marks the outermost {@link #die(DamageSource)} invocation as having reached
+     * ServerPlayer's normal TAIL. The death mixin calls this before lifecycle code,
+     * so an exception in the manager can never make the override mistake a real
+     * death for NeoForge's cancellable early return.
+     */
+    public boolean markDeathCompletionObserved() {
+        DeathSaveFenceAttempt attempt = deathSaveFenceAttempt;
+        if (deathInvocationDepth <= 0 || attempt == null) {
+            armDeathRetirementSaveFence();
+            return false;
+        }
+        attempt.normalCompletionObserved = true;
+        return true;
+    }
+
+    /**
+     * Transfers the current death-attempt fence to the lifecycle retirement owner.
+     * Reentrant {@code die} calls share the same outermost owner token.
+     */
+    public boolean adoptCompletedDeathSaveFence() {
+        DeathSaveFenceAttempt attempt = deathSaveFenceAttempt;
+        if (attempt == null || !attempt.normalCompletionObserved) {
+            return false;
+        }
+        if (attempt.dispositionCompleted) {
+            return attempt.adoptedByRetirement;
+        }
+        suppressDeathRetirementSave = true;
+        suppressDeathAttemptSave = false;
+        attempt.adoptedByRetirement = true;
+        attempt.dispositionCompleted = true;
+        return true;
+    }
+
+    /**
+     * Releases only the currently observed death invocation when an existing
+     * lifecycle state already owns the body. It never releases a retirement,
+     * disconnect, or no-save fence.
+     */
+    public boolean releaseCompletedDeathAttemptSaveFence() {
+        DeathSaveFenceAttempt attempt = deathSaveFenceAttempt;
+        if (attempt == null
+                || !attempt.normalCompletionObserved
+                || attempt.adoptedByRetirement) {
+            return false;
+        }
+        suppressDeathAttemptSave = false;
+        attempt.dispositionCompleted = true;
+        return true;
     }
 
     public boolean consumePlayerDataSaveSuppression() {
         if (suppressPlayerDataSaveUntilReleased
-                || suppressDisconnectPreSave) {
+                || suppressDisconnectPreSave
+                || suppressDeathRetirementSave
+                || suppressDeathAttemptSave) {
             return true;
         }
         boolean suppressed =
@@ -116,6 +204,47 @@ public final class BotServerPlayer extends ServerPlayer {
         suppressNextPlayerDataSave = false;
         suppressPlayerDataSaveUntilReleased = false;
         suppressDisconnectPreSave = false;
+        suppressDeathRetirementSave = false;
+        suppressDeathAttemptSave = false;
+        deathSaveFenceAttempt = null;
+    }
+
+    @Override
+    public void die(@NotNull DamageSource source) {
+        boolean outermost = deathInvocationDepth == 0;
+        DeathSaveFenceAttempt attempt = deathSaveFenceAttempt;
+        if (outermost) {
+            attempt = new DeathSaveFenceAttempt();
+            deathSaveFenceAttempt = attempt;
+            suppressDeathAttemptSave = true;
+        } else if (attempt == null) {
+            /* A corrupted reentrant owner must fail closed before invoking callbacks. */
+            suppressDeathAttemptSave = true;
+            throw new IllegalStateException(
+                    "Nested BotPlayer death lost its save-fence owner");
+        }
+
+        deathInvocationDepth++;
+        boolean returnedNormally = false;
+        try {
+            super.die(source);
+            returnedNormally = true;
+        } finally {
+            deathInvocationDepth--;
+            if (outermost) {
+                if (returnedNormally
+                        && !attempt.normalCompletionObserved) {
+                    /* NeoForge canceled death through its early return. */
+                    suppressDeathAttemptSave = false;
+                    deathSaveFenceAttempt = null;
+                } else if (attempt.dispositionCompleted) {
+                    /* A lifecycle owner adopted or explicitly dismissed this attempt. */
+                    suppressDeathAttemptSave = false;
+                    deathSaveFenceAttempt = null;
+                }
+                /* Throws and an observed-but-unadopted TAIL deliberately retain the fence. */
+            }
+        }
     }
 
     @Override
@@ -195,5 +324,11 @@ public final class BotServerPlayer extends ServerPlayer {
     @Override
     public boolean allowsListing() {
         return BotPlayerConfig.SHOW_IN_PLAYER_LIST.get();
+    }
+
+    private static final class DeathSaveFenceAttempt {
+        private boolean normalCompletionObserved;
+        private boolean adoptedByRetirement;
+        private boolean dispositionCompleted;
     }
 }
