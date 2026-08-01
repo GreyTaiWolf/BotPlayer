@@ -52,6 +52,8 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @PrefixGameTestTemplate(false)
 public final class P5SurvivalSkillAcceptanceGameTests {
     private static final String BATCH = "p5_survival_skills";
+    private static final String LIFECYCLE_BATCH =
+            "p5_survival_skills_lifecycle";
     private static final String CONFIG_MUTATION_BATCH =
             "p5_survival_skills_config_mutation";
     private static final String RESPAWN_FENCE_BATCH =
@@ -282,7 +284,7 @@ public final class P5SurvivalSkillAcceptanceGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = LIFECYCLE_BATCH,
             timeoutTicks = TIMEOUT_TICKS)
     public static void unsafeLayoutReceiptPreventsDimensionGenerationActivation(
             GameTestHelper helper) {
@@ -465,7 +467,7 @@ public final class P5SurvivalSkillAcceptanceGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = LIFECYCLE_BATCH,
             timeoutTicks = TIMEOUT_TICKS)
     public static void sharedListenerNoSaveClosureRevokesBothBodies(
             GameTestHelper helper) {
@@ -663,7 +665,7 @@ public final class P5SurvivalSkillAcceptanceGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = LIFECYCLE_BATCH,
             timeoutTicks = TIMEOUT_TICKS)
     public static void persistentNoSaveFenceBlocksEveryExactSave(
             GameTestHelper helper) {
@@ -858,7 +860,7 @@ public final class P5SurvivalSkillAcceptanceGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = LIFECYCLE_BATCH,
             timeoutTicks = TIMEOUT_TICKS)
     public static void disconnectPersistsRestoredEatingSelectionBeforeRemoval(
             GameTestHelper helper) {

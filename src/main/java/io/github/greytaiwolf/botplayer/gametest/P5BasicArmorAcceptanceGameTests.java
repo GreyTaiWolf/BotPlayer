@@ -39,6 +39,8 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @PrefixGameTestTemplate(false)
 public final class P5BasicArmorAcceptanceGameTests {
     private static final String BATCH = "p5_basic_armor";
+    private static final String REJECTION_BATCH =
+            "p5_basic_armor_rejection";
     private static final String COMPLETION_DELAY_BATCH =
             "p5_basic_armor_completion_delay";
     private static final int TIMEOUT_TICKS = 240;
@@ -130,7 +132,7 @@ public final class P5BasicArmorAcceptanceGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = REJECTION_BATCH,
             timeoutTicks = TIMEOUT_TICKS)
     public static void bindingTargetRejectsUpgradeWithoutMutation(
             GameTestHelper helper) {
@@ -192,7 +194,7 @@ public final class P5BasicArmorAcceptanceGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = REJECTION_BATCH,
             timeoutTicks = TIMEOUT_TICKS)
     public static void bindingCandidateRejectsUpgradeWithoutMutation(
             GameTestHelper helper) {
