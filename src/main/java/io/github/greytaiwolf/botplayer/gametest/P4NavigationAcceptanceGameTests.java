@@ -36,6 +36,8 @@ public final class P4NavigationAcceptanceGameTests {
             "p4_terrain_place";
     private static final String TERRAIN_POLICY_BATCH =
             "p4_terrain_policy";
+    private static final String SUPPLY_BATCH =
+            "p4_navigation_supply";
     private static final String LIFECYCLE_BATCH =
             "p4_navigation_lifecycle";
     private static final int TIMEOUT_TICKS = 400;
@@ -375,7 +377,7 @@ public final class P4NavigationAcceptanceGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = SUPPLY_BATCH,
             timeoutTicks = TIMEOUT_TICKS)
     public static void lowSupplyRejectsDistantTravelBeforePlanning(
             GameTestHelper helper) {
