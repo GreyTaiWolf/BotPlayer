@@ -462,6 +462,26 @@ public final class BotActionRuntime {
    }
 
    public boolean isGenerationSafe(UUID var1, long var2) {
+      return this.inspectGenerationStatus(var1, var2, false)
+         == GenerationDrainStatus.COMPLETE;
+   }
+
+   /**
+    * 区分“仍在有界清理”与“该代已经不可安全提交”。生命周期层只能把
+    * COMPLETE 当作可保存/可接管的授权；PENDING 需要在后续 Tick 继续观察。
+    */
+   public GenerationDrainStatus generationDrainStatus(
+      UUID var1,
+      long var2
+   ) {
+      return this.inspectGenerationStatus(var1, var2, true);
+   }
+
+   private GenerationDrainStatus inspectGenerationStatus(
+      UUID var1,
+      long var2,
+      boolean requireClosedIngress
+   ) {
       this.assertOwnerThread();
       ActionEnvelope.requireNonZero(var1, "botId");
       if (var2 <= 0L) {
@@ -469,14 +489,24 @@ public final class BotActionRuntime {
       } else {
          BotActionRuntime.GenerationKey var4 =
             new BotActionRuntime.GenerationKey(var1, var2);
-         return !this.quarantineCapacityExhausted
-            && !this.unsafeGenerations.contains(var4)
-            && !this.pendingRuntimeFailClosed
-            && !this.runtimeFailClosedInProgress
-            && !this.pendingGenerationQuarantines.containsKey(var4)
-            && !this.quarantinesInProgress.contains(var4)
-            && !this.hasActiveGeneration(var4)
-            && !this.arbiter.hasLease(var1, var2);
+         if (this.quarantineCapacityExhausted
+            || this.unsafeGenerations.contains(var4)
+            || this.pendingRuntimeFailClosed
+            || this.runtimeFailClosedInProgress
+            || this.pendingGenerationQuarantines.containsKey(var4)
+            || this.quarantinesInProgress.contains(var4)) {
+            return GenerationDrainStatus.UNSAFE;
+         }
+         BotActionRuntime.PendingLifecycleClose var5 =
+            this.pendingLifecycleCloses.get(var1);
+         return GenerationDrainStatus.classify(
+            false,
+            (requireClosedIngress
+               && !this.mailbox.isGenerationIngressClosed(var1, var2))
+               || this.hasActiveGeneration(var4)
+               || (var5 != null && var2 <= var5.throughGeneration),
+            this.arbiter.hasLease(var1, var2)
+         );
       }
    }
 
@@ -2034,10 +2064,16 @@ public final class BotActionRuntime {
       }
 
       public boolean safeForExclusiveMutation() {
-         return this.cleanupFailures == 0
-            && !this.quarantined
-            && !this.ticketRemaining
-            && !this.leaseRemaining;
+         return this.drainStatus()
+            == GenerationDrainStatus.COMPLETE;
+      }
+
+      public GenerationDrainStatus drainStatus() {
+         return GenerationDrainStatus.classify(
+            this.cleanupFailures != 0 || this.quarantined,
+            this.ticketRemaining,
+            this.leaseRemaining
+         );
       }
    }
 

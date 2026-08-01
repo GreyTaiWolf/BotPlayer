@@ -16,6 +16,44 @@ class BotActionRuntimeCleanupStepTest {
     private static final UUID BOT = new UUID(0L, 700L);
 
     @Test
+    void drainStatusRequiresClosedGenerationIngress() {
+        CleanupScriptBackend backend = new CleanupScriptBackend();
+        BotActionRuntime runtime = runtime(backend);
+        ActionEnvelope queued = envelope(51L, 1L, 100L);
+
+        Assertions.assertTrue(runtime.isGenerationSafe(BOT, 1L));
+        Assertions.assertEquals(
+                GenerationDrainStatus.PENDING,
+                runtime.generationDrainStatus(BOT, 1L));
+        ActionMailbox.Submission submission = runtime.submit(
+                queued, ActionPriority.OWNER_TASK);
+        Assertions.assertEquals(
+                ActionMailbox.SubmissionStatus.ENQUEUED,
+                submission.status());
+        Assertions.assertEquals(
+                GenerationDrainStatus.PENDING,
+                runtime.generationDrainStatus(BOT, 1L));
+
+        runtime.cancelBotNow(
+                BOT,
+                1L,
+                ActionCancellationReason.LIFECYCLE,
+                0L);
+
+        Assertions.assertEquals(
+                GenerationDrainStatus.COMPLETE,
+                runtime.generationDrainStatus(BOT, 1L));
+        Assertions.assertEquals(
+                ActionMailbox.SubmissionStatus.BOT_GENERATION_CLOSED,
+                runtime.submit(
+                        envelope(52L, 1L, 100L),
+                        ActionPriority.OWNER_TASK).status());
+        Assertions.assertEquals(
+                ActionState.CANCELLED,
+                outcome(submission).state());
+    }
+
+    @Test
     void pendingCleanupRetainsAuthorityAndCompletesOnAdvertisedTick() {
         CleanupScriptBackend backend = new CleanupScriptBackend();
         BotActionRuntime runtime = runtime(backend);
@@ -52,6 +90,12 @@ class BotActionRuntimeCleanupStepTest {
         Assertions.assertFalse(cancelFuture(cancellation).isDone());
         Assertions.assertFalse(
                 repeated.safeForExclusiveMutation());
+        Assertions.assertEquals(
+                GenerationDrainStatus.PENDING,
+                repeated.drainStatus());
+        Assertions.assertEquals(
+                GenerationDrainStatus.PENDING,
+                runtime.generationDrainStatus(BOT, 1L));
         Assertions.assertTrue(repeated.ticketRemaining());
         Assertions.assertTrue(repeated.leaseRemaining());
         Assertions.assertEquals(1, backend.cleanupStepCount(
@@ -77,6 +121,10 @@ class BotActionRuntimeCleanupStepTest {
                 cancelStatus(cancellation));
         Assertions.assertEquals(0, runtime.activeActionCount());
         Assertions.assertEquals(0, runtime.activeLeaseCount());
+        Assertions.assertEquals(
+                GenerationDrainStatus.PENDING,
+                runtime.generationDrainStatus(BOT, 1L));
+        Assertions.assertTrue(runtime.isGenerationSafe(BOT, 1L));
         List<ActionCleanupRequest> requests =
                 backend.cleanupRequests(action.actionId());
         Assertions.assertEquals(2, requests.size());
@@ -347,12 +395,16 @@ class BotActionRuntimeCleanupStepTest {
                         request -> ActionCleanupReceipt.complete(
                                 request, 1L, "重入收口完成")));
         backend.readyOnStart(action.actionId());
-        backend.onStart(action.actionId(), () ->
-                runtime.cancelBotNow(
+        GenerationDrainStatus[] observed =
+                new GenerationDrainStatus[1];
+        backend.onStart(action.actionId(), () -> {
+            runtime.cancelBotNow(
                         BOT,
                         1L,
                         ActionCancellationReason.LIFECYCLE,
-                        1L));
+                        1L);
+            observed[0] = runtime.generationDrainStatus(BOT, 1L);
+        });
         ActionMailbox.Submission submission = runtime.submit(
                 action, ActionPriority.OWNER_TASK);
 
@@ -363,11 +415,17 @@ class BotActionRuntimeCleanupStepTest {
                 action.actionId()));
         Assertions.assertEquals(1, backend.cleanupStepCount(
                 action.actionId()));
+        Assertions.assertEquals(
+                GenerationDrainStatus.PENDING,
+                observed[0]);
 
         runtime.tick(2L);
 
         Assertions.assertEquals(ActionState.CANCELLED,
                 outcome(submission).state());
+        Assertions.assertEquals(
+                GenerationDrainStatus.COMPLETE,
+                runtime.generationDrainStatus(BOT, 1L));
         Assertions.assertEquals(0, backend.verifyCount(
                 action.actionId()));
         Assertions.assertEquals(0, runtime.activeLeaseCount());
@@ -808,6 +866,9 @@ class BotActionRuntimeCleanupStepTest {
                 BOT, 1L, 3L));
 
         Assertions.assertFalse(runtime.isGenerationSafe(BOT, 1L));
+        Assertions.assertEquals(
+                GenerationDrainStatus.UNSAFE,
+                runtime.generationDrainStatus(BOT, 1L));
         Assertions.assertEquals(
                 ActionMailbox.SubmissionStatus.BOT_GENERATION_CLOSED,
                 runtime.submit(
