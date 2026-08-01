@@ -18,6 +18,9 @@ import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSwap
 import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftActionSnapshot;
 import io.github.greytaiwolf.botplayer.gametest.P2GameTestSupport.TestBot;
 import io.github.greytaiwolf.botplayer.kernel.BotConnection;
+import io.github.greytaiwolf.botplayer.kernel.BotGamePacketListener;
+import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
+import io.github.greytaiwolf.botplayer.lifecycle.BotLifecycleManager.ListenerDisconnectDecision;
 import io.github.greytaiwolf.botplayer.mixin.PlayerListAccessor;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -38,6 +41,7 @@ import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ClientInformation;
 import net.minecraft.world.level.storage.LevelResource;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -54,6 +58,8 @@ public final class P5GenericMenuTransactionGameTests {
             "p5_generic_menu_transaction";
     private static final String DISCONNECT_BATCH =
             "p5_generic_menu_disconnect";
+    private static final String LISTENER_BODY_DRIFT_BATCH =
+            "p5_generic_menu_listener_body_drift";
     private static final int TIMEOUT_TICKS = 240;
     private static final int WAIT_TICKS = 180;
 
@@ -305,6 +311,221 @@ public final class P5GenericMenuTransactionGameTests {
         } catch (RuntimeException | AssertionError exception) {
             cleanup.run();
             throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = LISTENER_BODY_DRIFT_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void listenerBodyDriftDuringDirectPendingFailsClosedWithoutSave(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P5GameTestSupport.spawnFixedBot(
+                helper, "P5MenuRace");
+        P2GameTestSupport.Cleanup cleanup =
+                P5GameTestSupport.cleanup(bot);
+        try {
+            BotServerPlayer predecessor = bot.player();
+            UUID botId = predecessor.getUUID();
+            long generation = predecessor
+                    .runtimeHandle()
+                    .generation();
+            P2GameTestSupport.require(
+                    predecessor.connection
+                                    instanceof BotGamePacketListener
+                            && predecessor.connection
+                                            .getConnection()
+                                    instanceof BotConnection,
+                    "Listener-body-drift fixture has no Bot listener stack");
+            BotGamePacketListener listener =
+                    (BotGamePacketListener)
+                            predecessor.connection;
+            BotConnection connection =
+                    (BotConnection)
+                            listener.getConnection();
+            PlayerListAccessor playerList =
+                    (PlayerListAccessor)
+                            (Object) helper.getLevel()
+                                    .getServer()
+                                    .getPlayerList();
+            Path playerData = helper.getLevel()
+                    .getServer()
+                    .getWorldPath(
+                            LevelResource.PLAYER_DATA_DIR)
+                    .resolve(botId + ".dat");
+
+            InventoryMenuSwapPlan plan =
+                    prepareFiveStepPlan(bot);
+            playerList.botplayer$saveExactPlayer(
+                    predecessor);
+            PersistedInventoryLayout baseline =
+                    savedInventoryLayout(playerData);
+            byte[] baselineBytes = readAllBytes(playerData);
+            TrackedSubmission menu = submit(
+                    bot,
+                    new WorldInteractionAction(
+                            new WorldInteractionActionSpec
+                                    .InventoryMenuSwap(plan)),
+                    ActionPriority.OWNER_TASK,
+                    "listener-body-drift",
+                    80);
+
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    WAIT_TICKS,
+                    () -> currentPrefix(bot, plan) == 2,
+                    "Listener-body-drift fixture never exposed prefix two",
+                    cleanup,
+                    () -> injectListenerBodyDriftDuringDirectPending(
+                            helper,
+                            bot,
+                            plan,
+                            menu,
+                            listener,
+                            connection,
+                            playerData,
+                            baseline,
+                            baselineBytes,
+                            botId,
+                            generation,
+                            cleanup));
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    private static void injectListenerBodyDriftDuringDirectPending(
+            GameTestHelper helper,
+            TestBot bot,
+            InventoryMenuSwapPlan plan,
+            TrackedSubmission menu,
+            BotGamePacketListener listener,
+            BotConnection connection,
+            Path playerData,
+            PersistedInventoryLayout baseline,
+            byte[] baselineBytes,
+            UUID botId,
+            long generation,
+            P2GameTestSupport.Cleanup cleanup) {
+        try {
+            BotServerPlayer predecessor = bot.player();
+            listener.disconnect(Component.literal(
+                    "P5 direct-pending listener body drift fixture"));
+            P2GameTestSupport.require(
+                    connection.snapshot().open()
+                            && predecessor
+                                    .hasDisconnectPreSaveFence()
+                            && !menu.completion()
+                                    .toCompletableFuture()
+                                    .isDone()
+                            && currentPrefix(bot, plan) == 1,
+                    "Listener body drift did not begin from a cross-Tick direct PENDING state");
+            predecessor.experienceLevel =
+                    baseline.experienceLevel() + 13;
+
+            BotServerPlayer replacement =
+                    BotServerPlayer.recreateForRespawn(
+                            helper.getLevel().getServer(),
+                            predecessor.serverLevel(),
+                            predecessor.getGameProfile(),
+                            ClientInformation.createDefault(),
+                            predecessor);
+            replacement.connection = listener;
+            listener.player = replacement;
+            P2GameTestSupport.require(
+                    replacement.runtimeHandle()
+                                    == predecessor.runtimeHandle()
+                            && replacement.getUUID()
+                                    .equals(botId)
+                            && replacement
+                                    .hasDisconnectPreSaveFence()
+                            && listener.disconnectRequested()
+                            && !listener.acceptsRuntimeAuthority()
+                            && connection.snapshot().open(),
+                    "Listener replacement did not inherit the direct save fence and listener");
+            ListenerDisconnectDecision decision =
+                    bot.manager().onDisconnecting(
+                            replacement,
+                            listener,
+                            connection);
+
+            P2GameTestSupport.require(
+                    decision == ListenerDisconnectDecision.ABORTED,
+                    "Listener body drift did not fail the direct retirement closed");
+            P2GameTestSupport.require(
+                    !connection.snapshot().open()
+                            && !listener.acceptsRuntimeAuthority()
+                            && predecessor.runtimeHandle()
+                                    .player()
+                                    .isEmpty()
+                            && predecessor.runtimeHandle()
+                                            .generation()
+                                    == generation + 1L
+                            && bot.manager()
+                                    .resolveActive(
+                                            botId, generation)
+                                    .isEmpty()
+                            && helper.getLevel()
+                                            .getServer()
+                                            .getPlayerList()
+                                            .getPlayer(botId)
+                                    == null
+                            && helper.getLevel()
+                                            .getPlayerByUUID(botId)
+                                    == null,
+                    "Listener-body-drift fail-closed path retained body, listener, or runtime authority");
+            for (var level : helper.getLevel()
+                    .getServer()
+                    .getAllLevels()) {
+                P2GameTestSupport.require(
+                        level.getPlayerByUUID(botId) == null
+                                && level.getEntity(botId) == null
+                                && level.players()
+                                        .stream()
+                                        .noneMatch(player ->
+                                                player.getUUID()
+                                                        .equals(botId)),
+                        "Listener-body-drift fail-closed path retained a level identity");
+            }
+            P2GameTestSupport.require(
+                    Arrays.equals(
+                            baselineBytes,
+                            readAllBytes(playerData))
+                            && savedInventoryLayout(playerData)
+                                    .equals(baseline),
+                    "Listener-body-drift fail-closed path persisted the temporary layout or XP marker");
+            P2GameTestSupport.require(
+                    !predecessor.hasDisconnectPreSaveFence()
+                            && !replacement
+                                    .hasDisconnectPreSaveFence(),
+                    "Listener-body-drift fail-closed path retained a save fence after exact removal");
+
+            P2GameTestSupport.awaitOutcome(
+                    helper,
+                    menu.completion(),
+                    WAIT_TICKS,
+                    cleanup,
+                    outcome -> {
+                        P2GameTestSupport.require(
+                                outcome.state()
+                                                == ActionState
+                                                        .FAILED
+                                        && outcome.failureCode()
+                                                == ActionFailureCode
+                                                        .UNSAFE_CONTROL_STATE,
+                                "Listener-body-drift no-save retirement did not quarantine the orphaned cleanup: "
+                                        + outcome);
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            helper.fail(
+                    exception.getMessage() == null
+                            ? exception.toString()
+                            : exception.getMessage());
         }
     }
 

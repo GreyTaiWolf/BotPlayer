@@ -1,5 +1,6 @@
 package io.github.greytaiwolf.botplayer.lifecycle.retirement;
 
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -197,6 +198,45 @@ class GenerationRetirementSessionTest {
                 GenerationRetirementSession.UpdateKind.FAILED_CLOSED,
                 update.kind());
         Assertions.assertEquals(KEY, update.receipt().key());
+    }
+
+    @Test
+    void directPendingFailsClosedWhenShutdownOrReplacementClaimsContinuation() {
+        GenerationRetirementSession.Update pending = pendingOne();
+        for (GenerationRetirementContinuation continuation : List.of(
+                GenerationRetirementContinuation.SERVER_STOP,
+                GenerationRetirementContinuation.REPLACEMENT_HANDOFF)) {
+            GenerationRetirementKey conflict =
+                    new GenerationRetirementKey(
+                            RETIREMENT,
+                            BOT,
+                            7L,
+                            continuation);
+            GenerationRetirementTicket ticket =
+                    new GenerationRetirementTicket(
+                            conflict, 10L, 15L, 11L, 2);
+
+            GenerationRetirementSession.Update update =
+                    pending.session().observe(
+                            ticket,
+                            GenerationRetirementStatus.COMPLETE,
+                            2L,
+                            -1L);
+
+            Assertions.assertEquals(
+                    GenerationRetirementSession.UpdateKind.FAILED_CLOSED,
+                    update.kind());
+            Assertions.assertEquals(
+                    GenerationRetirementStatus.UNSAFE,
+                    update.receipt().status());
+            Assertions.assertEquals(
+                    GenerationRetirementFailure.AUTHORITY_CONFLICT,
+                    update.receipt().failure());
+            Assertions.assertEquals(KEY, update.receipt().key());
+            Assertions.assertEquals(
+                    GenerationRetirementStatus.PENDING,
+                    pending.session().status());
+        }
     }
 
     @Test
@@ -533,6 +573,67 @@ class GenerationRetirementSessionTest {
                     update.receipt(),
                     update.receipt().nextRetryTick());
         }
+    }
+
+    @Test
+    void penultimateAttemptRemainsPendingAndFinalAttemptMayComplete() {
+        GenerationRetirementSession current =
+                GenerationRetirementSession.open(
+                        KEY,
+                        0L,
+                        GenerationRetirementTicket.MAX_ATTEMPTS);
+        GenerationRetirementTicket ticket =
+                GenerationRetirementTicket.first(
+                        KEY,
+                        0L,
+                        GenerationRetirementTicket.MAX_ATTEMPTS);
+        GenerationRetirementSession.Update update = null;
+        for (int attempt = 1;
+                attempt < GenerationRetirementTicket.MAX_ATTEMPTS;
+                attempt++) {
+            update = current.observe(
+                    ticket,
+                    GenerationRetirementStatus.PENDING,
+                    attempt,
+                    attempt);
+            current = update.session();
+            Assertions.assertEquals(
+                    GenerationRetirementStatus.PENDING,
+                    update.receipt().status());
+            if (attempt
+                    < GenerationRetirementTicket.MAX_ATTEMPTS - 1) {
+                ticket = ticket.next(
+                        update.receipt(),
+                        update.receipt().nextRetryTick());
+            }
+        }
+
+        Assertions.assertTrue(update != null);
+        Assertions.assertEquals(
+                GenerationRetirementTicket.MAX_ATTEMPTS - 1,
+                update.receipt().attempt());
+        GenerationRetirementTicket finalTicket = ticket.next(
+                update.receipt(),
+                GenerationRetirementTicket.MAX_ATTEMPTS);
+        GenerationRetirementSession.Update completed =
+                current.observe(
+                        finalTicket,
+                        GenerationRetirementStatus.COMPLETE,
+                        GenerationRetirementTicket.MAX_ATTEMPTS,
+                        -1L);
+
+        Assertions.assertEquals(
+                GenerationRetirementStatus.COMPLETE,
+                completed.receipt().status());
+        Assertions.assertEquals(
+                GenerationRetirementTicket.MAX_ATTEMPTS,
+                completed.receipt().attempt());
+        Assertions.assertEquals(
+                GenerationRetirementTicket.MAX_ATTEMPTS,
+                completed.receipt().attemptedTick());
+        Assertions.assertEquals(
+                GenerationRetirementFailure.NONE,
+                completed.receipt().failure());
     }
 
     private static GenerationRetirementSession session() {

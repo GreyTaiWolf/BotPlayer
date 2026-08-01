@@ -147,6 +147,77 @@ class BotActionRuntimeCleanupStepTest {
     }
 
     @Test
+    void cleanupMayCompleteOnTheFinalAttemptWithoutPrematureQuarantine() {
+        CleanupScriptBackend backend = new CleanupScriptBackend();
+        BotActionRuntime runtime = runtime(backend);
+        ActionEnvelope action = envelope(53L, 1L, 1_000L);
+        Assertions.assertEquals(
+                BotActionRuntime.MAX_CLEANUP_TICKS,
+                ActionCleanupRequest.MAX_ATTEMPTS);
+        List<Function<ActionCleanupRequest, ActionCleanupReceipt>>
+                cleanup = new ArrayList<>();
+        for (int attempt = 1;
+                attempt < ActionCleanupRequest.MAX_ATTEMPTS;
+                attempt++) {
+            cleanup.add(request -> ActionCleanupReceipt.pending(
+                    request,
+                    request.attempt(),
+                    request.currentTick() + 1L,
+                    "bounded cleanup pending"));
+        }
+        cleanup.add(request -> ActionCleanupReceipt.complete(
+                request,
+                request.attempt(),
+                "bounded cleanup complete"));
+        backend.script(action.actionId(), cleanup);
+        ActionMailbox.Submission submission = runtime.submit(
+                action, ActionPriority.OWNER_TASK);
+        runtime.tick(1L);
+        ActionMailbox.Cancellation cancellation = runtime.cancel(
+                BOT,
+                action.actionId(),
+                ActionCancellationReason.REQUESTED);
+
+        for (long tick = 2L;
+                tick <= ActionCleanupRequest.MAX_ATTEMPTS;
+                tick++) {
+            runtime.tick(tick);
+            assertPending(runtime, action, submission);
+            Assertions.assertEquals(
+                    GenerationDrainStatus.PENDING,
+                    runtime.generationDrainStatus(BOT, 1L));
+            Assertions.assertEquals(0L, runtime.cleanupFailureCount());
+        }
+
+        long finalAttemptTick =
+                2L + BotActionRuntime.MAX_CLEANUP_TICKS - 1L;
+        runtime.tick(finalAttemptTick);
+
+        ActionOutcome completed = outcome(submission);
+        Assertions.assertEquals(ActionState.CANCELLED, completed.state());
+        Assertions.assertEquals(
+                ActionFailureCode.CANCELLED,
+                completed.failureCode());
+        Assertions.assertEquals(finalAttemptTick, completed.finishedTick());
+        Assertions.assertEquals(
+                ActionMailbox.CancellationStatus.CANCELLED,
+                cancelStatus(cancellation));
+        Assertions.assertEquals(0L, runtime.cleanupFailureCount());
+        Assertions.assertEquals(0, runtime.activeActionCount());
+        Assertions.assertEquals(0, runtime.activeLeaseCount());
+        List<ActionCleanupRequest> requests =
+                backend.cleanupRequests(action.actionId());
+        Assertions.assertEquals(
+                ActionCleanupRequest.MAX_ATTEMPTS,
+                requests.size());
+        ActionCleanupRequest last = requests.get(requests.size() - 1);
+        Assertions.assertEquals(
+                ActionCleanupRequest.MAX_ATTEMPTS,
+                last.attempt());
+        Assertions.assertEquals(finalAttemptTick, last.currentTick());
+    }
+
+    @Test
     void preemptorStartsOnlyAfterDisplacedCleanupCompletes() {
         CleanupScriptBackend backend = new CleanupScriptBackend();
         BotActionRuntime runtime = runtime(backend);
