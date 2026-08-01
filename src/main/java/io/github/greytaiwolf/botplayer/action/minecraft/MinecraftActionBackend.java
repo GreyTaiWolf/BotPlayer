@@ -2,6 +2,8 @@ package io.github.greytaiwolf.botplayer.action.minecraft;
 
 import io.github.greytaiwolf.botplayer.action.ActionBackend;
 import io.github.greytaiwolf.botplayer.action.ActionCleanupReason;
+import io.github.greytaiwolf.botplayer.action.ActionCleanupReceipt;
+import io.github.greytaiwolf.botplayer.action.ActionCleanupRequest;
 import io.github.greytaiwolf.botplayer.action.ActionEnvelope;
 import io.github.greytaiwolf.botplayer.action.ActionEvidence;
 import io.github.greytaiwolf.botplayer.action.ActionFailureCode;
@@ -370,6 +372,20 @@ public final class MinecraftActionBackend implements ActionBackend {
             return verifyStop(envelope, player, stopState);
         }
         return unsupported(envelope);
+    }
+
+    @Override
+    public ActionCleanupReceipt cleanupStep(
+            ActionEnvelope envelope,
+            ActionCleanupRequest request) {
+        Objects.requireNonNull(envelope, "envelope");
+        Objects.requireNonNull(request, "request");
+        if (envelope.action() instanceof WorldInteractionAction) {
+            return worldInteractionBackend.cleanupStep(
+                    envelope, request);
+        }
+        return ActionBackend.super.cleanupStep(
+                envelope, request);
     }
 
     @Override

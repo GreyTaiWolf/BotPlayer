@@ -3,6 +3,9 @@ package io.github.greytaiwolf.botplayer.action.minecraft;
 import io.github.greytaiwolf.botplayer.action.ActionBackend;
 import io.github.greytaiwolf.botplayer.action.ActionChannel;
 import io.github.greytaiwolf.botplayer.action.ActionCleanupReason;
+import io.github.greytaiwolf.botplayer.action.ActionCleanupReceipt;
+import io.github.greytaiwolf.botplayer.action.ActionCleanupRequest;
+import io.github.greytaiwolf.botplayer.action.ActionCleanupStatus;
 import io.github.greytaiwolf.botplayer.action.ActionEnvelope;
 import io.github.greytaiwolf.botplayer.action.ActionEvidence;
 import io.github.greytaiwolf.botplayer.action.ActionFailureCode;
@@ -21,8 +24,10 @@ import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanup
 import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuClickStep;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuCleanupSession;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuPrefixAuthority;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSettlementDecision;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSettlementCursor;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSettlementPolicy;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSnapshot;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSwapPlan;
@@ -63,8 +68,11 @@ import net.minecraft.world.phys.Vec3;
  * 状态，使 packet handler 重入生命周期逻辑时，运行时清理仍能撤销持续使用或方块破坏。
  */
 final class MinecraftWorldInteractionBackend implements ActionBackend {
+    private static final int MAX_COMPLETED_MENU_CLEANUPS = 256;
     private final BotLifecycleManager lifecycleManager;
     private final Map<ActionKey, InteractionState> active = new LinkedHashMap<>();
+    private final Map<ActionKey, ActionCleanupReceipt>
+            completedMenuCleanups = new LinkedHashMap<>();
     private final InventoryLayoutCleanupFence
             inventoryLayoutCleanupFence =
                     new InventoryLayoutCleanupFence();
@@ -262,6 +270,565 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             case WorldInteractionActionSpec.PickupWait pickupWait ->
                     verifyPickup(envelope, player, state, pickupWait);
         };
+    }
+
+    @Override
+    public ActionCleanupReceipt cleanupStep(
+            ActionEnvelope envelope,
+            ActionCleanupRequest request) {
+        Objects.requireNonNull(envelope, "envelope");
+        Objects.requireNonNull(request, "request");
+        if (!request.matches(envelope)) {
+            throw new IllegalArgumentException(
+                    "cleanup request does not match the action envelope");
+        }
+
+        ActionKey key = ActionKey.from(envelope);
+        InteractionState state = active.get(key);
+        ActionCleanupReceipt completed =
+                completedMenuCleanups.get(key);
+        if (state == null && completed != null) {
+            return completed.matches(request)
+                    ? completed
+                    : ActionCleanupReceipt.unsafe(
+                            request,
+                            completed.progressRevision(),
+                            "Completed menu cleanup identity changed");
+        }
+        if (state == null
+                || !(state.spec
+                        instanceof WorldInteractionActionSpec
+                                .InventoryMenuSwap menuSwap)) {
+            return ActionBackend.super.cleanupStep(
+                    envelope, request);
+        }
+        InventoryMenuCleanupSession.BeginResult begin =
+                state.menuCleanupSession.begin(request);
+        if (begin.status()
+                == InventoryMenuCleanupSession.BeginStatus.REPLAY) {
+            return begin.replayReceipt().orElseThrow();
+        }
+        if (begin.status()
+                == InventoryMenuCleanupSession.BeginStatus.REJECTED) {
+            return ActionCleanupReceipt.unsafe(
+                    request,
+                    state.menuCleanupSession.progressRevision(),
+                    "Menu cleanup identity or attempt changed");
+        }
+
+        ActionCleanupReceipt receipt;
+        try {
+            receipt = cleanupMenuSwapStep(
+                    envelope,
+                    key,
+                    state,
+                    menuSwap,
+                    request);
+        } catch (RuntimeException exception) {
+            receipt = unsafeMenuCleanup(
+                    state,
+                    request,
+                    "Menu cleanup adapter failed closed");
+        }
+        receipt = state.menuCleanupSession.remember(
+                request, receipt);
+        if (receipt.status() != ActionCleanupStatus.PENDING) {
+            rememberCompletedMenuCleanup(key, receipt);
+        }
+        return receipt;
+    }
+
+    private void rememberCompletedMenuCleanup(
+            ActionKey key, ActionCleanupReceipt receipt) {
+        completedMenuCleanups.put(key, receipt);
+        while (completedMenuCleanups.size()
+                > MAX_COMPLETED_MENU_CLEANUPS) {
+            ActionKey eldest = completedMenuCleanups
+                    .keySet()
+                    .iterator()
+                    .next();
+            completedMenuCleanups.remove(eldest);
+        }
+    }
+
+    private ActionCleanupReceipt cleanupMenuSwapStep(
+            ActionEnvelope envelope,
+            ActionKey key,
+            InteractionState state,
+            WorldInteractionActionSpec.InventoryMenuSwap menuSwap,
+            ActionCleanupRequest request) {
+        InventoryMenuTransaction transaction =
+                state.menuTransaction;
+        if (request.reason() == ActionCleanupReason.SUCCEEDED) {
+            if (transaction == null
+                    || transaction.state()
+                            != InventoryMenuTransactionState
+                                    .COMMITTED) {
+                return unsafeMenuCleanup(
+                        state,
+                        request,
+                        "Successful menu action lacks a committed transaction");
+            }
+            active.remove(key, state);
+            return ActionCleanupReceipt.complete(
+                    request,
+                    state.menuCleanupSession.progressRevision(),
+                    "Committed menu transaction released");
+        }
+        if (!state.sideEffectDispatched) {
+            active.remove(key, state);
+            return ActionCleanupReceipt.complete(
+                    request,
+                    state.menuCleanupSession.progressRevision(),
+                    "Menu transaction stopped before its first click");
+        }
+        if (transaction == null
+                || transaction.state().terminal()) {
+            return unsafeMenuCleanup(
+                    state,
+                    request,
+                    "Menu cleanup lost its live transaction cursor");
+        }
+
+        Optional<BotServerPlayer> resolved =
+                lifecycleManager.resolveCleanupTarget(
+                        envelope.botId(), envelope.botGeneration());
+        if (resolved.isEmpty()) {
+            return unsafeMenuCleanup(
+                    state,
+                    request,
+                    "Menu cleanup has no authoritative player body");
+        }
+        BotServerPlayer player = resolved.orElseThrow();
+        boolean replacementInheritor =
+                lifecycleManager
+                        .isStagedReplacementCleanupTarget(
+                                envelope.botId(),
+                                envelope.botGeneration(),
+                                player);
+
+        InventoryMenuSnapshot actual;
+        try {
+            actual = MinecraftActionSnapshot.inventoryMenu(
+                    player);
+        } catch (RuntimeException exception) {
+            return unsafeMenuCleanup(
+                    state,
+                    request,
+                    "Menu cleanup could not capture its authoritative snapshot");
+        }
+        InventoryMenuSwapPlan plan = menuSwap.plan();
+        if (!menuCleanupControlPlaneSafe(
+                player, state, plan, actual)) {
+            return unsafeMenuCleanup(
+                    state,
+                    request,
+                    "Menu cleanup control plane or conservation proof changed");
+        }
+
+        InventoryMenuSettlementDecision decision;
+        try {
+            decision = menuCleanupDecision(
+                    state,
+                    plan,
+                    transaction,
+                    actual,
+                    replacementInheritor);
+        } catch (RuntimeException exception) {
+            return unsafeMenuCleanup(
+                    state,
+                    request,
+                    "Menu cleanup could not bind one exact plan prefix");
+        }
+
+        return switch (decision.outcome()) {
+            case UNSAFE -> unsafeMenuCleanup(
+                    state,
+                    request,
+                    "Menu cleanup observed an unauthorized plan prefix");
+            case SAFE_PREFIX_COMMITTED -> {
+                state.menuTransaction = transaction.cancel();
+                clearMenuSettlementState(state);
+                active.remove(key, state);
+                yield ActionCleanupReceipt.complete(
+                        request,
+                        state.menuCleanupSession.progressRevision(),
+                        "Menu layout changed externally but remained conserved");
+            }
+            case ALREADY_INITIAL, ALREADY_FINAL ->
+                    finishMenuCleanupEndpoint(
+                            key,
+                            state,
+                            plan,
+                            decision,
+                            actual,
+                            request);
+            case CLICK_TO_INITIAL, CLICK_TO_FINAL ->
+                    applyMenuCleanupClick(
+                            key,
+                            player,
+                            state,
+                            plan,
+                            decision,
+                            request);
+        };
+    }
+
+    private InventoryMenuSettlementDecision menuCleanupDecision(
+            InteractionState state,
+            InventoryMenuSwapPlan plan,
+            InventoryMenuTransaction transaction,
+            InventoryMenuSnapshot actual,
+            boolean replacementInheritor) {
+        resolveForwardMenuInFlight(
+                state,
+                plan,
+                transaction,
+                actual,
+                replacementInheritor);
+
+        InventoryMenuSettlementCursor settlementCursor =
+                state.menuCleanupSession
+                        .settlementCursor()
+                        .orElse(null);
+        int stablePrefix = settlementCursor == null
+                ? state.menuTransaction.confirmedClicks()
+                : settlementCursor.confirmedPrefix();
+        InventoryMenuSnapshot stableSnapshot =
+                Objects.requireNonNull(
+                        state.menuLastSnapshot,
+                        "menuLastSnapshot");
+        boolean reboundStable = consumeReplacementRebind(
+                state,
+                plan,
+                stablePrefix,
+                actual,
+                replacementInheritor);
+        if (reboundStable) {
+            stableSnapshot = actual;
+            state.menuLastSnapshot = actual;
+        }
+        InventoryMenuPrefixAuthority authority =
+                InventoryMenuPrefixAuthority.stable(
+                        plan, stablePrefix, stableSnapshot);
+        if (settlementCursor == null) {
+            return InventoryMenuSettlementPolicy.decide(
+                    plan, actual, authority);
+        }
+        return InventoryMenuSettlementPolicy.decide(
+                settlementCursor,
+                actual,
+                authority);
+    }
+
+    private void resolveForwardMenuInFlight(
+            InteractionState state,
+            InventoryMenuSwapPlan plan,
+            InventoryMenuTransaction transaction,
+            InventoryMenuSnapshot actual,
+            boolean replacementInheritor) {
+        int source = transaction.confirmedClicks();
+        if (state.menuForwardInFlight != source) {
+            return;
+        }
+        InventoryMenuSnapshot sourceSnapshot =
+                Objects.requireNonNull(
+                        state.menuLastSnapshot,
+                        "menuLastSnapshot");
+        boolean reboundSource = consumeReplacementRebind(
+                state,
+                plan,
+                source,
+                actual,
+                replacementInheritor);
+        if (actual.equals(sourceSnapshot) || reboundSource) {
+            if (reboundSource) {
+                state.menuLastSnapshot = actual;
+            }
+            state.menuForwardInFlight = -1;
+            state.menuForwardTargetSnapshot = null;
+            return;
+        }
+
+        int target = source + 1;
+        InventoryMenuSnapshot targetSnapshot =
+                state.menuForwardTargetSnapshot;
+        boolean exactTarget = targetSnapshot != null
+                && actual.equals(targetSnapshot);
+        boolean reboundTarget =
+                target <= plan.orderedSteps().size()
+                        && consumeReplacementRebind(
+                                state,
+                                plan,
+                                target,
+                                actual,
+                                replacementInheritor);
+        if (!exactTarget && !reboundTarget) {
+            throw new IllegalStateException(
+                    "forward menu in-flight state is neither exact source nor target");
+        }
+        state.menuTransaction = transaction.confirmNext(
+                plan.orderedSteps().get(source));
+        state.menuLastSnapshot = actual;
+        state.menuForwardInFlight = -1;
+        state.menuForwardTargetSnapshot = null;
+        state.menuCleanupSession
+                .recordObservedForwardProgress();
+    }
+
+    private static boolean consumeReplacementRebind(
+            InteractionState state,
+            InventoryMenuSwapPlan plan,
+            int prefix,
+            InventoryMenuSnapshot actual,
+            boolean replacementInheritor) {
+        if (!replacementInheritor
+                || state.menuReplacementRebound
+                || !plan.snapshotAtPrefix(prefix)
+                        .layoutEqualsIgnoringState(actual)) {
+            return false;
+        }
+        state.menuReplacementRebound = true;
+        return true;
+    }
+
+    private boolean menuCleanupControlPlaneSafe(
+            BotServerPlayer player,
+            InteractionState state,
+            InventoryMenuSwapPlan plan,
+            InventoryMenuSnapshot actual) {
+        return lifecycleManager.mayCleanupMutateInventory(
+                        state.botId, state.botGeneration)
+                && player.containerMenu == player.inventoryMenu
+                && isCurrentCleanupTarget(state, player)
+                && nativeCraftSlotsEmpty(player)
+                && actual.cursor().isEmpty()
+                && actual.containerId()
+                        == plan.initialSnapshot().containerId()
+                && actual.inventoryMultisetEquals(
+                        plan.initialSnapshot())
+                && MinecraftInteractionView
+                        .inventoryMultisetDigest(player)
+                        .equals(state.inventoryMultisetBefore);
+    }
+
+    private ActionCleanupReceipt applyMenuCleanupClick(
+            ActionKey key,
+            BotServerPlayer player,
+            InteractionState state,
+            InventoryMenuSwapPlan plan,
+            InventoryMenuSettlementDecision decision,
+            ActionCleanupRequest request) {
+        InventoryMenuSettlementCursor cursor =
+                decision.settlementCursor().orElseThrow();
+        InventoryMenuClickStep step =
+                decision.click().orElseThrow();
+        InventoryMenuSnapshot before =
+                MinecraftActionSnapshot.inventoryMenu(player);
+        if (!before.equals(decision.observedSnapshot())
+                || !menuCleanupControlPlaneSafe(
+                        player, state, plan, before)
+                || !before.layoutEqualsIgnoringState(
+                        step.before())
+                || !menuStepAllowedNow(player, step)) {
+            return unsafeMenuCleanup(
+                    state,
+                    request,
+                    "Menu cleanup click precondition changed");
+        }
+
+        InventoryMenuSettlementCursor advanced =
+                cursor.advanceAfterProposedClick();
+        state.menuCleanupSession.observe(decision);
+        state.menuSettlementSourcePrefix =
+                cursor.confirmedPrefix();
+        state.menuSettlementTargetPrefix =
+                advanced.confirmedPrefix();
+        state.menuSettlementSourceSnapshot = before;
+        state.menuSettlementTargetSnapshot = null;
+        state.menuForwardInFlight = -1;
+
+        try {
+            player.inventoryMenu.clicked(
+                    step.menuSlot(),
+                    step.hotbarButton(),
+                    ClickType.SWAP,
+                    player);
+            player.inventoryMenu.broadcastChanges();
+        } catch (RuntimeException ignored) {
+            // The exact authoritative post-call snapshot distinguishes
+            // a before-mutation throw from an after-mutation throw.
+        }
+
+        InventoryMenuSnapshot after;
+        try {
+            after = MinecraftActionSnapshot.inventoryMenu(
+                    player);
+        } catch (RuntimeException exception) {
+            return unsafeMenuCleanup(
+                    state,
+                    request,
+                    "Menu cleanup click outcome could not be observed");
+        }
+        if (!menuCleanupControlPlaneSafe(
+                player, state, plan, after)) {
+            return unsafeMenuCleanup(
+                    state,
+                    request,
+                    "Menu cleanup authority changed during its click");
+        }
+        if (after.equals(before)) {
+            clearMenuSettlementInFlight(state);
+            state.menuLastSnapshot = before;
+            return pendingMenuCleanup(
+                    state,
+                    request,
+                    "Menu cleanup click stopped before mutation");
+        }
+        if (!after.layoutEqualsIgnoringState(step.after())) {
+            return unsafeMenuCleanup(
+                    state,
+                    request,
+                    "Menu cleanup click reached neither adjacent snapshot");
+        }
+
+        state.menuSettlementTargetSnapshot = after;
+        InventoryMenuSettlementCursor confirmed =
+                state.menuCleanupSession
+                        .confirmProposedClick(decision);
+        if (confirmed.confirmedPrefix()
+                != advanced.confirmedPrefix()) {
+            return unsafeMenuCleanup(
+                    state,
+                    request,
+                    "Menu cleanup progress cursor diverged");
+        }
+        state.menuLastSnapshot = after;
+        if (advanced.endpoint()
+                        == InventoryMenuSettlementCursor.Endpoint.FINAL) {
+            InventoryMenuTransaction transaction =
+                    state.menuTransaction;
+            if (transaction.confirmedClicks()
+                    != cursor.confirmedPrefix()) {
+                return unsafeMenuCleanup(
+                        state,
+                        request,
+                        "Final-directed cleanup lost its transaction cursor");
+            }
+            state.menuTransaction = transaction.confirmNext(
+                    plan.orderedSteps().get(
+                            cursor.confirmedPrefix()));
+        }
+        clearMenuSettlementInFlight(state);
+        if (advanced.atEndpoint()) {
+            InventoryMenuSettlementDecision endpointDecision =
+                    InventoryMenuSettlementPolicy.decide(
+                            advanced,
+                            after,
+                            InventoryMenuPrefixAuthority.stable(
+                                    plan,
+                                    advanced.confirmedPrefix(),
+                                    after));
+            return finishMenuCleanupEndpoint(
+                    key,
+                    state,
+                    plan,
+                    endpointDecision,
+                    after,
+                    request);
+        }
+        return pendingMenuCleanup(
+                state,
+                request,
+                "Menu cleanup advanced one adjacent prefix");
+    }
+
+    private ActionCleanupReceipt finishMenuCleanupEndpoint(
+            ActionKey key,
+            InteractionState state,
+            InventoryMenuSwapPlan plan,
+            InventoryMenuSettlementDecision decision,
+            InventoryMenuSnapshot settled,
+            ActionCleanupRequest request) {
+        InventoryMenuSettlementCursor cursor =
+                decision.settlementCursor().orElseThrow();
+        if (!cursor.atEndpoint()
+                || decision.observedPrefix()
+                        != cursor.confirmedPrefix()
+                || !settled.equals(
+                        decision.observedSnapshot())) {
+            return unsafeMenuCleanup(
+                    state,
+                    request,
+                    "Menu cleanup endpoint proof is inconsistent");
+        }
+        InventoryMenuTransaction transaction =
+                Objects.requireNonNull(
+                        state.menuTransaction,
+                        "menuTransaction");
+        if (cursor.endpoint()
+                == InventoryMenuSettlementCursor.Endpoint.FINAL) {
+            if (cursor.confirmedPrefix()
+                            != plan.orderedSteps().size()
+                    || transaction.state()
+                            != InventoryMenuTransactionState
+                                    .VERIFYING
+                    || transaction.confirmedClicks()
+                            != plan.orderedSteps().size()) {
+                return unsafeMenuCleanup(
+                        state,
+                        request,
+                        "Final menu endpoint lacks an exact transaction proof");
+            }
+            state.menuTransaction = transaction.commit();
+        } else {
+            if (cursor.confirmedPrefix() != 0) {
+                return unsafeMenuCleanup(
+                        state,
+                        request,
+                        "Initial menu endpoint has a non-zero prefix");
+            }
+            state.menuTransaction = transaction.cancel();
+        }
+        state.menuLastSnapshot = settled;
+        clearMenuSettlementState(state);
+        active.remove(key, state);
+        return ActionCleanupReceipt.complete(
+                request,
+                state.menuCleanupSession.progressRevision(),
+                cursor.endpoint()
+                                == InventoryMenuSettlementCursor
+                                        .Endpoint.INITIAL
+                        ? "Menu cleanup restored the initial endpoint"
+                        : "Menu cleanup committed the final endpoint");
+    }
+
+    private static ActionCleanupReceipt pendingMenuCleanup(
+            InteractionState state,
+            ActionCleanupRequest request,
+            String summary) {
+        if (request.attempt()
+                >= ActionCleanupRequest.MAX_ATTEMPTS) {
+            return ActionCleanupReceipt.unsafe(
+                    request,
+                    state.menuCleanupSession.progressRevision(),
+                    "Menu cleanup exhausted its bounded attempts");
+        }
+        return ActionCleanupReceipt.pending(
+                request,
+                state.menuCleanupSession.progressRevision(),
+                request.currentTick() + 1L,
+                summary);
+    }
+
+    private static ActionCleanupReceipt unsafeMenuCleanup(
+            InteractionState state,
+            ActionCleanupRequest request,
+            String summary) {
+        return ActionCleanupReceipt.unsafe(
+                request,
+                state.menuCleanupSession.progressRevision(),
+                summary);
     }
 
     @Override
@@ -742,11 +1309,17 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     "Bot native inventory menu is not active");
         }
         InventoryMenuSwapPlan plan = menuSwap.plan();
-        if (plan.orderedSteps().size() > 3) {
+        if (plan.operation()
+                        == InventoryMenuSwapPlan.Operation
+                                .SWAP_SEQUENCE
+                && plan.touchedInventorySlots().stream()
+                        .anyMatch(
+                                PlayerInventoryMenuLayout
+                                        ::isEquipmentInventorySlot)) {
             return failure(
                     envelope,
                     ActionFailureCode.UNSUPPORTED,
-                    "Runtime menu adapter accepts at most three bounded clicks");
+                    "Generic menu sequences cannot touch equipment slots");
         }
         InventoryMenuSnapshot actual =
                 MinecraftActionSnapshot.inventoryMenu(player);
@@ -2190,6 +2763,11 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 Objects.requireNonNull(
                         state.menuTransaction,
                         "menuTransaction");
+        if (state.menuForwardInFlight >= 0
+                || state.menuSettlementSourcePrefix >= 0) {
+            throw new IllegalStateException(
+                    "Synchronous menu cleanup cannot resolve an in-flight click");
+        }
         InventoryMenuPrefixAuthority authority =
                 menuPrefixAuthority(
                         state,
@@ -2204,6 +2782,14 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             case UNSAFE -> throw new IllegalStateException(
                     "Inventory menu transaction cannot prove a safe settlement");
             case CLICK_TO_INITIAL, CLICK_TO_FINAL -> {
+                InventoryMenuSettlementCursor cursor =
+                        decision.settlementCursor().orElseThrow();
+                InventoryMenuSettlementCursor advanced =
+                        cursor.advanceAfterProposedClick();
+                if (!advanced.atEndpoint()) {
+                    throw new IllegalStateException(
+                            "Synchronous menu cleanup cannot span multiple Ticks");
+                }
                 InventoryMenuSnapshot settled =
                         applyMenuSettlementClick(
                                 player,
@@ -2213,18 +2799,20 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 finishMenuSettlement(
                         state,
                         plan,
-                        decision.outcome(),
+                        advanced,
                         settled);
             }
             case ALREADY_INITIAL -> finishMenuSettlement(
                     state,
                     plan,
-                    decision.outcome(),
+                    decision.settlementCursor()
+                            .orElseThrow(),
                     actual);
             case ALREADY_FINAL -> finishMenuSettlement(
                     state,
                     plan,
-                    decision.outcome(),
+                    decision.settlementCursor()
+                            .orElseThrow(),
                     actual);
             case SAFE_PREFIX_COMMITTED -> {
                 clearMenuSettlementState(state);
@@ -2421,41 +3009,24 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
     private static void finishMenuSettlement(
             InteractionState state,
             InventoryMenuSwapPlan plan,
-            InventoryMenuSettlementDecision.Outcome outcome,
+            InventoryMenuSettlementCursor cursor,
             InventoryMenuSnapshot settled) {
         InventoryMenuTransaction transaction =
                 Objects.requireNonNull(
                         state.menuTransaction,
                         "menuTransaction");
-        boolean finalEndpoint =
-                outcome
-                                == InventoryMenuSettlementDecision
-                                        .Outcome.ALREADY_FINAL
-                        || outcome
-                                == InventoryMenuSettlementDecision
-                                        .Outcome.CLICK_TO_FINAL;
-        if (finalEndpoint) {
+        if (!cursor.atEndpoint()) {
+            throw new IllegalStateException(
+                    "Menu settlement did not reach its endpoint");
+        }
+        if (cursor.endpoint()
+                == InventoryMenuSettlementCursor.Endpoint.FINAL) {
             int finalPrefix = plan.orderedSteps().size();
-            int missing =
-                    finalPrefix - transaction.confirmedClicks();
-            boolean authorizedTwoStepGap =
-                    state.menuSettlementSourcePrefix
-                                    == finalPrefix - 1
-                            && state.menuSettlementTargetPrefix
-                                    == finalPrefix
-                            && transaction.confirmedClicks()
-                                    == finalPrefix - 2;
-            int maximumMissing =
-                    authorizedTwoStepGap ? 2 : 1;
-            if (missing < 0 || missing > maximumMissing) {
-                throw new IllegalStateException(
-                        "Final menu settlement is outside its bounded confirmed prefix");
-            }
-            while (transaction.confirmedClicks()
-                    < finalPrefix) {
-                int next = transaction.confirmedClicks();
+            if (transaction.confirmedClicks()
+                    == finalPrefix - 1) {
                 transaction = transaction.confirmNext(
-                        plan.orderedSteps().get(next));
+                        plan.orderedSteps().get(
+                                finalPrefix - 1));
             }
             if (transaction.confirmedClicks()
                             != finalPrefix
@@ -2476,6 +3047,12 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
     }
 
     private static void clearMenuSettlementState(
+            InteractionState state) {
+        state.menuCleanupSession.clearSettlementCursor();
+        clearMenuSettlementInFlight(state);
+    }
+
+    private static void clearMenuSettlementInFlight(
             InteractionState state) {
         state.menuSettlementSourcePrefix = -1;
         state.menuSettlementTargetPrefix = -1;
@@ -2667,6 +3244,10 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         private InventoryMenuTransaction menuTransaction;
         private InventoryMenuSnapshot menuLastSnapshot;
         private int menuForwardInFlight = -1;
+        private final InventoryMenuCleanupSession
+                menuCleanupSession =
+                        new InventoryMenuCleanupSession();
+        private boolean menuReplacementRebound;
         private int menuSettlementSourcePrefix = -1;
         private int menuSettlementTargetPrefix = -1;
         private InventoryMenuSnapshot
