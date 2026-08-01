@@ -714,61 +714,141 @@ public final class P5SurvivalSkillAcceptanceGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = CONFIG_MUTATION_BATCH,
             timeoutTicks = TIMEOUT_TICKS)
     public static void persistentNoSaveFenceCrossesRespawnBody(
             GameTestHelper helper) {
         P2GameTestSupport.prepareEmptyFloor(helper);
-        TestBot bot = P5GameTestSupport.spawnFixedBot(
-                helper, "P5RespawnFence");
+        boolean previousAutoRespawn =
+                BotPlayerConfig.AUTO_RESPAWN.get();
+        int previousRespawnDelay =
+                BotPlayerConfig.RESPAWN_DELAY_TICKS.get();
+        boolean previousKeepInventory = helper
+                .getLevel()
+                .getGameRules()
+                .getBoolean(GameRules.RULE_KEEPINVENTORY);
         P2GameTestSupport.Cleanup cleanup =
-                P5GameTestSupport.cleanup(bot);
+                P5GameTestSupport.cleanup();
+        cleanup.add(() -> BotPlayerConfig.AUTO_RESPAWN.set(
+                previousAutoRespawn));
+        cleanup.add(() -> BotPlayerConfig.RESPAWN_DELAY_TICKS.set(
+                previousRespawnDelay));
+        cleanup.add(() -> helper
+                .getLevel()
+                .getGameRules()
+                .getRule(GameRules.RULE_KEEPINVENTORY)
+                .set(
+                        previousKeepInventory,
+                        helper.getLevel().getServer()));
         try {
+            BotPlayerConfig.AUTO_RESPAWN.set(true);
+            BotPlayerConfig.RESPAWN_DELAY_TICKS.set(0);
+            helper.getLevel()
+                    .getGameRules()
+                    .getRule(GameRules.RULE_KEEPINVENTORY)
+                    .set(
+                            true,
+                            helper.getLevel().getServer());
+            TestBot bot = P5GameTestSupport.spawnFixedBot(
+                    helper, "P5RespawnFence");
+            P5GameTestSupport.trackBot(cleanup, bot);
             var server = helper.getLevel().getServer();
-            UUID botId = bot.player().getUUID();
+            BotServerPlayer predecessor = bot.player();
+            UUID botId = predecessor.getUUID();
+            long generation = predecessor
+                    .runtimeHandle()
+                    .generation();
+            BotServerPlayer[] replacement = {null};
+            cleanup.add(() -> {
+                predecessor.releasePlayerDataSaveSuppression();
+                if (replacement[0] != null) {
+                    replacement[0]
+                            .releasePlayerDataSaveSuppression();
+                }
+            });
             Path playerData = server
                     .getWorldPath(LevelResource.PLAYER_DATA_DIR)
                     .resolve(botId + ".dat");
             PlayerListAccessor playerList =
                     (PlayerListAccessor)
                             (Object) server.getPlayerList();
-            bot.player().getInventory().clearContent();
-            bot.player().getInventory().selected = 1;
-            bot.player().getInventory().setItem(
+            predecessor.getInventory().clearContent();
+            predecessor.getInventory().selected = 1;
+            predecessor.getInventory().setItem(
                     1, new ItemStack(Items.COBBLESTONE));
-            playerList.botplayer$saveExactPlayer(bot.player());
+            playerList.botplayer$saveExactPlayer(predecessor);
             PersistedLayout baseline = savedLayout(playerData);
 
-            bot.player().suppressPlayerDataSaveUntilReleased();
-            BotServerPlayer replacement =
-                    BotServerPlayer.recreateForRespawn(
-                            server,
-                            bot.player().serverLevel(),
-                            bot.player().getGameProfile(),
-                            ClientInformation.createDefault(),
-                            bot.player());
-            replacement.getInventory().clearContent();
-            replacement.getInventory().selected = 6;
-            replacement.getInventory().setItem(
-                    12, new ItemStack(Items.EMERALD));
-            playerList.botplayer$saveExactPlayer(replacement);
-            playerList.botplayer$saveExactPlayer(replacement);
-            P2GameTestSupport.require(
-                    savedLayout(playerData).equals(baseline),
-                    "Respawn body did not inherit the persistent no-save fence");
+            predecessor.suppressPlayerDataSaveUntilReleased();
+            predecessor.kill();
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    80,
+                    () -> bot.manager()
+                            .resolveActionTarget(
+                                    botId,
+                                    generation + 1L)
+                            .filter(player ->
+                                    player != predecessor)
+                            .isPresent(),
+                    "Persistent-fence Bot never obtained an authoritative respawn body",
+                    cleanup,
+                    () -> {
+                        replacement[0] = bot.manager()
+                                .resolveActionTarget(
+                                        botId,
+                                        generation + 1L)
+                                .orElseThrow();
+                        P2GameTestSupport.require(
+                                replacement[0]
+                                                .runtimeHandle()
+                                        == predecessor
+                                                .runtimeHandle()
+                                        && server.getPlayerList()
+                                                        .getPlayer(botId)
+                                                == replacement[0]
+                                        && replacement[0]
+                                                        .serverLevel()
+                                                        .getPlayerByUUID(
+                                                                botId)
+                                                == replacement[0],
+                                "Respawn fence fixture did not obtain the authoritative replacement");
+                        replacement[0]
+                                .getInventory()
+                                .clearContent();
+                        replacement[0]
+                                .getInventory()
+                                .selected = 6;
+                        replacement[0]
+                                .getInventory()
+                                .setItem(
+                                        12,
+                                        new ItemStack(
+                                                Items.EMERALD));
+                        playerList.botplayer$saveExactPlayer(
+                                replacement[0]);
+                        playerList.botplayer$saveExactPlayer(
+                                replacement[0]);
+                        P2GameTestSupport.require(
+                                savedLayout(playerData)
+                                        .equals(baseline),
+                                "Authoritative respawn body did not inherit the persistent no-save fence");
 
-            replacement.releasePlayerDataSaveSuppression();
-            playerList.botplayer$saveExactPlayer(replacement);
-            P2GameTestSupport.require(
-                    savedLayout(playerData)
-                            .equals(new PersistedLayout(
-                                    6, Set.of(12))),
-                    "Explicit respawn-body fence release did not restore exact saves");
-            bot.player().releasePlayerDataSaveSuppression();
-            cleanup.run();
-            helper.succeed();
+                        replacement[0]
+                                .releasePlayerDataSaveSuppression();
+                        playerList.botplayer$saveExactPlayer(
+                                replacement[0]);
+                        P2GameTestSupport.require(
+                                savedLayout(playerData)
+                                        .equals(
+                                                new PersistedLayout(
+                                                        6,
+                                                        Set.of(12))),
+                                "Explicit authoritative respawn-body fence release did not restore exact saves");
+                        cleanup.run();
+                        helper.succeed();
+                    });
         } catch (RuntimeException | AssertionError exception) {
-            bot.player().releasePlayerDataSaveSuppression();
             cleanup.run();
             throw exception;
         }
