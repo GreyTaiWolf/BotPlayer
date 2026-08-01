@@ -3297,15 +3297,20 @@ public final class BotLifecycleManager {
                             "Death retirement completion lost its exact receipt or authority"));
             return false;
         }
-        if (!pending.player.hasDeathRetirementSaveFence()
-                || !pending.player
-                        .releaseDeathRetirementSaveFence()) {
+        if (!pending.player.hasDeathRetirementSaveFence()) {
             pending.failure = appendFailure(
                     pending.failure,
                     new IllegalStateException(
-                            "Another save fence remained after death retirement"));
+                            "Death-retirement save fence disappeared before completion"));
             return false;
         }
+        /*
+         * Release only the retirement-owned share. A separately owned persistent
+         * no-save fence is allowed to remain and is intentionally inherited by the
+         * authoritative respawn body; it must not turn an otherwise safe retirement
+         * into a failure.
+         */
+        pending.player.releaseDeathRetirementSaveFence();
 
         runtime.completedDeathRetirement = receipt;
         runtime.deathRetirement = null;
