@@ -262,6 +262,35 @@ class InventoryMenuCleanupSessionTest {
                         "不能继续"));
     }
 
+    @Test
+    void reservesOnlyOneClickDispatchPerTick() {
+        InventoryMenuCleanupSession session =
+                new InventoryMenuCleanupSession();
+
+        Assertions.assertTrue(session.mayDispatchClickAt(20L));
+        session.beginClickDispatch(20L);
+        Assertions.assertTrue(session.clickDispatchOpen());
+        Assertions.assertFalse(session.mayDispatchClickAt(20L));
+        Assertions.assertFalse(session.mayDispatchClickAt(21L));
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> session.endClickDispatch(21L));
+        Assertions.assertTrue(session.clickDispatchOpen());
+        session.endClickDispatch(20L);
+        Assertions.assertFalse(session.clickDispatchOpen());
+        Assertions.assertFalse(session.mayDispatchClickAt(19L));
+        Assertions.assertTrue(session.mayDispatchClickAt(21L));
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> session.beginClickDispatch(20L));
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> session.endClickDispatch(20L));
+        session.beginClickDispatch(21L);
+        session.endClickDispatch(21L);
+        Assertions.assertFalse(session.mayDispatchClickAt(21L));
+    }
+
     private static ActionCleanupRequest request(UUID cleanupId) {
         return ActionCleanupRequest.first(
                 cleanupId,

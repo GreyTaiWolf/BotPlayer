@@ -497,8 +497,9 @@ public final class P5BasicArmorAcceptanceGameTests {
                     cleanup,
                     () -> {
                         /*
-                         * 旧菜单 ticket 在下一 tick 先执行第 2 击；随后
-                         * Stop ticket acquire 并同步把该 prefix 收口到 FINAL。
+                         * 旧菜单 ticket 在下一 Tick 先执行第 2 击；随后
+                         * Stop ticket acquire，但同 Tick 物理栅栏会把最终
+                         * 收口点击延后到下一 Tick。
                          */
                         submitEmergencyStop(bot);
                         awaitTerminalRun(

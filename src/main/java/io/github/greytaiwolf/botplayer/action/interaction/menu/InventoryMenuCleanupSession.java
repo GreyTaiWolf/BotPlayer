@@ -45,6 +45,8 @@ public final class InventoryMenuCleanupSession {
     private ActionCleanupReceipt lastReceipt;
     private ActionCleanupRequest openAttempt;
     private long progressRevision;
+    private long lastClickDispatchTick = -1L;
+    private boolean clickDispatchOpen;
     private InventoryMenuSettlementCursor settlementCursor;
 
     public BeginResult begin(ActionCleanupRequest request) {
@@ -115,6 +117,44 @@ public final class InventoryMenuCleanupSession {
 
     public long progressRevision() {
         return progressRevision;
+    }
+
+    /**
+     * 同一菜单事务在一个服务器 Tick 内至多派发一次原生点击。
+     */
+    public boolean mayDispatchClickAt(long currentTick) {
+        if (currentTick < 0L) {
+            throw new IllegalArgumentException(
+                    "currentTick must not be negative");
+        }
+        return !clickDispatchOpen
+                && currentTick > lastClickDispatchTick;
+    }
+
+    /**
+     * 在进入可能同步重入的原生点击前预占本 Tick；即使点击在变更前抛错，
+     * 本 Tick 也不能再次派发点击。
+     */
+    public void beginClickDispatch(long currentTick) {
+        if (!mayDispatchClickAt(currentTick)) {
+            throw new IllegalArgumentException(
+                    "menu click dispatch requires a later Tick");
+        }
+        lastClickDispatchTick = currentTick;
+        clickDispatchOpen = true;
+    }
+
+    public void endClickDispatch(long currentTick) {
+        if (!clickDispatchOpen
+                || currentTick != lastClickDispatchTick) {
+            throw new IllegalArgumentException(
+                    "menu click dispatch is not open for this Tick");
+        }
+        clickDispatchOpen = false;
+    }
+
+    public boolean clickDispatchOpen() {
+        return clickDispatchOpen;
     }
 
     public Optional<InventoryMenuSettlementCursor>

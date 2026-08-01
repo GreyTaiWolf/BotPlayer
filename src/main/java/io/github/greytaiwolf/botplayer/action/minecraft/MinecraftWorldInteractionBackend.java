@@ -225,7 +225,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                             envelope,
                             player,
                             state,
-                            menuSwap);
+                            menuSwap,
+                            currentTick);
             default -> BackendResult.readyToVerify(envelope);
         };
     }
@@ -389,6 +390,12 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     request,
                     "Menu cleanup lost its live transaction cursor");
         }
+        if (state.menuCleanupSession.clickDispatchOpen()) {
+            return pendingMenuCleanup(
+                    state,
+                    request,
+                    "Menu cleanup is waiting for an open menu click to return");
+        }
 
         Optional<BotServerPlayer> resolved =
                 lifecycleManager.resolveCleanupTarget(
@@ -464,14 +471,33 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                             actual,
                             request);
             case CLICK_TO_INITIAL, CLICK_TO_FINAL ->
-                    applyMenuCleanupClick(
-                            key,
-                            player,
-                            state,
-                            plan,
-                            decision,
-                            request);
+                    !state.menuCleanupSession
+                            .mayDispatchClickAt(
+                                    request.currentTick())
+                            ? deferMenuCleanupAfterSameTickClick(
+                                    state,
+                                    decision,
+                                    request)
+                            : applyMenuCleanupClick(
+                                    key,
+                                    player,
+                                    state,
+                                    plan,
+                                    decision,
+                                    request);
         };
+    }
+
+    private static ActionCleanupReceipt
+            deferMenuCleanupAfterSameTickClick(
+                    InteractionState state,
+                    InventoryMenuSettlementDecision decision,
+                    ActionCleanupRequest request) {
+        state.menuCleanupSession.observe(decision);
+        return pendingMenuCleanup(
+                state,
+                request,
+                "Menu cleanup deferred after a same-Tick menu click");
     }
 
     private InventoryMenuSettlementDecision menuCleanupDecision(
@@ -647,6 +673,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         state.menuSettlementSourceSnapshot = before;
         state.menuSettlementTargetSnapshot = null;
         state.menuForwardInFlight = -1;
+        state.menuCleanupSession.beginClickDispatch(
+                request.currentTick());
 
         try {
             player.inventoryMenu.clicked(
@@ -658,6 +686,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         } catch (RuntimeException ignored) {
             // The exact authoritative post-call snapshot distinguishes
             // a before-mutation throw from an after-mutation throw.
+        } finally {
+            state.menuCleanupSession.endClickDispatch(
+                    request.currentTick());
         }
 
         InventoryMenuSnapshot after;
@@ -852,6 +883,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     player,
                     state,
                     reason,
+                    currentTick,
                     lifecycleManager
                             .isStagedReplacementCleanupTarget(
                                     envelope.botId(),
@@ -891,6 +923,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                             player,
                             entry.getValue(),
                             ActionCleanupReason.FAILED,
+                            currentTick,
                             replacementInheritor);
                     active.remove(key, entry.getValue());
                 }
@@ -1766,13 +1799,18 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             throw new IllegalStateException(
                     "Inventory menu transaction did not start");
         }
-        applyNextMenuSwapStep(player, state, menuSwap);
+        applyNextMenuSwapStep(
+                player,
+                state,
+                menuSwap,
+                state.startedTick);
     }
 
     private void applyNextMenuSwapStep(
             BotServerPlayer player,
             InteractionState state,
-            WorldInteractionActionSpec.InventoryMenuSwap menuSwap) {
+            WorldInteractionActionSpec.InventoryMenuSwap menuSwap,
+            long currentTick) {
         InventoryMenuTransaction transaction =
                 Objects.requireNonNull(
                         state.menuTransaction,
@@ -1800,6 +1838,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         state.menuForwardInFlight =
                 transaction.confirmedClicks();
         state.menuForwardTargetSnapshot = null;
+        state.menuCleanupSession.beginClickDispatch(
+                currentTick);
         try {
             player.inventoryMenu.clicked(
                     step.menuSlot(),
@@ -1811,6 +1851,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             freezeMenuForwardTargetAfterThrow(
                     player, state, step);
             throw exception;
+        } finally {
+            state.menuCleanupSession.endClickDispatch(
+                    currentTick);
         }
         InventoryMenuSnapshot after =
                 MinecraftActionSnapshot.inventoryMenu(player);
@@ -1852,6 +1895,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     step.after())) {
                 state.menuForwardTargetSnapshot =
                         after;
+                return;
             }
         } catch (RuntimeException ignored) {
             // Cleanup will fail closed without a frozen in-flight target.
@@ -2031,7 +2075,12 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             ActionEnvelope envelope,
             BotServerPlayer player,
             InteractionState state,
-            WorldInteractionActionSpec.InventoryMenuSwap menuSwap) {
+            WorldInteractionActionSpec.InventoryMenuSwap menuSwap,
+            long currentTick) {
+        if (!state.menuCleanupSession
+                .mayDispatchClickAt(currentTick)) {
+            return BackendResult.running(envelope);
+        }
         if (!lifecycleManager.mayActionMutateInventory(
                 envelope.botId(), envelope.botGeneration())) {
             return failure(
@@ -2060,7 +2109,10 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         }
         try {
             applyNextMenuSwapStep(
-                    player, state, menuSwap);
+                    player,
+                    state,
+                    menuSwap,
+                    currentTick);
         } catch (MenuPreconditionChangedException exception) {
             return failure(
                     envelope,
@@ -2611,6 +2663,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             BotServerPlayer player,
             InteractionState state,
             ActionCleanupReason reason,
+            long currentTick,
             boolean replacementInheritor) {
         if (reason == ActionCleanupReason.SUCCEEDED
                 && state.spec
@@ -2636,6 +2689,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         player,
                         state,
                         menuSwap,
+                        currentTick,
                         replacementInheritor);
             } else if (state.spec
                     instanceof WorldInteractionActionSpec
@@ -2735,6 +2789,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             BotServerPlayer player,
             InteractionState state,
             WorldInteractionActionSpec.InventoryMenuSwap menuSwap,
+            long currentTick,
             boolean replacementInheritor) {
         if (!lifecycleManager.mayCleanupMutateInventory(
                         state.botId, state.botGeneration)
@@ -2782,6 +2837,11 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             case UNSAFE -> throw new IllegalStateException(
                     "Inventory menu transaction cannot prove a safe settlement");
             case CLICK_TO_INITIAL, CLICK_TO_FINAL -> {
+                if (!state.menuCleanupSession
+                        .mayDispatchClickAt(currentTick)) {
+                    throw new IllegalStateException(
+                            "Synchronous menu cleanup cannot click twice in one Tick");
+                }
                 InventoryMenuSettlementCursor cursor =
                         decision.settlementCursor().orElseThrow();
                 InventoryMenuSettlementCursor advanced =
@@ -2795,7 +2855,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                 player,
                                 state,
                                 plan,
-                                decision);
+                                decision,
+                                currentTick);
                 finishMenuSettlement(
                         state,
                         plan,
@@ -2910,7 +2971,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             BotServerPlayer player,
             InteractionState state,
             InventoryMenuSwapPlan plan,
-            InventoryMenuSettlementDecision decision) {
+            InventoryMenuSettlementDecision decision,
+            long currentTick) {
         InventoryMenuClickStep step =
                 decision.click().orElseThrow();
         InventoryMenuSnapshot before =
@@ -2942,6 +3004,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         state.menuSettlementSourceSnapshot = before;
         state.menuSettlementTargetSnapshot = null;
         state.menuForwardInFlight = -1;
+        state.menuCleanupSession.beginClickDispatch(
+                currentTick);
         try {
             player.inventoryMenu.clicked(
                     step.menuSlot(),
@@ -2953,6 +3017,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             freezeMenuSettlementTargetAfterThrow(
                     player, state, plan, step);
             throw exception;
+        } finally {
+            state.menuCleanupSession.endClickDispatch(
+                    currentTick);
         }
         InventoryMenuSnapshot after =
                 MinecraftActionSnapshot.inventoryMenu(player);
