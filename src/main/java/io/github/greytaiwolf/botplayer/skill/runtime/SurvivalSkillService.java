@@ -458,56 +458,96 @@ public final class SurvivalSkillService implements SafetyHandoff {
             throw new IllegalArgumentException(
                     "generation must be positive and tick non-negative");
         }
-        if (!actionCleanupConfirmed) {
-            return false;
-        }
+        return VanillaDeathSkillClosure.close(
+                botId,
+                generation,
+                actionCleanupConfirmed,
+                new VanillaDeathSkillClosure
+                        .Operations<ActiveRun>() {
+                    @Override
+                    public Optional<ActiveRun> activeRun(
+                            UUID requestedBotId) {
+                        return Optional.ofNullable(
+                                activeRuns.get(
+                                        requestedBotId));
+                    }
 
-        ActiveRun run = activeRuns.get(botId);
-        if (run == null || run.generation != generation) {
-            incidentAttempts.closeGeneration(
-                    botId, generation);
-            generationLayoutCompensator.closeGeneration(
-                    botId, generation);
-            return true;
-        }
+                    @Override
+                    public long generation(ActiveRun run) {
+                        return run.generation;
+                    }
 
-        if (run.layoutLease != null) {
-            InventoryLayoutCleanupResult consumed;
-            try {
-                consumed = Objects.requireNonNull(
+                    @Override
+                    public boolean hasOpenLayoutLease(
+                            ActiveRun run) {
+                        return run.layoutLease != null
+                                && run.layoutLeaseOpen;
+                    }
+
+                    @Override
+                    public boolean consumeLayout(
+                            UUID requestedBotId,
+                            long requestedGeneration,
+                            ActiveRun run) {
+                        if (activeRuns.get(requestedBotId)
+                                        != run
+                                || run.generation
+                                        != requestedGeneration
+                                || run.layoutLease == null
+                                || !run.layoutLeaseOpen) {
+                            return false;
+                        }
+                        InventoryLayoutCleanupResult consumed =
+                                Objects.requireNonNull(
+                                        generationLayoutCompensator
+                                                .consumeVanillaDeath(
+                                                        run.botId,
+                                                        run.generation,
+                                                        run.layoutLease),
+                                        "vanilla death layout receipt");
+                        if (consumed
+                                != InventoryLayoutCleanupResult
+                                        .VANILLA_DEATH_CONSUMED) {
+                            return false;
+                        }
+                        /*
+                         * Mark the exact lease before any later operation may
+                         * throw. A retry must never consume it twice.
+                         */
+                        run.layoutLeaseOpen = false;
+                        return true;
+                    }
+
+                    @Override
+                    public void finishActiveRun(
+                            ActiveRun run) {
+                        if (activeRuns.get(run.botId)
+                                != run) {
+                            throw new IllegalStateException(
+                                    "Vanilla-death skill run authority changed");
+                        }
+                        run.generationCloseConfirmed = true;
+                        acknowledgeGenerationClose(run);
+                        finish(
+                                run,
+                                SkillRunState.CANCELLED,
+                                "原版死亡已消费玩家背包；活动生存技能已取消",
+                                currentTick);
+                    }
+
+                    @Override
+                    public void closeGeneration(
+                            UUID requestedBotId,
+                            long requestedGeneration) {
+                        incidentAttempts.closeGeneration(
+                                requestedBotId,
+                                requestedGeneration);
                         generationLayoutCompensator
-                                .consumeVanillaDeath(
-                                        run.botId,
-                                        run.generation,
-                                        run.layoutLease),
-                        "vanilla death layout receipt");
-            } catch (RuntimeException exception) {
-                return false;
-            }
-            if (consumed
-                    != InventoryLayoutCleanupResult
-                            .VANILLA_DEATH_CONSUMED) {
-                return false;
-            }
-        }
-
-        run.generationCloseConfirmed = true;
-        acknowledgeGenerationClose(run);
-        /*
-         * The dedicated consume transition already owns the exact fence.
-         * Do not route finish() through the ordinary release path; the final
-         * generation close below reclaims both the lease and its receipt.
-         */
-        run.layoutLeaseOpen = false;
-        finish(
-                run,
-                SkillRunState.CANCELLED,
-                "原版死亡已消费玩家背包；活动生存技能已取消",
-                currentTick);
-        incidentAttempts.closeGeneration(botId, generation);
-        generationLayoutCompensator.closeGeneration(
-                botId, generation);
-        return true;
+                                .closeGeneration(
+                                        requestedBotId,
+                                        requestedGeneration);
+                    }
+                });
     }
 
     /**
