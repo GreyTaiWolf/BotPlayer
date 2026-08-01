@@ -1,11 +1,13 @@
 package io.github.greytaiwolf.botplayer.action;
 
+import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -1037,6 +1039,460 @@ class BotActionRuntimeCleanupStepTest {
                 cancelStatus(cancellation));
     }
 
+    @Test
+    void vanillaDeathConsumesOnlyTheExactQueuedGeneration() {
+        CleanupScriptBackend backend = new CleanupScriptBackend();
+        BotActionRuntime runtime = runtime(backend);
+        ActionEnvelope consumed = envelope(40L, 1L, 100L);
+        ActionEnvelope newer = envelope(41L, 2L, 100L);
+        ActionMailbox.Submission consumedSubmission = runtime.submit(
+                consumed, ActionPriority.OWNER_TASK);
+        ActionMailbox.Submission newerSubmission = runtime.submit(
+                newer, ActionPriority.OWNER_TASK);
+
+        Assertions.assertEquals(
+                GenerationDrainStatus.COMPLETE,
+                runtime.consumeBotGenerationForVanillaDeathNow(
+                        BOT, 1L, 0L));
+
+        Assertions.assertEquals(
+                ActionState.CANCELLED,
+                outcome(consumedSubmission).state());
+        Assertions.assertFalse(future(newerSubmission).isDone());
+        Assertions.assertEquals(0, backend.startCount(
+                consumed.actionId()));
+        Assertions.assertEquals(0, backend.cleanupStepCount(
+                consumed.actionId()));
+        Assertions.assertEquals(
+                ActionMailbox.SubmissionStatus.BOT_GENERATION_CLOSED,
+                runtime.submit(
+                        envelope(42L, 1L, 100L),
+                        ActionPriority.OWNER_TASK).status());
+        Assertions.assertEquals(
+                ActionMailbox.SubmissionStatus.ENQUEUED,
+                runtime.submit(
+                        envelope(43L, 3L, 100L),
+                        ActionPriority.OWNER_TASK).status());
+    }
+
+    @Test
+    void vanillaDeathUsesOneSpecialCleanupForStartedAction() {
+        CleanupScriptBackend backend = new CleanupScriptBackend();
+        BotActionRuntime runtime = runtime(backend);
+        ActionEnvelope action = envelope(44L, 1L, 100L);
+        ActionMailbox.Submission submission = runtime.submit(
+                action, ActionPriority.OWNER_TASK);
+        runtime.tick(1L);
+
+        Assertions.assertEquals(
+                GenerationDrainStatus.COMPLETE,
+                runtime.consumeBotGenerationForVanillaDeathNow(
+                        BOT, 1L, 2L));
+
+        Assertions.assertEquals(
+                ActionState.CANCELLED, outcome(submission).state());
+        List<ActionCleanupRequest> requests =
+                backend.cleanupRequests(action.actionId());
+        Assertions.assertEquals(1, requests.size());
+        Assertions.assertEquals(
+                ActionCleanupReason.VANILLA_DEATH_CONSUMED,
+                requests.get(0).reason());
+        Assertions.assertEquals(1, requests.get(0).attempt());
+        Assertions.assertEquals(0, runtime.activeActionCount());
+        Assertions.assertEquals(0, runtime.activeLeaseCount());
+    }
+
+    @Test
+    void vanillaDeathReplacesOrdinaryPendingCleanupIdentity() {
+        CleanupScriptBackend backend = new CleanupScriptBackend();
+        BotActionRuntime runtime = runtime(backend);
+        ActionEnvelope action = envelope(45L, 1L, 100L);
+        backend.script(
+                action.actionId(),
+                List.of(
+                        request -> ActionCleanupReceipt.pending(
+                                request, 3L, 3L, "普通清理等待"),
+                        request -> ActionCleanupReceipt.complete(
+                                request, 0L, "死亡消费清理完成")));
+        ActionMailbox.Submission submission = runtime.submit(
+                action, ActionPriority.OWNER_TASK);
+        runtime.tick(1L);
+        runtime.cancel(
+                BOT,
+                action.actionId(),
+                ActionCancellationReason.REQUESTED);
+        runtime.tick(2L);
+        Assertions.assertFalse(future(submission).isDone());
+
+        Assertions.assertEquals(
+                GenerationDrainStatus.COMPLETE,
+                runtime.consumeBotGenerationForVanillaDeathNow(
+                        BOT, 1L, 2L));
+
+        List<ActionCleanupRequest> requests =
+                backend.cleanupRequests(action.actionId());
+        Assertions.assertEquals(2, requests.size());
+        Assertions.assertEquals(
+                ActionCleanupReason.CANCELLED,
+                requests.get(0).reason());
+        Assertions.assertEquals(
+                ActionCleanupReason.VANILLA_DEATH_CONSUMED,
+                requests.get(1).reason());
+        Assertions.assertNotEquals(
+                requests.get(0).cleanupId(),
+                requests.get(1).cleanupId());
+        Assertions.assertEquals(1, requests.get(1).attempt());
+        Assertions.assertEquals(2L, requests.get(1).currentTick());
+        Assertions.assertEquals(
+                ActionState.CANCELLED, outcome(submission).state());
+    }
+
+    @Test
+    void reentrantVanillaDeathConsumptionDoesNotRecurseCleanup() {
+        CleanupScriptBackend backend = new CleanupScriptBackend();
+        BotActionRuntime runtime = runtime(backend);
+        ActionEnvelope action = envelope(46L, 1L, 100L);
+        backend.onStart(action.actionId(), () ->
+                Assertions.assertEquals(
+                        GenerationDrainStatus.PENDING,
+                        runtime.consumeBotGenerationForVanillaDeathNow(
+                                BOT, 1L, 1L)));
+        backend.script(
+                action.actionId(),
+                List.of(request -> {
+                    Assertions.assertEquals(
+                            ActionCleanupReason.VANILLA_DEATH_CONSUMED,
+                            request.reason());
+                    Assertions.assertEquals(
+                            GenerationDrainStatus.PENDING,
+                            runtime.consumeBotGenerationForVanillaDeathNow(
+                                    BOT, 1L, 1L));
+                    return ActionCleanupReceipt.complete(
+                            request, 0L, "重入仍只清理一次");
+                }));
+        ActionMailbox.Submission submission = runtime.submit(
+                action, ActionPriority.OWNER_TASK);
+
+        Assertions.assertDoesNotThrow(() -> runtime.tick(1L));
+
+        Assertions.assertEquals(
+                ActionState.CANCELLED, outcome(submission).state());
+        Assertions.assertEquals(1, backend.cleanupStepCount(
+                action.actionId()));
+        Assertions.assertEquals(
+                GenerationDrainStatus.COMPLETE,
+                runtime.generationDrainStatus(BOT, 1L));
+        Assertions.assertEquals(0, runtime.activeLeaseCount());
+    }
+
+    @Test
+    void safetyRecoveryCannotReopenAConsumedGeneration() {
+        CleanupScriptBackend backend = new CleanupScriptBackend();
+        BotActionRuntime runtime = runtime(backend);
+        ActionEnvelope action = envelope(47L, 1L, 100L);
+        backend.script(
+                action.actionId(),
+                List.of(request -> {
+                    throw new IllegalStateException("故障注入");
+                }));
+        ActionMailbox.Submission submission = runtime.submit(
+                action, ActionPriority.OWNER_TASK);
+        runtime.tick(1L);
+
+        Assertions.assertEquals(
+                GenerationDrainStatus.UNSAFE,
+                runtime.consumeBotGenerationForVanillaDeathNow(
+                        BOT, 1L, 2L));
+        Assertions.assertEquals(
+                ActionFailureCode.UNSAFE_CONTROL_STATE,
+                outcome(submission).failureCode());
+
+        Assertions.assertTrue(runtime.recoverBotSafety(
+                BOT, 1L, 3L));
+        Assertions.assertEquals(
+                GenerationDrainStatus.COMPLETE,
+                runtime.generationDrainStatus(BOT, 1L));
+        Assertions.assertEquals(
+                ActionMailbox.SubmissionStatus.BOT_GENERATION_CLOSED,
+                runtime.submit(
+                        envelope(48L, 1L, 100L),
+                        ActionPriority.OWNER_TASK).status());
+    }
+
+    @Test
+    void consumedIntentDominatesADeferredQuarantine() {
+        CleanupScriptBackend backend = new CleanupScriptBackend();
+        BotActionRuntime runtime = runtime(backend);
+        ActionEnvelope action = envelope(49L, 1L, 100L);
+        backend.onStart(action.actionId(), () -> {
+            Assertions.assertEquals(
+                    GenerationDrainStatus.PENDING,
+                    runtime.consumeBotGenerationForVanillaDeathNow(
+                            BOT, 1L, 1L));
+            runtime.quarantineBotGenerationNow(BOT, 1L, 1L);
+        });
+        ActionMailbox.Submission submission = runtime.submit(
+                action, ActionPriority.OWNER_TASK);
+
+        Assertions.assertDoesNotThrow(() -> runtime.tick(1L));
+
+        Assertions.assertEquals(
+                ActionFailureCode.UNSAFE_CONTROL_STATE,
+                outcome(submission).failureCode());
+        List<ActionCleanupRequest> requests =
+                backend.cleanupRequests(action.actionId());
+        Assertions.assertEquals(1, requests.size());
+        Assertions.assertEquals(
+                ActionCleanupReason.VANILLA_DEATH_CONSUMED,
+                requests.get(0).reason());
+    }
+
+    @Test
+    void laterConsumedIntentDominatesAnEarlierDeferredQuarantine() {
+        CleanupScriptBackend backend = new CleanupScriptBackend();
+        BotActionRuntime runtime = runtime(backend);
+        ActionEnvelope action = envelope(50L, 1L, 100L);
+        backend.onStart(action.actionId(), () -> {
+            runtime.quarantineBotGenerationNow(BOT, 1L, 1L);
+            Assertions.assertEquals(
+                    GenerationDrainStatus.UNSAFE,
+                    runtime.consumeBotGenerationForVanillaDeathNow(
+                            BOT, 1L, 1L));
+        });
+        ActionMailbox.Submission submission = runtime.submit(
+                action, ActionPriority.OWNER_TASK);
+
+        Assertions.assertDoesNotThrow(() -> runtime.tick(1L));
+
+        Assertions.assertEquals(
+                ActionFailureCode.UNSAFE_CONTROL_STATE,
+                outcome(submission).failureCode());
+        List<ActionCleanupRequest> requests =
+                backend.cleanupRequests(action.actionId());
+        Assertions.assertEquals(1, requests.size());
+        Assertions.assertEquals(
+                ActionCleanupReason.VANILLA_DEATH_CONSUMED,
+                requests.get(0).reason());
+    }
+
+    @Test
+    void consumedReentrySupersedesOrdinaryQuarantineCleanup() {
+        CleanupScriptBackend backend = new CleanupScriptBackend();
+        BotActionRuntime runtime = runtime(backend);
+        ActionEnvelope action = envelope(51L, 1L, 100L);
+        backend.script(
+                action.actionId(),
+                List.of(
+                        request -> {
+                            Assertions.assertEquals(
+                                    ActionCleanupReason.FAILED,
+                                    request.reason());
+                            Assertions.assertEquals(
+                                    GenerationDrainStatus.UNSAFE,
+                                    runtime.consumeBotGenerationForVanillaDeathNow(
+                                            BOT, 1L, 2L));
+                            return ActionCleanupReceipt.complete(
+                                    request, 1L, "普通隔离清理返回");
+                        },
+                        request -> {
+                            Assertions.assertEquals(
+                                    ActionCleanupReason.VANILLA_DEATH_CONSUMED,
+                                    request.reason());
+                            return ActionCleanupReceipt.complete(
+                                    request, 0L, "死亡消费支配后续清理");
+                        }));
+        ActionMailbox.Submission submission = runtime.submit(
+                action, ActionPriority.OWNER_TASK);
+        runtime.tick(1L);
+
+        runtime.quarantineBotGenerationNow(BOT, 1L, 2L);
+
+        Assertions.assertEquals(
+                ActionFailureCode.UNSAFE_CONTROL_STATE,
+                outcome(submission).failureCode());
+        List<ActionCleanupRequest> requests =
+                backend.cleanupRequests(action.actionId());
+        Assertions.assertEquals(2, requests.size());
+        Assertions.assertNotEquals(
+                requests.get(0).cleanupId(),
+                requests.get(1).cleanupId());
+        Assertions.assertEquals(1, requests.get(1).attempt());
+        Assertions.assertEquals(2, backend.cleanupStepCount(
+                action.actionId()));
+    }
+
+    @Test
+    void activeGenerationMatrixFailsClosedOnOlderResidue() {
+        CleanupScriptBackend backend = new CleanupScriptBackend();
+        BotActionRuntime runtime = runtime(backend);
+        ActionEnvelope older = envelope(52L, 1L, 100L);
+        ActionEnvelope exact = waitEnvelope(53L, 2L, 100L);
+        ActionEnvelope newer = inventoryEnvelope(54L, 3L, 100L);
+        ActionMailbox.Submission olderSubmission = runtime.submit(
+                older, ActionPriority.OWNER_TASK);
+        ActionMailbox.Submission exactSubmission = runtime.submit(
+                exact, ActionPriority.OWNER_TASK);
+        ActionMailbox.Submission newerSubmission = runtime.submit(
+                newer, ActionPriority.OWNER_TASK);
+        runtime.tick(1L);
+
+        Assertions.assertEquals(
+                GenerationDrainStatus.UNSAFE,
+                runtime.consumeBotGenerationForVanillaDeathNow(
+                        BOT, 2L, 2L));
+
+        Assertions.assertEquals(
+                ActionFailureCode.UNSAFE_CONTROL_STATE,
+                outcome(olderSubmission).failureCode());
+        Assertions.assertEquals(
+                ActionFailureCode.UNSAFE_CONTROL_STATE,
+                outcome(exactSubmission).failureCode());
+        Assertions.assertFalse(future(newerSubmission).isDone());
+        Assertions.assertEquals(
+                ActionCleanupReason.FAILED,
+                backend.cleanupRequests(older.actionId())
+                        .get(0).reason());
+        Assertions.assertEquals(
+                ActionCleanupReason.VANILLA_DEATH_CONSUMED,
+                backend.cleanupRequests(exact.actionId())
+                        .get(0).reason());
+        Assertions.assertEquals(0, backend.cleanupStepCount(
+                newer.actionId()));
+        Assertions.assertEquals(1, runtime.activeActionCount());
+        Assertions.assertEquals(1, runtime.activeLeaseCount());
+    }
+
+    @Test
+    void queuedGenerationMatrixCancelsThroughExactAndPreservesNewer() {
+        CleanupScriptBackend backend = new CleanupScriptBackend();
+        BotActionRuntime runtime = runtime(backend);
+        ActionEnvelope older = envelope(55L, 1L, 100L);
+        ActionEnvelope exact = waitEnvelope(56L, 2L, 100L);
+        ActionEnvelope newer = inventoryEnvelope(57L, 3L, 100L);
+        ActionMailbox.Submission olderSubmission = runtime.submit(
+                older, ActionPriority.OWNER_TASK);
+        ActionMailbox.Submission exactSubmission = runtime.submit(
+                exact, ActionPriority.OWNER_TASK);
+        ActionMailbox.Submission newerSubmission = runtime.submit(
+                newer, ActionPriority.OWNER_TASK);
+
+        Assertions.assertEquals(
+                GenerationDrainStatus.COMPLETE,
+                runtime.consumeBotGenerationForVanillaDeathNow(
+                        BOT, 2L, 0L));
+
+        Assertions.assertEquals(
+                ActionState.CANCELLED,
+                outcome(olderSubmission).state());
+        Assertions.assertEquals(
+                ActionState.CANCELLED,
+                outcome(exactSubmission).state());
+        Assertions.assertFalse(future(newerSubmission).isDone());
+        Assertions.assertEquals(0, backend.cleanupStepCount(
+                older.actionId()));
+        Assertions.assertEquals(0, backend.cleanupStepCount(
+                exact.actionId()));
+        Assertions.assertEquals(0, backend.cleanupStepCount(
+                newer.actionId()));
+        Assertions.assertEquals(
+                ActionMailbox.SubmissionStatus.BOT_GENERATION_CLOSED,
+                runtime.submit(
+                        envelope(58L, 1L, 100L),
+                        ActionPriority.OWNER_TASK).status());
+        Assertions.assertEquals(
+                ActionMailbox.SubmissionStatus.BOT_GENERATION_CLOSED,
+                runtime.submit(
+                        envelope(59L, 2L, 100L),
+                        ActionPriority.OWNER_TASK).status());
+        Assertions.assertEquals(
+                ActionMailbox.SubmissionStatus.ENQUEUED,
+                runtime.submit(
+                        envelope(60L, 4L, 100L),
+                        ActionPriority.OWNER_TASK).status());
+    }
+
+    @Test
+    void emptyConsumedCallsDoNotRetainUnboundedRuntimeIntent() {
+        CleanupScriptBackend backend = new CleanupScriptBackend();
+        BotActionRuntime runtime = runtime(backend);
+
+        for (int index = 1;
+                index <= BotActionRuntime.MAX_QUARANTINED_GENERATIONS + 1;
+                index++) {
+            UUID emptyBot = new UUID(71L, index);
+            Assertions.assertEquals(
+                    GenerationDrainStatus.COMPLETE,
+                    runtime.consumeBotGenerationForVanillaDeathNow(
+                            emptyBot, 1L, 0L));
+        }
+
+        Assertions.assertEquals(
+                0, runtime.retainedVanillaDeathConsumedIntentCount());
+        Assertions.assertEquals(0, runtime.activeActionCount());
+        Assertions.assertEquals(0, runtime.activeLeaseCount());
+    }
+
+    @Test
+    void sameBotDualConsumedGenerationsRetainBothExactIntents() {
+        assertSameBotDualConsumedOrder(false);
+    }
+
+    @Test
+    void sameBotDualConsumedGenerationsRetainBothExactIntentsInReverse() {
+        assertSameBotDualConsumedOrder(true);
+    }
+
+    private static void assertSameBotDualConsumedOrder(
+            boolean newerFirst) {
+        CleanupScriptBackend backend = new CleanupScriptBackend();
+        BotActionRuntime runtime = runtime(backend);
+        ActionEnvelope older = envelope(61L, 1L, 100L);
+        ActionEnvelope newer = waitEnvelope(62L, 2L, 100L);
+        backend.onStart(newer.actionId(), () -> {
+            if (newerFirst) {
+                runtime.consumeBotGenerationForVanillaDeathNow(
+                        BOT, 2L, 1L);
+                runtime.consumeBotGenerationForVanillaDeathNow(
+                        BOT, 1L, 1L);
+            } else {
+                runtime.consumeBotGenerationForVanillaDeathNow(
+                        BOT, 1L, 1L);
+                runtime.consumeBotGenerationForVanillaDeathNow(
+                        BOT, 2L, 1L);
+            }
+            Assertions.assertEquals(
+                    2,
+                    runtime.retainedVanillaDeathConsumedIntentCount());
+        });
+        ActionMailbox.Submission olderSubmission = runtime.submit(
+                older, ActionPriority.OWNER_TASK);
+        ActionMailbox.Submission newerSubmission = runtime.submit(
+                newer, ActionPriority.OWNER_TASK);
+
+        Assertions.assertDoesNotThrow(() -> runtime.tick(1L));
+
+        Assertions.assertEquals(
+                ActionFailureCode.UNSAFE_CONTROL_STATE,
+                outcome(olderSubmission).failureCode());
+        Assertions.assertEquals(
+                ActionFailureCode.UNSAFE_CONTROL_STATE,
+                outcome(newerSubmission).failureCode());
+        Assertions.assertEquals(
+                ActionCleanupReason.VANILLA_DEATH_CONSUMED,
+                backend.cleanupRequests(older.actionId())
+                        .get(0).reason());
+        Assertions.assertEquals(
+                ActionCleanupReason.VANILLA_DEATH_CONSUMED,
+                backend.cleanupRequests(newer.actionId())
+                        .get(0).reason());
+        Assertions.assertEquals(1, backend.cleanupStepCount(
+                older.actionId()));
+        Assertions.assertEquals(1, backend.cleanupStepCount(
+                newer.actionId()));
+        Assertions.assertEquals(
+                0, runtime.retainedVanillaDeathConsumedIntentCount());
+    }
+
     private static void assertPending(
             BotActionRuntime runtime,
             ActionEnvelope action,
@@ -1118,6 +1574,21 @@ class BotActionRuntimeCleanupStepTest {
                 deadline,
                 20,
                 new WaitAction(20),
+                ActionOrigin.none());
+    }
+
+    private static ActionEnvelope inventoryEnvelope(
+            long actionId, long generation, long deadline) {
+        return new ActionEnvelope(
+                new UUID(0L, actionId),
+                BOT,
+                generation,
+                "cleanup-inventory-" + actionId,
+                deadline,
+                20,
+                new WorldInteractionAction(
+                        new WorldInteractionActionSpec.PickupWait(
+                                20, Optional.empty())),
                 ActionOrigin.none());
     }
 

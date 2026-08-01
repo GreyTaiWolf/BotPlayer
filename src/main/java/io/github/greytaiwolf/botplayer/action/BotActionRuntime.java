@@ -32,8 +32,15 @@ public final class BotActionRuntime {
    private final int activeCapacity;
    private final Map<BotActionRuntime.ActionKey, BotActionRuntime.Ticket> active = new LinkedHashMap<>();
    private final Set<BotActionRuntime.GenerationKey> unsafeGenerations = new LinkedHashSet<>();
+   /**
+    * Exact consumed intents retained only while their active ticket drains;
+    * size is therefore bounded by {@link #activeCapacity}.
+    */
+   private final Set<BotActionRuntime.GenerationKey> vanillaDeathConsumedGenerations = new LinkedHashSet<>();
    private final Map<BotActionRuntime.GenerationKey, BotActionRuntime.PendingGenerationQuarantine> pendingGenerationQuarantines = new LinkedHashMap<>();
    private final Set<BotActionRuntime.GenerationKey> quarantinesInProgress = new LinkedHashSet<>();
+   private final Map<BotActionRuntime.GenerationKey, BotActionRuntime.PendingVanillaDeathConsumption> pendingVanillaDeathConsumptions = new LinkedHashMap<>();
+   private final Set<BotActionRuntime.GenerationKey> vanillaDeathConsumptionsInProgress = new LinkedHashSet<>();
    private final List<ActionMailbox.Command> pendingRuntimeFailClosedCommands = new ArrayList<>();
    private final Map<UUID, BotActionRuntime.PendingLifecycleClose> pendingLifecycleCloses = new LinkedHashMap<>();
    private final Deque<ActionTransition> transitionHistory = new ArrayDeque<>(512);
@@ -46,6 +53,7 @@ public final class BotActionRuntime {
    private boolean pendingRuntimeFailClosed;
    private boolean runtimeFailClosedInProgress;
    private boolean drainingGenerationQuarantines;
+   private boolean drainingVanillaDeathConsumptions;
    private boolean drainingLifecycleCloses;
    private boolean shutdown;
    private boolean shutdownComplete;
@@ -268,6 +276,9 @@ public final class BotActionRuntime {
          } else if (!this.drainingGenerationQuarantines
             && !this.pendingGenerationQuarantines.isEmpty()) {
             this.drainPendingGenerationQuarantines(var1);
+         } else if (!this.drainingVanillaDeathConsumptions
+            && !this.pendingVanillaDeathConsumptions.isEmpty()) {
+            this.drainPendingVanillaDeathConsumptions(var1);
          } else {
             if (this.drainingLifecycleCloses
                || this.pendingLifecycleCloses.isEmpty()) {
@@ -276,6 +287,199 @@ public final class BotActionRuntime {
 
             this.drainPendingLifecycleCloses(var1);
          }
+      }
+   }
+
+   private void requestVanillaDeathConsumption(
+      BotActionRuntime.GenerationKey key
+   ) {
+      List<ActionMailbox.SubmitCommand> queued =
+         this.mailbox.closeBotThrough(
+            key.botId(), key.generation()
+         );
+      boolean exactGenerationActive = this.hasActiveGeneration(key);
+      if (exactGenerationActive) {
+         this.vanillaDeathConsumedGenerations.add(key);
+      }
+      List<BotActionRuntime.GenerationKey> olderActiveGenerations =
+         this.active.values().stream()
+            .filter(ticket -> !ticket.state.isTerminal()
+               && ticket.envelope.botId().equals(key.botId())
+               && ticket.envelope.botGeneration() < key.generation())
+            .map(ticket -> new BotActionRuntime.GenerationKey(
+               ticket.envelope.botId(),
+               ticket.envelope.botGeneration()
+            ))
+            .distinct()
+            .toList();
+      for (BotActionRuntime.GenerationKey older
+            : olderActiveGenerations) {
+         this.requestGenerationQuarantine(older);
+      }
+      if (!olderActiveGenerations.isEmpty()) {
+         this.requestGenerationQuarantine(key);
+      }
+      if (this.vanillaDeathConsumptionsInProgress.contains(key)) {
+         return;
+      }
+      if (!queued.isEmpty() || exactGenerationActive) {
+         this.pendingVanillaDeathConsumptions
+            .computeIfAbsent(
+               key,
+               ignored -> new BotActionRuntime.PendingVanillaDeathConsumption()
+            )
+            .queued.addAll(queued);
+      }
+   }
+
+   private void drainPendingVanillaDeathConsumptions(long currentTick) {
+      if (this.drainingVanillaDeathConsumptions
+         || this.pendingVanillaDeathConsumptions.isEmpty()) {
+         return;
+      }
+      this.drainingVanillaDeathConsumptions = true;
+      try {
+         while (!this.pendingVanillaDeathConsumptions.isEmpty()) {
+            List<Map.Entry<BotActionRuntime.GenerationKey,
+               BotActionRuntime.PendingVanillaDeathConsumption>> pending =
+               List.copyOf(this.pendingVanillaDeathConsumptions.entrySet());
+            this.pendingVanillaDeathConsumptions.clear();
+            for (Map.Entry<BotActionRuntime.GenerationKey,
+                    BotActionRuntime.PendingVanillaDeathConsumption> entry
+                    : pending) {
+               BotActionRuntime.GenerationKey key = entry.getKey();
+               this.vanillaDeathConsumptionsInProgress.add(key);
+               try {
+                  this.consumeGenerationAfterVanillaDeathAtSafeBoundary(
+                     key, entry.getValue().queued, currentTick
+                  );
+               } finally {
+                  this.vanillaDeathConsumptionsInProgress.remove(key);
+                  this.releaseVanillaDeathConsumedIntent(key);
+               }
+            }
+         }
+      } finally {
+         this.drainingVanillaDeathConsumptions = false;
+      }
+   }
+
+   private void consumeGenerationAfterVanillaDeathAtSafeBoundary(
+      BotActionRuntime.GenerationKey key,
+      List<ActionMailbox.SubmitCommand> queued,
+      long currentTick
+   ) {
+      for (BotActionRuntime.Ticket ticket
+            : List.copyOf(this.active.values())) {
+         if (!ticket.state.isTerminal()
+            && ticket.envelope.botId().equals(key.botId())
+            && ticket.envelope.botGeneration() == key.generation()) {
+            if (this.isTerminationGenerationUnsafe(ticket)) {
+               this.replaceUnsafeTerminationForVanillaDeath(
+                  ticket,
+                  "Bot controls were unsafe when vanilla death consumed the player body state",
+                  currentTick
+               );
+            } else {
+               this.replaceTerminationForVanillaDeath(
+                  ticket, currentTick
+               );
+            }
+            this.advanceTermination(ticket, currentTick);
+         }
+      }
+      for (ActionMailbox.SubmitCommand submission : queued) {
+         this.completeQueuedCancellation(
+            submission,
+            currentTick,
+            ActionCancellationReason.LIFECYCLE
+         );
+      }
+   }
+
+   private void replaceTerminationForVanillaDeath(
+      BotActionRuntime.Ticket ticket, long currentTick
+   ) {
+      this.replaceTerminationWithVanillaDeathCleanup(
+         ticket,
+         ActionState.CANCELLED,
+         ActionFailureCode.CANCELLED,
+         List.of(),
+         "Action cancelled after vanilla death consumed the player body state",
+         currentTick
+      );
+   }
+
+   private void replaceUnsafeTerminationForVanillaDeath(
+      BotActionRuntime.Ticket ticket,
+      String summary,
+      long currentTick
+   ) {
+      this.replaceTerminationWithVanillaDeathCleanup(
+         ticket,
+         ActionState.FAILED,
+         ActionFailureCode.UNSAFE_CONTROL_STATE,
+         List.of(),
+         summary,
+         currentTick
+      );
+   }
+
+   private void replaceTerminationWithVanillaDeathCleanup(
+      BotActionRuntime.Ticket ticket,
+      ActionState state,
+      ActionFailureCode failureCode,
+      List<ActionEvidence> evidence,
+      String summary,
+      long currentTick
+   ) {
+      if (ticket.termination != null
+         && ticket.termination.cleanupReason
+            == ActionCleanupReason.VANILLA_DEATH_CONSUMED
+         && (ticket.termination.state == ActionState.FAILED
+            || state != ActionState.FAILED)) {
+         return;
+      }
+      ticket.termination = new BotActionRuntime.PendingTermination(
+         state,
+         failureCode,
+         evidence,
+         summary,
+         ActionCleanupReason.VANILLA_DEATH_CONSUMED,
+         currentTick,
+         currentTick
+      );
+      ticket.cleanupRequest = null;
+      ticket.cleanupReceipt = null;
+      ticket.lastCleanupAttemptTick = -1L;
+      ticket.cleanupProgressRevision = -1L;
+      ticket.cleanupFailureRecorded = false;
+      ticket.preemptionClaimed = false;
+   }
+
+   private boolean wasVanillaDeathConsumed(
+      BotActionRuntime.GenerationKey key
+   ) {
+      return this.vanillaDeathConsumedGenerations.contains(key);
+   }
+
+   private boolean hasActiveOlderGeneration(
+      BotActionRuntime.GenerationKey key
+   ) {
+      return this.active.values().stream()
+         .anyMatch(ticket -> !ticket.state.isTerminal()
+            && ticket.envelope.botId().equals(key.botId())
+            && ticket.envelope.botGeneration() < key.generation());
+   }
+
+   private void releaseVanillaDeathConsumedIntent(
+      BotActionRuntime.GenerationKey key
+   ) {
+      if (this.vanillaDeathConsumedGenerations.contains(key)
+         && !this.hasActiveGeneration(key)
+         && !this.pendingVanillaDeathConsumptions.containsKey(key)
+         && !this.vanillaDeathConsumptionsInProgress.contains(key)) {
+         this.vanillaDeathConsumedGenerations.remove(key);
       }
    }
 
@@ -354,6 +558,51 @@ public final class BotActionRuntime {
          }
 
          return var7;
+      }
+   }
+
+   /**
+    * Consumes one exact authoritative generation after vanilla death has
+    * consumed that body's mutable inventory/menu state. Ingress is permanently
+    * closed through that generation by the mailbox's per-bot high-water mark;
+    * active cleanup still matches only the exact generation.
+    *
+    * <p>This lifecycle-only boundary never asks an action backend to restore
+    * the dead body's physical layout. Queued work is cancelled directly;
+    * started work receives a new, one-attempt
+    * {@link ActionCleanupReason#VANILLA_DEATH_CONSUMED} cleanup transaction.
+    */
+   public GenerationDrainStatus consumeBotGenerationForVanillaDeathNow(
+      UUID botId,
+      long botGeneration,
+      long currentTick
+   ) {
+      this.assertOwnerThread();
+      ActionEnvelope.requireNonZero(botId, "botId");
+      if (botGeneration <= 0L) {
+         throw new IllegalArgumentException(
+            "botGeneration must be positive"
+         );
+      }
+      BotActionRuntime.GenerationKey key =
+         new BotActionRuntime.GenerationKey(botId, botGeneration);
+      if (this.mutating) {
+         if (currentTick != this.lastMutationTick) {
+            throw new IllegalArgumentException(
+               "A reentrant vanilla death consumption must use the current runtime tick"
+            );
+         }
+         this.requestVanillaDeathConsumption(key);
+         return this.inspectGenerationStatus(botId, botGeneration, true);
+      }
+
+      this.beginMutation(currentTick);
+      try {
+         this.requestVanillaDeathConsumption(key);
+         this.drainPendingSafeBoundaryWork(currentTick);
+         return this.inspectGenerationStatus(botId, botGeneration, true);
+      } finally {
+         this.endMutation();
       }
    }
 
@@ -491,6 +740,8 @@ public final class BotActionRuntime {
             new BotActionRuntime.GenerationKey(var1, var2);
          if (this.quarantineCapacityExhausted
             || this.unsafeGenerations.contains(var4)
+            || (this.wasVanillaDeathConsumed(var4)
+               && this.hasActiveOlderGeneration(var4))
             || this.pendingRuntimeFailClosed
             || this.runtimeFailClosedInProgress
             || this.pendingGenerationQuarantines.containsKey(var4)
@@ -504,6 +755,8 @@ public final class BotActionRuntime {
             (requireClosedIngress
                && !this.mailbox.isGenerationIngressClosed(var1, var2))
                || this.hasActiveGeneration(var4)
+               || this.pendingVanillaDeathConsumptions.containsKey(var4)
+               || this.vanillaDeathConsumptionsInProgress.contains(var4)
                || (var5 != null && var2 <= var5.throughGeneration),
             this.arbiter.hasLease(var1, var2)
          );
@@ -582,6 +835,11 @@ public final class BotActionRuntime {
          new BotActionRuntime.ActionKey(var1, var2)
       );
       return var3 == null ? 0 : var3.cancellationWaiters.size();
+   }
+
+   int retainedVanillaDeathConsumedIntentCount() {
+      this.assertOwnerThread();
+      return this.vanillaDeathConsumedGenerations.size();
    }
 
    public long cleanupFailureCount() {
@@ -1411,6 +1669,12 @@ public final class BotActionRuntime {
          ),
          var1
       );
+      this.releaseVanillaDeathConsumedIntent(
+         new BotActionRuntime.GenerationKey(
+            var1.envelope.botId(),
+            var1.envelope.botGeneration()
+         )
+      );
       this.publishOutcome(var1.envelope, var11);
 
       for (CompletionDispatcher.Completion<ActionOutcome> var13
@@ -1660,15 +1924,29 @@ public final class BotActionRuntime {
 
             for (BotActionRuntime.Ticket var4 : List.copyOf(this.active.values())) {
                if (!var4.state.isTerminal()) {
-                  this.finish(
-                     var4,
-                     ActionState.FAILED,
-                     ActionFailureCode.UNSAFE_CONTROL_STATE,
-                     List.of(),
-                     "Action runtime failed closed after quarantine capacity was exhausted",
-                     ActionCleanupReason.FAILED,
-                     var1
-                  );
+                  BotActionRuntime.GenerationKey key =
+                     new BotActionRuntime.GenerationKey(
+                        var4.envelope.botId(),
+                        var4.envelope.botGeneration()
+                     );
+                  if (this.wasVanillaDeathConsumed(key)) {
+                     this.replaceUnsafeTerminationForVanillaDeath(
+                        var4,
+                        "Action runtime failed closed after vanilla death consumed the player body state",
+                        var1
+                     );
+                     this.advanceTermination(var4, var1);
+                  } else {
+                     this.finish(
+                        var4,
+                        ActionState.FAILED,
+                        ActionFailureCode.UNSAFE_CONTROL_STATE,
+                        List.of(),
+                        "Action runtime failed closed after quarantine capacity was exhausted",
+                        ActionCleanupReason.FAILED,
+                        var1
+                     );
+                  }
                }
             }
          } finally {
@@ -1745,15 +2023,24 @@ public final class BotActionRuntime {
          if (!var5.state.isTerminal()
             && var5.envelope.botId().equals(var1.botId())
             && var5.envelope.botGeneration() == var1.generation()) {
-            this.finish(
-               var5,
-               ActionState.FAILED,
-               ActionFailureCode.UNSAFE_CONTROL_STATE,
-               List.of(),
-               "Bot controls were quarantined after unsafe transaction recovery",
-               ActionCleanupReason.FAILED,
-               var3
-            );
+            if (this.wasVanillaDeathConsumed(var1)) {
+               this.replaceUnsafeTerminationForVanillaDeath(
+                  var5,
+                  "Bot controls were quarantined after vanilla death consumed the player body state",
+                  var3
+               );
+               this.advanceTermination(var5, var3);
+            } else {
+               this.finish(
+                  var5,
+                  ActionState.FAILED,
+                  ActionFailureCode.UNSAFE_CONTROL_STATE,
+                  List.of(),
+                  "Bot controls were quarantined after unsafe transaction recovery",
+                  ActionCleanupReason.FAILED,
+                  var3
+               );
+            }
          }
       }
 
@@ -1950,6 +2237,7 @@ public final class BotActionRuntime {
          && this.active.isEmpty()
          && this.arbiter.activeLeaseCount() == 0
          && this.pendingGenerationQuarantines.isEmpty()
+         && this.pendingVanillaDeathConsumptions.isEmpty()
          && this.pendingLifecycleCloses.isEmpty()
          && this.pendingRuntimeFailClosedCommands.isEmpty()
          && !this.pendingRuntimeFailClosed
@@ -2078,6 +2366,11 @@ public final class BotActionRuntime {
    }
 
    private static final class PendingGenerationQuarantine {
+      private final List<ActionMailbox.SubmitCommand> queued =
+         new ArrayList<>();
+   }
+
+   private static final class PendingVanillaDeathConsumption {
       private final List<ActionMailbox.SubmitCommand> queued =
          new ArrayList<>();
    }

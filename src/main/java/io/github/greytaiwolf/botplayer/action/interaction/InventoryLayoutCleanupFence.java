@@ -94,9 +94,12 @@ public final class InventoryLayoutCleanupFence {
         InventoryLayoutCleanupResult requiredResult =
                 Objects.requireNonNull(result, "result");
         if (requiredResult
-                == InventoryLayoutCleanupResult.BLOCKED) {
+                        == InventoryLayoutCleanupResult.BLOCKED
+                || requiredResult
+                        == InventoryLayoutCleanupResult
+                                .VANILLA_DEATH_CONSUMED) {
             throw new IllegalArgumentException(
-                    "BLOCKED cleanup must be re-armed, not completed");
+                    "result requires its dedicated fence transition");
         }
         Lease existing = leases.get(key);
         if (existing == null
@@ -113,6 +116,56 @@ public final class InventoryLayoutCleanupFence {
                 existing.layoutLease(),
                 Optional.of(requiredResult));
         return true;
+    }
+
+    /**
+     * Consumes one exact armed lease after vanilla death has externally
+     * consumed the physical inventory for {@code keepInventory=false}.
+     *
+     * <p>This transition deliberately bypasses {@link #begin} and
+     * {@link #complete}: no cleanup mutation is permitted after vanilla has
+     * dropped/consumed the layout. The exact terminal receipt is idempotent;
+     * a changed payload, a different run, an executing lease, or a lease
+     * already completed by another path is rejected without changing state.
+     */
+    public InventoryLayoutCleanupResult consumeVanillaDeath(
+            UUID botId,
+            long generation,
+            InventoryLayoutCleanupLease layoutLease) {
+        GenerationKey key = key(botId, generation);
+        InventoryLayoutCleanupLease requiredLease =
+                Objects.requireNonNull(
+                        layoutLease, "layoutLease");
+        Map<UUID, TerminalLease> records =
+                terminalRuns.get(key);
+        TerminalLease terminal = records == null
+                ? null
+                : records.get(requiredLease.runId());
+        if (terminal != null) {
+            return terminal.layoutLease().equals(requiredLease)
+                            && terminal.result().orElse(null)
+                                    == InventoryLayoutCleanupResult
+                                            .VANILLA_DEATH_CONSUMED
+                    ? InventoryLayoutCleanupResult
+                            .VANILLA_DEATH_CONSUMED
+                    : InventoryLayoutCleanupResult.STALE;
+        }
+
+        Lease existing = leases.get(key);
+        if (existing == null
+                || !existing.layoutLease().equals(requiredLease)
+                || existing.state() != LeaseState.ARMED
+                || !leases.remove(key, existing)) {
+            return InventoryLayoutCleanupResult.STALE;
+        }
+        rememberTerminal(
+                key,
+                requiredLease,
+                Optional.of(
+                        InventoryLayoutCleanupResult
+                                .VANILLA_DEATH_CONSUMED));
+        return InventoryLayoutCleanupResult
+                .VANILLA_DEATH_CONSUMED;
     }
 
     /**

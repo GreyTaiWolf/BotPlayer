@@ -7,7 +7,21 @@ public enum InventoryLayoutCleanupResult {
     RESTORED,
     ALREADY_SAFE,
     SAFE_LAYOUT_COMMITTED,
+    /**
+     * Vanilla death with {@code keepInventory=false} has consumed the exact
+     * armed layout outside the normal physical-compensation handler.
+     *
+     * <p>This is a lifecycle-only receipt. It must never be treated as a
+     * successful ordinary cleanup result.
+     */
+    VANILLA_DEATH_CONSUMED,
     STALE,
     BLOCKED,
-    UNSAFE
+    UNSAFE;
+
+    public boolean isOrdinaryCleanupSuccess() {
+        return this == RESTORED
+                || this == ALREADY_SAFE
+                || this == SAFE_LAYOUT_COMMITTED;
+    }
 }

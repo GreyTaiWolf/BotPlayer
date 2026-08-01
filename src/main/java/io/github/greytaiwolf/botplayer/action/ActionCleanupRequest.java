@@ -46,6 +46,11 @@ public final class ActionCleanupRequest {
             throw new IllegalArgumentException(
                     "cleanup attempt is outside the bounded range");
         }
+        if (reason == ActionCleanupReason.VANILLA_DEATH_CONSUMED
+                && attempt != 1) {
+            throw new IllegalArgumentException(
+                    "vanilla-death-consumed cleanup cannot be retried");
+        }
         this.cleanupId = cleanupId;
         this.actionId = actionId;
         this.botId = botId;
@@ -78,6 +83,10 @@ public final class ActionCleanupRequest {
     public ActionCleanupRequest next(
             ActionCleanupReceipt receipt, long retryTick) {
         Objects.requireNonNull(receipt, "receipt");
+        if (reason == ActionCleanupReason.VANILLA_DEATH_CONSUMED) {
+            throw new IllegalStateException(
+                    "vanilla-death-consumed cleanup is terminal in one attempt");
+        }
         if (!receipt.matches(this)
                 || receipt.status() != ActionCleanupStatus.PENDING) {
             throw new IllegalArgumentException(
@@ -140,5 +149,9 @@ public final class ActionCleanupRequest {
 
     public int attempt() {
         return attempt;
+    }
+
+    public boolean vanillaDeathConsumed() {
+        return reason == ActionCleanupReason.VANILLA_DEATH_CONSUMED;
     }
 }

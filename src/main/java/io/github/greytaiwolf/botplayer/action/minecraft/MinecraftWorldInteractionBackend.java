@@ -285,6 +285,14 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         }
 
         ActionKey key = ActionKey.from(envelope);
+        if (request.vanillaDeathConsumed()) {
+            active.remove(key);
+            completedMenuCleanups.remove(key);
+            return ActionCleanupReceipt.complete(
+                    request,
+                    0L,
+                    "Vanilla death consumed world action body state");
+        }
         InteractionState state = active.get(key);
         ActionCleanupReceipt completed =
                 completedMenuCleanups.get(key);
@@ -869,6 +877,11 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             long currentTick) {
         Objects.requireNonNull(reason, "reason");
         ActionKey key = ActionKey.from(envelope);
+        if (reason == ActionCleanupReason.VANILLA_DEATH_CONSUMED) {
+            active.remove(key);
+            completedMenuCleanups.remove(key);
+            return;
+        }
         InteractionState state = active.get(key);
         if (state == null) {
             return;
@@ -955,6 +968,17 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 || result
                         == InventoryLayoutCleanupFence
                                 .ArmResult.ALREADY_ARMED;
+    }
+
+    InventoryLayoutCleanupResult
+            consumeVanillaDeathSkillInventoryLayout(
+                    UUID botId,
+                    long botGeneration,
+                    InventoryLayoutCleanupLease layoutLease) {
+        return inventoryLayoutCleanupFence.consumeVanillaDeath(
+                botId,
+                botGeneration,
+                layoutLease);
     }
 
     void releaseSkillInventoryLayout(

@@ -38,6 +38,12 @@ public record ActionCleanupReceipt(
         reason = Objects.requireNonNull(reason, "reason");
         status = Objects.requireNonNull(status, "status");
         safeSummary = requireSummary(safeSummary);
+        if (reason == ActionCleanupReason.VANILLA_DEATH_CONSUMED
+                && (attempt != 1
+                        || status != ActionCleanupStatus.COMPLETE)) {
+            throw new IllegalArgumentException(
+                    "vanilla-death-consumed cleanup must complete on its first attempt");
+        }
         if (status == ActionCleanupStatus.PENDING) {
             if (attempt >= ActionCleanupRequest.MAX_ATTEMPTS) {
                 throw new IllegalArgumentException(

@@ -446,6 +446,63 @@ class ActionCleanupProtocolTest {
                 backend.lastReason);
     }
 
+    @Test
+    void vanillaDeathConsumedCleanupCanOnlyCompleteOnce() {
+        ActionCleanupRequest request =
+                ActionCleanupRequest.first(
+                        CLEANUP,
+                        envelope(),
+                        ActionCleanupReason.VANILLA_DEATH_CONSUMED,
+                        10L);
+
+        Assertions.assertTrue(request.vanillaDeathConsumed());
+        Assertions.assertEquals(
+                ActionCleanupStatus.COMPLETE,
+                ActionCleanupReceipt.complete(
+                        request, 0L, "死亡状态已由原版消费")
+                        .status());
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> ActionCleanupReceipt.pending(
+                        request, 0L, 11L, "不得重试"));
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> ActionCleanupReceipt.unsafe(
+                        request, 0L, "不得转为不安全"));
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> new ActionCleanupReceipt(
+                        request.cleanupId(),
+                        request.actionId(),
+                        request.botId(),
+                        request.botGeneration(),
+                        request.reason(),
+                        request.requestedTick(),
+                        request.currentTick(),
+                        2,
+                        ActionCleanupStatus.COMPLETE,
+                        0L,
+                        -1L,
+                        "不得伪造第二次完成"));
+    }
+
+    @Test
+    void vanillaDeathConsumedRequestRejectsRetryEvenWithReceipt() {
+        ActionCleanupRequest request =
+                ActionCleanupRequest.first(
+                        CLEANUP,
+                        envelope(),
+                        ActionCleanupReason.VANILLA_DEATH_CONSUMED,
+                        10L);
+        ActionCleanupReceipt complete =
+                ActionCleanupReceipt.complete(
+                        request, 0L, "已完成");
+
+        Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> request.next(complete, 11L));
+    }
+
     private static ActionCleanupRequest request() {
         return ActionCleanupRequest.first(
                 CLEANUP,

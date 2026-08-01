@@ -176,6 +176,98 @@ class InventoryLayoutCleanupFenceTest {
     }
 
     @Test
+    void vanillaDeathConsumesOnlyTheExactArmedLeaseOnce() {
+        InventoryLayoutCleanupFence fence =
+                new InventoryLayoutCleanupFence();
+        InventoryLayoutCleanupLease exact = lease(
+                FIRST_RUN, 1);
+        InventoryLayoutCleanupLease changed = lease(
+                FIRST_RUN, 2);
+        InventoryLayoutCleanupLease differentRun = lease(
+                SECOND_RUN, 1);
+        fence.arm(BOT, 4L, exact);
+
+        Assertions.assertEquals(
+                InventoryLayoutCleanupResult.STALE,
+                fence.consumeVanillaDeath(
+                        BOT, 4L, changed));
+        Assertions.assertEquals(
+                InventoryLayoutCleanupResult.STALE,
+                fence.consumeVanillaDeath(
+                        BOT, 4L, differentRun));
+        Assertions.assertEquals(
+                InventoryLayoutCleanupResult
+                        .VANILLA_DEATH_CONSUMED,
+                fence.consumeVanillaDeath(
+                        BOT, 4L, exact));
+        Assertions.assertEquals(
+                InventoryLayoutCleanupResult
+                        .VANILLA_DEATH_CONSUMED,
+                fence.consumeVanillaDeath(
+                        BOT, 4L, exact));
+        Assertions.assertEquals(
+                InventoryLayoutCleanupResult
+                        .VANILLA_DEATH_CONSUMED,
+                fence.completedResult(BOT, 4L, exact)
+                        .orElseThrow());
+        Assertions.assertTrue(
+                fence.completedResult(BOT, 4L, changed)
+                        .isEmpty());
+        Assertions.assertEquals(
+                InventoryLayoutCleanupFence.StartResult.STALE,
+                fence.begin(BOT, 4L, exact));
+        Assertions.assertEquals(
+                InventoryLayoutCleanupFence.ArmResult.CONFLICT,
+                fence.arm(BOT, 4L, exact));
+    }
+
+    @Test
+    void vanillaDeathCannotConsumeAnExecutingOrOrdinarilyCompletedLease() {
+        InventoryLayoutCleanupFence fence =
+                new InventoryLayoutCleanupFence();
+        InventoryLayoutCleanupLease executing = lease(
+                FIRST_RUN, 1);
+        fence.arm(BOT, 4L, executing);
+        fence.begin(BOT, 4L, executing);
+
+        Assertions.assertEquals(
+                InventoryLayoutCleanupResult.STALE,
+                fence.consumeVanillaDeath(
+                        BOT, 4L, executing));
+        Assertions.assertTrue(
+                fence.complete(
+                        BOT,
+                        4L,
+                        FIRST_RUN,
+                        InventoryLayoutCleanupResult.RESTORED));
+        Assertions.assertEquals(
+                InventoryLayoutCleanupResult.STALE,
+                fence.consumeVanillaDeath(
+                        BOT, 4L, executing));
+
+        InventoryLayoutCleanupLease armed = lease(
+                SECOND_RUN, 1);
+        Assertions.assertEquals(
+                InventoryLayoutCleanupFence.ArmResult.ARMED,
+                fence.arm(BOT, 4L, armed));
+        Assertions.assertEquals(
+                InventoryLayoutCleanupFence.StartResult.STARTED,
+                fence.begin(BOT, 4L, armed));
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> fence.complete(
+                        BOT,
+                        4L,
+                        SECOND_RUN,
+                        InventoryLayoutCleanupResult
+                                .VANILLA_DEATH_CONSUMED));
+        Assertions.assertEquals(
+                InventoryLayoutCleanupResult.STALE,
+                fence.consumeVanillaDeath(
+                        BOT, 4L, armed));
+    }
+
+    @Test
     void terminalReceiptCapacityIsBoundedAndGenerationCloseReclaimsIt() {
         InventoryLayoutCleanupFence fence =
                 new InventoryLayoutCleanupFence();

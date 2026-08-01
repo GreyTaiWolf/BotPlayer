@@ -433,6 +433,84 @@ public final class SurvivalSkillService implements SafetyHandoff {
     }
 
     /**
+     * Closes a generation after vanilla death with
+     * {@code keepInventory=false} has externally consumed its inventory.
+     *
+     * <p>The lifecycle caller must first prove that the action generation is
+     * closed. An exact armed layout lease is then consumed by the dedicated
+     * fence transition; the ordinary cleanup handler is never invoked because
+     * the physical layout no longer exists. Any active skill is reported as
+     * {@link SkillRunState#CANCELLED}, while its action, signal, incident and
+     * temporary-layout bookkeeping are discarded for the dead generation.
+     *
+     * @return {@code true} only when action cleanup was confirmed and any
+     *     exact active layout lease produced a vanilla-death-consumed receipt
+     */
+    public boolean closeVanillaDeathConsumedGeneration(
+            UUID botId,
+            long generation,
+            long currentTick,
+            boolean actionCleanupConfirmed) {
+        requireOwnerThread();
+        observeTick(currentTick);
+        Objects.requireNonNull(botId, "botId");
+        if (generation <= 0L) {
+            throw new IllegalArgumentException(
+                    "generation must be positive and tick non-negative");
+        }
+        if (!actionCleanupConfirmed) {
+            return false;
+        }
+
+        ActiveRun run = activeRuns.get(botId);
+        if (run == null || run.generation != generation) {
+            incidentAttempts.closeGeneration(
+                    botId, generation);
+            generationLayoutCompensator.closeGeneration(
+                    botId, generation);
+            return true;
+        }
+
+        if (run.layoutLease != null) {
+            InventoryLayoutCleanupResult consumed;
+            try {
+                consumed = Objects.requireNonNull(
+                        generationLayoutCompensator
+                                .consumeVanillaDeath(
+                                        run.botId,
+                                        run.generation,
+                                        run.layoutLease),
+                        "vanilla death layout receipt");
+            } catch (RuntimeException exception) {
+                return false;
+            }
+            if (consumed
+                    != InventoryLayoutCleanupResult
+                            .VANILLA_DEATH_CONSUMED) {
+                return false;
+            }
+        }
+
+        run.generationCloseConfirmed = true;
+        acknowledgeGenerationClose(run);
+        /*
+         * The dedicated consume transition already owns the exact fence.
+         * Do not route finish() through the ordinary release path; the final
+         * generation close below reclaims both the lease and its receipt.
+         */
+        run.layoutLeaseOpen = false;
+        finish(
+                run,
+                SkillRunState.CANCELLED,
+                "原版死亡已消费玩家背包；活动生存技能已取消",
+                currentTick);
+        incidentAttempts.closeGeneration(botId, generation);
+        generationLayoutCompensator.closeGeneration(
+                botId, generation);
+        return true;
+    }
+
+    /**
      * 在生命周期已经无保存地移除精确旧 body 后，丢弃只属于该内存 body 的未验证布局。
      *
      * <p>这不是“补偿成功”回执，也不能用于仍有权威 body 的 generation。调用者必须先完成
@@ -1894,12 +1972,7 @@ public final class SurvivalSkillService implements SafetyHandoff {
 
     private static boolean successfulLayoutCleanup(
             InventoryLayoutCleanupResult result) {
-        return result == InventoryLayoutCleanupResult.RESTORED
-                || result
-                        == InventoryLayoutCleanupResult.ALREADY_SAFE
-                || result
-                        == InventoryLayoutCleanupResult
-                                .SAFE_LAYOUT_COMMITTED;
+        return result.isOrdinaryCleanupSuccess();
     }
 
     private static void acknowledgeGenerationClose(
@@ -2153,7 +2226,10 @@ public final class SurvivalSkillService implements SafetyHandoff {
             case SAFE_LAYOUT_COMMITTED ->
                     summary + "；外部布局已作为安全端点提交";
             case ALREADY_SAFE -> summary;
-            case STALE, BLOCKED, UNSAFE ->
+            case VANILLA_DEATH_CONSUMED,
+                    STALE,
+                    BLOCKED,
+                    UNSAFE ->
                     throw new IllegalStateException(
                             "unsafe layout result passed the settlement gate");
         };
@@ -2439,6 +2515,11 @@ public final class SurvivalSkillService implements SafetyHandoff {
                 UUID botId,
                 long generation,
                 InventoryLayoutCleanupRequest request);
+
+        InventoryLayoutCleanupResult consumeVanillaDeath(
+                UUID botId,
+                long generation,
+                InventoryLayoutCleanupLease layoutLease);
 
         void release(
                 UUID botId,

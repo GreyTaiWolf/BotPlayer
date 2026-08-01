@@ -92,6 +92,23 @@ public final class MinecraftActionBackend implements ActionBackend {
                 botId, botGeneration, request);
     }
 
+    /**
+     * Consumes an exact skill layout lease after vanilla death has already
+     * emptied the body. This bookkeeping-only path never resolves or clicks
+     * the dead player's menu.
+     */
+    public InventoryLayoutCleanupResult
+            consumeVanillaDeathSkillInventoryLayout(
+                    UUID botId,
+                    long botGeneration,
+                    InventoryLayoutCleanupLease layoutLease) {
+        return worldInteractionBackend
+                .consumeVanillaDeathSkillInventoryLayout(
+                        botId,
+                        botGeneration,
+                        layoutLease);
+    }
+
     public void releaseSkillInventoryLayout(
             UUID botId, long botGeneration, UUID runId) {
         worldInteractionBackend.releaseSkillInventoryLayout(
@@ -380,9 +397,22 @@ public final class MinecraftActionBackend implements ActionBackend {
             ActionCleanupRequest request) {
         Objects.requireNonNull(envelope, "envelope");
         Objects.requireNonNull(request, "request");
+        if (!request.matches(envelope)) {
+            throw new IllegalArgumentException(
+                    "cleanup request does not match the action envelope");
+        }
         if (envelope.action() instanceof WorldInteractionAction) {
             return worldInteractionBackend.cleanupStep(
                     envelope, request);
+        }
+        if (request.vanillaDeathConsumed()) {
+            states.remove(stateKey(envelope));
+            inputController.forgetBot(
+                    envelope.botId(), envelope.botGeneration());
+            return ActionCleanupReceipt.complete(
+                    request,
+                    0L,
+                    "Vanilla death consumed action body state");
         }
         return ActionBackend.super.cleanupStep(
                 envelope, request);
@@ -402,6 +432,12 @@ public final class MinecraftActionBackend implements ActionBackend {
         }
 
         StateKey key = stateKey(envelope);
+        if (reason == ActionCleanupReason.VANILLA_DEATH_CONSUMED) {
+            states.remove(key);
+            inputController.forgetBot(
+                    envelope.botId(), envelope.botGeneration());
+            return;
+        }
         BackendState state = states.get(key);
         if (state instanceof MovementState movementState) {
             cleanupInputState(envelope, movementState);
