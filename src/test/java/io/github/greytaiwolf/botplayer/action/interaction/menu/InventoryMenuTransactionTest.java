@@ -129,6 +129,29 @@ class InventoryMenuTransactionTest {
         Assertions.assertTrue(cancelled.state().terminal());
     }
 
+    @Test
+    void transactionCursorSupportsFiveStepGenericPlan() {
+        InventoryMenuSwapPlan plan = fiveStepPlan();
+        InventoryMenuTransaction transaction =
+                InventoryMenuTransaction.planned(plan).start();
+
+        for (InventoryMenuClickStep step :
+                plan.orderedSteps()) {
+            Assertions.assertEquals(
+                    step,
+                    transaction.nextClick().orElseThrow());
+            transaction = transaction.confirmNext(step);
+        }
+
+        Assertions.assertEquals(5, transaction.confirmedClicks());
+        Assertions.assertEquals(
+                InventoryMenuTransactionState.VERIFYING,
+                transaction.state());
+        Assertions.assertEquals(
+                InventoryMenuTransactionState.COMMITTED,
+                transaction.commit().state());
+    }
+
     private static InventoryMenuSwapPlan plan() {
         List<ItemStackFingerprint> slots =
                 new ArrayList<>(41);
@@ -147,6 +170,34 @@ class InventoryMenuTransactionTest {
                         slots);
         return InventoryMenuSwapPlanBuilder
                 .mainToEquipment(initial, 10, 39, 2);
+    }
+
+    private static InventoryMenuSwapPlan fiveStepPlan() {
+        List<ItemStackFingerprint> slots =
+                new ArrayList<>(41);
+        for (int index = 0; index < 41; index++) {
+            slots.add(ItemStackFingerprint.empty());
+        }
+        slots.set(0, item("generic_zero", '3'));
+        slots.set(1, item("generic_one", '4'));
+        slots.set(9, item("generic_nine", '5'));
+        slots.set(10, item("generic_ten", '6'));
+        slots.set(11, item("generic_eleven", '7'));
+        InventoryMenuSnapshot initial =
+                new InventoryMenuSnapshot(
+                        0,
+                        7,
+                        4,
+                        ItemStackFingerprint.empty(),
+                        slots);
+        return InventoryMenuSwapPlanBuilder.swapSequence(
+                initial,
+                List.of(
+                        new InventoryMenuSwapInstruction(9, 0),
+                        new InventoryMenuSwapInstruction(10, 0),
+                        new InventoryMenuSwapInstruction(11, 1),
+                        new InventoryMenuSwapInstruction(9, 1),
+                        new InventoryMenuSwapInstruction(10, 1)));
     }
 
     private static ItemStackFingerprint item(

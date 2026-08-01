@@ -12,7 +12,8 @@ public final class InventoryMenuSwapPlan {
     public enum Operation {
         MAIN_TO_HOTBAR,
         HOTBAR_TO_EQUIPMENT,
-        MAIN_TO_EQUIPMENT
+        MAIN_TO_EQUIPMENT,
+        SWAP_SEQUENCE
     }
 
     private final Operation operation;
@@ -174,6 +175,13 @@ public final class InventoryMenuSwapPlan {
                     throw new IllegalArgumentException(
                             "main-to-equipment plan shape is invalid");
                 }
+            }
+            case SWAP_SEQUENCE -> {
+                /*
+                 * The constructor's exact snapshot chain, unique-prefix,
+                 * click-count and touched-slot gates are the complete
+                 * shape contract for a generic SWAP sequence.
+                 */
             }
         }
     }

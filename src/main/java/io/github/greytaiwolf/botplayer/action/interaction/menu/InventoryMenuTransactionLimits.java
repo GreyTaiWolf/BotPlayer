@@ -24,4 +24,13 @@ public record InventoryMenuTransactionLimits(
     public static InventoryMenuTransactionLimits defaults() {
         return new InventoryMenuTransactionLimits(3, 3);
     }
+
+    /**
+     * 通用玩家背包 SWAP 事务的冻结绝对上限。
+     */
+    public static InventoryMenuTransactionLimits hardMaximum() {
+        return new InventoryMenuTransactionLimits(
+                HARD_MAX_CLICKS,
+                HARD_MAX_UNIQUE_INVENTORY_SLOTS);
+    }
 }

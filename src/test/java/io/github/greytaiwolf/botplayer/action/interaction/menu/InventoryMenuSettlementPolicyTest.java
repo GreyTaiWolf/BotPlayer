@@ -393,6 +393,192 @@ class InventoryMenuSettlementPolicyTest {
         Assertions.assertTrue(decision.click().isEmpty());
     }
 
+    @Test
+    void fiveStepPlanSettlesAcrossTicksToFixedNearestEndpoint() {
+        InventoryMenuSwapPlan plan = fiveStepPlan();
+
+        assertSettlementPath(plan, 2, 0);
+        assertSettlementPath(plan, 3, 5);
+    }
+
+    @Test
+    void fiveStepPlanRecognizesExactTargetAfterClickThrows() {
+        InventoryMenuSwapPlan plan = fiveStepPlan();
+        InventoryMenuSnapshot source = withState(
+                plan.snapshotAtPrefix(2), 40);
+        InventoryMenuSnapshot target = withState(
+                plan.snapshotAtPrefix(1), 41);
+        InventoryMenuSettlementDecision initialDecision =
+                InventoryMenuSettlementPolicy.decide(
+                        plan,
+                        source,
+                        InventoryMenuPrefixAuthority.stable(
+                                plan, 2, source));
+        InventoryMenuSettlementCursor cursor =
+                initialDecision.settlementCursor()
+                        .orElseThrow();
+
+        InventoryMenuSettlementDecision decision =
+                InventoryMenuSettlementPolicy.decide(
+                        cursor,
+                        target,
+                        InventoryMenuPrefixAuthority.inFlight(
+                                plan,
+                                2,
+                                1,
+                                source,
+                                target));
+
+        Assertions.assertEquals(
+                InventoryMenuSettlementDecision.Outcome
+                        .CLICK_TO_INITIAL,
+                decision.outcome());
+        InventoryMenuClickStep next =
+                decision.click().orElseThrow();
+        Assertions.assertTrue(
+                next.before().layoutEqualsIgnoringState(target));
+        Assertions.assertTrue(
+                next.after().layoutEqualsIgnoringState(
+                        plan.initialSnapshot()));
+        Assertions.assertTrue(
+                next.after().inventoryMultisetEquals(
+                        plan.initialSnapshot()));
+        Assertions.assertEquals(
+                InventoryMenuSettlementCursor.Endpoint.INITIAL,
+                decision.settlementCursor()
+                        .orElseThrow()
+                        .endpoint());
+        Assertions.assertEquals(
+                1,
+                decision.settlementCursor()
+                        .orElseThrow()
+                        .confirmedPrefix());
+    }
+
+    @Test
+    void fiveStepPlanKeepsSourceAfterBeforeMutationThrow() {
+        InventoryMenuSwapPlan plan = fiveStepPlan();
+        InventoryMenuSnapshot source = withState(
+                plan.snapshotAtPrefix(2), 40);
+        InventoryMenuSnapshot target = withState(
+                plan.snapshotAtPrefix(1), 41);
+        InventoryMenuSettlementDecision initialDecision =
+                InventoryMenuSettlementPolicy.decide(
+                        plan,
+                        source,
+                        InventoryMenuPrefixAuthority.stable(
+                                plan, 2, source));
+        InventoryMenuSettlementCursor cursor =
+                initialDecision.settlementCursor()
+                        .orElseThrow();
+
+        InventoryMenuSettlementDecision decision =
+                InventoryMenuSettlementPolicy.decide(
+                        cursor,
+                        source,
+                        InventoryMenuPrefixAuthority.inFlight(
+                                plan,
+                                2,
+                                1,
+                                source,
+                                target));
+
+        Assertions.assertEquals(
+                InventoryMenuSettlementDecision.Outcome
+                        .CLICK_TO_INITIAL,
+                decision.outcome());
+        Assertions.assertEquals(
+                2, decision.observedPrefix());
+        Assertions.assertEquals(
+                source, decision.observedSnapshot());
+        Assertions.assertTrue(
+                decision.click().orElseThrow()
+                        .after()
+                        .layoutEqualsIgnoringState(target));
+        Assertions.assertTrue(
+                cursor
+                        == decision.settlementCursor()
+                                .orElseThrow());
+    }
+
+    @Test
+    void frozenEndpointRejectsOppositeAdjacentTarget() {
+        InventoryMenuSwapPlan plan = fiveStepPlan();
+        InventoryMenuSnapshot source = withState(
+                plan.snapshotAtPrefix(2), 40);
+        InventoryMenuSnapshot oppositeTarget = withState(
+                plan.snapshotAtPrefix(3), 41);
+        InventoryMenuSettlementCursor cursor =
+                InventoryMenuSettlementPolicy.decide(
+                                plan,
+                                source,
+                                InventoryMenuPrefixAuthority
+                                        .stable(plan, 2, source))
+                        .settlementCursor()
+                        .orElseThrow();
+
+        InventoryMenuSettlementDecision decision =
+                InventoryMenuSettlementPolicy.decide(
+                        cursor,
+                        oppositeTarget,
+                        InventoryMenuPrefixAuthority.inFlight(
+                                plan,
+                                2,
+                                3,
+                                source,
+                                oppositeTarget));
+
+        Assertions.assertEquals(
+                InventoryMenuSettlementCursor.Endpoint.INITIAL,
+                cursor.endpoint());
+        Assertions.assertEquals(
+                InventoryMenuSettlementDecision.Outcome.UNSAFE,
+                decision.outcome());
+        Assertions.assertEquals(3, decision.observedPrefix());
+        Assertions.assertTrue(decision.click().isEmpty());
+        Assertions.assertTrue(
+                decision.settlementCursor().isEmpty());
+    }
+
+    @Test
+    void fiveStepPlanRejectsUnownedPrefixAndConservationLoss() {
+        InventoryMenuSwapPlan plan = fiveStepPlan();
+        InventoryMenuSettlementDecision unowned =
+                InventoryMenuSettlementPolicy.decide(
+                        plan,
+                        plan.snapshotAtPrefix(3),
+                        stableAuthority(plan, 2));
+        List<ItemStackFingerprint> changed =
+                new ArrayList<>(
+                        plan.snapshotAtPrefix(2)
+                                .inventorySlots());
+        changed.set(20, item("unexpected_item", '8'));
+        InventoryMenuSnapshot lostConservation =
+                new InventoryMenuSnapshot(
+                        plan.initialSnapshot().containerId(),
+                        70,
+                        plan.initialSnapshot().selectedHotbar(),
+                        EMPTY,
+                        changed);
+        InventoryMenuSettlementDecision changedDecision =
+                InventoryMenuSettlementPolicy.decide(
+                        plan,
+                        lostConservation,
+                        stableAuthority(plan, 2));
+
+        Assertions.assertEquals(
+                InventoryMenuSettlementDecision.Outcome.UNSAFE,
+                unowned.outcome());
+        Assertions.assertEquals(3, unowned.observedPrefix());
+        Assertions.assertEquals(
+                InventoryMenuSettlementDecision.Outcome.UNSAFE,
+                changedDecision.outcome());
+        Assertions.assertFalse(
+                lostConservation.inventoryMultisetEquals(
+                        plan.initialSnapshot()));
+        Assertions.assertTrue(changedDecision.click().isEmpty());
+    }
+
     private static void assertDecision(
             InventoryMenuSwapPlan plan,
             int prefix,
@@ -420,6 +606,76 @@ class InventoryMenuSettlementPolicyTest {
                         .layoutEqualsIgnoringState(settled));
     }
 
+    private static void assertSettlementPath(
+            InventoryMenuSwapPlan plan,
+            int startingPrefix,
+            int endpointPrefix) {
+        int currentPrefix = startingPrefix;
+        InventoryMenuSnapshot actual = withState(
+                plan.snapshotAtPrefix(currentPrefix), 100);
+        InventoryMenuSettlementDecision decision =
+                InventoryMenuSettlementPolicy.decide(
+                        plan,
+                        actual,
+                        InventoryMenuPrefixAuthority.stable(
+                                plan,
+                                currentPrefix,
+                                actual));
+        InventoryMenuSettlementCursor cursor =
+                decision.settlementCursor().orElseThrow();
+        while (currentPrefix != endpointPrefix) {
+            boolean towardInitial = endpointPrefix == 0;
+            Assertions.assertEquals(
+                    towardInitial
+                            ? InventoryMenuSettlementDecision
+                                    .Outcome.CLICK_TO_INITIAL
+                            : InventoryMenuSettlementDecision
+                                    .Outcome.CLICK_TO_FINAL,
+                    decision.outcome());
+            Assertions.assertEquals(
+                    currentPrefix,
+                    decision.observedPrefix());
+            InventoryMenuClickStep click =
+                    decision.click().orElseThrow();
+            int nextPrefix = currentPrefix
+                    + (towardInitial ? -1 : 1);
+            Assertions.assertTrue(
+                    click.before().layoutEqualsIgnoringState(
+                            actual));
+            Assertions.assertTrue(
+                    click.after().layoutEqualsIgnoringState(
+                            plan.snapshotAtPrefix(nextPrefix)));
+            Assertions.assertTrue(
+                    click.after().inventoryMultisetEquals(
+                            plan.initialSnapshot()));
+            actual = withState(
+                    click.after(), actual.stateId() + 1);
+            currentPrefix = nextPrefix;
+            cursor = cursor.advanceAfterProposedClick();
+            decision = InventoryMenuSettlementPolicy.decide(
+                    cursor,
+                    actual,
+                    InventoryMenuPrefixAuthority.stable(
+                            plan,
+                            currentPrefix,
+                            actual));
+        }
+
+        Assertions.assertEquals(
+                endpointPrefix == 0
+                        ? InventoryMenuSettlementDecision
+                                .Outcome.ALREADY_INITIAL
+                        : InventoryMenuSettlementDecision
+                                .Outcome.ALREADY_FINAL,
+                decision.outcome());
+        Assertions.assertTrue(decision.click().isEmpty());
+        Assertions.assertEquals(
+                endpointPrefix,
+                decision.settlementCursor()
+                        .orElseThrow()
+                        .confirmedPrefix());
+    }
+
     private static InventoryMenuPrefixAuthority stableAuthority(
             InventoryMenuSwapPlan plan, int prefix) {
         return InventoryMenuPrefixAuthority.stable(
@@ -440,6 +696,32 @@ class InventoryMenuSettlementPolicyTest {
                         10,
                         39,
                         2);
+    }
+
+    private static InventoryMenuSwapPlan fiveStepPlan() {
+        return InventoryMenuSwapPlanBuilder.swapSequence(
+                snapshot(
+                        0, SOURCE,
+                        1, TARGET,
+                        9, TEMPORARY,
+                        10, FIRST_UNRELATED,
+                        11, SECOND_UNRELATED),
+                List.of(
+                        new InventoryMenuSwapInstruction(9, 0),
+                        new InventoryMenuSwapInstruction(10, 0),
+                        new InventoryMenuSwapInstruction(11, 1),
+                        new InventoryMenuSwapInstruction(9, 1),
+                        new InventoryMenuSwapInstruction(10, 1)));
+    }
+
+    private static InventoryMenuSnapshot withState(
+            InventoryMenuSnapshot source, int stateId) {
+        return new InventoryMenuSnapshot(
+                source.containerId(),
+                stateId,
+                source.selectedHotbar(),
+                source.cursor(),
+                source.inventorySlots());
     }
 
     private static InventoryMenuSnapshot snapshot(

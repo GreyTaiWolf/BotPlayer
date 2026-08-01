@@ -111,6 +111,17 @@ public final class InventoryMenuPrefixAuthority {
                 : OptionalInt.empty();
     }
 
+    boolean bindsSource(
+            InventoryMenuSwapPlan requestedPlan,
+            int requestedSourcePrefix) {
+        return plan == requestedPlan
+                && sourcePrefix == requestedSourcePrefix;
+    }
+
+    OptionalInt inFlightTargetPrefix() {
+        return inFlightTargetPrefix;
+    }
+
     private static void requirePrefix(
             InventoryMenuSwapPlan plan, int prefix) {
         if (prefix < 0

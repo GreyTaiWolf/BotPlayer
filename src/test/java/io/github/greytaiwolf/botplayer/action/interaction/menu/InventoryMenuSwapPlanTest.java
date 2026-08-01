@@ -453,6 +453,114 @@ class InventoryMenuSwapPlanTest {
                         InventoryMenuTransactionLimits.defaults()));
     }
 
+    @Test
+    void genericSequenceAcceptsOneThroughSixteenClicks() {
+        InventoryMenuSnapshot initial = numberedSnapshot(
+                0, 9, 10, 11, 12, 13, 14, 15);
+        InventoryMenuSwapPlan single =
+                InventoryMenuSwapPlanBuilder.swapSequence(
+                        initial,
+                        List.of(new InventoryMenuSwapInstruction(
+                                9, 0)));
+        List<InventoryMenuSwapInstruction> instructions =
+                new ArrayList<>();
+        for (int index = 0;
+                index < InventoryMenuTransactionLimits
+                        .HARD_MAX_CLICKS;
+                index++) {
+            instructions.add(
+                    new InventoryMenuSwapInstruction(
+                            9 + index % 7, 0));
+        }
+
+        Assertions.assertEquals(
+                InventoryMenuSwapPlan.Operation.SWAP_SEQUENCE,
+                single.operation());
+        Assertions.assertEquals(1, single.orderedSteps().size());
+        InventoryMenuSwapPlan maximum = null;
+        for (int clickCount = 1;
+                clickCount
+                        <= InventoryMenuTransactionLimits
+                                .HARD_MAX_CLICKS;
+                clickCount++) {
+            InventoryMenuSwapPlan plan =
+                    InventoryMenuSwapPlanBuilder.swapSequence(
+                            initial,
+                            instructions.subList(
+                                    0, clickCount));
+            Assertions.assertEquals(
+                    InventoryMenuSwapPlan.Operation
+                            .SWAP_SEQUENCE,
+                    plan.operation());
+            Assertions.assertEquals(
+                    clickCount, plan.orderedSteps().size());
+            Assertions.assertTrue(
+                    plan.finalSnapshot()
+                            .inventoryMultisetEquals(initial));
+            maximum = plan;
+        }
+        Assertions.assertTrue(maximum != null);
+        Assertions.assertEquals(
+                List.of(0, 9, 10, 11, 12, 13, 14, 15),
+                maximum.touchedInventorySlots());
+        Assertions.assertEquals(
+                InventoryMenuTransactionLimits.hardMaximum(),
+                maximum.limits());
+    }
+
+    @Test
+    void genericSequenceRejectsEmptyClickAndSlotOverflow() {
+        InventoryMenuSnapshot eightSlots = numberedSnapshot(
+                0, 9, 10, 11, 12, 13, 14, 15);
+        List<InventoryMenuSwapInstruction> tooMany =
+                new ArrayList<>();
+        for (int index = 0;
+                index
+                        <= InventoryMenuTransactionLimits
+                                .HARD_MAX_CLICKS;
+                index++) {
+            tooMany.add(new InventoryMenuSwapInstruction(
+                    9 + index % 7, 0));
+        }
+        InventoryMenuSnapshot nineSlots = numberedSnapshot(
+                0, 9, 10, 11, 12, 13, 14, 15, 16);
+        List<InventoryMenuSwapInstruction> tooWide =
+                new ArrayList<>();
+        for (int slot = 9; slot <= 16; slot++) {
+            tooWide.add(new InventoryMenuSwapInstruction(
+                    slot, 0));
+        }
+        List<InventoryMenuSwapInstruction> withNull =
+                new ArrayList<>();
+        withNull.add(new InventoryMenuSwapInstruction(9, 0));
+        withNull.add(null);
+
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> InventoryMenuSwapPlanBuilder
+                        .swapSequence(eightSlots, List.of()));
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> InventoryMenuSwapPlanBuilder
+                        .swapSequence(eightSlots, tooMany));
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> InventoryMenuSwapPlanBuilder
+                        .swapSequence(nineSlots, tooWide));
+        Assertions.assertThrows(
+                NullPointerException.class,
+                () -> InventoryMenuSwapPlanBuilder
+                        .swapSequence(
+                                eightSlots,
+                                withNull));
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> new InventoryMenuSwapInstruction(0, 0));
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> new InventoryMenuSwapInstruction(9, 9));
+    }
+
     private static InventoryMenuSnapshot snapshot(
             Object... slotAndFingerprintPairs) {
         if (slotAndFingerprintPairs.length % 2 != 0) {
@@ -486,6 +594,23 @@ class InventoryMenuSwapPlanTest {
                 source.selectedHotbar(),
                 source.cursor(),
                 slots);
+    }
+
+    private static InventoryMenuSnapshot numberedSnapshot(
+            int... inventorySlots) {
+        List<ItemStackFingerprint> slots = emptySlots();
+        for (int index = 0;
+                index < inventorySlots.length;
+                index++) {
+            int inventorySlot = inventorySlots[index];
+            slots.set(
+                    inventorySlot,
+                    item(
+                            "generic_token_" + inventorySlot,
+                            "0123456789abcdef".charAt(index)));
+        }
+        return new InventoryMenuSnapshot(
+                0, 17, 4, EMPTY, slots);
     }
 
     private static List<ItemStackFingerprint> emptySlots() {

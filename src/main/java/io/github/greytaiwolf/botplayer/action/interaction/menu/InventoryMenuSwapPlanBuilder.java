@@ -17,6 +17,60 @@ public final class InventoryMenuSwapPlanBuilder {
     private InventoryMenuSwapPlanBuilder() {
     }
 
+    /**
+     * 按冻结硬上限构造一条通用、逐步可验证的 SWAP 序列。
+     */
+    public static InventoryMenuSwapPlan swapSequence(
+            InventoryMenuSnapshot initialSnapshot,
+            List<InventoryMenuSwapInstruction> instructions) {
+        return swapSequence(
+                initialSnapshot,
+                instructions,
+                InventoryMenuTransactionLimits.hardMaximum());
+    }
+
+    /**
+     * 构造一条最多 16 次点击、触碰最多 8 个库存槽的通用 SWAP 序列。
+     *
+     * <p>每条指令都从前一条的完整结果快照推导；不可观察交换、重复布局、
+     * 空计划和超限计划均由模型默认拒绝。
+     */
+    public static InventoryMenuSwapPlan swapSequence(
+            InventoryMenuSnapshot initialSnapshot,
+            List<InventoryMenuSwapInstruction> instructions,
+            InventoryMenuTransactionLimits limits) {
+        requireInitial(initialSnapshot);
+        Objects.requireNonNull(instructions, "instructions");
+        Objects.requireNonNull(limits, "limits");
+        if (instructions.isEmpty()
+                || instructions.size() > limits.maxClicks()) {
+            throw new IllegalArgumentException(
+                    "SWAP instruction count is outside its limit");
+        }
+
+        List<InventoryMenuClickStep> steps =
+                new ArrayList<>(instructions.size());
+        InventoryMenuSnapshot current = initialSnapshot;
+        for (InventoryMenuSwapInstruction instruction :
+                instructions) {
+            InventoryMenuSwapInstruction required =
+                    Objects.requireNonNull(
+                            instruction, "swap instruction");
+            InventoryMenuClickStep next = step(
+                    current,
+                    required.clickedInventorySlot(),
+                    required.hotbarButton());
+            steps.add(next);
+            current = next.after();
+        }
+        return new InventoryMenuSwapPlan(
+                InventoryMenuSwapPlan.Operation.SWAP_SEQUENCE,
+                initialSnapshot,
+                current,
+                steps,
+                limits);
+    }
+
     public static InventoryMenuSwapPlan mainToHotbar(
             InventoryMenuSnapshot initialSnapshot,
             int sourceMainInventorySlot,
