@@ -1,19 +1,18 @@
 package io.github.greytaiwolf.botplayer.action.interaction;
 
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Generation-scoped, one-shot identity fence for lifecycle inventory
- * compensation.
+ * Generation-scoped identity fence for lifecycle inventory compensation.
  *
  * <p>The fence is owned by the server thread. A run must be armed before it
- * can begin compensation; exact and stale replays cannot invoke the mutation
- * handler a second time.
+ * can begin compensation. A physically untouched BLOCKED attempt may be
+ * re-armed; terminal results are retained as bounded idempotent receipts, so
+ * exact and stale replays cannot invoke the mutation handler a second time.
  */
 public final class InventoryLayoutCleanupFence {
     public static final int MAX_CONSUMED_RUNS = 4096;
@@ -21,8 +20,8 @@ public final class InventoryLayoutCleanupFence {
 
     private final Map<GenerationKey, Lease> leases =
             new HashMap<>();
-    private final Map<GenerationKey, Set<UUID>>
-            consumedRuns = new HashMap<>();
+    private final Map<GenerationKey, Map<UUID, TerminalLease>>
+            terminalRuns = new HashMap<>();
     private int consumedRunCount;
 
     public ArmResult arm(
@@ -86,9 +85,19 @@ public final class InventoryLayoutCleanupFence {
     }
 
     public boolean complete(
-            UUID botId, long generation, UUID runId) {
+            UUID botId,
+            long generation,
+            UUID runId,
+            InventoryLayoutCleanupResult result) {
         GenerationKey key = key(botId, generation);
         UUID requiredRunId = runId(runId);
+        InventoryLayoutCleanupResult requiredResult =
+                Objects.requireNonNull(result, "result");
+        if (requiredResult
+                == InventoryLayoutCleanupResult.BLOCKED) {
+            throw new IllegalArgumentException(
+                    "BLOCKED cleanup must be re-armed, not completed");
+        }
         Lease existing = leases.get(key);
         if (existing == null
                 || !existing.layoutLease()
@@ -99,8 +108,61 @@ public final class InventoryLayoutCleanupFence {
                 || !leases.remove(key, existing)) {
             return false;
         }
-        rememberConsumed(key, requiredRunId);
+        rememberTerminal(
+                key,
+                existing.layoutLease(),
+                Optional.of(requiredResult));
         return true;
+    }
+
+    /**
+     * 瞬时阻塞没有执行物理补偿；把精确 lease 放回 ARMED，允许后续 Tick 重试。
+     */
+    public boolean retry(
+            UUID botId, long generation, UUID runId) {
+        GenerationKey key = key(botId, generation);
+        UUID requiredRunId = runId(runId);
+        Lease existing = leases.get(key);
+        if (existing == null
+                || !existing.layoutLease()
+                        .runId()
+                        .equals(requiredRunId)
+                || existing.state()
+                        != LeaseState.EXECUTING) {
+            return false;
+        }
+        return leases.replace(
+                key,
+                existing,
+                new Lease(
+                        existing.layoutLease(),
+                        LeaseState.ARMED));
+    }
+
+    /**
+     * 返回同一精确 lease 已完成的不可变回执；不同 payload 不能复用旧 runId。
+     */
+    public Optional<InventoryLayoutCleanupResult>
+            completedResult(
+                    UUID botId,
+                    long generation,
+                    InventoryLayoutCleanupLease layoutLease) {
+        GenerationKey key = key(botId, generation);
+        InventoryLayoutCleanupLease requiredLease =
+                Objects.requireNonNull(
+                        layoutLease, "layoutLease");
+        Map<UUID, TerminalLease> records =
+                terminalRuns.get(key);
+        if (records == null) {
+            return Optional.empty();
+        }
+        TerminalLease terminal = records.get(
+                requiredLease.runId());
+        return terminal != null
+                        && terminal.layoutLease()
+                                .equals(requiredLease)
+                ? terminal.result()
+                : Optional.empty();
     }
 
     public boolean release(
@@ -115,7 +177,10 @@ public final class InventoryLayoutCleanupFence {
                 && existing.state()
                         == LeaseState.ARMED
                 && leases.remove(key, existing)) {
-            rememberConsumed(key, requiredRunId);
+            rememberTerminal(
+                    key,
+                    existing.layoutLease(),
+                    Optional.empty());
             return true;
         }
         return false;
@@ -125,7 +190,8 @@ public final class InventoryLayoutCleanupFence {
             UUID botId, long generation) {
         GenerationKey key = key(botId, generation);
         leases.remove(key);
-        Set<UUID> removed = consumedRuns.remove(key);
+        Map<UUID, TerminalLease> removed =
+                terminalRuns.remove(key);
         if (removed != null) {
             consumedRunCount = Math.subtractExact(
                     consumedRunCount,
@@ -135,24 +201,30 @@ public final class InventoryLayoutCleanupFence {
 
     public void clear() {
         leases.clear();
-        consumedRuns.clear();
+        terminalRuns.clear();
         consumedRunCount = 0;
     }
 
     private boolean wasConsumed(
             GenerationKey key, UUID runId) {
-        Set<UUID> consumed =
-                consumedRuns.get(key);
-        return consumed != null
-                && consumed.contains(runId);
+        Map<UUID, TerminalLease> terminal =
+                terminalRuns.get(key);
+        return terminal != null
+                && terminal.containsKey(runId);
     }
 
-    private void rememberConsumed(
-            GenerationKey key, UUID runId) {
-        if (consumedRuns
+    private void rememberTerminal(
+            GenerationKey key,
+            InventoryLayoutCleanupLease layoutLease,
+            Optional<InventoryLayoutCleanupResult> result) {
+        TerminalLease previous = terminalRuns
                 .computeIfAbsent(
-                        key, ignored -> new HashSet<>())
-                .add(runId)) {
+                        key, ignored -> new HashMap<>())
+                .putIfAbsent(
+                        layoutLease.runId(),
+                        new TerminalLease(
+                                layoutLease, result));
+        if (previous == null) {
             consumedRunCount = Math.incrementExact(
                     consumedRunCount);
         }
@@ -202,4 +274,15 @@ public final class InventoryLayoutCleanupFence {
     private record Lease(
             InventoryLayoutCleanupLease layoutLease,
             LeaseState state) {}
+
+    private record TerminalLease(
+            InventoryLayoutCleanupLease layoutLease,
+            Optional<InventoryLayoutCleanupResult> result) {
+        private TerminalLease {
+            Objects.requireNonNull(
+                    layoutLease, "layoutLease");
+            result = Objects.requireNonNull(
+                    result, "result");
+        }
+    }
 }

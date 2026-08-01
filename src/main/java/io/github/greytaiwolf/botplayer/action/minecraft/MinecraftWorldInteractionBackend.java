@@ -378,6 +378,14 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             long botGeneration,
             InventoryLayoutCleanupRequest request) {
         Objects.requireNonNull(request, "request");
+        Optional<InventoryLayoutCleanupResult> completed =
+                inventoryLayoutCleanupFence.completedResult(
+                        botId,
+                        botGeneration,
+                        request.lease());
+        if (completed.isPresent()) {
+            return completed.orElseThrow();
+        }
         if (inventoryLayoutCleanupFence.begin(
                         botId,
                         botGeneration,
@@ -393,10 +401,20 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         } catch (RuntimeException exception) {
             result = InventoryLayoutCleanupResult.UNSAFE;
         }
+        if (result
+                == InventoryLayoutCleanupResult.BLOCKED) {
+            return inventoryLayoutCleanupFence.retry(
+                            botId,
+                            botGeneration,
+                            request.runId())
+                    ? result
+                    : InventoryLayoutCleanupResult.UNSAFE;
+        }
         if (!inventoryLayoutCleanupFence.complete(
                 botId,
                 botGeneration,
-                request.runId())) {
+                request.runId(),
+                result)) {
             return InventoryLayoutCleanupResult.UNSAFE;
         }
         return result;

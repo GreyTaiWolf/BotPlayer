@@ -45,50 +45,61 @@ public final class BotInventorySessionManager {
 
    public BotInventorySessionManager.OpenResult open(UUID var1, long var2, UUID var4) {
       this.requireOwnerThread();
-      validateIdentity(var1, var2, var4);
-      if (!this.permissionValidator.canWriteInventory(var1, var4)) {
-         return BotInventorySessionManager.OpenResult.rejected(BotInventorySessionManager.OpenStatus.PERMISSION_DENIED);
-      } else {
-         InventoryLifecycleValidator.LifecycleStatus var5 = this.validateLifecycle(var1, var2);
-         if (!var5.active()) {
-            return BotInventorySessionManager.OpenResult.rejected(mapOpenStatus(var5));
-         } else {
-            InventoryDistanceValidator.SpatialStatus var6 = this.validateDistance(var1, var4);
-            if (!var6.valid()) {
-               return BotInventorySessionManager.OpenResult.rejected(mapOpenStatus(var6));
-            } else {
-               BotInventorySession var7 = this.sessionsByBot.get(var1);
-               if (var7 != null) {
-                  InventorySessionToken var13 = var7.token();
-                  if (var13.viewerId().equals(var4) && var13.botGeneration() == var2) {
-                     BotInventorySessionManager.OpenStatus var14 = var7.state() == InventorySessionState.CLOSING
-                        ? BotInventorySessionManager.OpenStatus.SESSION_CLOSING
-                        : BotInventorySessionManager.OpenStatus.EXISTING_SESSION;
-                     return new BotInventorySessionManager.OpenResult(var14, Optional.of(var7));
-                  } else {
-                     return BotInventorySessionManager.OpenResult.rejected(BotInventorySessionManager.OpenStatus.BOT_LOCKED);
-                  }
-               } else {
-                  BotInventorySession var8 = this.sessionsByViewer.get(var4);
-                  if (var8 != null) {
-                     return new BotInventorySessionManager.OpenResult(BotInventorySessionManager.OpenStatus.VIEWER_BUSY, Optional.of(var8));
-                  } else {
-                     UUID var9 = this.nextNonce();
-                     if (var9 == null) {
-                        return BotInventorySessionManager.OpenResult.rejected(BotInventorySessionManager.OpenStatus.NONCE_UNAVAILABLE);
-                     } else {
-                        InventorySessionToken var10 = new InventorySessionToken(var1, var2, var4, var9);
-                        BotInventoryLock var11 = new BotInventoryLock(var10);
-                        BotInventorySession var12 = new BotInventorySession(var10, var11);
-                        this.sessionsByBot.put(var1, var12);
-                        this.sessionsByViewer.put(var4, var12);
-                        return new BotInventorySessionManager.OpenResult(BotInventorySessionManager.OpenStatus.OPENING, Optional.of(var12));
-                     }
-                  }
-               }
-            }
-         }
+      BotInventorySessionManager.OpenStatus status = this.probeOpen(var1, var2, var4);
+      if (status != BotInventorySessionManager.OpenStatus.OPENING) {
+         Optional<BotInventorySession> existing = switch (status) {
+            case EXISTING_SESSION, SESSION_CLOSING -> Optional.ofNullable(this.sessionsByBot.get(var1));
+            case VIEWER_BUSY -> Optional.ofNullable(this.sessionsByViewer.get(var4));
+            default -> Optional.empty();
+         };
+         return new BotInventorySessionManager.OpenResult(status, existing);
       }
+
+      UUID nonce = this.nextNonce();
+      if (nonce == null) {
+         return BotInventorySessionManager.OpenResult.rejected(BotInventorySessionManager.OpenStatus.NONCE_UNAVAILABLE);
+      }
+      InventorySessionToken token = new InventorySessionToken(var1, var2, var4, nonce);
+      BotInventoryLock lock = new BotInventoryLock(token);
+      BotInventorySession session = new BotInventorySession(token, lock);
+      this.sessionsByBot.put(var1, session);
+      this.sessionsByViewer.put(var4, session);
+      return new BotInventorySessionManager.OpenResult(BotInventorySessionManager.OpenStatus.OPENING, Optional.of(session));
+   }
+
+   /**
+    * 只读检查一次开包请求；它不会分配 nonce、会话或写锁。
+    *
+    * <p>生命周期层用它先排除无权限、超距和现有查看者，再让动作运行时收口菜单事务。
+    */
+   public BotInventorySessionManager.OpenStatus probeOpen(UUID botId, long botGeneration, UUID viewerId) {
+      this.requireOwnerThread();
+      validateIdentity(botId, botGeneration, viewerId);
+      if (!this.permissionValidator.canWriteInventory(botId, viewerId)) {
+         return BotInventorySessionManager.OpenStatus.PERMISSION_DENIED;
+      }
+      InventoryLifecycleValidator.LifecycleStatus lifecycle = this.validateLifecycle(botId, botGeneration);
+      if (!lifecycle.active()) {
+         return mapOpenStatus(lifecycle);
+      }
+      InventoryDistanceValidator.SpatialStatus spatial = this.validateDistance(botId, viewerId);
+      if (!spatial.valid()) {
+         return mapOpenStatus(spatial);
+      }
+
+      BotInventorySession botSession = this.sessionsByBot.get(botId);
+      if (botSession != null) {
+         InventorySessionToken token = botSession.token();
+         if (token.viewerId().equals(viewerId) && token.botGeneration() == botGeneration) {
+            return botSession.state() == InventorySessionState.CLOSING
+               ? BotInventorySessionManager.OpenStatus.SESSION_CLOSING
+               : BotInventorySessionManager.OpenStatus.EXISTING_SESSION;
+         }
+         return BotInventorySessionManager.OpenStatus.BOT_LOCKED;
+      }
+      return this.sessionsByViewer.containsKey(viewerId)
+         ? BotInventorySessionManager.OpenStatus.VIEWER_BUSY
+         : BotInventorySessionManager.OpenStatus.OPENING;
    }
 
    public BotInventorySessionManager.OpenConfirmationStatus markOpened(InventorySessionToken var1) {

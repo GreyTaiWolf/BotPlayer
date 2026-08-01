@@ -376,32 +376,32 @@ public final class BotLifecycleManager {
             return BotInventorySessionManager.OpenStatus.BOT_NOT_ACTIVE;
         }
 
-        BotInventorySessionManager.OpenResult result =
-                inventorySessions.open(
+        BotInventorySessionManager.OpenStatus probe =
+                inventorySessions.probeOpen(
                         bot.getUUID(),
                         generation,
                         viewer.getUUID());
-        if (result.status()
-                == BotInventorySessionManager.OpenStatus.EXISTING_SESSION) {
-            InventorySessionToken token =
-                    result.session().orElseThrow().token();
-            if (viewer.containerMenu instanceof BotInventoryMenu menu
-                    && menu.sessionToken()
-                            .filter(token::equals)
-                            .isPresent()) {
-                return result.status();
+        if (probe != BotInventorySessionManager.OpenStatus.OPENING) {
+            if (probe
+                    != BotInventorySessionManager
+                            .OpenStatus.EXISTING_SESSION) {
+                return probe;
             }
-            closeInventorySession(
-                    token, InventoryCloseReason.MENU_REPLACED);
-            return BotInventorySessionManager.OpenStatus.SESSION_CLOSING;
-        }
-        if (result.status()
-                != BotInventorySessionManager.OpenStatus.OPENING) {
-            return result.status();
+            BotInventorySession existingSession =
+                    inventorySessions
+                            .sessionForBot(bot.getUUID())
+                            .orElse(null);
+            return existingSession == null
+                    ? BotInventorySessionManager.OpenStatus
+                            .SESSION_CLOSING
+                    : finishExistingInventoryOpen(
+                            viewer, existingSession);
         }
 
-        InventorySessionToken token =
-                result.session().orElseThrow().token();
+        /*
+         * 先让动作运行时把菜单事务收口，再创建查看者写锁。反过来会让
+         * cleanup 自己被 mayCleanupMutateInventory 拒绝，留下不安全 prefix。
+         */
         BotActionRuntime.GenerationCancellationResult cancellation;
         try {
             cancellation = actionRuntime.cancelBotGenerationNow(
@@ -410,17 +410,15 @@ public final class BotLifecycleManager {
                     ActionCancellationReason.LIFECYCLE,
                     server.getTickCount());
         } catch (RuntimeException exception) {
-            failInventoryOpen(token, viewer);
             BotPlayer.LOGGER.error(
                     "Refused BotPlayer inventory menu for bot {} generation {} because "
                             + "the exclusive action drain failed",
                     bot.getUUID(),
                     generation,
                     exception);
-            return BotInventorySessionManager.OpenStatus.SESSION_CLOSING;
+            return BotInventorySessionManager.OpenStatus.BOT_LOCKED;
         }
         if (!cancellation.safeForExclusiveMutation()) {
-            failInventoryOpen(token, viewer);
             BotPlayer.LOGGER.error(
                     "Refused BotPlayer inventory menu for bot {} generation {} after unsafe "
                             + "action drain: cleanupFailures={}, quarantined={}, "
@@ -431,21 +429,42 @@ public final class BotLifecycleManager {
                     cancellation.quarantined(),
                     cancellation.ticketRemaining(),
                     cancellation.leaseRemaining());
-            return BotInventorySessionManager.OpenStatus.SESSION_CLOSING;
+            return BotInventorySessionManager.OpenStatus.BOT_LOCKED;
         }
 
         BotActionTarget refreshedTarget =
                 inspectActionTarget(bot.getUUID(), generation);
+        if (refreshedTarget.status()
+                        != BotActionTargetStatus.ACTIVE
+                || refreshedTarget.player().orElse(null) != bot) {
+            return BotInventorySessionManager.OpenStatus.BOT_NOT_ACTIVE;
+        }
+
+        BotInventorySessionManager.OpenResult result =
+                inventorySessions.open(
+                        bot.getUUID(),
+                        generation,
+                        viewer.getUUID());
+        if (result.status()
+                != BotInventorySessionManager.OpenStatus.OPENING) {
+            return result.status()
+                            == BotInventorySessionManager
+                                    .OpenStatus.EXISTING_SESSION
+                    ? finishExistingInventoryOpen(
+                            viewer,
+                            result.session().orElseThrow())
+                    : result.status();
+        }
+
+        InventorySessionToken token =
+                result.session().orElseThrow().token();
         BotInventorySession pendingSession =
                 inventorySessions
                         .sessionForBot(bot.getUUID())
                         .filter(session ->
                                 session.token().equals(token))
                         .orElse(null);
-        if (refreshedTarget.status()
-                        != BotActionTargetStatus.ACTIVE
-                || refreshedTarget.player().orElse(null) != bot
-                || pendingSession == null
+        if (pendingSession == null
                 || pendingSession.state()
                         != InventorySessionState.OPENING
                 || !inventorySessions
@@ -495,6 +514,19 @@ public final class BotLifecycleManager {
             return BotInventorySessionManager.OpenStatus.SESSION_CLOSING;
         }
         return result.status();
+    }
+
+    private BotInventorySessionManager.OpenStatus finishExistingInventoryOpen(
+            ServerPlayer viewer,
+            BotInventorySession session) {
+        InventorySessionToken token =
+                session.token();
+        if (viewer.containerMenu instanceof BotInventoryMenu menu
+                && menu.sessionToken().filter(token::equals).isPresent()) {
+            return BotInventorySessionManager.OpenStatus.EXISTING_SESSION;
+        }
+        closeInventorySession(token, InventoryCloseReason.MENU_REPLACED);
+        return BotInventorySessionManager.OpenStatus.SESSION_CLOSING;
     }
 
     public BotServerPlayer spawn(CommandSourceStack source, String requestedName) {

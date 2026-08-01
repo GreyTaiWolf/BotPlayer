@@ -209,6 +209,19 @@ public final class SurvivalSkillService implements SafetyHandoff {
                 retryUnsafeFailure(run, currentTick);
                 continue;
             }
+            if (SkillDeadlinePolicy.beforeSignals(
+                            currentTick,
+                            run.deadlineTick)
+                    == SkillDeadlinePolicy
+                            .PreSignalDecision
+                            .HARD_TIMEOUT) {
+                failUnsafe(
+                        run,
+                        SkillFailureCode.TIMEOUT,
+                        "技能清理超过硬时限",
+                        currentTick);
+                continue;
+            }
             BotServerPlayer player = resolver
                     .resolve(run.botId, run.generation)
                     .orElse(null);
@@ -234,17 +247,15 @@ public final class SurvivalSkillService implements SafetyHandoff {
             if (activeRuns.get(run.botId) != run) {
                 continue;
             }
-            if (currentTick >= run.deadlineTick) {
-                failUnsafe(
-                        run,
-                        SkillFailureCode.TIMEOUT,
-                        "技能清理超过硬时限",
-                        currentTick);
-            } else if (currentTick
-                            >= run.workDeadlineTick
-                    && run.pendingTerminalState == null
-                    && (run.operation == null
-                            || !run.operation.cleanup())) {
+            if (SkillDeadlinePolicy
+                    .shouldRequestWorkTimeout(
+                            currentTick,
+                            run.workDeadlineTick,
+                            run.pendingTerminalState
+                                    != null,
+                            run.operation != null
+                                    && run.operation
+                                            .cleanup())) {
                 requestWorkTimeout(
                         player, run, currentTick);
             }
@@ -2076,10 +2087,49 @@ public final class SurvivalSkillService implements SafetyHandoff {
         if (!confirmed) {
             return;
         }
+        /*
+         * 动作权威已隔离不等于临时背包布局已经安全。只有布局补偿器
+         * 明确给出安全端点后，才允许解绑 signal 并释放 layout lease。
+         */
+        InventoryLayoutCleanupResult layoutResult =
+                cleanupGenerationLayout(run);
+        if (!successfulLayoutCleanup(layoutResult)) {
+            return;
+        }
+        if (run.kind
+                == SurvivalSkillKind.EQUIP_BASIC_ARMOR) {
+            resolver.resolve(run.botId, run.generation)
+                    .ifPresent(player ->
+                            reconcileArmorAfterNonSuccess(
+                                    player, run));
+        }
+
+        String settledSummary = switch (layoutResult) {
+            case RESTORED ->
+                    summary + "；临时背包布局已恢复";
+            case SAFE_LAYOUT_COMMITTED ->
+                    summary + "；外部布局已作为安全端点提交";
+            case ALREADY_SAFE -> summary;
+            case STALE, BLOCKED, UNSAFE ->
+                    throw new IllegalStateException(
+                            "unsafe layout result passed the settlement gate");
+        };
+        if (run.kind
+                        == SurvivalSkillKind.EQUIP_BASIC_ARMOR
+                && run.armorChanges > 0) {
+            settledSummary = settledSummary
+                    + "；已安全提交 "
+                    + run.armorChanges
+                    + " 个盔甲升级";
+        }
         run.quarantineConfirmed = true;
         run.unsafeFailureCode = null;
         run.unsafeFailureSummary = null;
-        fail(run, code, summary, currentTick);
+        fail(
+                run,
+                code,
+                requireSummary(settledSummary),
+                currentTick);
     }
 
     private void finish(

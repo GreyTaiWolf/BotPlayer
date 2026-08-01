@@ -9,12 +9,16 @@ import io.github.greytaiwolf.botplayer.action.StopAction;
 import io.github.greytaiwolf.botplayer.gametest.P2GameTestSupport.TestBot;
 import io.github.greytaiwolf.botplayer.inventory.BotInventoryMenu;
 import io.github.greytaiwolf.botplayer.inventory.BotInventorySessionManager;
+import io.github.greytaiwolf.botplayer.skill.core.SkillFailureCode;
 import io.github.greytaiwolf.botplayer.skill.core.SkillRunState;
 import io.github.greytaiwolf.botplayer.skill.runtime.SurvivalSkillKind;
 import io.github.greytaiwolf.botplayer.skill.runtime.SurvivalSkillRunView;
 import io.github.greytaiwolf.botplayer.skill.runtime.SurvivalSkillSubmission;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.gametest.framework.GameTest;
@@ -35,8 +39,10 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @PrefixGameTestTemplate(false)
 public final class P5BasicArmorAcceptanceGameTests {
     private static final String BATCH = "p5_basic_armor";
+    private static final String COMPLETION_DELAY_BATCH =
+            "p5_basic_armor_completion_delay";
     private static final int TIMEOUT_TICKS = 240;
-    private static final int TERMINAL_WAIT_TICKS = 160;
+    private static final int TERMINAL_WAIT_TICKS = 200;
 
     private P5BasicArmorAcceptanceGameTests() {}
 
@@ -518,6 +524,201 @@ public final class P5BasicArmorAcceptanceGameTests {
             template = P2GameTestSupport.TEMPLATE,
             batch = BATCH,
             timeoutTicks = TIMEOUT_TICKS)
+    public static void viewerOpenAfterPrefixOneSettlesBeforeTakingLock(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P5GameTestSupport.spawnFixedBot(
+                helper, "P5ArmorViewMid");
+        P2GameTestSupport.Cleanup cleanup =
+                P5GameTestSupport.cleanup(bot);
+        try {
+            ItemStack[] expectedHotbar =
+                    prepareThreeClickArmorLayout(bot);
+            ServerPlayer viewer = P2GameTestSupport.spawnViewer(
+                    helper, new Vec3(4.5D, 1.0D, 3.4D));
+            cleanup.add(
+                    () -> P2GameTestSupport.disconnectViewer(
+                            viewer));
+            helper.getLevel()
+                    .getServer()
+                    .getPlayerList()
+                    .op(viewer.getGameProfile());
+            cleanup.add(() -> helper.getLevel()
+                    .getServer()
+                    .getPlayerList()
+                    .deop(viewer.getGameProfile()));
+
+            SurvivalSkillSubmission submission =
+                    bot.manager().startBasicArmor(bot.name());
+            P2GameTestSupport.require(
+                    submission.accepted(),
+                    "Mid-transaction viewer scenario rejected the armor skill: "
+                            + submission.status());
+            UUID runId = submission.runId().orElseThrow();
+
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    TERMINAL_WAIT_TICKS,
+                    () -> matchesThreeClickPrefixOne(
+                            bot, expectedHotbar),
+                    "Armor run never exposed a prefix for the viewer hand-off",
+                    cleanup,
+                    () -> {
+                        BotInventorySessionManager.OpenStatus openStatus =
+                                bot.manager().openInventory(
+                                        viewer, bot.player());
+                        P2GameTestSupport.require(
+                                openStatus
+                                                == BotInventorySessionManager
+                                                        .OpenStatus
+                                                        .OPENING
+                                        && viewer.containerMenu
+                                                instanceof BotInventoryMenu,
+                                "Viewer did not acquire the lock after action settlement: "
+                                        + openStatus);
+                        awaitTerminalRun(
+                                helper,
+                                bot,
+                                runId,
+                                cleanup,
+                                "Viewer hand-off did not terminate the armor run",
+                                view -> {
+                                    P2GameTestSupport.require(
+                                            view.kind()
+                                                                    == SurvivalSkillKind
+                                                                            .EQUIP_BASIC_ARMOR
+                                                            && view.state()
+                                                                    == SkillRunState
+                                                                            .CANCELLED
+                                                            && view.operationSequence()
+                                                                    == 1
+                                                            && !view.safeSummary()
+                                                                    .contains(
+                                                                            "已安全提交 1 个盔甲升级"),
+                                            "Viewer hand-off exposed an invalid terminal run: "
+                                                    + view);
+                                    requireInitialArmorEndpoint(
+                                            bot, expectedHotbar);
+                                    P2GameTestSupport.require(
+                                            viewer.containerMenu
+                                                    instanceof BotInventoryMenu,
+                                            "Settled skill stole or closed the new viewer lock");
+                                });
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = COMPLETION_DELAY_BATCH,
+            timeoutTicks = 300)
+    public static void hardDeadlineRecordsPhysicalFinalBeforeDelayedCompletion(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P5GameTestSupport.spawnFixedBot(
+                helper, "P5ArmorLateAck");
+        P2GameTestSupport.Cleanup cleanup =
+                P5GameTestSupport.cleanup(bot);
+        CountDownLatch completionGate = new CountDownLatch(1);
+        AtomicBoolean dispatcherBlocked = new AtomicBoolean();
+        cleanup.add(completionGate::countDown);
+        try {
+            long currentTick = helper.getLevel()
+                    .getServer()
+                    .getTickCount();
+            UUID blockerId = UUID.randomUUID();
+            ActionEnvelope blocker = new ActionEnvelope(
+                    blockerId,
+                    bot.player().getUUID(),
+                    bot.player().runtimeHandle().generation(),
+                    "gametest/p5/armor-completion-gate/"
+                            + blockerId,
+                    currentTick + 40L,
+                    5,
+                    new StopAction(),
+                    ActionOrigin.none());
+            ActionMailbox.Submission gateSubmission =
+                    bot.manager().submitAction(
+                            blocker,
+                            ActionPriority.OWNER_TASK);
+            P2GameTestSupport.require(
+                    gateSubmission.status()
+                            == ActionMailbox.SubmissionStatus
+                                    .ENQUEUED,
+                    "Completion-gate action was rejected");
+            gateSubmission.completion()
+                    .orElseThrow()
+                    .whenComplete((outcome, throwable) -> {
+                        dispatcherBlocked.set(true);
+                        try {
+                            completionGate.await(
+                                    20L,
+                                    TimeUnit.SECONDS);
+                        } catch (InterruptedException exception) {
+                            Thread.currentThread().interrupt();
+                        }
+                    });
+
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    40,
+                    dispatcherBlocked::get,
+                    "Completion dispatcher did not enter the deterministic gate",
+                    cleanup,
+                    () -> {
+                        ItemStack[] expectedHotbar =
+                                prepareThreeClickArmorLayout(bot);
+                        SurvivalSkillSubmission submission =
+                                bot.manager().startBasicArmor(
+                                        bot.name());
+                        P2GameTestSupport.require(
+                                submission.accepted(),
+                                "Delayed-completion armor skill was rejected: "
+                                        + submission.status());
+                        awaitTerminalRun(
+                                helper,
+                                bot,
+                                submission.runId().orElseThrow(),
+                                cleanup,
+                                "Hard deadline did not close the delayed-completion armor run",
+                                view -> {
+                                    P2GameTestSupport.require(
+                                            view.kind()
+                                                                    == SurvivalSkillKind
+                                                                            .EQUIP_BASIC_ARMOR
+                                                            && view.state()
+                                                                    == SkillRunState
+                                                                            .FAILED
+                                                            && view.failureCode()
+                                                                    .filter(code ->
+                                                                            code
+                                                                                    == SkillFailureCode
+                                                                                            .TIMEOUT)
+                                                                    .isPresent()
+                                                            && view.operationSequence()
+                                                                    == 1
+                                                            && view.safeSummary()
+                                                                    .contains(
+                                                                            "已安全提交 1 个盔甲升级"),
+                                            "Hard timeout hid or overwrote the physical armor result: "
+                                                    + view);
+                                    requireFinalArmorEndpoint(
+                                            bot, expectedHotbar);
+                                });
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
     public static void viewerLockPreventsNativeMenuMutation(
             GameTestHelper helper) {
         P2GameTestSupport.prepareEmptyFloor(helper);
@@ -836,6 +1037,92 @@ public final class P5BasicArmorAcceptanceGameTests {
                 finalEndpoint
                         ? "Prefix-two preemption did not settle to the exact final endpoint"
                         : "Prefix-one preemption did not settle to the exact initial endpoint");
+    }
+
+    private static void requireInitialArmorEndpoint(
+            TestBot bot, ItemStack[] expectedHotbar) {
+        for (int slot = 0;
+                slot < expectedHotbar.length;
+                slot++) {
+            P2GameTestSupport.require(
+                    ItemStack.matches(
+                                    expectedHotbar[slot],
+                                    bot.player()
+                                            .getInventory()
+                                            .getItem(slot))
+                            && count(
+                                            bot,
+                                            expectedHotbar[slot]
+                                                    .getItem())
+                                    == 1,
+                    "Viewer hand-off changed hotbar slot "
+                            + slot);
+        }
+        P2GameTestSupport.require(
+                bot.player()
+                                .getInventory()
+                                .getItem(9)
+                                .is(Items.DIAMOND_HELMET)
+                        && bot.player()
+                                .getInventory()
+                                .getItem(39)
+                                .is(Items.IRON_HELMET)
+                        && bot.player()
+                                        .getInventory()
+                                        .selected
+                                == 8
+                        && bot.player()
+                                .inventoryMenu
+                                .getCarried()
+                                .isEmpty()
+                        && count(bot, Items.DIAMOND_HELMET)
+                                == 1
+                        && count(bot, Items.IRON_HELMET)
+                                == 1,
+                "Viewer hand-off did not settle the menu prefix to the exact initial endpoint");
+    }
+
+    private static void requireFinalArmorEndpoint(
+            TestBot bot, ItemStack[] expectedHotbar) {
+        for (int slot = 0;
+                slot < expectedHotbar.length;
+                slot++) {
+            P2GameTestSupport.require(
+                    ItemStack.matches(
+                                    expectedHotbar[slot],
+                                    bot.player()
+                                            .getInventory()
+                                            .getItem(slot))
+                            && count(
+                                            bot,
+                                            expectedHotbar[slot]
+                                                    .getItem())
+                                    == 1,
+                    "Delayed completion changed hotbar slot "
+                            + slot);
+        }
+        P2GameTestSupport.require(
+                bot.player()
+                                .getInventory()
+                                .getItem(9)
+                                .is(Items.IRON_HELMET)
+                        && bot.player()
+                                .getInventory()
+                                .getItem(39)
+                                .is(Items.DIAMOND_HELMET)
+                        && bot.player()
+                                        .getInventory()
+                                        .selected
+                                == 8
+                        && bot.player()
+                                .inventoryMenu
+                                .getCarried()
+                                .isEmpty()
+                        && count(bot, Items.DIAMOND_HELMET)
+                                == 1
+                        && count(bot, Items.IRON_HELMET)
+                                == 1,
+                "Hard timeout did not preserve the exact final armor endpoint");
     }
 
     private static void submitEmergencyStop(TestBot bot) {
