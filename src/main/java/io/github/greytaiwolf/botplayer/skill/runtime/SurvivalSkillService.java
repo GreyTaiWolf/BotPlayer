@@ -433,6 +433,49 @@ public final class SurvivalSkillService implements SafetyHandoff {
     }
 
     /**
+     * 在生命周期已经无保存地移除精确旧 body 后，丢弃只属于该内存 body 的未验证布局。
+     *
+     * <p>这不是“补偿成功”回执，也不能用于仍有权威 body 的 generation。调用者必须先完成
+     * no-save removal；本方法只把无法再落盘或继续执行的内存事务记为失败并释放有界账务，
+     * 避免一个已隔离 generation 永久阻塞服务器关停。
+     */
+    public boolean closeRemovedGenerationWithoutSave(
+            UUID botId,
+            long generation,
+            long currentTick) {
+        requireOwnerThread();
+        observeTick(currentTick);
+        Objects.requireNonNull(botId, "botId");
+        if (generation <= 0L) {
+            throw new IllegalArgumentException(
+                    "generation must be positive and tick non-negative");
+        }
+        if (resolver.resolve(botId, generation).isPresent()) {
+            return false;
+        }
+
+        ActiveRun run = activeRuns.get(botId);
+        if (run != null && run.generation != generation) {
+            return false;
+        }
+        if (run != null) {
+            run.noSaveRemovalConfirmed = true;
+            run.failureCode = run.unsafeFailureCode != null
+                    ? run.unsafeFailureCode
+                    : SkillFailureCode.UNSAFE_CONTROL_STATE;
+            finish(
+                    run,
+                    SkillRunState.FAILED,
+                    "未验证背包布局所属 body 已无保存隔离移除；该布局未写入玩家数据",
+                    currentTick);
+        }
+        incidentAttempts.closeGeneration(botId, generation);
+        generationLayoutCompensator.closeGeneration(
+                botId, generation);
+        return true;
+    }
+
+    /**
      * 服务器关闭路径必须先停止动作运行时，再终结这里保留的运行视图。
      */
     public void shutdown(
@@ -2149,6 +2192,8 @@ public final class SurvivalSkillService implements SafetyHandoff {
         boolean closureConfirmed =
                 (terminal == SkillRunState.FAILED
                                 && run.quarantineConfirmed)
+                        || (terminal == SkillRunState.FAILED
+                                && run.noSaveRemovalConfirmed)
                         || ((terminal == SkillRunState.FAILED
                                         || terminal
                                                 == SkillRunState
@@ -2520,6 +2565,7 @@ public final class SurvivalSkillService implements SafetyHandoff {
         private boolean foodIncreaseObserved;
         private boolean quarantineConfirmed;
         private boolean generationCloseConfirmed;
+        private boolean noSaveRemovalConfirmed;
         private SkillFailureCode unsafeFailureCode;
         private String unsafeFailureSummary;
         private SkillRunState pendingTerminalState;

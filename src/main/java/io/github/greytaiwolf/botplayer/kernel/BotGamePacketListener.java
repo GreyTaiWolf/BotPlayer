@@ -103,6 +103,22 @@ public final class BotGamePacketListener extends ServerGamePacketListenerImpl {
         return disconnectRequested.get();
     }
 
+    /**
+     * 在生命周期已经选择 no-save 隔离时撤销本 listener 的全部运行时权威。
+     *
+     * <p>该路径不会调用原版 disconnect，因此也不会触发玩家保存或二次移除；调用者必须
+     * 已经冻结精确 body 闭包，并在撤权后继续完成 no-save removal。方法幂等，允许共享
+     * listener 的多个旧 body 在同一收口事务中重复调用。
+     */
+    public void closeForNoSaveIsolation() {
+        if (!server.isSameThread()) {
+            throw new IllegalStateException(
+                    "BotPlayer no-save listener isolation must run on the server thread");
+        }
+        disconnectRequested.set(true);
+        closeWithoutVanillaDisconnect();
+    }
+
     @Override
     public void disconnect(@NotNull Component reason) {
         onDisconnect(new DisconnectionDetails(reason));

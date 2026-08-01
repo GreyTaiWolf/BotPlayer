@@ -62,6 +62,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -739,6 +740,16 @@ public final class BotLifecycleManager {
                 ? Optional.empty()
                 : survivalSkillService.inspect(
                         runtime.handle.botId());
+    }
+
+    /**
+     * 按稳定身份读取最近技能视图，供 body 已隔离移除后的诊断与验收使用。
+     */
+    public Optional<SurvivalSkillRunView> survivalSkillRun(
+            UUID botId) {
+        requireServerThread();
+        Objects.requireNonNull(botId, "botId");
+        return survivalSkillService.inspect(botId);
     }
 
     public SurvivalSkillSubmission startBasicArmor(
@@ -2280,27 +2291,304 @@ public final class BotLifecycleManager {
             failure = appendFailure(
                     failure, exception);
         }
-        failure = appendFailure(
-                failure,
-                removePlayerIdentity(
-                        attached,
-                        suppressPlayerDataSave));
+        RuntimeException removalFailure = removePlayerIdentity(
+                attached, suppressPlayerDataSave);
         if (preferredPlayer != attached) {
-            failure = appendFailure(
-                    failure,
+            removalFailure = appendFailure(
+                    removalFailure,
                     removePlayerIdentity(
                             preferredPlayer,
                             suppressPlayerDataSave));
         }
         if (staged != attached
                 && staged != preferredPlayer) {
-            failure = appendFailure(
-                    failure,
+            removalFailure = appendFailure(
+                    removalFailure,
                     removePlayerIdentity(
                             staged,
                             suppressPlayerDataSave));
         }
+        failure = appendFailure(failure, removalFailure);
         return failure;
+    }
+
+    @Nullable
+    private RuntimeException
+            finalizeRuntimeTeardownWithoutSave(
+                    RuntimeEntry runtime,
+                    @Nullable BotServerPlayer preferredPlayer,
+                    @Nullable BotServerPlayer additionalPlayer) {
+        UUID botId = runtime.handle.botId();
+        long retiredGeneration =
+                runtime.handle.generation();
+        BotRuntimeHandle handle = runtime.handle;
+        boolean attachedBodyWillDetach =
+                handle.player().isPresent();
+        long expectedPostGeneration =
+                attachedBodyWillDetach
+                        ? Math.incrementExact(
+                                retiredGeneration)
+                        : retiredGeneration;
+        Connection boundDisconnectConnection =
+                runtime.disconnectingConnection;
+        ServerGamePacketListenerImpl boundDisconnectListener =
+                runtime.disconnectingListener;
+        LinkedHashSet<BotServerPlayer> exactBodies =
+                collectNoSaveBodies(
+                        runtime,
+                        preferredPlayer,
+                        additionalPlayer,
+                        botId);
+        LinkedHashSet<ServerGamePacketListenerImpl> exactListeners =
+                new LinkedHashSet<>();
+        if (boundDisconnectListener != null) {
+            exactListeners.add(boundDisconnectListener);
+        }
+        for (BotServerPlayer exactBody : exactBodies) {
+            if (exactBody.connection != null) {
+                exactListeners.add(exactBody.connection);
+            }
+        }
+
+        /*
+         * 必须先撤销全部 listener 权威，再触发 PlayerList.remove。否则 remove/logout
+         * 回调重入 disconnect 时仍可能走原版保存，把未验证的临时布局落盘。
+         */
+        RuntimeException failure = null;
+        for (ServerGamePacketListenerImpl exactListener :
+                exactListeners) {
+            try {
+                if (exactListener
+                        instanceof BotGamePacketListener botListener) {
+                    botListener.closeForNoSaveIsolation();
+                } else {
+                    failure = appendFailure(
+                            failure,
+                            new IllegalStateException(
+                                    "No-save teardown captured a non-Bot listener"));
+                }
+            } catch (RuntimeException exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        if (boundDisconnectConnection != null) {
+            try {
+                if (boundDisconnectConnection
+                        instanceof BotConnection botConnection) {
+                    botConnection.markClosed();
+                } else {
+                    failure = appendFailure(
+                            failure,
+                            new IllegalStateException(
+                                    "No-save teardown captured a non-Bot connection"));
+                }
+            } catch (RuntimeException exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        failure = appendFailure(
+                failure,
+                finalizeRuntimeTeardown(
+                        runtime,
+                        preferredPlayer,
+                        true));
+        for (BotServerPlayer exactBody : exactBodies) {
+            failure = appendFailure(
+                    failure,
+                    removePlayerIdentity(
+                            exactBody, true));
+        }
+        if (!noSaveRemovalConfirmed(
+                runtime,
+                handle,
+                botId,
+                expectedPostGeneration,
+                exactBodies,
+                exactListeners,
+                boundDisconnectListener,
+                boundDisconnectConnection)) {
+            return appendFailure(
+                    failure,
+                    new IllegalStateException(
+                            "No-save teardown retained an exact player body or listener authority"));
+        }
+        if (retiredGeneration > 0L) {
+            try {
+                if (!survivalSkillService
+                        .closeRemovedGenerationWithoutSave(
+                                botId,
+                                retiredGeneration,
+                                server.getTickCount())) {
+                    failure = appendFailure(
+                            failure,
+                            new IllegalStateException(
+                                    "No-save generation removal retained an authoritative skill body"));
+                }
+            } catch (RuntimeException exception) {
+                failure = appendFailure(
+                        failure, exception);
+            }
+        }
+        return failure;
+    }
+
+    private LinkedHashSet<BotServerPlayer>
+            collectNoSaveBodies(
+                    RuntimeEntry runtime,
+                    @Nullable BotServerPlayer preferredPlayer,
+                    @Nullable BotServerPlayer additionalPlayer,
+                    UUID botId) {
+        LinkedHashSet<BotServerPlayer> bodies =
+                new LinkedHashSet<>();
+        addNoSaveBody(
+                bodies,
+                runtime.handle.player().orElse(null),
+                botId);
+        addNoSaveBody(
+                bodies, preferredPlayer, botId);
+        addNoSaveBody(
+                bodies, additionalPlayer, botId);
+        addNoSaveBody(
+                bodies,
+                runtime.stagedCleanupPlayer,
+                botId);
+        addNoSaveBody(
+                bodies,
+                runtime.stagedCleanupPredecessor,
+                botId);
+        addNoSaveBody(
+                bodies,
+                runtime.respawnCandidate,
+                botId);
+        addNoSaveBody(
+                bodies,
+                runtime.disconnectingPlayer,
+                botId);
+        if (runtime.disconnectingListener != null) {
+            addNoSaveBody(
+                    bodies,
+                    runtime.disconnectingListener.player,
+                    botId);
+        }
+        for (ServerPlayer player :
+                server.getPlayerList().getPlayers()) {
+            addNoSaveBody(bodies, player, botId);
+        }
+        for (ServerLevel level : server.getAllLevels()) {
+            for (ServerPlayer player : level.players()) {
+                addNoSaveBody(bodies, player, botId);
+            }
+        }
+
+        boolean expanded;
+        do {
+            expanded = false;
+            for (BotServerPlayer body :
+                    List.copyOf(bodies)) {
+                int before = bodies.size();
+                if (body.connection != null) {
+                    addNoSaveBody(
+                            bodies,
+                            body.connection.player,
+                            botId);
+                }
+                expanded |= bodies.size() != before;
+            }
+        } while (expanded);
+        return bodies;
+    }
+
+    private static void addNoSaveBody(
+            Set<BotServerPlayer> bodies,
+            @Nullable ServerPlayer candidate,
+            UUID botId) {
+        if (candidate instanceof BotServerPlayer bot
+                && bot.getUUID().equals(botId)) {
+            bodies.add(bot);
+        }
+    }
+
+    private boolean noSaveRemovalConfirmed(
+            RuntimeEntry runtime,
+            BotRuntimeHandle handle,
+            UUID botId,
+            long expectedPostGeneration,
+            Set<BotServerPlayer> exactBodies,
+            Set<ServerGamePacketListenerImpl> exactListeners,
+            @Nullable ServerGamePacketListenerImpl
+                    boundDisconnectListener,
+            @Nullable Connection boundDisconnectConnection) {
+        if (runtimes.get(botId) == runtime
+                || handle.player().isPresent()
+                || handle.generation()
+                        != expectedPostGeneration
+                || server.getPlayerList()
+                                .getPlayer(botId)
+                        != null
+                || server.getPlayerList()
+                        .getPlayers()
+                        .stream()
+                        .anyMatch(player ->
+                                player.getUUID()
+                                        .equals(botId))) {
+            return false;
+        }
+        for (ServerLevel level : server.getAllLevels()) {
+            if (level.getPlayerByUUID(botId) != null
+                    || level.getEntity(botId) != null) {
+                return false;
+            }
+            for (ServerPlayer candidate : level.players()) {
+                if (candidate.getUUID().equals(botId)) {
+                    return false;
+                }
+            }
+        }
+        for (BotServerPlayer player : exactBodies) {
+            if (isPresentInAnyLevel(player)
+                    || server.getPlayerList()
+                                    .getPlayer(player.getUUID())
+                            == player
+                    || (player.connection != null
+                            && (!(player.connection
+                                            instanceof BotGamePacketListener
+                                                    botListener)
+                                    || botListener
+                                            .acceptsRuntimeAuthority()))
+                    || (player.connection != null
+                            && (!(player.connection
+                                                    .getConnection()
+                                            instanceof BotConnection connection)
+                                    || connection.snapshot()
+                                            .open()))) {
+                return false;
+            }
+        }
+        for (ServerGamePacketListenerImpl listener :
+                exactListeners) {
+            if (!(listener
+                            instanceof BotGamePacketListener botListener)
+                    || botListener.acceptsRuntimeAuthority()
+                    || !(listener.getConnection()
+                            instanceof BotConnection connection)
+                    || connection.snapshot().open()) {
+                return false;
+            }
+        }
+        if (boundDisconnectListener != null
+                && (!(boundDisconnectListener
+                                        instanceof BotGamePacketListener
+                                                botListener)
+                        || botListener.acceptsRuntimeAuthority())) {
+            return false;
+        }
+        if (boundDisconnectConnection != null
+                && (!(boundDisconnectConnection
+                                        instanceof BotConnection connection)
+                        || connection.snapshot().open())) {
+            return false;
+        }
+        return true;
     }
 
     @Nullable
@@ -2322,6 +2610,11 @@ public final class BotLifecycleManager {
                                     .getPlayer(
                                             player.getUUID())
                             == player
+                    || server.getPlayerList()
+                            .getPlayers()
+                            .stream()
+                            .anyMatch(candidate ->
+                                    candidate == player)
                     || isPresentInAnyLevel(player)) {
                 if (suppressPlayerDataSave) {
                     player.suppressNextPlayerDataSave();
@@ -2339,6 +2632,11 @@ public final class BotLifecycleManager {
         }
         try {
             MinecraftPlayerInputAdapter.clear(player);
+            if (suppressPlayerDataSave
+                    && player.connection
+                            instanceof BotGamePacketListener botListener) {
+                botListener.closeForNoSaveIsolation();
+            }
             if (player.connection != null
                     && player.connection
                                     .getConnection()
@@ -3094,23 +3392,19 @@ public final class BotLifecycleManager {
         failure = appendFailure(
                 failure,
                 retirement.failure());
+        BotServerPlayer listedBot =
+                listedPlayer
+                                instanceof BotServerPlayer candidate
+                        && candidate.runtimeHandle()
+                                == runtime.handle
+                        ? candidate
+                        : null;
         failure = appendFailure(
                 failure,
-                finalizeRuntimeTeardown(
+                finalizeRuntimeTeardownWithoutSave(
                         runtime,
                         listenerPlayer,
-                        true));
-        if (listedPlayer
-                        instanceof BotServerPlayer listedBot
-                && listedBot.runtimeHandle()
-                        == runtime.handle
-                && listedBot != listenerPlayer) {
-            failure = appendFailure(
-                    failure,
-                    removePlayerIdentity(
-                            listedBot,
-                            true));
-        }
+                        listedBot));
         BotPlayer.LOGGER.error(
                 "{}; BotPlayer {} ({}) was failed closed without invoking vanilla disconnect (generation safely closed: {})",
                 reason,
@@ -3334,10 +3628,10 @@ public final class BotLifecycleManager {
                     disconnectFailure =
                             appendFailure(
                                     disconnectFailure,
-                                    finalizeRuntimeTeardown(
+                                    finalizeRuntimeTeardownWithoutSave(
                                             runtime,
                                             replacement,
-                                            true));
+                                            null));
                 }
                 failure = disconnectFailure;
             }
@@ -3348,10 +3642,10 @@ public final class BotLifecycleManager {
                             "Could not bind the exact staged replacement to its old-generation disconnect receipt"));
             failure = appendFailure(
                     failure,
-                    finalizeRuntimeTeardown(
+                    finalizeRuntimeTeardownWithoutSave(
                             runtime,
                             replacement,
-                            true));
+                            null));
         }
         if (failure != null) {
             BotPlayer.LOGGER.error(
@@ -3514,6 +3808,12 @@ public final class BotLifecycleManager {
             BotServerPlayer player) {
         for (ServerLevel level :
                 server.getAllLevels()) {
+            if (level.getPlayerByUUID(player.getUUID())
+                            == player
+                    || level.getEntity(player.getUUID())
+                            == player) {
+                return true;
+            }
             for (ServerPlayer candidate :
                     level.players()) {
                 if (candidate == player) {

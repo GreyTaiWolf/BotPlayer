@@ -10,6 +10,10 @@ import io.github.greytaiwolf.botplayer.action.StopAction;
 import io.github.greytaiwolf.botplayer.config.BotPlayerConfig;
 import io.github.greytaiwolf.botplayer.gametest.P2GameTestSupport.TestBot;
 import io.github.greytaiwolf.botplayer.kernel.BotConnection;
+import io.github.greytaiwolf.botplayer.kernel.BotGamePacketListener;
+import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
+import io.github.greytaiwolf.botplayer.lifecycle.BotActionTargetStatus;
+import io.github.greytaiwolf.botplayer.lifecycle.BotLifecycleManager.ListenerDisconnectDecision;
 import io.github.greytaiwolf.botplayer.safety.HazardType;
 import io.github.greytaiwolf.botplayer.safety.SafetyIntervention;
 import io.github.greytaiwolf.botplayer.safety.SafetyState;
@@ -30,6 +34,7 @@ import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ClientInformation;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -298,6 +303,13 @@ public final class P5SurvivalSkillAcceptanceGameTests {
                             bot.player()
                                     .connection
                                     .getConnection();
+            P2GameTestSupport.require(
+                    bot.player().connection
+                            instanceof BotGamePacketListener,
+                    "P5 dimension fixture has no BotGamePacketListener");
+            BotGamePacketListener listener =
+                    (BotGamePacketListener)
+                            bot.player().connection;
             bot.player().getInventory().selected = 0;
             bot.player().getInventory().setItem(
                     0, new ItemStack(Items.STONE));
@@ -308,12 +320,29 @@ public final class P5SurvivalSkillAcceptanceGameTests {
             bot.player().getFoodData().setExhaustion(0.0F);
 
             boolean[] closeRequested = {false};
+            UUID[] runId = {null};
             P2GameTestSupport.awaitCondition(
                     helper,
                     180,
                     () -> {
                         if (!closeRequested[0]
                                 && bot.player().isUsingItem()) {
+                            var activeView = bot.manager()
+                                    .survivalSkillRun(botId)
+                                    .orElseThrow(() ->
+                                            new IllegalStateException(
+                                                    "Eating body had no active skill view before no-save closure"));
+                            P2GameTestSupport.require(
+                                    activeView.botId().equals(botId)
+                                            && activeView.botGeneration()
+                                                    == generation
+                                            && activeView.kind()
+                                                    == SurvivalSkillKind
+                                                            .EAT_FOOD
+                                            && !activeView.state()
+                                                    .isTerminal(),
+                                    "No-save fixture captured the wrong active run");
+                            runId[0] = activeView.runId();
                             bot.player()
                                     .getInventory()
                                     .setItem(
@@ -340,19 +369,16 @@ public final class P5SurvivalSkillAcceptanceGameTests {
                                                 generation)
                                         .isEmpty(),
                                 "Unsafe old generation remained active after dimension closure");
-                        long retainedGeneration =
-                                bot.player()
-                                        .runtimeHandle()
-                                        .generation();
                         P2GameTestSupport.require(
-                                retainedGeneration
-                                                == generation
-                                        || bot.manager()
-                                                .resolveActive(
-                                                        botId,
-                                                        retainedGeneration)
-                                                .isEmpty(),
-                                "Unsafe layout activated a replacement generation");
+                                bot.player()
+                                                .runtimeHandle()
+                                                .player()
+                                                .isEmpty()
+                                        && bot.player()
+                                                        .runtimeHandle()
+                                                        .generation()
+                                                == generation + 1L,
+                                "No-save closure retained a body or advanced an unexpected generation");
                         P2GameTestSupport.require(
                                 bot.player()
                                                 .getInventory()
@@ -366,9 +392,264 @@ public final class P5SurvivalSkillAcceptanceGameTests {
                                                                 .DIAMOND)
                                                 == 1,
                                 "Fail-closed dimension containment mutated the external item");
+                        var terminalView = bot.manager()
+                                .survivalSkillRun(botId)
+                                .orElseThrow(() ->
+                                        new IllegalStateException(
+                                                "No-save dimension containment lost the skill receipt"));
+                        P2GameTestSupport.require(
+                                runId[0] != null
+                                        && terminalView.runId()
+                                                .equals(runId[0])
+                                        && terminalView.botId()
+                                                .equals(botId)
+                                        && terminalView
+                                                        .botGeneration()
+                                                == generation
+                                        && terminalView.state()
+                                                == SkillRunState.FAILED
+                                        && terminalView
+                                                .failureCode()
+                                                .filter(code ->
+                                                        code
+                                                                == SkillFailureCode
+                                                                        .ITEM_CONSERVATION_VIOLATION)
+                                                .isPresent()
+                                        && terminalView.safeSummary()
+                                                .contains(
+                                                        "无保存隔离移除"),
+                                "No-save dimension containment rewrote or left the exact skill run active");
+                        var server = helper.getLevel().getServer();
+                        P2GameTestSupport.require(
+                                server.getPlayerList()
+                                                        .getPlayer(botId)
+                                                == null
+                                        && server.getPlayerList()
+                                                .getPlayers()
+                                                .stream()
+                                                .noneMatch(player ->
+                                                        player.getUUID()
+                                                                .equals(botId)),
+                                "No-save closure retained the Bot in PlayerList indexes");
+                        for (var level : server.getAllLevels()) {
+                            P2GameTestSupport.require(
+                                    level.getPlayerByUUID(botId)
+                                                    == null
+                                            && level.getEntity(botId)
+                                                    == null
+                                            && level.players()
+                                                    .stream()
+                                                    .noneMatch(player ->
+                                                            player.getUUID()
+                                                                    .equals(botId)),
+                                    "No-save closure retained the Bot in a level index");
+                        }
+                        P2GameTestSupport.require(
+                                !connection.snapshot().open()
+                                        && listener
+                                                .disconnectRequested()
+                                        && !listener
+                                                .acceptsRuntimeAuthority(),
+                                "No-save closure retained physical connection or listener authority");
                         cleanup.run();
                         helper.succeed();
                     });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void sharedListenerNoSaveClosureRevokesBothBodies(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P5GameTestSupport.spawnFixedBot(
+                helper, "P5ShareFence");
+        P2GameTestSupport.Cleanup cleanup =
+                P5GameTestSupport.cleanup(bot);
+        try {
+            BotServerPlayer predecessor = bot.player();
+            UUID botId = predecessor.getUUID();
+            var server = helper.getLevel().getServer();
+            long generation = predecessor
+                    .runtimeHandle()
+                    .generation();
+            P2GameTestSupport.require(
+                    predecessor.connection
+                            instanceof BotGamePacketListener
+                                    && predecessor.connection
+                                                    .getConnection()
+                                            instanceof BotConnection,
+                    "Shared-listener fixture has no Bot connection stack");
+            BotGamePacketListener listener =
+                    (BotGamePacketListener)
+                            predecessor.connection;
+            BotConnection connection =
+                    (BotConnection)
+                            listener.getConnection();
+            Path playerData = server
+                    .getWorldPath(
+                            LevelResource.PLAYER_DATA_DIR)
+                    .resolve(botId + ".dat");
+            predecessor.getInventory().clearContent();
+            predecessor.getInventory().selected = 7;
+            predecessor.getInventory().setItem(
+                    7, new ItemStack(Items.TORCH));
+            server.getPlayerList().save(predecessor);
+            P2GameTestSupport.require(
+                    Files.isRegularFile(playerData),
+                    "Shared-listener fixture could not persist its baseline layout");
+            PersistedLayout persistedBaseline =
+                    savedLayout(playerData);
+            P2GameTestSupport.require(
+                    persistedBaseline.selectedSlot() == 7
+                            && persistedBaseline
+                                    .occupiedSlots()
+                                    .equals(Set.of(7)),
+                    "Shared-listener persisted baseline was not deterministic");
+            BotServerPlayer replacement =
+                    BotServerPlayer.recreateForRespawn(
+                            server,
+                            predecessor.serverLevel(),
+                            predecessor.getGameProfile(),
+                            ClientInformation.createDefault(),
+                            predecessor);
+            replacement.connection = listener;
+            P2GameTestSupport.require(
+                    replacement.runtimeHandle()
+                                    == predecessor.runtimeHandle()
+                            && replacement.getUUID()
+                                    .equals(botId)
+                            && server.getPlayerList()
+                                            .getPlayer(botId)
+                                    == predecessor
+                            && predecessor.serverLevel()
+                                            .getPlayerByUUID(botId)
+                                    == predecessor
+                            && server.getPlayerList()
+                                    .getPlayers()
+                                    .stream()
+                                    .noneMatch(player ->
+                                            player == replacement),
+                    "Shared-listener replacement was registered or changed identity");
+            predecessor.getInventory().clearContent();
+            predecessor.getInventory().selected = 8;
+            predecessor.getInventory().setItem(
+                    10, new ItemStack(Items.DIAMOND));
+            P2GameTestSupport.require(
+                    listener.player == predecessor
+                            && listener
+                                    .acceptsRuntimeAuthority()
+                            && connection.snapshot().open(),
+                    "Shared-listener fixture did not begin with one authoritative open listener");
+
+            ListenerDisconnectDecision decision;
+            listener.player = replacement;
+            try {
+                P2GameTestSupport.require(
+                        predecessor.connection == listener
+                                && replacement.connection
+                                        == listener
+                                && listener.player
+                                        == replacement
+                                && listener
+                                        .acceptsRuntimeAuthority(),
+                        "Shared-listener fixture did not expose the unstable body graph");
+                decision = bot.manager().onDisconnecting(
+                        predecessor,
+                        listener,
+                        connection);
+            } finally {
+                if (listener.acceptsRuntimeAuthority()
+                        && listener.player == replacement) {
+                    listener.player = predecessor;
+                }
+            }
+
+            P2GameTestSupport.require(
+                    decision
+                            == ListenerDisconnectDecision.ABORTED,
+                    "Shared-listener mismatch did not choose fail-closed removal");
+            P2GameTestSupport.require(
+                    predecessor.runtimeHandle()
+                                    .player()
+                                    .isEmpty()
+                            && predecessor.runtimeHandle()
+                                            .generation()
+                                    == generation + 1L,
+                    "Shared-listener closure retained an attached body or wrong generation");
+            P2GameTestSupport.require(
+                    bot.manager()
+                                            .inspectActionTarget(
+                                                    botId,
+                                                    generation)
+                                            .status()
+                                    == BotActionTargetStatus
+                                            .STALE_GENERATION
+                            && bot.manager()
+                                    .resolveActive(
+                                            botId,
+                                            generation)
+                                    .isEmpty()
+                            && bot.manager()
+                                    .resolveCleanupTarget(
+                                            botId,
+                                            generation)
+                                    .isEmpty(),
+                    "Shared-listener closure retained old-generation action or cleanup authority");
+            P2GameTestSupport.require(
+                    predecessor.connection == listener
+                            && replacement.connection
+                                    == listener
+                            && listener.player == replacement
+                            && listener.disconnectRequested()
+                            && !listener
+                                    .acceptsRuntimeAuthority()
+                            && !connection.snapshot().open(),
+                    "Shared listener or one of its exact bodies retained authority");
+            P2GameTestSupport.require(
+                    server.getPlayerList().getPlayer(botId)
+                                    == null
+                            && server.getPlayerList()
+                                    .getPlayers()
+                                    .stream()
+                                    .noneMatch(player ->
+                                            player.getUUID()
+                                                    .equals(botId)),
+                    "Shared-listener closure retained a PlayerList identity");
+            for (var level : server.getAllLevels()) {
+                P2GameTestSupport.require(
+                        level.getPlayerByUUID(botId) == null
+                                && level.getEntity(botId) == null
+                                && level.players()
+                                        .stream()
+                                        .noneMatch(player ->
+                                                player == predecessor
+                                                        || player
+                                                                == replacement
+                                                        || player.getUUID()
+                                                                .equals(botId)),
+                        "Shared-listener closure retained an entity index");
+            }
+            P2GameTestSupport.require(
+                    savedLayout(playerData)
+                            .equals(persistedBaseline),
+                    "Shared-listener no-save closure persisted the temporary layout");
+            P2GameTestSupport.require(
+                    predecessor.getInventory()
+                                    .getItem(10)
+                                    .is(Items.DIAMOND)
+                            && predecessor.getInventory()
+                                            .getItem(10)
+                                            .getCount()
+                                    == 1,
+                    "Shared-listener fail-closed path mutated the external item");
+            cleanup.run();
+            helper.succeed();
         } catch (RuntimeException | AssertionError exception) {
             cleanup.run();
             throw exception;
