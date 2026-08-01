@@ -54,6 +54,8 @@ public final class P5SurvivalSkillAcceptanceGameTests {
     private static final String BATCH = "p5_survival_skills";
     private static final String CONFIG_MUTATION_BATCH =
             "p5_survival_skills_config_mutation";
+    private static final String RESPAWN_FENCE_BATCH =
+            "p5_survival_skills_respawn_fence";
     private static final int TIMEOUT_TICKS = 360;
     /*
      * SurvivalSkillService 当前未公开该生产常量；验收固定 40，
@@ -714,7 +716,7 @@ public final class P5SurvivalSkillAcceptanceGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = CONFIG_MUTATION_BATCH,
+            batch = RESPAWN_FENCE_BATCH,
             timeoutTicks = TIMEOUT_TICKS)
     public static void persistentNoSaveFenceCrossesRespawnBody(
             GameTestHelper helper) {
