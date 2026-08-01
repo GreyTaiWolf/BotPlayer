@@ -24,7 +24,7 @@ class ControlArbiterTest {
    }
 
    @Test
-   void lowerPriorityIsRejectedAndHigherPriorityPreempts() {
+   void higherPriorityRequestsPreemptionWithoutStealingTheLease() {
       ControlArbiter var1 = new ControlArbiter();
       ActionEnvelope var2 = lookEnvelope(FIRST_BOT, 1L);
       ControlArbiter.Lease var3 = var1.acquire(var2, ActionPriority.OWNER_TASK).lease().orElseThrow();
@@ -33,13 +33,28 @@ class ControlArbiterTest {
       Assertions.assertSame(var3, var4.blocker().orElseThrow());
       ActionEnvelope var5 = lookEnvelope(FIRST_BOT, 3L);
       ControlArbiter.AcquireResult var6 = var1.acquire(var5, ActionPriority.EMERGENCY);
-      ControlArbiter.Lease var7 = var6.lease().orElseThrow();
-      Assertions.assertEquals(ControlArbiter.AcquireStatus.GRANTED, var6.status());
-      Assertions.assertEquals(1, var6.preempted().size());
-      Assertions.assertSame(var3, var6.preempted().getFirst());
-      Assertions.assertSame(var7, var1.currentLease(FIRST_BOT, ActionChannel.LOOK).orElseThrow());
+      Assertions.assertEquals(
+         ControlArbiter.AcquireStatus.PREEMPTION_REQUIRED,
+         var6.status()
+      );
+      Assertions.assertFalse(var6.acquired());
+      Assertions.assertTrue(var6.lease().isEmpty());
+      Assertions.assertEquals(1, var6.preemptionCandidates().size());
+      Assertions.assertSame(
+         var3, var6.preemptionCandidates().getFirst()
+      );
+      Assertions.assertSame(var3, var1.currentLease(FIRST_BOT, ActionChannel.LOOK).orElseThrow());
+      Assertions.assertTrue(var1.release(var3));
+      ControlArbiter.AcquireResult var7 =
+         var1.acquire(var5, ActionPriority.EMERGENCY);
+      ControlArbiter.Lease var8 = var7.lease().orElseThrow();
+      Assertions.assertEquals(
+         ControlArbiter.AcquireStatus.GRANTED, var7.status()
+      );
+      Assertions.assertTrue(var7.preemptionCandidates().isEmpty());
+      Assertions.assertSame(var8, var1.currentLease(FIRST_BOT, ActionChannel.LOOK).orElseThrow());
       Assertions.assertFalse(var1.release(var3));
-      Assertions.assertSame(var7, var1.currentLease(FIRST_BOT, ActionChannel.LOOK).orElseThrow());
+      Assertions.assertSame(var8, var1.currentLease(FIRST_BOT, ActionChannel.LOOK).orElseThrow());
    }
 
    @Test
@@ -68,19 +83,54 @@ class ControlArbiterTest {
    }
 
    @Test
-   void stopAcquiresEveryChannelAtomicallyAndCanPreemptLook() {
+   void stopWaitsForEveryOldOwnerBeforeAtomicGrant() {
       ControlArbiter var1 = new ControlArbiter();
       ControlArbiter.Lease var2 = var1.acquire(lookEnvelope(FIRST_BOT, 1L), ActionPriority.AUTONOMOUS).lease().orElseThrow();
-      ActionEnvelope var3 = new ActionEnvelope(new UUID(0L, 2L), FIRST_BOT, 1L, "stop-2", 100L, 1, new StopAction(), ActionOrigin.none());
-      ControlArbiter.AcquireResult var4 = var1.acquire(var3, ActionPriority.OWNER_CONTROL);
-      ControlArbiter.Lease var5 = var4.lease().orElseThrow();
-      Assertions.assertEquals(1, var4.preempted().size());
-      Assertions.assertSame(var2, var4.preempted().getFirst());
-      Assertions.assertEquals(ActionChannel.all(), var5.channels());
+      ControlArbiter.Lease var3 = var1.acquire(waitEnvelope(FIRST_BOT, 2L), ActionPriority.AUTONOMOUS).lease().orElseThrow();
+      ActionEnvelope var4 = new ActionEnvelope(new UUID(0L, 3L), FIRST_BOT, 1L, "stop-3", 100L, 1, new StopAction(), ActionOrigin.none());
+      ControlArbiter.AcquireResult var5 = var1.acquire(var4, ActionPriority.OWNER_CONTROL);
+      Assertions.assertEquals(
+         ControlArbiter.AcquireStatus.PREEMPTION_REQUIRED,
+         var5.status()
+      );
+      Assertions.assertEquals(
+         java.util.List.of(var2, var3),
+         var5.preemptionCandidates()
+      );
+      Assertions.assertSame(
+         var2,
+         var1.currentLease(FIRST_BOT, ActionChannel.LOOK)
+            .orElseThrow()
+      );
+      Assertions.assertSame(
+         var3,
+         var1.currentLease(FIRST_BOT, ActionChannel.MOVE)
+            .orElseThrow()
+      );
+      Assertions.assertTrue(var1.release(var2));
+      ControlArbiter.AcquireResult var6 =
+         var1.acquire(var4, ActionPriority.OWNER_CONTROL);
+      Assertions.assertEquals(
+         ControlArbiter.AcquireStatus.PREEMPTION_REQUIRED,
+         var6.status()
+      );
+      Assertions.assertEquals(
+         java.util.List.of(var3),
+         var6.preemptionCandidates()
+      );
+      Assertions.assertTrue(var6.lease().isEmpty());
+      Assertions.assertTrue(var1.release(var3));
+      ControlArbiter.AcquireResult var7 =
+         var1.acquire(var4, ActionPriority.OWNER_CONTROL);
+      ControlArbiter.Lease var8 = var7.lease().orElseThrow();
+      Assertions.assertEquals(
+         ControlArbiter.AcquireStatus.GRANTED, var7.status()
+      );
+      Assertions.assertEquals(ActionChannel.all(), var8.channels());
       Assertions.assertEquals(ActionChannel.values().length, var1.occupiedChannelCount());
 
       for (ActionChannel var9 : ActionChannel.values()) {
-         Assertions.assertSame(var5, var1.currentLease(FIRST_BOT, var9).orElseThrow());
+         Assertions.assertSame(var8, var1.currentLease(FIRST_BOT, var9).orElseThrow());
       }
    }
 
@@ -117,5 +167,18 @@ class ControlArbiterTest {
 
    private static ActionEnvelope lookEnvelope(UUID var0, long var1) {
       return new ActionEnvelope(new UUID(0L, var1), var0, 1L, "look-" + var1, 100L, 20, new LookAtAction(1.0, 2.0, 3.0), ActionOrigin.none());
+   }
+
+   private static ActionEnvelope waitEnvelope(UUID var0, long var1) {
+      return new ActionEnvelope(
+         new UUID(0L, var1),
+         var0,
+         1L,
+         "wait-" + var1,
+         100L,
+         20,
+         new WaitAction(20),
+         ActionOrigin.none()
+      );
    }
 }

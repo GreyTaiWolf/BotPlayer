@@ -24,6 +24,7 @@ public final class BotServerPlayer extends ServerPlayer {
     private final BotRuntimeHandle runtimeHandle;
     private int lastClientlessConnectionTick = Integer.MIN_VALUE;
     private boolean suppressNextPlayerDataSave;
+    private boolean suppressPlayerDataSaveUntilReleased;
 
     public BotServerPlayer(
             MinecraftServer server,
@@ -41,8 +42,12 @@ public final class BotServerPlayer extends ServerPlayer {
             GameProfile profile,
             ClientInformation clientInformation,
             BotServerPlayer oldPlayer) {
-        return new BotServerPlayer(
+        BotServerPlayer replacement = new BotServerPlayer(
                 server, level, profile, clientInformation, oldPlayer.runtimeHandle);
+        if (oldPlayer.suppressPlayerDataSaveUntilReleased) {
+            replacement.suppressPlayerDataSaveUntilReleased();
+        }
+        return replacement;
     }
 
     public BotRuntimeHandle runtimeHandle() {
@@ -58,7 +63,18 @@ public final class BotServerPlayer extends ServerPlayer {
         suppressNextPlayerDataSave = true;
     }
 
+    /**
+     * 在 no-save 隔离尚未确认移除 exact body 前，拒绝该 body 的每一次保存。
+     * 这条 fence 不能被单次 save 消费；只有身份移除确认后才能显式释放。
+     */
+    public void suppressPlayerDataSaveUntilReleased() {
+        suppressPlayerDataSaveUntilReleased = true;
+    }
+
     public boolean consumePlayerDataSaveSuppression() {
+        if (suppressPlayerDataSaveUntilReleased) {
+            return true;
+        }
         boolean suppressed =
                 suppressNextPlayerDataSave;
         suppressNextPlayerDataSave = false;
@@ -66,7 +82,13 @@ public final class BotServerPlayer extends ServerPlayer {
     }
 
     public void clearPlayerDataSaveSuppression() {
+        /* 单次 remove 的门闩可清理；跨调用 fence 只能由确认移除路径释放。 */
         suppressNextPlayerDataSave = false;
+    }
+
+    public void releasePlayerDataSaveSuppression() {
+        suppressNextPlayerDataSave = false;
+        suppressPlayerDataSaveUntilReleased = false;
     }
 
     @Override

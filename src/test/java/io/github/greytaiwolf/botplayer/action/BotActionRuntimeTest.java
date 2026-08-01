@@ -97,6 +97,7 @@ class BotActionRuntimeTest {
       Assertions.assertEquals(ActionState.PREEMPTED, outcome(var4).state());
       Assertions.assertEquals(ActionFailureCode.PREEMPTED, outcome(var4).failureCode());
       Assertions.assertEquals(ActionState.SUCCEEDED, outcome(var6).state());
+      Assertions.assertEquals(2L, outcome(var6).finishedTick());
       Assertions.assertEquals(1, var1.cleanupCount(var3.actionId()));
       Assertions.assertEquals(1, var1.cleanupCount(var5.actionId()));
       Assertions.assertEquals(0, var2.activeLeaseCount());
@@ -368,7 +369,7 @@ class BotActionRuntimeTest {
       Assertions.assertEquals(1, result.cleanupFailures());
       Assertions.assertTrue(result.quarantined());
       Assertions.assertFalse(result.safeForExclusiveMutation());
-      Assertions.assertEquals(ActionFailureCode.INTERNAL_ERROR, outcome(submission).failureCode());
+      Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(submission).failureCode());
       Assertions.assertEquals(0, runtime.activeActionCount());
       Assertions.assertEquals(0, runtime.activeLeaseCount());
       Assertions.assertEquals(
@@ -389,7 +390,7 @@ class BotActionRuntimeTest {
    }
 
    @Test
-   void exactGenerationDrainTreatsRecoveredCleanupFailureAsUnsafeButReusable() {
+   void exactGenerationDrainRequiresExplicitRecoveryAfterCleanupFailure() {
       BotActionRuntimeTest.ScriptedBackend backend = new BotActionRuntimeTest.ScriptedBackend();
       BotActionRuntime runtime = runtime(backend);
       ActionEnvelope active = envelope(
@@ -409,8 +410,24 @@ class BotActionRuntimeTest {
          );
 
       Assertions.assertEquals(1, result.cleanupFailures());
-      Assertions.assertFalse(result.quarantined());
+      Assertions.assertTrue(result.quarantined());
       Assertions.assertFalse(result.safeForExclusiveMutation());
+      Assertions.assertEquals(
+         ActionMailbox.SubmissionStatus.BOT_GENERATION_CLOSED,
+         runtime.submit(
+            envelope(
+               FIRST_BOT,
+               1L,
+               2L,
+               "exclusive-reset-blocked",
+               new StopAction(),
+               100L,
+               5
+            ),
+            ActionPriority.OWNER_CONTROL
+         ).status()
+      );
+      Assertions.assertTrue(runtime.recoverBotSafety(FIRST_BOT, 1L, 3L));
       ActionMailbox.Submission resumed = runtime.submit(
          envelope(
             FIRST_BOT,
@@ -424,7 +441,7 @@ class BotActionRuntimeTest {
          ActionPriority.OWNER_CONTROL
       );
       Assertions.assertEquals(ActionMailbox.SubmissionStatus.ENQUEUED, resumed.status());
-      runtime.tick(2L);
+      runtime.tick(3L);
       Assertions.assertEquals(ActionState.SUCCEEDED, outcome(resumed).state());
    }
 
@@ -613,7 +630,7 @@ class BotActionRuntimeTest {
       );
 
       Assertions.assertEquals(
-         ActionFailureCode.INTERNAL_ERROR, outcome(submission).failureCode()
+         ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(submission).failureCode()
       );
       Assertions.assertFalse(runtime.isGenerationSafe(FIRST_BOT, 1L));
       Assertions.assertEquals(0, runtime.activeActionCount());
@@ -664,8 +681,9 @@ class BotActionRuntimeTest {
       ActionMailbox.Submission var4 = var2.submit(var3, ActionPriority.OWNER_TASK);
       var2.tick(1L);
       Assertions.assertEquals(ActionState.FAILED, outcome(var4).state());
-      Assertions.assertEquals(ActionFailureCode.INTERNAL_ERROR, outcome(var4).failureCode());
+      Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(var4).failureCode());
       Assertions.assertEquals(1L, var2.cleanupFailureCount());
+      Assertions.assertEquals(0, var1.forceResetCount);
       Assertions.assertEquals(0, var2.activeLeaseCount());
    }
 
@@ -680,7 +698,7 @@ class BotActionRuntimeTest {
       ActionMailbox.Submission var5 = var2.submit(var3, ActionPriority.OWNER_CONTROL);
       ActionMailbox.Submission var6 = var2.submit(var4, ActionPriority.BACKGROUND);
       var2.tick(1L);
-      Assertions.assertEquals(ActionFailureCode.INTERNAL_ERROR, outcome(var5).failureCode());
+      Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(var5).failureCode());
       Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(var6).failureCode());
       Assertions.assertEquals(0, var1.startCount(var4.actionId()));
       Assertions.assertEquals(0, var2.activeActionCount());
@@ -696,7 +714,7 @@ class BotActionRuntimeTest {
       ActionEnvelope var3 = envelope(FIRST_BOT, 1L, "permanent-close", new StopAction(), 100L, 5);
       ActionMailbox.Submission var4 = var2.submit(var3, ActionPriority.OWNER_CONTROL);
       var2.tick(1L);
-      Assertions.assertEquals(ActionFailureCode.INTERNAL_ERROR, outcome(var4).failureCode());
+      Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(var4).failureCode());
       var2.cancelBotNow(FIRST_BOT, var3.botGeneration(), ActionCancellationReason.LIFECYCLE, 2L);
       var1.forceResetSucceeds = true;
       Assertions.assertTrue(var2.recoverBotSafety(FIRST_BOT, var3.botGeneration(), 3L));
@@ -722,7 +740,7 @@ class BotActionRuntimeTest {
       ActionMailbox.Cancellation var9 = var4.cancel(FIRST_BOT, var2.actionId(), ActionCancellationReason.REQUESTED);
       var4.tick(2L);
       Assertions.assertEquals(ActionMailbox.CancellationStatus.CLEANUP_FAILED, cancellationStatus(var9));
-      Assertions.assertEquals(ActionFailureCode.INTERNAL_ERROR, outcome(var5).failureCode());
+      Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(var5).failureCode());
       Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(var6).failureCode());
       Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(var8).failureCode());
       Assertions.assertEquals(0, var1.startCount(var7.actionId()));
@@ -1144,7 +1162,7 @@ class BotActionRuntimeTest {
       ActionEnvelope var7 = envelope(FIRST_BOT, 3L, "preempt-stop", new StopAction(), 100L, 5);
       ActionMailbox.Submission var8 = var4.submit(var7, ActionPriority.OWNER_CONTROL);
       var4.tick(2L);
-      Assertions.assertEquals(ActionFailureCode.INTERNAL_ERROR, outcome(var5).failureCode());
+      Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(var5).failureCode());
       Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(var6).failureCode());
       Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(var8).failureCode());
       Assertions.assertEquals(0, var4.activeActionCount());
@@ -1170,7 +1188,7 @@ class BotActionRuntimeTest {
       ActionMailbox.Submission var9 = var4.submit(var7, ActionPriority.OWNER_CONTROL);
       ActionMailbox.Submission var10 = var4.submit(var8, ActionPriority.BACKGROUND);
       var4.tick(3L);
-      Assertions.assertEquals(ActionFailureCode.INTERNAL_ERROR, outcome(var5).failureCode());
+      Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(var5).failureCode());
       Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(var6).failureCode());
       Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(var9).failureCode());
       Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE, outcome(var10).failureCode());

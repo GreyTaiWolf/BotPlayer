@@ -17,6 +17,8 @@ public final class BotActionRuntime {
    public static final int MAX_ACTIVE_ACTIONS = 16384;
    public static final int MAX_WAITERS_PER_ACTION = 64;
    public static final int TRANSITION_HISTORY_CAPACITY = 512;
+   /** 动作业务终止后，物理清理最多保留的独立 Tick 预算。 */
+   public static final int MAX_CLEANUP_TICKS = 256;
    /** Exact unsafe-generation keys retained before the runtime fails closed. */
    public static final int MAX_QUARANTINED_GENERATIONS = 4096;
    private final Thread ownerThread;
@@ -46,6 +48,7 @@ public final class BotActionRuntime {
    private boolean drainingGenerationQuarantines;
    private boolean drainingLifecycleCloses;
    private boolean shutdown;
+   private boolean shutdownComplete;
 
    public BotActionRuntime(ActionBackend var1, int var2, int var3, int var4, int var5) {
       this(var1, var2, var3, var4, var5, Math.max(var2, var5), ActionOutcomeSink.noop());
@@ -99,30 +102,35 @@ public final class BotActionRuntime {
          }
 
          this.lastTick = var1;
-         if (!this.shutdown) {
-            List<ActionMailbox.Command> var10 = this.mailbox.drain(this.commandBudget);
+         List<ActionMailbox.Command> var10 = this.shutdown
+            ? List.of()
+            : this.mailbox.drain(this.commandBudget);
 
-            for (ActionMailbox.Command var5 : var10) {
-               this.process(var5, var1);
-               this.drainPendingSafeBoundaryWork(var1);
-            }
-
+         for (ActionMailbox.Command var5 : var10) {
+            this.process(var5, var1);
             this.drainPendingSafeBoundaryWork(var1);
-            int var12 = 0;
-
-            for (BotActionRuntime.Ticket var6 : List.copyOf(this.active.values())) {
-               if (!var6.state.isTerminal()) {
-                  this.advance(var6, var1);
-                  var12++;
-                  this.drainPendingSafeBoundaryWork(var1);
-               }
-            }
-
-            this.drainPendingSafeBoundaryWork(var1);
-            return new BotActionRuntime.TickReport(false, var10.size(), var12, this.active.size(), this.cleanupFailureCount);
          }
 
-         var3 = new BotActionRuntime.TickReport(false, 0, 0, 0, this.cleanupFailureCount);
+         this.drainPendingSafeBoundaryWork(var1);
+         int var12 = 0;
+
+         for (BotActionRuntime.Ticket var6 : this.orderedActiveTickets()) {
+            if (!var6.state.isTerminal()) {
+               this.advance(var6, var1);
+               var12++;
+               this.drainPendingSafeBoundaryWork(var1);
+            }
+         }
+
+         this.drainPendingSafeBoundaryWork(var1);
+         this.completeShutdownIfDrained();
+         var3 = new BotActionRuntime.TickReport(
+            false,
+            var10.size(),
+            var12,
+            this.active.size(),
+            this.cleanupFailureCount
+         );
       } finally {
          this.endMutation();
       }
@@ -310,7 +318,8 @@ public final class BotActionRuntime {
                         : ActionCleanupReason.CANCELLED,
                      var5
                   );
-                  if (var14.state() != ActionState.CANCELLED) {
+                  if (var14 != null
+                     && var14.state() != ActionState.CANCELLED) {
                      var11++;
                   }
                }
@@ -367,13 +376,11 @@ public final class BotActionRuntime {
             if (!this.unsafeGenerations.contains(var6)) {
                return true;
             }
-
             boolean var7 = this.active
                .values()
                .stream()
                .anyMatch(var3 -> var3.envelope.botId().equals(var1) && var3.envelope.botGeneration() == var2 && !var3.state.isTerminal());
             if (var7
-               || this.arbiter.hasLease(var1, var2)
                || this.pendingGenerationQuarantines.containsKey(var6)
                || this.quarantinesInProgress.contains(var6)) {
                return false;
@@ -386,9 +393,17 @@ public final class BotActionRuntime {
                var8 = false;
             }
 
-            if (var8) {
+            if (var8
+               && this.unsafeGenerations.contains(var6)
+               && !this.pendingRuntimeFailClosed
+               && !this.runtimeFailClosedInProgress
+               && !this.pendingGenerationQuarantines.containsKey(var6)
+               && !this.quarantinesInProgress.contains(var6)) {
+               this.arbiter.releaseGenerationAfterSafeReset(var1, var2);
                this.unsafeGenerations.remove(var6);
                this.mailbox.recoverBotGeneration(var1, var2);
+            } else {
+               var8 = false;
             }
 
             var9 = var8;
@@ -488,8 +503,19 @@ public final class BotActionRuntime {
                );
             }
 
+            /*
+             * 停服事件没有下一服务器 Tick 合同。首次清理仍未到安全端点时，
+             * 立即转入精确 generation 隔离，不能留下永久占用的 lease。
+             */
+            for (BotActionRuntime.Ticket var9
+               : List.copyOf(this.active.values())) {
+               if (var9.termination != null
+                  && var9.outcome == null) {
+                  this.failCleanupUnsafe(var9, var1);
+               }
+            }
+
             this.shutdown = true;
-            this.completionDispatcher.shutdownAfterQueuedWork();
             return;
          }
       } finally {
@@ -510,6 +536,22 @@ public final class BotActionRuntime {
    public int activeLeaseCount() {
       this.assertOwnerThread();
       return this.arbiter.activeLeaseCount();
+   }
+
+   Optional<UUID> activeLeaseOwner(
+      UUID var1, ActionChannel var2
+   ) {
+      this.assertOwnerThread();
+      return this.arbiter.currentLease(var1, var2)
+         .map(ControlArbiter.Lease::actionId);
+   }
+
+   int pendingCancellationWaiterCount(UUID var1, UUID var2) {
+      this.assertOwnerThread();
+      BotActionRuntime.Ticket var3 = this.active.get(
+         new BotActionRuntime.ActionKey(var1, var2)
+      );
+      return var3 == null ? 0 : var3.cancellationWaiters.size();
    }
 
    public long cleanupFailureCount() {
@@ -637,14 +679,38 @@ public final class BotActionRuntime {
             var1.reason() == ActionCancellationReason.RUNTIME_SHUTDOWN ? ActionCleanupReason.RUNTIME_SHUTDOWN : ActionCleanupReason.CANCELLED,
             var2
          );
-         this.publish(
-            var1.completion(),
-            var8.state() == ActionState.CANCELLED ? ActionMailbox.CancellationStatus.CANCELLED : ActionMailbox.CancellationStatus.CLEANUP_FAILED
-         );
-         var1.queuedSubmission().ifPresent(var4x -> this.completeQueuedCancellation(var4x, var2, var1.reason()));
+         if (var8 == null) {
+            if (!this.queueCancellationWaiter(
+               var5, var1, false
+            )) {
+               var1.queuedSubmission().ifPresent(
+                  var4x -> this.completeQueuedCancellation(
+                     var4x, var2, var1.reason()
+                  )
+               );
+               this.publish(
+                  var1.completion(),
+                  ActionMailbox.CancellationStatus.COMPLETION_BACKPRESSURE
+               );
+            }
+         } else {
+            this.publish(
+               var1.completion(),
+               var8.state() == ActionState.CANCELLED ? ActionMailbox.CancellationStatus.CANCELLED : ActionMailbox.CancellationStatus.CLEANUP_FAILED
+            );
+            var1.queuedSubmission().ifPresent(var4x -> this.completeQueuedCancellation(var4x, var2, var1.reason()));
+         }
       } else if (var1.queuedSubmission().isPresent()) {
-         ActionMailbox.CancellationStatus var7 = this.completeQueuedCancellation(var1.queuedSubmission().orElseThrow(), var2, var1.reason());
-         this.publish(var1.completion(), var7);
+         ActionMailbox.CancellationStatus var7 =
+            this.completeQueuedCancellation(
+               var1.queuedSubmission().orElseThrow(),
+               var2,
+               var1.reason(),
+               var1
+            );
+         if (var7 != null) {
+            this.publish(var1.completion(), var7);
+         }
       } else {
          ActionMailbox.CancellationStatus var6 = this.ledger.completedOutcome(var1.botId(), var1.actionId()).isPresent()
             ? ActionMailbox.CancellationStatus.ALREADY_TERMINAL
@@ -654,7 +720,12 @@ public final class BotActionRuntime {
    }
 
    private void advance(BotActionRuntime.Ticket var1, long var2) {
-      if (var1.envelope.isExpiredAt(var2)) {
+      if (var1.termination != null) {
+         this.advanceTermination(var1, var2);
+      } else if (var1.backendStarted
+         && !this.ensureSafeControlAuthority(var1, var2)) {
+         return;
+      } else if (var1.envelope.isExpiredAt(var2)) {
          if (var1.state == ActionState.QUEUED) {
             this.transition(var1, ActionState.VALIDATING);
          }
@@ -678,10 +749,16 @@ public final class BotActionRuntime {
          }
 
          if (var1.state == ActionState.VALIDATING) {
+            if (var1.controlValidated) {
+               this.acquireAndStart(var1, var2);
+               return;
+            }
+
             ActionBackend.BackendResult var5 = this.invoke(var1, BotActionRuntime.BackendCall.VALIDATE, var2);
             if (this.acceptIdentity(var1, var5, var2)) {
                switch (var5.step()) {
                   case ACCEPTED:
+                     var1.controlValidated = true;
                      this.acquireAndStart(var1, var2);
                      break;
                   case FAILED:
@@ -708,66 +785,287 @@ public final class BotActionRuntime {
    }
 
    private void acquireAndStart(BotActionRuntime.Ticket var1, long var2) {
+      if (!this.isLiveActiveTicket(var1)) {
+         return;
+      }
+      if (var1.lastAcquireAttemptTick == var2) {
+         return;
+      }
+      var1.lastAcquireAttemptTick = var2;
+      if (this.hasSuperiorPreemptionClaim(var1)) {
+         return;
+      }
+      if (this.hasUnsafePreemptionBarrier(var1)) {
+         this.finish(
+            var1,
+            ActionState.FAILED,
+            ActionFailureCode.UNSAFE_CONTROL_STATE,
+            List.of(),
+            "A displaced control generation could not be contained safely",
+            ActionCleanupReason.FAILED,
+            var2
+         );
+         return;
+      }
+
       ControlArbiter.AcquireResult var4 = this.arbiter.acquire(var1.envelope, var1.priority);
-      if (!var4.acquired()) {
-         this.finish(var1, ActionState.FAILED, ActionFailureCode.CHANNEL_BUSY, List.of(), "Required control channel is busy", ActionCleanupReason.FAILED, var2);
-      } else {
-         var1.lease = var4.lease().orElseThrow();
-
-         for (ControlArbiter.Lease var6 : var4.preempted()) {
-            if (var1.state.isTerminal()) {
-               break;
-            }
-
-            BotActionRuntime.Ticket var7 = this.active.get(new BotActionRuntime.ActionKey(var6.botId(), var6.actionId()));
-            if (var7 == null) {
-               if (!this.ledger.completedOutcome(var6.botId(), var6.actionId()).isPresent()) {
-                  throw new IllegalStateException("Preempted control lease has no active action");
-               }
-            } else if (!var7.state.isTerminal()) {
-               this.finish(
-                  var7,
-                  ActionState.PREEMPTED,
-                  ActionFailureCode.PREEMPTED,
-                  List.of(),
-                  "Action was preempted by a higher-priority controller",
-                  ActionCleanupReason.PREEMPTED,
-                  var2
+      if (var4.status()
+         == ControlArbiter.AcquireStatus.PREEMPTION_REQUIRED) {
+         var1.preemptionClaimed = true;
+         boolean var5 = false;
+         for (ControlArbiter.Lease var6 : var4.preemptionCandidates()) {
+            BotActionRuntime.GenerationKey var7 =
+               new BotActionRuntime.GenerationKey(
+                  var6.botId(), var6.botGeneration()
                );
-               this.drainPendingSafeBoundaryWork(var2);
+            var1.preemptionBarriers.add(var7);
+            BotActionRuntime.Ticket var8 = this.active.get(
+               new BotActionRuntime.ActionKey(
+                  var6.botId(), var6.actionId()
+               )
+            );
+            if (this.arbiter.isHeld(var6)
+               && (var8 == null
+               || var8.state.isTerminal()
+               || var8.lease != var6)) {
+               this.requestGenerationQuarantine(var7);
+               var5 = true;
             }
          }
+         this.drainPendingSafeBoundaryWork(var2);
+         if (!this.isLiveActiveTicket(var1)) {
+            return;
+         }
+         if (var5 || this.hasUnsafePreemptionBarrier(var1)) {
+            this.finish(
+               var1,
+               ActionState.FAILED,
+               ActionFailureCode.UNSAFE_CONTROL_STATE,
+               List.of(),
+               "A displaced control lease lost its exact owner",
+               ActionCleanupReason.FAILED,
+               var2
+            );
+            return;
+         }
 
-         if (!var1.state.isTerminal()) {
-            BotActionRuntime.GenerationKey var8 =
+         /*
+          * 先验证整组旧 owner，再逐个请求收口。任一旧 owner 已经失败到不安全
+          * 端点时，后续互不相关的 owner 必须保持运行，不能被一个注定失败的
+          * claimant 继续终止。重入回调若已安全释放某张精确 lease，则直接跳过；
+          * 只有 lease 仍在而 owner 消失时才按 orphan 隔离。
+          */
+         for (ControlArbiter.Lease var6 : var4.preemptionCandidates()) {
+            if (!this.isLiveActiveTicket(var1)) {
+               return;
+            }
+            if (!this.arbiter.isHeld(var6)) {
+               continue;
+            }
+            BotActionRuntime.GenerationKey var7 =
                new BotActionRuntime.GenerationKey(
-                  var1.envelope.botId(),
-                  var1.envelope.botGeneration()
+                  var6.botId(), var6.botGeneration()
                );
-            if (this.quarantineCapacityExhausted
-               || this.unsafeGenerations.contains(var8)) {
+            BotActionRuntime.Ticket var8 = this.active.get(
+               new BotActionRuntime.ActionKey(
+                  var6.botId(), var6.actionId()
+               )
+            );
+            if (var8 == null
+               || var8.state.isTerminal()
+               || var8.lease != var6) {
+               this.requestGenerationQuarantine(var7);
+               this.drainPendingSafeBoundaryWork(var2);
+               if (this.isLiveActiveTicket(var1)) {
+                  this.finish(
+                     var1,
+                     ActionState.FAILED,
+                     ActionFailureCode.UNSAFE_CONTROL_STATE,
+                     List.of(),
+                     "A displaced control lease lost its exact owner",
+                     ActionCleanupReason.FAILED,
+                     var2
+                  );
+               }
+               return;
+            }
+            this.finish(
+               var8,
+               ActionState.PREEMPTED,
+               ActionFailureCode.PREEMPTED,
+               List.of(),
+               "Action was preempted by a higher-priority controller",
+               ActionCleanupReason.PREEMPTED,
+               var2
+            );
+            this.drainPendingSafeBoundaryWork(var2);
+            if (!this.isLiveActiveTicket(var1)) {
+               return;
+            }
+            if (this.hasUnsafePreemptionBarrier(var1)) {
                this.finish(
                   var1,
                   ActionState.FAILED,
                   ActionFailureCode.UNSAFE_CONTROL_STATE,
                   List.of(),
-                  "Preempted control could not be reset safely",
+                  "A displaced control generation could not be contained safely",
                   ActionCleanupReason.FAILED,
                   var2
                );
-            } else {
-               var1.startedTick = var2;
-               this.transition(var1, ActionState.RUNNING);
-               var1.backendStarted = true;
-               ActionBackend.BackendResult var9 = this.invoke(var1, BotActionRuntime.BackendCall.START, var2);
-               this.handleExecutionResult(var1, var9, var2);
+               return;
             }
          }
+
+         /*
+          * 同步清理可能已经释放全部旧 lease。当前最高 claim 必须在本 Tick
+          * 立即重试一次，不能让随后遍历到的较低优先级 waiter 抢走通道。
+          */
+         if (!this.hasSuperiorPreemptionClaim(var1)) {
+            ControlArbiter.AcquireResult var9 =
+               this.arbiter.acquire(var1.envelope, var1.priority);
+            if (var9.acquired()) {
+               if (!this.isLiveActiveTicket(var1)) {
+                  this.arbiter.release(var9.lease().orElseThrow());
+                  return;
+               }
+               this.grantAndStart(
+                  var1, var9.lease().orElseThrow(), var2
+               );
+            }
+         }
+         return;
       }
+      if (!var4.acquired()) {
+         this.finish(var1, ActionState.FAILED, ActionFailureCode.CHANNEL_BUSY, List.of(), "Required control channel is busy", ActionCleanupReason.FAILED, var2);
+         return;
+      }
+
+      this.grantAndStart(var1, var4.lease().orElseThrow(), var2);
+   }
+
+   private boolean hasUnsafePreemptionBarrier(
+      BotActionRuntime.Ticket var1
+   ) {
+      if (this.quarantineCapacityExhausted
+         || this.pendingRuntimeFailClosed
+         || this.runtimeFailClosedInProgress) {
+         return true;
+      }
+      return var1.preemptionBarriers.stream()
+         .anyMatch(this.unsafeGenerations::contains);
+   }
+
+   private boolean isLiveActiveTicket(
+      BotActionRuntime.Ticket var1
+   ) {
+      return var1.outcome == null
+         && var1.termination == null
+         && !var1.state.isTerminal()
+         && this.active.get(
+            new BotActionRuntime.ActionKey(
+               var1.envelope.botId(),
+               var1.envelope.actionId()
+            )
+         ) == var1;
+   }
+
+   private boolean hasSuperiorPreemptionClaim(
+      BotActionRuntime.Ticket var1
+   ) {
+      boolean var2 = false;
+      for (BotActionRuntime.Ticket var4 : this.active.values()) {
+         if (var4 == var1) {
+            var2 = true;
+            continue;
+         }
+         if (!var4.preemptionClaimed
+            || var4.outcome != null
+            || var4.termination != null
+            || !var4.envelope.botId().equals(var1.envelope.botId())
+            || java.util.Collections.disjoint(
+               var4.envelope.action().channels(),
+               var1.envelope.action().channels()
+            )) {
+            continue;
+         }
+         if (var4.priority.outranks(var1.priority)
+            || (var4.priority == var1.priority && !var2)) {
+            return true;
+         }
+      }
+      return false;
+   }
+
+   private boolean ensureSafeControlAuthority(
+      BotActionRuntime.Ticket var1, long var2
+   ) {
+      BotActionRuntime.GenerationKey var4 =
+         new BotActionRuntime.GenerationKey(
+            var1.envelope.botId(),
+            var1.envelope.botGeneration()
+         );
+      if (!this.quarantineCapacityExhausted
+         && !this.pendingRuntimeFailClosed
+         && !this.runtimeFailClosedInProgress
+         && !this.unsafeGenerations.contains(var4)
+         && !this.hasUnsafePreemptionBarrier(var1)) {
+         return true;
+      }
+      this.finish(
+         var1,
+         ActionState.FAILED,
+         ActionFailureCode.UNSAFE_CONTROL_STATE,
+         List.of(),
+         "Control authority became unsafe while the action was running",
+         ActionCleanupReason.FAILED,
+         var2
+      );
+      return false;
+   }
+
+   private void grantAndStart(
+      BotActionRuntime.Ticket var1,
+      ControlArbiter.Lease var2,
+      long var3
+   ) {
+      if (!this.isLiveActiveTicket(var1)) {
+         this.arbiter.release(var2);
+         return;
+      }
+      var1.lease = var2;
+      BotActionRuntime.GenerationKey var4 =
+         new BotActionRuntime.GenerationKey(
+            var1.envelope.botId(),
+            var1.envelope.botGeneration()
+         );
+      if (this.quarantineCapacityExhausted
+         || this.unsafeGenerations.contains(var4)
+         || this.hasUnsafePreemptionBarrier(var1)) {
+         this.finish(
+            var1,
+            ActionState.FAILED,
+            ActionFailureCode.UNSAFE_CONTROL_STATE,
+            List.of(),
+            "Preempted control could not be reset safely",
+            ActionCleanupReason.FAILED,
+            var3
+         );
+         return;
+      }
+
+      var1.startedTick = var3;
+      this.transition(var1, ActionState.RUNNING);
+      var1.preemptionClaimed = false;
+      var1.backendStarted = true;
+      ActionBackend.BackendResult var5 = this.invoke(
+         var1, BotActionRuntime.BackendCall.START, var3
+      );
+      this.handleExecutionResult(var1, var5, var3);
    }
 
    private void handleExecutionResult(BotActionRuntime.Ticket var1, ActionBackend.BackendResult var2, long var3) {
-      if (this.acceptIdentity(var1, var2, var3)) {
+      if (this.ensureSafeControlAuthority(var1, var3)
+         && this.acceptIdentity(var1, var2, var3)) {
          switch (var2.step()) {
             case ACCEPTED:
             case SUCCEEDED:
@@ -791,7 +1089,8 @@ public final class BotActionRuntime {
 
    private void verify(BotActionRuntime.Ticket var1, long var2) {
       ActionBackend.BackendResult var4 = this.invoke(var1, BotActionRuntime.BackendCall.VERIFY, var2);
-      if (this.acceptIdentity(var1, var4, var2)) {
+      if (this.ensureSafeControlAuthority(var1, var2)
+         && this.acceptIdentity(var1, var4, var2)) {
          switch (var4.step()) {
             case ACCEPTED:
             case READY_TO_VERIFY:
@@ -834,7 +1133,8 @@ public final class BotActionRuntime {
    }
 
    private boolean acceptIdentity(BotActionRuntime.Ticket var1, ActionBackend.BackendResult var2, long var3) {
-      if (var1.state.isTerminal()) {
+      if (var1.state.isTerminal()
+         || var1.termination != null) {
          return false;
       } else if (!var2.botId().equals(var1.envelope.botId()) || var2.botGeneration() != var1.envelope.botGeneration()) {
          this.finish(
@@ -874,60 +1174,368 @@ public final class BotActionRuntime {
          return var1.outcome;
       } else if (!var2.isTerminal()) {
          throw new IllegalArgumentException("finish requires a terminal state");
-      } else {
-         ActionState var9 = var2;
-         ActionFailureCode var10 = var3;
-         List<ActionEvidence> var11 = var4;
-         String var12 = var5;
-         if (var1.lease != null && var1.backendStarted && !var1.cleaned) {
-            var1.cleaned = true;
-
-            try {
-               this.backend.cleanup(var1.envelope, var6, var7);
-            } catch (RuntimeException var22) {
-               this.cleanupFailureCount++;
-               var9 = ActionState.FAILED;
-               var10 = ActionFailureCode.INTERNAL_ERROR;
-               var11 = List.of(new ActionEvidence("runtime.cleanup", "failed"));
-               var12 = "Action cleanup failed";
-
-               boolean var14;
-               try {
-                  var14 = this.backend.forceSafeReset(var1.envelope.botId(), var1.envelope.botGeneration(), var7);
-               } catch (RuntimeException var21) {
-                  var14 = false;
-               }
-
-               if (!var14) {
-                  this.quarantineGeneration(var1);
-               }
-            } finally {
-               this.arbiter.release(var1.lease);
-               var1.lease = null;
-            }
-         } else if (var1.lease != null) {
-            this.arbiter.release(var1.lease);
-            var1.lease = null;
-         }
-
-         if (var1.state == ActionState.QUEUED && var9 == ActionState.FAILED) {
-            this.transition(var1, ActionState.VALIDATING);
-         }
-
-         this.transition(var1, var9);
-         long var13 = var1.startedTick >= 0L ? var1.startedTick : var1.acceptedTick;
-         ActionOutcome var15 = new ActionOutcome(var1.envelope.actionId(), var9, var10, var13, var7, var11, var12);
-         this.ledger.complete(var1.envelope, var15);
-         var1.outcome = var15;
-         this.active.remove(new BotActionRuntime.ActionKey(var1.envelope.botId(), var1.envelope.actionId()), var1);
-         this.publishOutcome(var1.envelope, var15);
-
-         for (CompletionDispatcher.Completion<ActionOutcome> var17 : var1.waiters) {
-            this.publish(var17, var15);
-         }
-
-         return var15;
       }
+
+      if (var1.termination == null) {
+         var1.termination = new BotActionRuntime.PendingTermination(
+            var2,
+            var3,
+            var4,
+            var5,
+            var6,
+            var7,
+            cleanupDeadline(var7)
+         );
+      }
+      this.advanceTermination(var1, var7);
+      return var1.outcome;
+   }
+
+   private void advanceTermination(
+      BotActionRuntime.Ticket var1, long var2
+   ) {
+      if (var1.outcome != null) {
+         return;
+      }
+      BotActionRuntime.PendingTermination var3 =
+         Objects.requireNonNull(var1.termination, "termination");
+      if (var1.lease == null || !var1.backendStarted) {
+         this.finalizeTermination(
+            var1,
+            var3.state,
+            var3.failureCode,
+            var3.evidence,
+            var3.safeSummary,
+            var2,
+            false
+         );
+         return;
+      }
+      if (var1.lastCleanupAttemptTick == var2) {
+         return;
+      }
+      if (var2 > var3.cleanupDeadlineTick) {
+         this.failCleanupUnsafe(var1, var2);
+         return;
+      }
+
+      ActionCleanupRequest var4;
+      if (var1.cleanupRequest == null) {
+         var4 = ActionCleanupRequest.first(
+            UUID.randomUUID(),
+            var1.envelope,
+            var3.cleanupReason,
+            var2
+         );
+      } else {
+         ActionCleanupReceipt var5 = var1.cleanupReceipt;
+         if (var5 == null
+            || var5.status() != ActionCleanupStatus.PENDING) {
+            this.failCleanupUnsafe(var1, var2);
+            return;
+         }
+         if (var2 < var5.nextRetryTick()) {
+            return;
+         }
+         try {
+            var4 = var1.cleanupRequest.next(var5, var2);
+         } catch (RuntimeException var13) {
+            this.failCleanupUnsafe(var1, var2);
+            return;
+         }
+      }
+
+      var1.cleanupRequest = var4;
+      var1.lastCleanupAttemptTick = var2;
+      ActionCleanupReceipt var5;
+      try {
+         var5 = Objects.requireNonNull(
+            this.backend.cleanupStep(var1.envelope, var4),
+            "cleanup receipt"
+         );
+      } catch (RuntimeException var12) {
+         this.failCleanupUnsafe(var1, var2);
+         return;
+      }
+
+      this.drainPendingSafeBoundaryWork(var2);
+      if (var1.outcome != null) {
+         return;
+      }
+      if (!var5.matches(var4)
+         || var5.progressRevision()
+            < var1.cleanupProgressRevision) {
+         this.failCleanupUnsafe(var1, var2);
+         return;
+      }
+      var1.cleanupProgressRevision = var5.progressRevision();
+      var1.cleanupReceipt = var5;
+      switch (var5.status()) {
+         case PENDING:
+            if (var5.nextRetryTick()
+               > var3.cleanupDeadlineTick) {
+               this.failCleanupUnsafe(var1, var2);
+            }
+            break;
+         case UNSAFE:
+            this.failCleanupUnsafe(var1, var2);
+            break;
+         case COMPLETE:
+            if (this.isTerminationGenerationUnsafe(var1)) {
+               this.failCleanupUnsafe(var1, var2);
+            } else {
+               this.finalizeTermination(
+                  var1,
+                  var3.state,
+                  var3.failureCode,
+                  var3.evidence,
+                  var3.safeSummary,
+                  var2,
+                  false
+               );
+            }
+      }
+   }
+
+   private boolean isTerminationGenerationUnsafe(
+      BotActionRuntime.Ticket var1
+   ) {
+      BotActionRuntime.GenerationKey var2 =
+         new BotActionRuntime.GenerationKey(
+            var1.envelope.botId(),
+            var1.envelope.botGeneration()
+         );
+      return this.quarantineCapacityExhausted
+         || this.pendingRuntimeFailClosed
+         || this.runtimeFailClosedInProgress
+         || this.unsafeGenerations.contains(var2);
+   }
+
+   private void failCleanupUnsafe(
+      BotActionRuntime.Ticket var1, long var2
+   ) {
+      if (!var1.cleanupFailureRecorded) {
+         var1.cleanupFailureRecorded = true;
+         this.cleanupFailureCount++;
+         this.quarantineGeneration(var1);
+      }
+      this.finalizeTermination(
+         var1,
+         ActionState.FAILED,
+         ActionFailureCode.UNSAFE_CONTROL_STATE,
+         List.of(new ActionEvidence("runtime.cleanup", "unsafe")),
+         "Action cleanup could not prove a safe endpoint",
+         var2,
+         true
+      );
+   }
+
+   private void finalizeTermination(
+      BotActionRuntime.Ticket var1,
+      ActionState var2,
+      ActionFailureCode var3,
+      List<ActionEvidence> var4,
+      String var5,
+      long var6,
+      boolean var8
+   ) {
+      if (var1.outcome != null) {
+         return;
+      }
+      if (var1.lease != null) {
+         ControlArbiter.Lease var9 = var1.lease;
+         if (!var8 && !this.arbiter.release(var9)) {
+            var1.lease = null;
+            this.failCleanupUnsafe(var1, var6);
+            return;
+         }
+         if (var8) {
+            this.arbiter.release(var9);
+         }
+         var1.lease = null;
+      }
+
+      if (var1.state == ActionState.QUEUED
+         && var2 == ActionState.FAILED) {
+         this.transition(var1, ActionState.VALIDATING);
+      }
+      this.transition(var1, var2);
+      long var10 = var1.startedTick >= 0L
+         ? var1.startedTick
+         : var1.acceptedTick;
+      ActionOutcome var11 = new ActionOutcome(
+         var1.envelope.actionId(),
+         var2,
+         var3,
+         var10,
+         var6,
+         var4,
+         var5
+      );
+      this.ledger.complete(var1.envelope, var11);
+      var1.outcome = var11;
+      this.active.remove(
+         new BotActionRuntime.ActionKey(
+            var1.envelope.botId(),
+            var1.envelope.actionId()
+         ),
+         var1
+      );
+      this.publishOutcome(var1.envelope, var11);
+
+      for (CompletionDispatcher.Completion<ActionOutcome> var13
+         : var1.waiters) {
+         this.publish(var13, var11);
+      }
+      this.completeCancellationWaiters(var1, var11, var8, var6);
+   }
+
+   private void completeCancellationWaiters(
+      BotActionRuntime.Ticket var1,
+      ActionOutcome var2,
+      boolean var3,
+      long var4
+   ) {
+      ActionMailbox.CancellationStatus var6;
+      if (var3) {
+         var6 = ActionMailbox.CancellationStatus.CLEANUP_FAILED;
+      } else if (var1.termination.state == ActionState.CANCELLED
+         && var2.state() == ActionState.CANCELLED) {
+         var6 = ActionMailbox.CancellationStatus.CANCELLED;
+      } else {
+         var6 = ActionMailbox.CancellationStatus.ALREADY_TERMINAL;
+      }
+
+      for (BotActionRuntime.PendingCancellation var8
+         : var1.cancellationWaiters) {
+         ActionMailbox.CancelCommand var9 = var8.command;
+         if (!var8.queuedSubmissionHandled) {
+            var9.queuedSubmission().ifPresent(
+            var3x -> this.completeQueuedCancellation(
+                  var3x, var4, var9.reason()
+               )
+            );
+         }
+         this.publish(var9.completion(), var6);
+      }
+   }
+
+   private boolean queueCancellationWaiter(
+      BotActionRuntime.Ticket var1,
+      ActionMailbox.CancelCommand var2,
+      boolean var3
+   ) {
+      if (var1.cancellationWaiters.size()
+         >= MAX_WAITERS_PER_ACTION) {
+         return false;
+      }
+      var1.cancellationWaiters.add(
+         new BotActionRuntime.PendingCancellation(var2, var3)
+      );
+      return true;
+   }
+
+   private ActionMailbox.CancellationStatus completeQueuedCancellation(
+      ActionMailbox.SubmitCommand var1,
+      long var2,
+      ActionCancellationReason var4
+   ) {
+      return this.completeQueuedCancellation(
+         var1, var2, var4, null
+      );
+   }
+
+   private ActionMailbox.CancellationStatus completeQueuedCancellation(
+      ActionMailbox.SubmitCommand var1,
+      long var2,
+      ActionCancellationReason var4,
+      ActionMailbox.CancelCommand var5
+   ) {
+      ActionEnvelope var6 = var1.envelope();
+      ActionLedger.BeginResult var7 = this.ledger.begin(var6);
+
+      return switch (var7.status()) {
+         case STARTED -> {
+            BotActionRuntime.Ticket var13 = new BotActionRuntime.Ticket(var6, var1.priority(), var2, var1.completion());
+            this.finishDetached(var13, ActionState.CANCELLED, ActionFailureCode.CANCELLED, "Action cancelled before leaving the lifecycle mailbox", var2, true);
+            yield ActionMailbox.CancellationStatus.CANCELLED;
+         }
+         case DUPLICATE_IN_PROGRESS -> {
+            BotActionRuntime.Ticket var12 = this.active.get(new BotActionRuntime.ActionKey(var6.botId(), var7.canonicalActionId().orElseThrow()));
+            if (var12 == null) {
+               throw new IllegalStateException("Queued cancellation found a missing canonical action");
+            }
+
+            if (var12.waiters.size() >= MAX_WAITERS_PER_ACTION
+               || var5 != null
+                  && var12.cancellationWaiters.size()
+                     >= MAX_WAITERS_PER_ACTION
+               || !this.ledger.registerAlias(
+                  var6, var7.canonicalActionId().orElseThrow()
+               )) {
+               this.publish(
+                  var1.completion(),
+                  this.rejectedOutcome(
+                     var6,
+                     var2,
+                     ActionFailureCode.DUPLICATE_IN_PROGRESS,
+                     "Too many callers are waiting for the canonical action"
+                  )
+               );
+               yield ActionMailbox.CancellationStatus.ALREADY_TERMINAL;
+            }
+
+            /*
+             * 必须先登记两个 completion，再触发 canonical cleanup。cleanupStep
+             * 可以同步重入；预留完成后，无论本次收口同步还是跨 Tick，别名提交和
+             * 取消回执都只由 canonical 的唯一终态发布一次。
+             */
+            var12.waiters.add(var1.completion());
+            if (var5 != null
+               && !this.queueCancellationWaiter(var12, var5, true)) {
+               throw new IllegalStateException(
+                  "Queued alias cancellation lost its reserved waiter"
+               );
+            }
+            ActionOutcome var9 = this.finish(
+               var12,
+               ActionState.CANCELLED,
+               ActionFailureCode.CANCELLED,
+               List.of(),
+               cancellationSummary(var4),
+               var4 == ActionCancellationReason.RUNTIME_SHUTDOWN ? ActionCleanupReason.RUNTIME_SHUTDOWN : ActionCleanupReason.CANCELLED,
+               var2
+            );
+            if (var5 != null) {
+               yield null;
+            }
+            yield var9 == null
+               || var9.state() == ActionState.CANCELLED
+               ? ActionMailbox.CancellationStatus.CANCELLED
+               : ActionMailbox.CancellationStatus.CLEANUP_FAILED;
+         }
+         case REPLAYED -> {
+            ActionOutcome var11 = this.replayOrAliasFailure(var1, var7, var2);
+            this.publish(var1.completion(), var11);
+            yield ActionMailbox.CancellationStatus.ALREADY_TERMINAL;
+         }
+         case IDEMPOTENCY_CONFLICT -> {
+            ActionOutcome var10 = this.rejectedOutcome(var6, var2, ActionFailureCode.IDEMPOTENCY_CONFLICT, "Queued action conflicts with a retained action");
+            this.publish(var1.completion(), var10);
+            yield ActionMailbox.CancellationStatus.ALREADY_TERMINAL;
+         }
+         case CAPACITY_EXHAUSTED -> {
+            ActionOutcome var8 = this.rejectedOutcome(var6, var2, ActionFailureCode.LEDGER_CAPACITY_EXCEEDED, "Action ledger capacity is exhausted");
+            this.publish(var1.completion(), var8);
+            yield ActionMailbox.CancellationStatus.ALREADY_TERMINAL;
+         }
+      };
+   }
+
+   private static long cleanupDeadline(long var0) {
+      return var0 > Long.MAX_VALUE - MAX_CLEANUP_TICKS
+         ? Long.MAX_VALUE
+         : var0 + MAX_CLEANUP_TICKS;
    }
 
    private void quarantineGeneration(BotActionRuntime.Ticket var1) {
@@ -1184,53 +1792,6 @@ public final class BotActionRuntime {
       }
    }
 
-   private ActionMailbox.CancellationStatus completeQueuedCancellation(ActionMailbox.SubmitCommand var1, long var2, ActionCancellationReason var4) {
-      ActionEnvelope var5 = var1.envelope();
-      ActionLedger.BeginResult var6 = this.ledger.begin(var5);
-
-      return switch (var6.status()) {
-         case STARTED -> {
-            BotActionRuntime.Ticket var12 = new BotActionRuntime.Ticket(var5, var1.priority(), var2, var1.completion());
-            this.finishDetached(var12, ActionState.CANCELLED, ActionFailureCode.CANCELLED, "Action cancelled before leaving the lifecycle mailbox", var2, true);
-            yield ActionMailbox.CancellationStatus.CANCELLED;
-         }
-         case DUPLICATE_IN_PROGRESS -> {
-            BotActionRuntime.Ticket var11 = this.active.get(new BotActionRuntime.ActionKey(var5.botId(), var6.canonicalActionId().orElseThrow()));
-            if (var11 == null) {
-               throw new IllegalStateException("Queued cancellation found a missing canonical action");
-            }
-
-            this.ledger.registerAlias(var5, var6.canonicalActionId().orElseThrow());
-            ActionOutcome var8 = this.finish(
-               var11,
-               ActionState.CANCELLED,
-               ActionFailureCode.CANCELLED,
-               List.of(),
-               cancellationSummary(var4),
-               var4 == ActionCancellationReason.RUNTIME_SHUTDOWN ? ActionCleanupReason.RUNTIME_SHUTDOWN : ActionCleanupReason.CANCELLED,
-               var2
-            );
-            this.publish(var1.completion(), var8);
-            yield var8.state() == ActionState.CANCELLED ? ActionMailbox.CancellationStatus.CANCELLED : ActionMailbox.CancellationStatus.CLEANUP_FAILED;
-         }
-         case REPLAYED -> {
-            ActionOutcome var10 = this.replayOrAliasFailure(var1, var6, var2);
-            this.publish(var1.completion(), var10);
-            yield ActionMailbox.CancellationStatus.ALREADY_TERMINAL;
-         }
-         case IDEMPOTENCY_CONFLICT -> {
-            ActionOutcome var9 = this.rejectedOutcome(var5, var2, ActionFailureCode.IDEMPOTENCY_CONFLICT, "Queued action conflicts with a retained action");
-            this.publish(var1.completion(), var9);
-            yield ActionMailbox.CancellationStatus.ALREADY_TERMINAL;
-         }
-         case CAPACITY_EXHAUSTED -> {
-            ActionOutcome var7 = this.rejectedOutcome(var5, var2, ActionFailureCode.LEDGER_CAPACITY_EXCEEDED, "Action ledger capacity is exhausted");
-            this.publish(var1.completion(), var7);
-            yield ActionMailbox.CancellationStatus.ALREADY_TERMINAL;
-         }
-      };
-   }
-
    private ActionOutcome replayOrAliasFailure(ActionMailbox.SubmitCommand var1, ActionLedger.BeginResult var2, long var3) {
       ActionEnvelope var5 = var1.envelope();
       UUID var6 = var2.canonicalActionId().orElseThrow();
@@ -1325,9 +1886,46 @@ public final class BotActionRuntime {
       } else {
          try {
             this.drainPendingSafeBoundaryWork(this.lastMutationTick);
+            this.completeShutdownIfDrained();
          } finally {
             this.mutating = false;
          }
+      }
+   }
+
+   private List<BotActionRuntime.Ticket> orderedActiveTickets() {
+      List<BotActionRuntime.Ticket> var1 =
+         new ArrayList<>(this.active.values());
+      var1.sort((var0, var2) -> {
+         int var3 = Boolean.compare(
+            var0.termination == null,
+            var2.termination == null
+         );
+         if (var3 != 0) {
+            return var3;
+         }
+         /*
+          * List.sort 是稳定排序；除清理 ticket 前置外，业务动作严格保留
+          * LinkedHashMap/mailbox FIFO。这样每个旧 owner 本 Tick 至多再执行
+          * 一个后端步骤，随后 emergency 才能取得其精确 prefix 并发起收口。
+          */
+         return 0;
+      });
+      return var1;
+   }
+
+   private void completeShutdownIfDrained() {
+      if (this.shutdown
+         && !this.shutdownComplete
+         && this.active.isEmpty()
+         && this.arbiter.activeLeaseCount() == 0
+         && this.pendingGenerationQuarantines.isEmpty()
+         && this.pendingLifecycleCloses.isEmpty()
+         && this.pendingRuntimeFailClosedCommands.isEmpty()
+         && !this.pendingRuntimeFailClosed
+         && !this.runtimeFailClosedInProgress) {
+         this.shutdownComplete = true;
+         this.completionDispatcher.shutdownAfterQueuedWork();
       }
    }
 
@@ -1479,16 +2077,73 @@ public final class BotActionRuntime {
       }
    }
 
+   private static final class PendingTermination {
+      private final ActionState state;
+      private final ActionFailureCode failureCode;
+      private final List<ActionEvidence> evidence;
+      private final String safeSummary;
+      private final ActionCleanupReason cleanupReason;
+      private final long requestedTick;
+      private final long cleanupDeadlineTick;
+
+      private PendingTermination(
+         ActionState var1,
+         ActionFailureCode var2,
+         List<ActionEvidence> var3,
+         String var4,
+         ActionCleanupReason var5,
+         long var6,
+         long var8
+      ) {
+         this.state = Objects.requireNonNull(var1, "state");
+         this.failureCode = Objects.requireNonNull(
+            var2, "failureCode"
+         );
+         this.evidence = List.copyOf(
+            Objects.requireNonNull(var3, "evidence")
+         );
+         this.safeSummary = Objects.requireNonNull(
+            var4, "safeSummary"
+         );
+         this.cleanupReason = Objects.requireNonNull(
+            var5, "cleanupReason"
+         );
+         this.requestedTick = var6;
+         this.cleanupDeadlineTick = var8;
+      }
+   }
+
+   private static record PendingCancellation(
+      ActionMailbox.CancelCommand command,
+      boolean queuedSubmissionHandled
+   ) {
+      private PendingCancellation {
+         Objects.requireNonNull(command, "command");
+      }
+   }
+
    private static final class Ticket {
       private final ActionEnvelope envelope;
       private final ActionPriority priority;
       private final long acceptedTick;
       private final List<CompletionDispatcher.Completion<ActionOutcome>> waiters = new ArrayList<>();
+      private final List<BotActionRuntime.PendingCancellation> cancellationWaiters =
+         new ArrayList<>();
+      private final Set<BotActionRuntime.GenerationKey> preemptionBarriers =
+         new LinkedHashSet<>();
       private ActionState state = ActionState.QUEUED;
       private long startedTick = -1L;
+      private long lastAcquireAttemptTick = -1L;
+      private long lastCleanupAttemptTick = -1L;
+      private long cleanupProgressRevision = -1L;
       private ControlArbiter.Lease lease;
       private ActionOutcome outcome;
-      private boolean cleaned;
+      private BotActionRuntime.PendingTermination termination;
+      private ActionCleanupRequest cleanupRequest;
+      private ActionCleanupReceipt cleanupReceipt;
+      private boolean cleanupFailureRecorded;
+      private boolean controlValidated;
+      private boolean preemptionClaimed;
       private boolean backendStarted;
 
       private Ticket(ActionEnvelope var1, ActionPriority var2, long var3) {

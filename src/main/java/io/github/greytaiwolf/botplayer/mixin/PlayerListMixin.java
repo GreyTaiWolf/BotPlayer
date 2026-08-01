@@ -16,9 +16,24 @@ import net.minecraft.server.players.PlayerList;
 import net.minecraft.world.entity.Entity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(PlayerList.class)
 public abstract class PlayerListMixin {
+    @Inject(
+            method = "save",
+            require = 1,
+            cancellable = true,
+            at = @At("HEAD"))
+    private void botplayer$suppressPersistentlyUnsafePlayerDataSave(
+            ServerPlayer player, CallbackInfo callback) {
+        if (player instanceof BotServerPlayer botPlayer
+                && botPlayer.consumePlayerDataSaveSuppression()) {
+            callback.cancel();
+        }
+    }
+
     @WrapOperation(
             method = "placeNewPlayer",
             require = 1,

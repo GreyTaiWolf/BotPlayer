@@ -663,6 +663,121 @@ public final class P5SurvivalSkillAcceptanceGameTests {
             template = P2GameTestSupport.TEMPLATE,
             batch = BATCH,
             timeoutTicks = TIMEOUT_TICKS)
+    public static void persistentNoSaveFenceBlocksEveryExactSave(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P5GameTestSupport.spawnFixedBot(
+                helper, "P5SaveFence");
+        P2GameTestSupport.Cleanup cleanup =
+                P5GameTestSupport.cleanup(bot);
+        try {
+            var server = helper.getLevel().getServer();
+            UUID botId = bot.player().getUUID();
+            Path playerData = server
+                    .getWorldPath(LevelResource.PLAYER_DATA_DIR)
+                    .resolve(botId + ".dat");
+            PlayerListAccessor playerList =
+                    (PlayerListAccessor)
+                            (Object) server.getPlayerList();
+            bot.player().getInventory().clearContent();
+            bot.player().getInventory().selected = 2;
+            bot.player().getInventory().setItem(
+                    2, new ItemStack(Items.STONE));
+            playerList.botplayer$saveExactPlayer(bot.player());
+            PersistedLayout baseline = savedLayout(playerData);
+
+            bot.player().getInventory().clearContent();
+            bot.player().getInventory().selected = 8;
+            bot.player().getInventory().setItem(
+                    10, new ItemStack(Items.DIAMOND));
+            bot.player().suppressPlayerDataSaveUntilReleased();
+            playerList.botplayer$saveExactPlayer(bot.player());
+            playerList.botplayer$saveExactPlayer(bot.player());
+            P2GameTestSupport.require(
+                    savedLayout(playerData).equals(baseline),
+                    "Persistent no-save fence was consumed by an earlier save");
+
+            bot.player().releasePlayerDataSaveSuppression();
+            playerList.botplayer$saveExactPlayer(bot.player());
+            P2GameTestSupport.require(
+                    savedLayout(playerData)
+                            .equals(new PersistedLayout(
+                                    8, Set.of(10))),
+                    "Explicit no-save fence release did not restore exact saves");
+            cleanup.run();
+            helper.succeed();
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void persistentNoSaveFenceCrossesRespawnBody(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P5GameTestSupport.spawnFixedBot(
+                helper, "P5RespawnFence");
+        P2GameTestSupport.Cleanup cleanup =
+                P5GameTestSupport.cleanup(bot);
+        try {
+            var server = helper.getLevel().getServer();
+            UUID botId = bot.player().getUUID();
+            Path playerData = server
+                    .getWorldPath(LevelResource.PLAYER_DATA_DIR)
+                    .resolve(botId + ".dat");
+            PlayerListAccessor playerList =
+                    (PlayerListAccessor)
+                            (Object) server.getPlayerList();
+            bot.player().getInventory().clearContent();
+            bot.player().getInventory().selected = 1;
+            bot.player().getInventory().setItem(
+                    1, new ItemStack(Items.COBBLESTONE));
+            playerList.botplayer$saveExactPlayer(bot.player());
+            PersistedLayout baseline = savedLayout(playerData);
+
+            bot.player().suppressPlayerDataSaveUntilReleased();
+            BotServerPlayer replacement =
+                    BotServerPlayer.recreateForRespawn(
+                            server,
+                            bot.player().serverLevel(),
+                            bot.player().getGameProfile(),
+                            ClientInformation.createDefault(),
+                            bot.player());
+            replacement.getInventory().clearContent();
+            replacement.getInventory().selected = 6;
+            replacement.getInventory().setItem(
+                    12, new ItemStack(Items.EMERALD));
+            playerList.botplayer$saveExactPlayer(replacement);
+            playerList.botplayer$saveExactPlayer(replacement);
+            P2GameTestSupport.require(
+                    savedLayout(playerData).equals(baseline),
+                    "Respawn body did not inherit the persistent no-save fence");
+
+            replacement.releasePlayerDataSaveSuppression();
+            playerList.botplayer$saveExactPlayer(replacement);
+            P2GameTestSupport.require(
+                    savedLayout(playerData)
+                            .equals(new PersistedLayout(
+                                    6, Set.of(12))),
+                    "Explicit respawn-body fence release did not restore exact saves");
+            bot.player().releasePlayerDataSaveSuppression();
+            cleanup.run();
+            helper.succeed();
+        } catch (RuntimeException | AssertionError exception) {
+            bot.player().releasePlayerDataSaveSuppression();
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
     public static void disconnectPersistsRestoredEatingSelectionBeforeRemoval(
             GameTestHelper helper) {
         P2GameTestSupport.prepareEmptyFloor(helper);

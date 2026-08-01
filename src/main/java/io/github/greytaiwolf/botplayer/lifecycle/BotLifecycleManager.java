@@ -1933,18 +1933,101 @@ public final class BotLifecycleManager {
         if (stopping) {
             return;
         }
-        closeAllInventories(InventoryCloseReason.SERVER_STOPPING);
-        safetyService.shutdown();
-        navigationService.close();
-        actionRuntime.shutdown(server.getTickCount());
-        survivalSkillService.shutdown(
-                server.getTickCount(),
-                actionRuntime::isGenerationSafe);
+        long currentTick = server.getTickCount();
         stopping = true;
+        List<RuntimeEntry> shutdownRuntimes =
+                new ArrayList<>(runtimes.values());
+        RuntimeException preparationFailure = null;
+
+        /*
+         * 必须先于任何菜单/动作回调建立保存 fence。setter 本身不进入原版
+         * 回调；随后完整 ticket 再覆盖 PlayerList、level、replacement 与
+         * 已绑定 listener 能看到的全部 exact body。
+         */
+        for (RuntimeEntry runtime : shutdownRuntimes) {
+            BotServerPlayer attached =
+                    runtime.handle.player().orElse(null);
+            armImmediatelyKnownNoSaveBodies(
+                    runtime, attached, null);
+            try {
+                PendingNoSaveTeardown teardown =
+                        rememberNoSaveTeardown(
+                                runtime, attached, null);
+                for (BotServerPlayer exactBody :
+                        teardown.exactBodies) {
+                    exactBody
+                            .suppressPlayerDataSaveUntilReleased();
+                }
+            } catch (RuntimeException exception) {
+                preparationFailure = appendFailure(
+                        preparationFailure, exception);
+            }
+        }
         try {
-            for (RuntimeEntry runtime : new ArrayList<>(runtimes.values())) {
+            closeAllInventories(
+                    InventoryCloseReason.SERVER_STOPPING);
+        } catch (RuntimeException exception) {
+            preparationFailure = appendFailure(
+                    preparationFailure, exception);
+        }
+        try {
+            safetyService.shutdown();
+        } catch (RuntimeException exception) {
+            preparationFailure = appendFailure(
+                    preparationFailure, exception);
+        }
+        try {
+            navigationService.close();
+        } catch (RuntimeException exception) {
+            preparationFailure = appendFailure(
+                    preparationFailure, exception);
+        }
+        try {
+            actionRuntime.shutdown(currentTick);
+        } catch (RuntimeException exception) {
+            preparationFailure = appendFailure(
+                    preparationFailure, exception);
+        }
+
+        /*
+         * 任一准备步骤失去证明后，不能再依据局部 runtime 视图走原版保存。
+         * 仍继续为每个 exact body 建票、上持久 fence 并执行 no-save 移除，
+         * 这样一次 shutdown 异常不会跳过后续 Bot 的隔离。
+         */
+        boolean allowNormalPlayerSave =
+                preparationFailure == null;
+        if (!allowNormalPlayerSave) {
+            BotPlayer.LOGGER.error(
+                    "BotPlayer shutdown preparation failed; all remaining bots will use no-save isolation",
+                    preparationFailure);
+        }
+        try {
+            for (RuntimeEntry runtime : shutdownRuntimes) {
                 try {
-                    disconnect(runtime, Component.literal("Server stopping"));
+                    PendingNoSaveTeardown teardown =
+                            rememberNoSaveTeardown(
+                                    runtime,
+                                    runtime.handle.player()
+                                            .orElse(null),
+                                    null);
+                    UUID botId = teardown.botId;
+                    boolean normalDisconnectStarted =
+                            allowNormalPlayerSave
+                                    && tryNormalShutdownDisconnect(
+                                            runtime,
+                                            teardown);
+                    if (!normalDisconnectStarted
+                            || runtimes.get(botId) == runtime) {
+                        RuntimeException isolationFailure =
+                                finalizeRuntimeTeardownWithoutSave(
+                                        runtime,
+                                        runtime.handle.player()
+                                                .orElse(null),
+                                        null);
+                        if (isolationFailure != null) {
+                            throw isolationFailure;
+                        }
+                    }
                 } catch (RuntimeException exception) {
                     BotPlayer.LOGGER.error(
                             "Failed to cleanly unload BotPlayer {} ({}) during server stop",
@@ -1954,12 +2037,125 @@ public final class BotLifecycleManager {
                     closeFailedShutdownRuntime(runtime);
                 }
             }
+            try {
+                survivalSkillService.shutdown(
+                        currentTick,
+                        (botId, generation) ->
+                                allowNormalPlayerSave
+                                        && actionRuntime
+                                                .isGenerationSafe(
+                                                        botId,
+                                                        generation));
+            } catch (RuntimeException exception) {
+                BotPlayer.LOGGER.error(
+                        "Failed to close BotPlayer survival skill state during server stop",
+                        exception);
+            }
         } finally {
-            perceptionService.shutdown();
-            runtimes.clear();
-            activeAgentByBot.clear();
-            botByActiveAgent.clear();
+            try {
+                perceptionService.shutdown();
+            } catch (RuntimeException exception) {
+                BotPlayer.LOGGER.error(
+                        "Failed to close BotPlayer perception state during server stop",
+                        exception);
+            } finally {
+                runtimes.clear();
+                activeAgentByBot.clear();
+                botByActiveAgent.clear();
+            }
         }
+    }
+
+    /**
+     * 保持 persistent fence 完成动作、技能布局与 listener 票据的全部退休；只有
+     * topology 仍是单 body/单 listener 时才释放真正会被 vanilla 保存的 body。
+     */
+    private boolean tryNormalShutdownDisconnect(
+            RuntimeEntry runtime,
+            PendingNoSaveTeardown teardown) {
+        UUID botId = teardown.botId;
+        long generation = teardown.retiredGeneration;
+        BotServerPlayer player =
+                runtime.handle.player().orElse(null);
+        if (runtimes.get(botId) != runtime
+                || runtime.handle.generation()
+                        != generation
+                || player == null
+                || !actionRuntime.isGenerationSafe(
+                        botId, generation)) {
+            return false;
+        }
+
+        GenerationRetirement retirement =
+                retireGenerationBestEffort(
+                        runtime,
+                        generation,
+                        InventoryCloseReason.SERVER_STOPPING);
+        if (!retirement.safelyClosed()
+                || retirement.failure() != null
+                || !prepareListenerDisconnect(
+                        runtime,
+                        player,
+                        generation,
+                        retirement)) {
+            return false;
+        }
+
+        PendingNoSaveTeardown refreshed =
+                rememberNoSaveTeardown(
+                        runtime, player, null);
+        if (refreshed != teardown
+                || !isSingleShutdownSaveTopology(
+                        runtime,
+                        refreshed,
+                        player,
+                        generation)) {
+            return false;
+        }
+
+        player.releasePlayerDataSaveSuppression();
+        disconnect(
+                runtime,
+                Component.literal("Server stopping"));
+        return true;
+    }
+
+    private boolean isSingleShutdownSaveTopology(
+            RuntimeEntry runtime,
+            PendingNoSaveTeardown teardown,
+            BotServerPlayer player,
+            long generation) {
+        if (!(player.connection
+                        instanceof BotGamePacketListener listener)) {
+            return false;
+        }
+        Connection connection = listener.getConnection();
+        return teardown.exactBodies.size() == 1
+                && teardown.exactBodies.contains(player)
+                && teardown.exactListeners.size() == 1
+                && teardown.exactListeners.contains(listener)
+                && teardown.boundDisconnectListener == listener
+                && teardown.boundDisconnectConnection == connection
+                && isPreparedListenerDisconnect(
+                        runtime,
+                        player,
+                        listener,
+                        connection,
+                        generation)
+                && runtimes.get(teardown.botId) == runtime
+                && runtime.handle.player().orElse(null)
+                        == player
+                && runtime.handle.generation()
+                        == generation
+                && player.connection == listener
+                && listener.player == player
+                && server.getPlayerList()
+                                .getPlayer(teardown.botId)
+                        == player
+                && player.serverLevel()
+                                .getPlayerByUUID(
+                                        teardown.botId)
+                        == player;
     }
 
     private void disconnect(RuntimeEntry runtime, Component reason) {
@@ -2318,36 +2514,26 @@ public final class BotLifecycleManager {
                     RuntimeEntry runtime,
                     @Nullable BotServerPlayer preferredPlayer,
                     @Nullable BotServerPlayer additionalPlayer) {
-        UUID botId = runtime.handle.botId();
-        long retiredGeneration =
-                runtime.handle.generation();
-        BotRuntimeHandle handle = runtime.handle;
-        boolean attachedBodyWillDetach =
-                handle.player().isPresent();
-        long expectedPostGeneration =
-                attachedBodyWillDetach
-                        ? Math.incrementExact(
-                                retiredGeneration)
-                        : retiredGeneration;
-        Connection boundDisconnectConnection =
-                runtime.disconnectingConnection;
-        ServerGamePacketListenerImpl boundDisconnectListener =
-                runtime.disconnectingListener;
-        LinkedHashSet<BotServerPlayer> exactBodies =
-                collectNoSaveBodies(
+        armImmediatelyKnownNoSaveBodies(
+                runtime,
+                preferredPlayer,
+                additionalPlayer);
+        PendingNoSaveTeardown teardown =
+                rememberNoSaveTeardown(
                         runtime,
                         preferredPlayer,
-                        additionalPlayer,
-                        botId);
+                        additionalPlayer);
+        UUID botId = teardown.botId;
+        long retiredGeneration =
+                teardown.retiredGeneration;
+        BotRuntimeHandle handle = teardown.handle;
+        LinkedHashSet<BotServerPlayer> exactBodies =
+                teardown.exactBodies;
         LinkedHashSet<ServerGamePacketListenerImpl> exactListeners =
-                new LinkedHashSet<>();
-        if (boundDisconnectListener != null) {
-            exactListeners.add(boundDisconnectListener);
-        }
+                teardown.exactListeners;
+
         for (BotServerPlayer exactBody : exactBodies) {
-            if (exactBody.connection != null) {
-                exactListeners.add(exactBody.connection);
-            }
+            exactBody.suppressPlayerDataSaveUntilReleased();
         }
 
         /*
@@ -2371,9 +2557,9 @@ public final class BotLifecycleManager {
                 failure = appendFailure(failure, exception);
             }
         }
-        if (boundDisconnectConnection != null) {
+        if (teardown.boundDisconnectConnection != null) {
             try {
-                if (boundDisconnectConnection
+                if (teardown.boundDisconnectConnection
                         instanceof BotConnection botConnection) {
                     botConnection.markClosed();
                 } else {
@@ -2402,15 +2588,38 @@ public final class BotLifecycleManager {
                 runtime,
                 handle,
                 botId,
-                expectedPostGeneration,
+                teardown.expectedPostGeneration,
                 exactBodies,
                 exactListeners,
-                boundDisconnectListener,
-                boundDisconnectConnection)) {
+                teardown.boundDisconnectListener,
+                teardown.boundDisconnectConnection)) {
+            PendingNoSaveTeardown refreshed =
+                    rememberNoSaveTeardown(
+                            runtime, null, null);
+            for (BotServerPlayer residualBody :
+                    refreshed.exactBodies) {
+                residualBody
+                        .suppressPlayerDataSaveUntilReleased();
+            }
+            for (ServerGamePacketListenerImpl residualListener :
+                    refreshed.exactListeners) {
+                try {
+                    if (residualListener
+                            instanceof BotGamePacketListener botListener) {
+                        botListener.closeForNoSaveIsolation();
+                    }
+                } catch (RuntimeException exception) {
+                    failure = appendFailure(
+                            failure, exception);
+                }
+            }
             return appendFailure(
                     failure,
                     new IllegalStateException(
                             "No-save teardown retained an exact player body or listener authority"));
+        }
+        for (BotServerPlayer exactBody : exactBodies) {
+            exactBody.releasePlayerDataSaveSuppression();
         }
         if (retiredGeneration > 0L) {
             try {
@@ -2429,7 +2638,113 @@ public final class BotLifecycleManager {
                         failure, exception);
             }
         }
+        if (failure == null) {
+            runtime.pendingNoSaveTeardown = null;
+        }
         return failure;
+    }
+
+    /**
+     * 在建票、generation 加法和全服身份扫描之前，先给无需外部查询即可取得的
+     * body 上 fence。后续建票即使抛错，这些仍可能被原版 saveAll 看见的对象
+     * 也不能写入临时布局。
+     */
+    private void armImmediatelyKnownNoSaveBodies(
+            RuntimeEntry runtime,
+            @Nullable BotServerPlayer preferredPlayer,
+            @Nullable BotServerPlayer additionalPlayer) {
+        UUID botId = runtime.handle.botId();
+        LinkedHashSet<BotServerPlayer> bodies =
+                new LinkedHashSet<>();
+        addNoSaveBody(
+                bodies,
+                runtime.handle.player().orElse(null),
+                botId);
+        addNoSaveBody(bodies, preferredPlayer, botId);
+        addNoSaveBody(bodies, additionalPlayer, botId);
+        addNoSaveBody(
+                bodies, runtime.stagedCleanupPlayer, botId);
+        addNoSaveBody(
+                bodies,
+                runtime.stagedCleanupPredecessor,
+                botId);
+        addNoSaveBody(
+                bodies, runtime.respawnCandidate, botId);
+        addNoSaveBody(
+                bodies,
+                runtime.disconnectingPlayer,
+                botId);
+        if (runtime.disconnectingListener != null) {
+            addNoSaveBody(
+                    bodies,
+                    runtime.disconnectingListener.player,
+                    botId);
+        }
+        boolean expanded;
+        do {
+            expanded = false;
+            for (BotServerPlayer body :
+                    List.copyOf(bodies)) {
+                int before = bodies.size();
+                if (body.connection != null) {
+                    addNoSaveBody(
+                            bodies,
+                            body.connection.player,
+                            botId);
+                }
+                expanded |= bodies.size() != before;
+            }
+        } while (expanded);
+        for (BotServerPlayer body : bodies) {
+            body.suppressPlayerDataSaveUntilReleased();
+        }
+    }
+
+    private PendingNoSaveTeardown rememberNoSaveTeardown(
+            RuntimeEntry runtime,
+            @Nullable BotServerPlayer preferredPlayer,
+            @Nullable BotServerPlayer additionalPlayer) {
+        PendingNoSaveTeardown teardown =
+                runtime.pendingNoSaveTeardown;
+        UUID botId = teardown == null
+                ? runtime.handle.botId()
+                : teardown.botId;
+        LinkedHashSet<BotServerPlayer> discoveredBodies =
+                collectNoSaveBodies(
+                        runtime,
+                        preferredPlayer,
+                        additionalPlayer,
+                        botId);
+        for (BotServerPlayer discoveredBody :
+                discoveredBodies) {
+            discoveredBody
+                    .suppressPlayerDataSaveUntilReleased();
+        }
+        if (teardown == null) {
+            BotRuntimeHandle handle = runtime.handle;
+            long retiredGeneration = handle.generation();
+            boolean attachedBodyWillDetach =
+                    handle.player().isPresent();
+            teardown = new PendingNoSaveTeardown(
+                    handle.botId(),
+                    retiredGeneration,
+                    handle,
+                    attachedBodyWillDetach
+                            ? Math.incrementExact(
+                                    retiredGeneration)
+                            : retiredGeneration);
+            runtime.pendingNoSaveTeardown = teardown;
+        }
+        teardown.captureRuntimeBindings(runtime);
+        teardown.exactBodies.addAll(discoveredBodies);
+        for (BotServerPlayer exactBody :
+                teardown.exactBodies) {
+            if (exactBody.connection != null) {
+                teardown.exactListeners.add(
+                        exactBody.connection);
+            }
+        }
+        return teardown;
     }
 
     private LinkedHashSet<BotServerPlayer>
@@ -2674,32 +2989,22 @@ public final class BotLifecycleManager {
     }
 
     private void closeFailedShutdownRuntime(RuntimeEntry runtime) {
-        BotServerPlayer player = runtime.handle.player().orElse(null);
-        if (player == null) {
-            return;
-        }
+        RuntimeException fallbackFailure;
         try {
-            if (server.getPlayerList().getPlayer(player.getUUID()) == player
-                    || player.serverLevel().getPlayerByUUID(player.getUUID()) == player) {
-                server.getPlayerList().remove(player);
-            }
-        } catch (RuntimeException fallbackFailure) {
+            fallbackFailure =
+                    finalizeRuntimeTeardownWithoutSave(
+                            runtime,
+                            runtime.handle.player().orElse(null),
+                            null);
+        } catch (RuntimeException exception) {
+            fallbackFailure = exception;
+        }
+        if (fallbackFailure != null) {
             BotPlayer.LOGGER.error(
-                    "Fallback removal also failed for BotPlayer {} ({})",
+                    "No-save fallback removal also failed for BotPlayer {} ({})",
                     runtime.handle.name(),
                     runtime.handle.botId(),
                     fallbackFailure);
-        } finally {
-            perceptionService.closeBot(runtime.handle.botId());
-            closeP4Generation(
-                    runtime.handle.botId(),
-                    runtime.handle.generation());
-            clearPlayerInput(runtime, true);
-            if (player.connection != null
-                    && player.connection.getConnection() instanceof BotConnection botConnection) {
-                botConnection.markClosed();
-            }
-            runtime.handle.detach(player);
         }
     }
 
@@ -3908,6 +4213,52 @@ public final class BotLifecycleManager {
         }
     }
 
+    private static final class PendingNoSaveTeardown {
+        private final UUID botId;
+        private final long retiredGeneration;
+        private final BotRuntimeHandle handle;
+        private final long expectedPostGeneration;
+        private final LinkedHashSet<BotServerPlayer> exactBodies =
+                new LinkedHashSet<>();
+        private final LinkedHashSet<ServerGamePacketListenerImpl>
+                exactListeners = new LinkedHashSet<>();
+        @Nullable
+        private ServerGamePacketListenerImpl
+                boundDisconnectListener;
+        @Nullable
+        private Connection boundDisconnectConnection;
+
+        private PendingNoSaveTeardown(
+                UUID botId,
+                long retiredGeneration,
+                BotRuntimeHandle handle,
+                long expectedPostGeneration) {
+            this.botId = botId;
+            this.retiredGeneration = retiredGeneration;
+            this.handle = handle;
+            this.expectedPostGeneration =
+                    expectedPostGeneration;
+        }
+
+        private void captureRuntimeBindings(
+                RuntimeEntry runtime) {
+            if (boundDisconnectListener == null
+                    && runtime.disconnectingListener
+                            != null) {
+                boundDisconnectListener =
+                        runtime.disconnectingListener;
+                exactListeners.add(
+                        boundDisconnectListener);
+            }
+            if (boundDisconnectConnection == null
+                    && runtime.disconnectingConnection
+                            != null) {
+                boundDisconnectConnection =
+                        runtime.disconnectingConnection;
+            }
+        }
+    }
+
     private static final class RuntimeEntry {
         private final BotRuntimeHandle handle;
         private BotLifecycleState state;
@@ -3944,6 +4295,9 @@ public final class BotLifecycleManager {
         private BotServerPlayer stagedCleanupPredecessor;
         @Nullable
         private BotServerPlayer stagedCleanupPlayer;
+        @Nullable
+        private PendingNoSaveTeardown
+                pendingNoSaveTeardown;
 
         private RuntimeEntry(BotRuntimeHandle handle, BotLifecycleState state) {
             this.handle = handle;
