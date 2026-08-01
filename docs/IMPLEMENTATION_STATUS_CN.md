@@ -27,7 +27,7 @@ P2 最终验证结果见 [P2_COMPLETION_REPORT_CN.md](P2_COMPLETION_REPORT_CN.md
 inventory `0..35` 的基础盔甲升级，以及通用 `InventoryMenu SWAP_SEQUENCE` 记为“已编码”。
 [PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 的
 [Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812) 已通过 Java 21
-`clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传。源码静态计数为 379 个 JUnit
+`clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传。源码静态计数为 380 个 JUnit
 `@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件；这些不是 CI 日志逐项执行数。
 
 原生 `InventoryMenu` 适配器会冻结 41 槽、cursor、选择槽和 stateId，并以动态槽权限、
@@ -98,7 +98,7 @@ soak 必须分别报告。
 | P4 严格编译与单元测试 | 远端已验证 | Build #97 使用 Temurin Java 21.0.11；源码静态计数为全仓 200 个 JUnit `@Test` 方法 |
 | P4 NeoForge GameTest | 远端已验证 | Build #97 日志明确 `All 55 required tests passed`；P4 直接场景 28 个 |
 | P4 clean build / JAR | 远端已验证 | `BUILD SUCCESSFUL in 50s`；artifact ID `8721162398`，`838883` bytes，SHA-256 `b36a69f607e4f0e028e2afff15946a03bddd64004638c2d64d479c704706ddcd` |
-| P5 当前自动化门 | 远端已验证 | Build #137：Java 21 `clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传通过；源码静态为 379 个 JUnit `@Test`、26 个 P5 GameTest、353 个 Java 文件，不是日志逐项计数 |
+| P5 当前自动化门 | 远端已验证 | Build #137：Java 21 `clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传通过；源码静态为 380 个 JUnit `@Test`、26 个 P5 GameTest、353 个 Java 文件，不是日志逐项计数 |
 | GameTest batch Bot 预算 | 远端已验证当前布局 | 25 个 batch 静态需求均不超过默认 8；Build #133/#135 暴露的超配已拆批修复，未提高 `maxBots` |
 | 客户端 screen 手工测试 | 基础场景已验证 | 用户已在真实客户端确认 `176×256` 原版玩家风格视觉修复有效；多语言、资源包与全部 GUI Scale 组合仍未专项验证 |
 | 独立专用服务器 | 未验证 | 当前不宣称纯服务端或版本不一致兼容 |

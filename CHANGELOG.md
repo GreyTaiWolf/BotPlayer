@@ -75,7 +75,7 @@
   保持独立。[PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 的
   [Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812) 已通过
   Java 21 `clean build`、Gradle `test`、83/83 GameTest 和 JAR 上传；真实五步场景直接
-  覆盖上述通用事务合同。源码静态计数为 379 个 JUnit `@Test` 方法、26 个 P5 GameTest
+  覆盖上述通用事务合同。源码静态计数为 380 个 JUnit `@Test` 方法、26 个 P5 GameTest
   与 353 个 Java 源文件，不冒充 CI 日志逐项执行数。P5A 退出门仍未通过；跨 menu 统一
   事务、`clicked()` 故障注入、生命周期 `PENDING` continuation、TaskSensor/Reservation
   生产接线、Checkpoint、工具/副手、自卫、craft/chest/furnace/DAG，以及两次启动、独立

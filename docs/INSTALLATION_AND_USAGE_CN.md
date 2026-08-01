@@ -12,7 +12,7 @@
 手工、独立专用服和多 bot soak 仍未验证；本文用于开发测试，不建议在重要世界中安装。
 P5 以 [Draft PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 作为远端验收载体；
 [Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812) 已通过 Java 21
-`clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传。源码静态计数为 379 个 JUnit
+`clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传。源码静态计数为 380 个 JUnit
 `@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件，不是 CI 日志逐项执行数。
 
 ## 当前安装拓扑

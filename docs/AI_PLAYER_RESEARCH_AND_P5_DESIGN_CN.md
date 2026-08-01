@@ -20,7 +20,7 @@
 carried inventory `0..35` 的基础盔甲升级，以及通用 `InventoryMenu SWAP_SEQUENCE`。
 [PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 的
 [Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812) 已通过 Java 21
-`clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传。源码静态计数为 379 个 JUnit
+`clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传。源码静态计数为 380 个 JUnit
 `@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件；这三项不是 CI 日志逐项执行数。
 “计入”不表示相关 P5A 能力、测试矩阵或退出门已经完成。
 

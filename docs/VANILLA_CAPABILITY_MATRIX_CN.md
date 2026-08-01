@@ -35,7 +35,7 @@ P4 达到 `VERIFIED`；只写一个阶段表示首次实现和验证截止相同
 P5A-0 已进入开发，但当前没有 P5 能力仅因“设计、类或首批纵切源码存在”提升成熟度。
 [PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 的
 [Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812) 已通过 Java 21
-`clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传。源码静态计数为 379 个 JUnit
+`clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传。源码静态计数为 380 个 JUnit
 `@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件，不是 CI 日志逐项计数。通用
 `InventoryMenu SWAP_SEQUENCE` 支持 1～16 次点击、最多 8 个槽位、逐 Tick 一击，并由
 真实五步场景验证跨 Tick `PENDING`、固定端点、双 ticket 阻塞和精确 revision；generic

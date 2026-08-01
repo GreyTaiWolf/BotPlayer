@@ -46,7 +46,7 @@ P2 已加入生命周期、移动、交互和库存 GameTest；P3 加入有限�
 [Draft PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 作为远端验收载体，
 [Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812) 已通过
 Java 21 `clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传。源码静态计数为
-379 个 JUnit `@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件，不是 CI 日志逐项
+380 个 JUnit `@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件，不是 CI 日志逐项
 执行数；P5A 阶段退出门仍未通过。涉及
 Minecraft 行为的提交必须运行：
 
@@ -414,7 +414,7 @@ build 与 JAR upload，日志明确 `All 55 required tests passed`，其中 P4 �
 
 P5 当前远端证据为
 [Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812)：Java 21
-`clean build`、Gradle `test`、83/83 GameTest 和 JAR 上传均成功。源码静态计数为 379 个
+`clean build`、Gradle `test`、83/83 GameTest 和 JAR 上传均成功。源码静态计数为 380 个
 JUnit `@Test` 方法、26 个 P5 GameTest 与 353 个 Java 源文件；这些不是 CI 日志逐项计数。
 25 个 GameTest batch 的静态 Bot 预算均不超过默认 8；Build #133/#135 暴露的超配通过
 拆批修复，没有提高 `server_player.maxBots`。两次服务器启动、独立专用服和多 Bot soak

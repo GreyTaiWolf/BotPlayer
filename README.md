@@ -16,7 +16,7 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 > [Draft PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 作为远端验收载体；
 > [Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812) 已通过
 > Java 21 `clean build`、Gradle `test`、83/83 NeoForge GameTest 和 JAR 上传。当前源码
-> 静态计数为 379 个 JUnit `@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件；这些是
+> 静态计数为 380 个 JUnit `@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件；这些是
 > 源码计数，不是 CI 日志逐项报告的测试执行数。通用 `InventoryMenu SWAP_SEQUENCE` 已支持
 > 1～16 次点击、最多 8 个槽位，每 Tick 只执行一次点击；真实五步场景验证了跨 Tick
 > `PENDING`、固定安全端点、旧 owner/新 claimant 双 ticket 阻塞和精确 progress revision。

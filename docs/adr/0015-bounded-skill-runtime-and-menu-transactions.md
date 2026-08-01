@@ -12,7 +12,7 @@
 > 和主背包 2～3 步路径保持独立。这不是无条件回滚，也不表示本 ADR 冻结的跨 menu 统一
 > 事务已经完成。[Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812)
 > 已通过 Java 21 `clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传。源码静态计数
-> 为 379 个 JUnit `@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件，不是 CI 日志
+> 为 380 个 JUnit `@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件，不是 CI 日志
 > 逐项计数；25 个 batch 静态 Bot 预算均不超过默认 8，Build #133/#135 的超配已拆批修复。
 > `clicked()` 故障注入、生命周期 `PENDING` continuation、TaskSensor/Reservation 生产
 > 接线、Checkpoint、工具/副手、自卫、craft/chest/furnace/DAG、两次启动、独立专用服和
