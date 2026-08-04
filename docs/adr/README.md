@@ -32,12 +32,20 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | ADR-0011 | 在 `ServerPlayer.die` TAIL 确认死亡 | Accepted | P1 已落实 |
 | [ADR-0012](0012-client-sponsored-ai-credentials.md) | 客户端赞助的 AI 凭据与每 bot 独立智能体 | Accepted | 客户端凭据基础设施已落实；Provider/HTTP 待 P6 |
 | [ADR-0013](0013-finite-perception-two-plane-world-model.md) | 有限感知、双事件平面与有界世界模型 | Accepted | P3 实现已编码并通过 Build #28 自动化退出门 |
-| [ADR-0014](0014-bounded-navigation-and-safety-plane.md) | 有界导航快照、分段路径与独立 L0 安全平面 | Accepted | P4 核心契约实施中 |
+| [ADR-0014](0014-bounded-navigation-and-safety-plane.md) | 有界导航快照、分段路径与独立 L0 安全平面 | Accepted | P4 自动化退出门已通过 |
+| [ADR-0015](0015-bounded-skill-runtime-and-menu-transactions.md) | 有界技能运行时与统一菜单事务 | Accepted | P5A-0 设计冻结、开发中 |
+| [ADR-0016](0016-durable-vanilla-death-consumption-handoff.md) | 原版死亡消费的耐久交接与失败关闭 | Accepted | P5 死亡纵切已由 Build #163 验证 |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
 DeepSeek 等边界仍然有效。ADR-0013 落实 ADR-0007：服务器全服审计与某个 bot 的认知
 必须分离，且 P3 不读取世界容器内容。
+
+ADR-0015 在此基础上固定 P5A 的 Skill FSM/DAG、有限任务查询、Safety handoff、统一
+menu 事务、检查点和运行时资源预留；对应纵切片尚未通过前仍不得标记能力完成。
+ADR-0016 固定 `keepInventory=false` 消费的 pre-drop tombstone、双份 playerdata 提交、
+一次性经验 handoff、旧 body 永久禁存和有界失败恢复；Build #163 只验证单进程故障边界，
+真实跨进程恢复仍未验收，且它不承诺掉落实体 exactly-once。
 
 ## 新 ADR 文件规则
 

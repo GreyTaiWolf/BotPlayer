@@ -14,6 +14,8 @@ public record WorldInteractionAction(WorldInteractionActionSpec spec) implements
    public ActionKind kind() {
       return switch (this.spec.kind()) {
          case SELECT_HOTBAR -> ActionKind.SELECT_HOTBAR;
+         case SWAP_INVENTORY_HOTBAR -> ActionKind.SWAP_INVENTORY_HOTBAR;
+         case INVENTORY_MENU_SWAP -> ActionKind.INVENTORY_MENU_SWAP;
          case USE_ITEM -> ActionKind.USE_ITEM;
          case RELEASE_USE -> ActionKind.RELEASE_USE;
          case USE_ON_BLOCK -> ActionKind.USE_ON_BLOCK;

@@ -23,6 +23,11 @@ public abstract class ServerPlayerDeathMixin {
         if (!((Object) this instanceof BotServerPlayer botPlayer)) {
             return;
         }
+        /*
+         * Mark the non-cancelled return before entering lifecycle code. If the
+         * manager throws, BotServerPlayer's outer death fence must remain armed.
+         */
+        botPlayer.markDeathCompletionObserved();
         MinecraftServer server = botPlayer.getServer();
         if (server != null) {
             BotPlayerManagers.find(server).ifPresent(manager -> manager.onDeath(botPlayer));

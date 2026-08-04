@@ -80,6 +80,45 @@ class BotInventorySessionManagerTest {
    }
 
    @Test
+   void probeOpenValidatesWithoutAllocatingNonceSessionOrWriteLock() {
+      BotInventorySessionManagerTest.MutableGuards guards = new BotInventorySessionManagerTest.MutableGuards();
+      AtomicInteger nonceCalls = new AtomicInteger();
+      BotInventorySessionManager manager = new BotInventorySessionManager(
+         guards::canWrite,
+         guards::distance,
+         guards::lifecycle,
+         () -> {
+            nonceCalls.incrementAndGet();
+            return UUID.randomUUID();
+         },
+         8
+      );
+
+      Assertions.assertEquals(
+         BotInventorySessionManager.OpenStatus.OPENING,
+         manager.probeOpen(FIRST_BOT, 1L, FIRST_VIEWER)
+      );
+      Assertions.assertEquals(0, nonceCalls.get());
+      Assertions.assertEquals(0, manager.activeSessionCount());
+      Assertions.assertEquals(
+         InventoryMutationGate.MutationStatus.ALLOWED,
+         manager.mutationGate().check(FIRST_BOT, 1L)
+      );
+
+      BotInventorySession session = manager.open(FIRST_BOT, 1L, FIRST_VIEWER).session().orElseThrow();
+      Assertions.assertEquals(1, nonceCalls.get());
+      Assertions.assertEquals(
+         BotInventorySessionManager.OpenStatus.EXISTING_SESSION,
+         manager.probeOpen(FIRST_BOT, 1L, FIRST_VIEWER)
+      );
+      Assertions.assertEquals(
+         BotInventorySessionManager.OpenStatus.BOT_LOCKED,
+         manager.probeOpen(FIRST_BOT, 1L, SECOND_VIEWER)
+      );
+      close(manager, session);
+   }
+
+   @Test
    void lifecycleAndSpatialOpenFailuresAreTyped() {
       BotInventorySessionManagerTest.MutableGuards var1 = new BotInventorySessionManagerTest.MutableGuards();
       BotInventorySessionManager var2 = manager(var1);

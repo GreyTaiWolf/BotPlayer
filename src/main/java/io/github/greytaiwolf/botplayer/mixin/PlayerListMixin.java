@@ -16,9 +16,24 @@ import net.minecraft.server.players.PlayerList;
 import net.minecraft.world.entity.Entity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(PlayerList.class)
 public abstract class PlayerListMixin {
+    @Inject(
+            method = "save",
+            require = 1,
+            cancellable = true,
+            at = @At("HEAD"))
+    private void botplayer$suppressPersistentlyUnsafePlayerDataSave(
+            ServerPlayer player, CallbackInfo callback) {
+        if (player instanceof BotServerPlayer botPlayer
+                && botPlayer.consumePlayerDataSaveSuppression()) {
+            callback.cancel();
+        }
+    }
+
     @WrapOperation(
             method = "placeNewPlayer",
             require = 1,
@@ -61,5 +76,26 @@ public abstract class PlayerListMixin {
                     server, level, profile, clientInformation, oldBot);
         }
         return original.call(server, level, profile, clientInformation);
+    }
+
+    @WrapOperation(
+            method = "remove",
+            require = 1,
+            at =
+                    @At(
+                            value = "INVOKE",
+                            target =
+                                    "Lnet/minecraft/server/players/PlayerList;save(Lnet/minecraft/server/level/ServerPlayer;)V"))
+    private void botplayer$suppressUnsafePlayerDataSave(
+            PlayerList playerList,
+            ServerPlayer player,
+            Operation<Void> original) {
+        if (player
+                        instanceof BotServerPlayer botPlayer
+                && botPlayer
+                        .consumePlayerDataSaveSuppression()) {
+            return;
+        }
+        original.call(playerList, player);
     }
 }

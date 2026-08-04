@@ -48,6 +48,8 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @PrefixGameTestTemplate(false)
 public final class P3PerceptionAcceptanceGameTests {
     private static final String BATCH = "p3_perception";
+    private static final String DIRECTED_SOUND_BATCH =
+            "p3_perception_directed_sound";
     private static final int SNAPSHOT_WAIT_TICKS = 100;
 
     private P3PerceptionAcceptanceGameTests() {}
@@ -311,7 +313,7 @@ public final class P3PerceptionAcceptanceGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = DIRECTED_SOUND_BATCH,
             timeoutTicks = P2GameTestSupport.TIMEOUT_TICKS)
     public static void directedSoundStaysWithinTargetBotGeneration(
             GameTestHelper helper) {

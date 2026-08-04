@@ -15,6 +15,8 @@ import io.github.greytaiwolf.botplayer.navigation.NavigationSubmission;
 import io.github.greytaiwolf.botplayer.perception.ObservationSnapshot;
 import io.github.greytaiwolf.botplayer.safety.SafetyFrame;
 import io.github.greytaiwolf.botplayer.safety.SafetyIncidentView;
+import io.github.greytaiwolf.botplayer.skill.runtime.SurvivalSkillRunView;
+import io.github.greytaiwolf.botplayer.skill.runtime.SurvivalSkillSubmission;
 import io.github.greytaiwolf.botplayer.worldmodel.ActivityReportFormatter;
 import io.github.greytaiwolf.botplayer.worldmodel.WorldFact;
 import java.util.List;
@@ -127,6 +129,30 @@ public final class BotPlayerCommands {
                                                 StringArgumentType.word())
                                         .executes(context ->
                                                 inspectSafety(
+                                                        context.getSource(),
+                                                        StringArgumentType
+                                                                .getString(
+                                                                        context,
+                                                                        "name"))))))
+                .then(literal("skill")
+                        .requires(source -> source.hasPermission(2))
+                        .then(literal("equip-armor")
+                                .then(argument(
+                                                "name",
+                                                StringArgumentType.word())
+                                        .executes(context ->
+                                                startBasicArmor(
+                                                        context.getSource(),
+                                                        StringArgumentType
+                                                                .getString(
+                                                                        context,
+                                                                        "name")))))
+                        .then(literal("inspect")
+                                .then(argument(
+                                                "name",
+                                                StringArgumentType.word())
+                                        .executes(context ->
+                                                inspectSkill(
                                                         context.getSource(),
                                                         StringArgumentType
                                                                 .getString(
@@ -323,6 +349,70 @@ public final class BotPlayerCommands {
                                             .orElse("none")),
                     false);
         }
+        return 1;
+    }
+
+    private static int inspectSkill(
+            CommandSourceStack source, String name) {
+        SurvivalSkillRunView view = BotPlayerManagers
+                .get(source.getServer())
+                .survivalSkillRun(name)
+                .orElse(null);
+        if (view == null) {
+            source.sendFailure(Component.literal(
+                    "没有 P5 生存技能记录：" + name));
+            return 0;
+        }
+        source.sendSuccess(
+                () -> Component.literal(
+                        "P5 技能 "
+                                + name
+                                + " run="
+                                + view.runId()
+                                + " kind="
+                                + view.kind().name()
+                                + " state="
+                                + view.state().name()
+                                + " revision="
+                                + view.stateRevision()
+                                + " generation="
+                                + view.botGeneration()
+                                + " operations="
+                                + view.operationSequence()
+                                + " failure="
+                                + view.failureCode()
+                                        .map(Enum::name)
+                                        .orElse("none")
+                                + " summary="
+                                + view.safeSummary()),
+                false);
+        return 1;
+    }
+
+    private static int startBasicArmor(
+            CommandSourceStack source, String name) {
+        SurvivalSkillSubmission submission =
+                BotPlayerManagers
+                        .get(source.getServer())
+                        .startBasicArmor(name);
+        if (!submission.accepted()) {
+            source.sendFailure(Component.literal(
+                    "P5 基础盔甲技能未启动："
+                            + submission.status().name()
+                            + " "
+                            + submission.safeSummary()));
+            return 0;
+        }
+        source.sendSuccess(
+                () -> Component.literal(
+                        "P5 基础盔甲技能已启动："
+                                + name
+                                + " run="
+                                + submission.runId()
+                                        .orElseThrow()
+                                + " "
+                                + submission.safeSummary()),
+                false);
         return 1;
     }
 

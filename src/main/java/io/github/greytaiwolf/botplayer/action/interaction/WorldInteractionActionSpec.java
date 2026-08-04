@@ -1,6 +1,7 @@
 package io.github.greytaiwolf.botplayer.action.interaction;
 
 import io.github.greytaiwolf.botplayer.action.ActionChannel;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSwapPlan;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -8,6 +9,8 @@ import java.util.UUID;
 
 public sealed interface WorldInteractionActionSpec
    permits WorldInteractionActionSpec.SelectHotbar,
+   WorldInteractionActionSpec.SwapInventoryHotbar,
+   WorldInteractionActionSpec.InventoryMenuSwap,
    WorldInteractionActionSpec.UseItem,
    WorldInteractionActionSpec.ReleaseUse,
    WorldInteractionActionSpec.UseOnBlock,
@@ -137,6 +140,8 @@ public sealed interface WorldInteractionActionSpec
 
    public static enum Kind {
       SELECT_HOTBAR,
+      SWAP_INVENTORY_HOTBAR,
+      INVENTORY_MENU_SWAP,
       USE_ITEM,
       RELEASE_USE,
       USE_ON_BLOCK,
@@ -145,6 +150,33 @@ public sealed interface WorldInteractionActionSpec
       INTERACT_ENTITY,
       DROP_SELECTED,
       PICKUP_WAIT;
+   }
+
+   /**
+    * 在原生玩家 InventoryMenu 中执行一份有界、完整快照约束的 SWAP 计划。
+    */
+   public static record InventoryMenuSwap(InventoryMenuSwapPlan plan)
+      implements WorldInteractionActionSpec {
+      private static final Set<ActionChannel> CHANNELS = Set.of(
+         ActionChannel.INVENTORY,
+         ActionChannel.MAIN_HAND,
+         ActionChannel.OFF_HAND
+      );
+
+      public InventoryMenuSwap(InventoryMenuSwapPlan plan) {
+         Objects.requireNonNull(plan, "plan");
+         this.plan = plan;
+      }
+
+      @Override
+      public WorldInteractionActionSpec.Kind kind() {
+         return WorldInteractionActionSpec.Kind.INVENTORY_MENU_SWAP;
+      }
+
+      @Override
+      public Set<ActionChannel> channels() {
+         return CHANNELS;
+      }
    }
 
    public static record PickupWait(int ticks, Optional<UUID> expectedItemEntityId) implements WorldInteractionActionSpec {
@@ -211,6 +243,44 @@ public sealed interface WorldInteractionActionSpec
       @Override
       public WorldInteractionActionSpec.Kind kind() {
          return WorldInteractionActionSpec.Kind.SELECT_HOTBAR;
+      }
+
+      @Override
+      public Set<ActionChannel> channels() {
+         return CHANNELS;
+      }
+   }
+
+   public static record SwapInventoryHotbar(
+      int sourceInventorySlot, int targetHotbarSlot, ItemStackFingerprint expectedSource, ItemStackFingerprint expectedTarget
+   ) implements WorldInteractionActionSpec {
+      private static final Set<ActionChannel> CHANNELS = Set.of(ActionChannel.INVENTORY, ActionChannel.MAIN_HAND);
+
+      public SwapInventoryHotbar(
+         int sourceInventorySlot, int targetHotbarSlot, ItemStackFingerprint expectedSource, ItemStackFingerprint expectedTarget
+      ) {
+         if (sourceInventorySlot < 9 || sourceInventorySlot > 35) {
+            throw new IllegalArgumentException("source inventory slot must be between 9 and 35");
+         }
+         if (targetHotbarSlot < 0 || targetHotbarSlot > 8) {
+            throw new IllegalArgumentException("target hotbar slot must be between 0 and 8");
+         }
+         Objects.requireNonNull(expectedSource, "expectedSource");
+         Objects.requireNonNull(expectedTarget, "expectedTarget");
+         if (expectedSource.equals(expectedTarget)) {
+            throw new IllegalArgumentException(
+               "source and target fingerprints must differ for an observable swap"
+            );
+         }
+         this.sourceInventorySlot = sourceInventorySlot;
+         this.targetHotbarSlot = targetHotbarSlot;
+         this.expectedSource = expectedSource;
+         this.expectedTarget = expectedTarget;
+      }
+
+      @Override
+      public WorldInteractionActionSpec.Kind kind() {
+         return WorldInteractionActionSpec.Kind.SWAP_INVENTORY_HOTBAR;
       }
 
       @Override

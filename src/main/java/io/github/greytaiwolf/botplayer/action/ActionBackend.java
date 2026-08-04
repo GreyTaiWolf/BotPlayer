@@ -15,6 +15,28 @@ public interface ActionBackend {
 
    void cleanup(ActionEnvelope var1, ActionCleanupReason var2, long var3);
 
+   /**
+    * 执行一次带精确身份的物理清理步骤。
+    *
+    * <p>旧后端继续使用同步 cleanup；需要跨 Tick 的后端覆写本方法并返回 PENDING。
+    */
+   default ActionCleanupReceipt cleanupStep(
+      ActionEnvelope envelope,
+      ActionCleanupRequest request
+   ) {
+      Objects.requireNonNull(envelope, "envelope");
+      Objects.requireNonNull(request, "request");
+      if (!request.matches(envelope)) {
+         throw new IllegalArgumentException(
+            "cleanup request does not match the action envelope"
+         );
+      }
+      cleanup(envelope, request.reason(), request.currentTick());
+      return ActionCleanupReceipt.complete(
+         request, 0L, "Legacy cleanup completed"
+      );
+   }
+
    boolean forceSafeReset(UUID var1, long var2, long var4);
 
    public static record BackendResult(

@@ -2,6 +2,8 @@ package io.github.greytaiwolf.botplayer.action.minecraft;
 
 import io.github.greytaiwolf.botplayer.action.ActionBackend;
 import io.github.greytaiwolf.botplayer.action.ActionCleanupReason;
+import io.github.greytaiwolf.botplayer.action.ActionCleanupReceipt;
+import io.github.greytaiwolf.botplayer.action.ActionCleanupRequest;
 import io.github.greytaiwolf.botplayer.action.ActionEnvelope;
 import io.github.greytaiwolf.botplayer.action.ActionEvidence;
 import io.github.greytaiwolf.botplayer.action.ActionFailureCode;
@@ -15,6 +17,9 @@ import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
 import io.github.greytaiwolf.botplayer.action.input.PlayerInputController;
 import io.github.greytaiwolf.botplayer.action.input.PlayerInputOwner;
 import io.github.greytaiwolf.botplayer.action.input.PlayerInputState;
+import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanupRequest;
+import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanupResult;
+import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanupLease;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.lifecycle.BotActionTarget;
 import io.github.greytaiwolf.botplayer.lifecycle.BotActionTargetStatus;
@@ -61,6 +66,63 @@ public final class MinecraftActionBackend implements ActionBackend {
                         inputController, "inputController");
         this.worldInteractionBackend =
                 new MinecraftWorldInteractionBackend(lifecycleManager);
+    }
+
+    /**
+     * Arms the one-shot generation fence before a skill can own inventory
+     * layout state.
+     */
+    public boolean openSkillInventoryLayout(
+            UUID botId,
+            long botGeneration,
+            InventoryLayoutCleanupLease layoutLease) {
+        return worldInteractionBackend.openSkillInventoryLayout(
+                botId, botGeneration, layoutLease);
+    }
+
+    /**
+     * Reconciles a completed skill's temporary inventory layout after the
+     * action runtime has synchronously closed that generation.
+     */
+    public InventoryLayoutCleanupResult cleanupSkillInventoryLayout(
+            UUID botId,
+            long botGeneration,
+            InventoryLayoutCleanupRequest request) {
+        return worldInteractionBackend.cleanupSkillInventoryLayout(
+                botId, botGeneration, request);
+    }
+
+    /**
+     * Consumes an exact skill layout lease after vanilla death has already
+     * emptied the body. This bookkeeping-only path never resolves or clicks
+     * the dead player's menu.
+     */
+    public InventoryLayoutCleanupResult
+            consumeVanillaDeathSkillInventoryLayout(
+                    UUID botId,
+                    long botGeneration,
+                    InventoryLayoutCleanupLease layoutLease) {
+        return worldInteractionBackend
+                .consumeVanillaDeathSkillInventoryLayout(
+                        botId,
+                        botGeneration,
+                        layoutLease);
+    }
+
+    public void releaseSkillInventoryLayout(
+            UUID botId, long botGeneration, UUID runId) {
+        worldInteractionBackend.releaseSkillInventoryLayout(
+                botId, botGeneration, runId);
+    }
+
+    public void closeSkillInventoryGeneration(
+            UUID botId, long botGeneration) {
+        worldInteractionBackend.closeSkillInventoryGeneration(
+                botId, botGeneration);
+    }
+
+    public void closeSkillInventoryFences() {
+        worldInteractionBackend.closeSkillInventoryFences();
     }
 
     @Override
@@ -330,6 +392,33 @@ public final class MinecraftActionBackend implements ActionBackend {
     }
 
     @Override
+    public ActionCleanupReceipt cleanupStep(
+            ActionEnvelope envelope,
+            ActionCleanupRequest request) {
+        Objects.requireNonNull(envelope, "envelope");
+        Objects.requireNonNull(request, "request");
+        if (!request.matches(envelope)) {
+            throw new IllegalArgumentException(
+                    "cleanup request does not match the action envelope");
+        }
+        if (envelope.action() instanceof WorldInteractionAction) {
+            return worldInteractionBackend.cleanupStep(
+                    envelope, request);
+        }
+        if (request.vanillaDeathConsumed()) {
+            states.remove(stateKey(envelope));
+            inputController.forgetBot(
+                    envelope.botId(), envelope.botGeneration());
+            return ActionCleanupReceipt.complete(
+                    request,
+                    0L,
+                    "Vanilla death consumed action body state");
+        }
+        return ActionBackend.super.cleanupStep(
+                envelope, request);
+    }
+
+    @Override
     public void cleanup(
             ActionEnvelope envelope,
             ActionCleanupReason reason,
@@ -343,6 +432,12 @@ public final class MinecraftActionBackend implements ActionBackend {
         }
 
         StateKey key = stateKey(envelope);
+        if (reason == ActionCleanupReason.VANILLA_DEATH_CONSUMED) {
+            states.remove(key);
+            inputController.forgetBot(
+                    envelope.botId(), envelope.botGeneration());
+            return;
+        }
         BackendState state = states.get(key);
         if (state instanceof MovementState movementState) {
             cleanupInputState(envelope, movementState);

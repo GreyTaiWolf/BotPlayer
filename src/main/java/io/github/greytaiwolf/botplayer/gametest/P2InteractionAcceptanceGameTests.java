@@ -129,6 +129,127 @@ public final class P2InteractionAcceptanceGameTests {
             template = P2GameTestSupport.TEMPLATE,
             batch = BATCH,
             timeoutTicks = P2GameTestSupport.TIMEOUT_TICKS)
+    public static void naturalItemUseReportsCompletionFoodLevels(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P2UseFood",
+                new Vec3(4.5D, 1.0D, 4.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup =
+                cleanupBot(bot, "P2 natural item-use GameTest completed");
+        try {
+            bot.player().getInventory().selected = 0;
+            bot.player()
+                    .getInventory()
+                    .setItem(0, new ItemStack(Items.APPLE, 2));
+            bot.player().getFoodData().setFoodLevel(10);
+            bot.player().getFoodData().setSaturation(0.0F);
+            bot.player().getFoodData().setExhaustion(0.0F);
+            int foodBefore =
+                    bot.player().getFoodData().getFoodLevel();
+
+            CompletionStage<ActionOutcome> completion =
+                    P2GameTestSupport.submit(
+                            bot,
+                            new WorldInteractionAction(
+                                    new WorldInteractionActionSpec.UseItem(
+                                            WorldInteractionActionSpec.Hand
+                                                    .MAIN_HAND,
+                                            MinecraftActionSnapshot
+                                                    .selectedItem(
+                                                            bot.player()),
+                                            WorldInteractionActionSpec
+                                                    .ItemUseMode
+                                                    .FINISH_NATURALLY,
+                                            0)),
+                            100);
+            P2GameTestSupport.awaitOutcome(
+                    helper,
+                    completion,
+                    180,
+                    cleanup,
+                    outcome -> {
+                        try {
+                            requireState(
+                                    outcome,
+                                    ActionState.SUCCEEDED,
+                                    ActionFailureCode.NONE);
+                            int evidenceBefore = Integer.parseInt(
+                                    evidence(
+                                            outcome,
+                                            "player.food_before"));
+                            int evidenceAfter = Integer.parseInt(
+                                    evidence(
+                                            outcome,
+                                            "player.food_after"));
+                            P2GameTestSupport.require(
+                                    evidenceBefore == foodBefore,
+                                    "Item-use evidence did not retain the start food level");
+                            P2GameTestSupport.require(
+                                    evidenceAfter
+                                            > evidenceBefore,
+                                    "Item-use evidence did not record the completion food level");
+                            P2GameTestSupport.require(
+                                    evidence(
+                                                    outcome,
+                                                    "item.before_count")
+                                            .equals("2")
+                                            && evidence(
+                                                            outcome,
+                                                            "item.after_count")
+                                                    .equals("1"),
+                                    "Item-use evidence did not retain the consumed stack counts");
+                            String itemBeforeId = evidence(
+                                    outcome, "item.before_id");
+                            String itemBeforeDamage = evidence(
+                                    outcome,
+                                    "item.before_damage");
+                            String itemBeforeComponents = evidence(
+                                    outcome,
+                                    "item.before_components");
+                            P2GameTestSupport.require(
+                                    itemBeforeId.equals(
+                                                    "minecraft:apple")
+                                            && evidence(
+                                                            outcome,
+                                                            "item.after_id")
+                                                    .equals(itemBeforeId),
+                                    "Item-use evidence did not retain the apple item id");
+                            P2GameTestSupport.require(
+                                    itemBeforeDamage.equals("0")
+                                            && evidence(
+                                                            outcome,
+                                                            "item.after_damage")
+                                                    .equals(
+                                                            itemBeforeDamage),
+                                    "Item-use evidence did not retain the apple damage identity");
+                            P2GameTestSupport.require(
+                                    !itemBeforeComponents.equals(
+                                                    "empty")
+                                            && evidence(
+                                                            outcome,
+                                                            "item.after_components")
+                                                    .equals(
+                                                            itemBeforeComponents),
+                                    "Item-use evidence did not retain the apple components identity");
+                        } finally {
+                            cleanup.run();
+                        }
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = P2GameTestSupport.TIMEOUT_TICKS)
     public static void breakBlockUsesPlayerActionAndWorldEvidence(
             GameTestHelper helper) {
         P2GameTestSupport.prepareEmptyFloor(helper);
@@ -510,6 +631,82 @@ public final class P2InteractionAcceptanceGameTests {
                                             + emeraldsBefore
                                             + ", after="
                                             + emeraldsAfter);
+                        } finally {
+                            cleanup.run();
+                        }
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = P2GameTestSupport.TIMEOUT_TICKS)
+    public static void selectingTheAlreadySelectedHotbarSlotFailsClosed(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P2NoopSelect",
+                new Vec3(4.5D, 1.0D, 4.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup =
+                cleanupBot(
+                        bot,
+                        "P2 no-op hotbar selection GameTest completed");
+        try {
+            int selectedSlot = 2;
+            bot.player().getInventory().selected =
+                    selectedSlot;
+            bot.player().getInventory().setItem(
+                    selectedSlot,
+                    new ItemStack(Items.STICK));
+            ItemStackFingerprint expected =
+                    MinecraftActionSnapshot.item(
+                            bot.player(),
+                            bot.player()
+                                    .getInventory()
+                                    .getItem(selectedSlot));
+
+            CompletionStage<ActionOutcome> completion =
+                    P2GameTestSupport.submit(
+                            bot,
+                            new WorldInteractionAction(
+                                    new WorldInteractionActionSpec
+                                            .SelectHotbar(
+                                            selectedSlot,
+                                            expected)),
+                            40);
+            P2GameTestSupport.awaitOutcome(
+                    helper,
+                    completion,
+                    80,
+                    cleanup,
+                    outcome -> {
+                        try {
+                            requireState(
+                                    outcome,
+                                    ActionState.FAILED,
+                                    ActionFailureCode
+                                            .PRECONDITION_FAILED);
+                            P2GameTestSupport.require(
+                                    bot.player()
+                                                    .getInventory()
+                                                    .selected
+                                            == selectedSlot
+                                            && bot.player()
+                                                    .getInventory()
+                                                    .getItem(
+                                                            selectedSlot)
+                                                    .is(
+                                                            Items
+                                                                    .STICK),
+                                    "Rejected no-op selection mutated the hotbar");
                         } finally {
                             cleanup.run();
                         }

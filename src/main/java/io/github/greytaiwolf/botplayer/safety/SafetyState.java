@@ -4,6 +4,7 @@ public enum SafetyState {
     CLEAR,
     OBSERVING,
     INTERVENING,
+    DELEGATED,
     VERIFYING,
     COOLDOWN,
     ESCALATING,

@@ -2,10 +2,12 @@ package io.github.greytaiwolf.botplayer.action;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletionStage;
@@ -17,7 +19,7 @@ public final class ActionMailbox {
    private final ArrayBlockingQueue<ActionMailbox.CancelCommand> cancellations;
    private final CompletionDispatcher completionDispatcher;
    private final Map<UUID, Long> closedGenerationByBot = new HashMap<>();
-   private final Map<UUID, Long> quarantinedGenerationByBot = new HashMap<>();
+   private final Set<ActionMailbox.GenerationKey> quarantinedGenerations = new HashSet<>();
    private final AtomicBoolean closed = new AtomicBoolean();
 
    ActionMailbox(int var1, CompletionDispatcher var2) {
@@ -39,8 +41,10 @@ public final class ActionMailbox {
          return ActionMailbox.Submission.rejected(ActionMailbox.SubmissionStatus.RUNTIME_CLOSED);
       } else {
          long var3 = this.closedGenerationByBot.getOrDefault(var1.botId(), 0L);
-         long var5 = this.quarantinedGenerationByBot.getOrDefault(var1.botId(), 0L);
-         if (var1.botGeneration() > var3 && var1.botGeneration() != var5) {
+         boolean var5 = this.quarantinedGenerations.contains(
+            new ActionMailbox.GenerationKey(var1.botId(), var1.botGeneration())
+         );
+         if (var1.botGeneration() > var3 && !var5) {
             CompletionDispatcher.Completion<ActionOutcome> var7 =
                this.completionDispatcher.tryReserveSubmission();
             if (var7 == null) {
@@ -105,6 +109,19 @@ public final class ActionMailbox {
       return this.closed.get();
    }
 
+   synchronized boolean isGenerationIngressClosed(UUID var1, long var2) {
+      ActionEnvelope.requireNonZero(var1, "botId");
+      if (var2 <= 0L) {
+         throw new IllegalArgumentException("generation must be positive");
+      } else {
+         return this.closed.get()
+            || var2 <= this.closedGenerationByBot.getOrDefault(var1, 0L)
+            || this.quarantinedGenerations.contains(
+               new ActionMailbox.GenerationKey(var1, var2)
+            );
+      }
+   }
+
    synchronized void close() {
       this.closed.set(true);
    }
@@ -137,10 +154,9 @@ public final class ActionMailbox {
          throw new IllegalArgumentException("generation must be positive");
       } else {
          this.closedGenerationByBot.merge(var1, var2, Math::max);
-         Long var4 = this.quarantinedGenerationByBot.get(var1);
-         if (var4 != null && var4 <= var2) {
-            this.quarantinedGenerationByBot.remove(var1, var4);
-         }
+         this.quarantinedGenerations.removeIf(
+            var3 -> var3.botId.equals(var1) && var3.generation <= var2
+         );
 
          ArrayList<ActionMailbox.SubmitCommand> var5 = new ArrayList<>();
          this.submissions.removeIf(var4x -> {
@@ -180,7 +196,9 @@ public final class ActionMailbox {
       if (var2 <= 0L) {
          throw new IllegalArgumentException("generation must be positive");
       } else {
-         this.quarantinedGenerationByBot.merge(var1, var2, Math::max);
+         this.quarantinedGenerations.add(
+            new ActionMailbox.GenerationKey(var1, var2)
+         );
          ArrayList<ActionMailbox.SubmitCommand> var4 = new ArrayList<>();
          this.submissions.removeIf(var4x -> {
             ActionEnvelope var5 = var4x.envelope();
@@ -200,8 +218,13 @@ public final class ActionMailbox {
       if (var2 <= 0L) {
          throw new IllegalArgumentException("generation must be positive");
       } else {
-         return this.quarantinedGenerationByBot.remove(var1, var2);
+         return this.quarantinedGenerations.remove(
+            new ActionMailbox.GenerationKey(var1, var2)
+         );
       }
+   }
+
+   private static record GenerationKey(UUID botId, long generation) {
    }
 
    static record CancelCommand(

@@ -13,6 +13,7 @@ import io.github.greytaiwolf.botplayer.safety.HazardType;
 import io.github.greytaiwolf.botplayer.safety.SafetyFrame;
 import io.github.greytaiwolf.botplayer.safety.SafetyIncidentView;
 import io.github.greytaiwolf.botplayer.safety.SafetyIntervention;
+import io.github.greytaiwolf.botplayer.safety.SafetyState;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import net.minecraft.core.BlockPos;
@@ -68,6 +69,7 @@ public final class P4SafetyAcceptanceGameTests {
                             BotPlayer.MOD_ID,
                             "compatibility_probe"));
     private static final int TIMEOUT_TICKS = 300;
+    private static final int HOSTILE_FALLBACK_STABLE_TICKS = 8;
 
     private P4SafetyAcceptanceGameTests() {}
 
@@ -502,6 +504,7 @@ public final class P4SafetyAcceptanceGameTests {
                     0.0F);
             zombie.setPersistenceRequired();
             zombie.setInvulnerable(true);
+            zombie.setNoAi(true);
             zombie.setTarget(bot.player());
             P2GameTestSupport.require(
                     helper.getLevel().addFreshEntity(zombie),
@@ -517,20 +520,57 @@ public final class P4SafetyAcceptanceGameTests {
                             == NavigationSubmission.Status.ENQUEUED,
                     "Navigation setup was rejected before hostile preemption");
             boolean[] observedSuspended = {false};
+            boolean[] observedRetreat = {false};
+            boolean[] everDelegated = {false};
+            boolean[] everStartedSurvivalSkill = {false};
+            int[] stableFallbackTicks = {0};
 
             P2GameTestSupport.awaitCondition(
                     helper,
                     100,
                     () -> {
-                        observedSuspended[0] |= bot.manager()
+                        boolean navigationSuspended = bot.manager()
                                 .navigationSession(bot.name())
                                 .filter(view ->
                                         view.state()
                                                 == NavigationState
                                                         .SUSPENDED_BY_SAFETY)
                                 .isPresent();
-                        return observedSuspended[0]
-                                && bot.manager()
+                        observedSuspended[0] |= navigationSuspended;
+                        SafetyIncidentView incident = bot.manager()
+                                .safetyIncident(bot.name())
+                                .orElse(null);
+                        boolean delegatedThisTick = incident != null
+                                && (incident.state()
+                                                == SafetyState.DELEGATED
+                                        || incident
+                                                .currentIntervention()
+                                                .filter(value ->
+                                                        value
+                                                                == SafetyIntervention
+                                                                        .DELEGATE_TO_SURVIVAL_SKILL)
+                                                .isPresent());
+                        everDelegated[0] |= delegatedThisTick;
+                        boolean hostileIncidentActive = incident != null
+                                && incident.hazardType()
+                                        == HazardType
+                                                .HOSTILE_TARGETING;
+                        boolean retreatThisTick =
+                                hostileIncidentActive
+                                        && incident
+                                                .currentIntervention()
+                                                .filter(value ->
+                                                        value
+                                                                == SafetyIntervention
+                                                                        .RETREAT_FROM_HOSTILE)
+                                                .isPresent();
+                        observedRetreat[0] |= retreatThisTick;
+                        boolean survivalSkillActive = bot.manager()
+                                .survivalSkillRun(bot.name())
+                                .isPresent();
+                        everStartedSurvivalSkill[0] |=
+                                survivalSkillActive;
+                        boolean targetingThreat = bot.manager()
                                         .latestSafetyFrame(bot.name())
                                         .stream()
                                         .flatMap(frame ->
@@ -542,18 +582,60 @@ public final class P4SafetyAcceptanceGameTests {
                                                                                 .getUUID())
                                                         && threat
                                                                 .targetingBot());
+                        boolean stableFallback = observedRetreat[0]
+                                && navigationSuspended
+                                && hostileIncidentActive
+                                && !delegatedThisTick
+                                && !survivalSkillActive
+                                && targetingThreat
+                                && zombie.getTarget()
+                                        == bot.player();
+                        if (stableFallback) {
+                            stableFallbackTicks[0]++;
+                        } else if (observedRetreat[0]) {
+                            stableFallbackTicks[0] = 0;
+                        }
+                        return observedSuspended[0]
+                                && observedRetreat[0]
+                                && stableFallbackTicks[0]
+                                        >= HOSTILE_FALLBACK_STABLE_TICKS;
                     },
-                    "P4 did not observe zombie target authority or suspend navigation",
+                    "P4 did not sustain hostile retreat authority after suspending navigation",
                     cleanup,
                     () -> {
+                        P2GameTestSupport.require(
+                                observedRetreat[0]
+                                        && stableFallbackTicks[0]
+                                                >= HOSTILE_FALLBACK_STABLE_TICKS,
+                                "P4 did not reach a stable RETREAT_FROM_HOSTILE window");
+                        P2GameTestSupport.require(
+                                !everDelegated[0]
+                                        && !everStartedSurvivalSkill[0],
+                                "Incomplete P5 self-defense intercepted the P4 hostile fallback");
                         P2GameTestSupport.require(
                                 zombie.getTarget() == bot.player(),
                                 "Zombie no longer targeted the real bot body");
                         P2GameTestSupport.require(
                                 bot.manager()
                                         .safetyIncident(bot.name())
+                                        .filter(incident ->
+                                                incident.hazardType()
+                                                                == HazardType
+                                                                        .HOSTILE_TARGETING
+                                                        && incident
+                                                                .currentIntervention()
+                                                                .filter(value ->
+                                                                        value
+                                                                                == SafetyIntervention
+                                                                                        .DELEGATE_TO_SURVIVAL_SKILL)
+                                                                .isEmpty())
                                         .isPresent(),
-                                "Hostile preemption lacked an incident");
+                                "Hostile preemption bypassed the P4 fallback");
+                        P2GameTestSupport.require(
+                                bot.manager()
+                                        .survivalSkillRun(bot.name())
+                                        .isEmpty(),
+                                "Incomplete P5 self-defense intercepted the P4 hostile fallback");
                         cleanup.run();
                         helper.succeed();
                     });

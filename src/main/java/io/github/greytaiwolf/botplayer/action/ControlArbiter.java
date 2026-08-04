@@ -52,14 +52,17 @@ public final class ControlArbiter {
                ? ControlArbiter.AcquireStatus.REJECTED_TIED_PRIORITY
                : ControlArbiter.AcquireStatus.REJECTED_LOWER_PRIORITY;
             return ControlArbiter.AcquireResult.rejected(var11, var10);
+         }
+
+         List<ControlArbiter.Lease> var8 =
+            var6.stream().sorted(PREEMPTION_ORDER).toList();
+         if (!var8.isEmpty()) {
+            return ControlArbiter.AcquireResult.preemptionRequired(var8);
          } else if (this.nextSequence == Long.MAX_VALUE) {
             throw new IllegalStateException("Control lease sequence exhausted");
          } else {
-            List<ControlArbiter.Lease> var8 =
-               var6.stream().sorted(PREEMPTION_ORDER).toList();
-            var8.forEach(this::removeLease);
             ControlArbiter.Lease var9 = this.grant(var1, var2, var3);
-            return ControlArbiter.AcquireResult.granted(var9, var8);
+            return ControlArbiter.AcquireResult.granted(var9);
          }
       }
    }
@@ -74,6 +77,19 @@ public final class ControlArbiter {
          this.removeLease(var1);
          return true;
       }
+   }
+
+   /**
+    * 只读核对一张候选票据是否仍是当前精确 lease。抢占清理中的重入回调
+    * 可能已经安全释放旧 lease；调用方必须把这种情况与 owner 丢失但 lease
+    * 仍悬空区分开。
+    */
+   boolean isHeld(ControlArbiter.Lease var1) {
+      this.assertOwnerThread();
+      Objects.requireNonNull(var1, "lease");
+      return this.leasesByAction.get(
+         new ControlArbiter.ActionKey(var1.botId(), var1.actionId())
+      ) == var1;
    }
 
    public Optional<ControlArbiter.Lease> currentLease(UUID var1, ActionChannel var2) {
@@ -101,6 +117,25 @@ public final class ControlArbiter {
       } else {
          return this.leasesByAction.values().stream().anyMatch(var3 -> var3.botId().equals(var1) && var3.botGeneration() == var2);
       }
+   }
+
+   /**
+    * 仅在调用方已经从动作后端取得整代安全重置证明后，释放该 generation
+    * 遗留的全部 lease。普通终止路径必须继续使用精确 {@link #release(Lease)}。
+    */
+   int releaseGenerationAfterSafeReset(UUID var1, long var2) {
+      this.assertOwnerThread();
+      ActionEnvelope.requireNonZero(var1, "botId");
+      if (var2 <= 0L) {
+         throw new IllegalArgumentException("botGeneration must be positive");
+      }
+      List<ControlArbiter.Lease> var4 = this.leasesByAction.values()
+         .stream()
+         .filter(var3 -> var3.botId().equals(var1)
+            && var3.botGeneration() == var2)
+         .toList();
+      var4.forEach(this::removeLease);
+      return var4.size();
    }
 
    private List<ControlArbiter.Lease> findConflicts(UUID var1, Set<ActionChannel> var2) {
@@ -172,8 +207,12 @@ public final class ControlArbiter {
          preempted = List.copyOf(Objects.requireNonNull(preempted, "preempted"));
          switch (status) {
             case GRANTED:
-               if (lease.isEmpty() || blocker.isPresent()) {
-                  throw new IllegalArgumentException("GRANTED requires a lease and no blocker");
+               if (lease.isEmpty()
+                  || blocker.isPresent()
+                  || !preempted.isEmpty()) {
+                  throw new IllegalArgumentException(
+                     "GRANTED requires only the new lease"
+                  );
                }
                break;
             case ALREADY_HELD:
@@ -185,6 +224,15 @@ public final class ControlArbiter {
             case REJECTED_TIED_PRIORITY:
                if (lease.isPresent() || blocker.isEmpty() || !preempted.isEmpty()) {
                   throw new IllegalArgumentException("Rejected acquisition requires only a blocker");
+               }
+               break;
+            case PREEMPTION_REQUIRED:
+               if (lease.isPresent()
+                  || blocker.isPresent()
+                  || preempted.isEmpty()) {
+                  throw new IllegalArgumentException(
+                     "PREEMPTION_REQUIRED requires only retained lease candidates"
+                  );
                }
          }
 
@@ -198,8 +246,15 @@ public final class ControlArbiter {
          return this.status == ControlArbiter.AcquireStatus.GRANTED || this.status == ControlArbiter.AcquireStatus.ALREADY_HELD;
       }
 
-      private static ControlArbiter.AcquireResult granted(ControlArbiter.Lease var0, List<ControlArbiter.Lease> var1) {
-         return new ControlArbiter.AcquireResult(ControlArbiter.AcquireStatus.GRANTED, Optional.of(var0), Optional.empty(), var1);
+      /**
+       * 仍由旧动作持有、必须先安全收口的 lease 候选。
+       */
+      public List<ControlArbiter.Lease> preemptionCandidates() {
+         return this.preempted;
+      }
+
+      private static ControlArbiter.AcquireResult granted(ControlArbiter.Lease var0) {
+         return new ControlArbiter.AcquireResult(ControlArbiter.AcquireStatus.GRANTED, Optional.of(var0), Optional.empty(), List.of());
       }
 
       private static ControlArbiter.AcquireResult alreadyHeld(ControlArbiter.Lease var0) {
@@ -209,11 +264,23 @@ public final class ControlArbiter {
       private static ControlArbiter.AcquireResult rejected(ControlArbiter.AcquireStatus var0, ControlArbiter.Lease var1) {
          return new ControlArbiter.AcquireResult(var0, Optional.empty(), Optional.of(var1), List.of());
       }
+
+      private static ControlArbiter.AcquireResult preemptionRequired(
+         List<ControlArbiter.Lease> var0
+      ) {
+         return new ControlArbiter.AcquireResult(
+            ControlArbiter.AcquireStatus.PREEMPTION_REQUIRED,
+            Optional.empty(),
+            Optional.empty(),
+            var0
+         );
+      }
    }
 
    public static enum AcquireStatus {
       GRANTED,
       ALREADY_HELD,
+      PREEMPTION_REQUIRED,
       REJECTED_LOWER_PRIORITY,
       REJECTED_TIED_PRIORITY;
    }

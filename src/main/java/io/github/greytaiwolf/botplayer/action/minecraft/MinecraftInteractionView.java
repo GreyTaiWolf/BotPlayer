@@ -5,6 +5,8 @@ import io.github.greytaiwolf.botplayer.action.interaction.BlockHitTarget;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockStateFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockTargetFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.EntityTargetFingerprint;
+import io.github.greytaiwolf.botplayer.action.interaction.InventoryContentsSnapshot;
+import io.github.greytaiwolf.botplayer.action.interaction.InventoryStackMultisetDigest;
 import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
 import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
@@ -36,9 +38,9 @@ import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 /**
- * Stateless conversion and fingerprint helpers for P2-C.
+ * P2-C 与 P5A 共用的无状态转换和指纹辅助。
  *
- * <p>Every method consumes a short-lived server-thread object and returns immutable values only.
+ * <p>每个方法只消费服务器主线程上的短生命周期对象，并且只返回不可变值。
  */
 final class MinecraftInteractionView {
     private MinecraftInteractionView() {}
@@ -150,6 +152,33 @@ final class MinecraftInteractionView {
             digest.update((byte) 0);
         }
         return HexFormat.of().formatHex(digest.digest());
+    }
+
+    /**
+     * 生成去除槽位顺序、但保留空槽数和每个完整物品栈字段的背包多重集摘要。
+     */
+    static String inventoryMultisetDigest(BotServerPlayer player) {
+        return InventoryStackMultisetDigest.sha256(
+                inventoryStackFingerprints(player));
+    }
+
+    static InventoryContentsSnapshot inventoryContents(
+            BotServerPlayer player) {
+        return new InventoryContentsSnapshot(
+                inventoryStackFingerprints(player));
+    }
+
+    private static List<ItemStackFingerprint>
+            inventoryStackFingerprints(
+                    BotServerPlayer player) {
+        int size = player.getInventory().getContainerSize();
+        List<ItemStackFingerprint> fingerprints =
+                new ArrayList<>(size);
+        for (int slot = 0; slot < size; slot++) {
+            fingerprints.add(itemFingerprint(
+                    player, player.getInventory().getItem(slot)));
+        }
+        return List.copyOf(fingerprints);
     }
 
     static int inventoryCount(

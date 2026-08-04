@@ -4,9 +4,14 @@ import io.github.greytaiwolf.botplayer.action.interaction.BlockCoordinates;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockHitTarget;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockTargetFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.EntityTargetFingerprint;
+import io.github.greytaiwolf.botplayer.action.interaction.InventoryContentsSnapshot;
 import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSnapshot;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.PlayerInventoryMenuLayout;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -34,6 +39,61 @@ public final class MinecraftActionSnapshot {
         requireServerThread(player);
         return MinecraftInteractionView.itemFingerprint(
                 player, player.getInventory().getSelected());
+    }
+
+    public static String inventoryMultiset(
+            BotServerPlayer player) {
+        requireServerThread(player);
+        return MinecraftInteractionView.inventoryMultisetDigest(
+                player);
+    }
+
+    public static InventoryContentsSnapshot inventoryContents(
+            BotServerPlayer player) {
+        requireServerThread(player);
+        return MinecraftInteractionView.inventoryContents(
+                player);
+    }
+
+    /**
+     * 捕获原生玩家背包菜单及 41 个玩家库存槽，不接受世界容器或自定义查看菜单。
+     */
+    public static InventoryMenuSnapshot inventoryMenu(
+            BotServerPlayer player) {
+        requireServerThread(player);
+        if (player.containerMenu != player.inventoryMenu) {
+            throw new IllegalStateException(
+                    "native player inventory menu must be active");
+        }
+        List<ItemStackFingerprint> slots = new ArrayList<>(
+                PlayerInventoryMenuLayout.INVENTORY_SLOT_COUNT);
+        for (int inventorySlot = 0;
+                inventorySlot
+                        < PlayerInventoryMenuLayout
+                                .INVENTORY_SLOT_COUNT;
+                inventorySlot++) {
+            slots.add(MinecraftInteractionView.itemFingerprint(
+                    player,
+                    player.getInventory().getItem(inventorySlot)));
+        }
+        return new InventoryMenuSnapshot(
+                player.inventoryMenu.containerId,
+                player.inventoryMenu.getStateId(),
+                player.getInventory().selected,
+                MinecraftInteractionView.itemFingerprint(
+                        player,
+                        player.inventoryMenu.getCarried()),
+                List.copyOf(slots));
+    }
+
+    public static int inventoryCount(
+            BotServerPlayer player,
+            ItemStackFingerprint expectedItem) {
+        requireServerThread(player);
+        return MinecraftInteractionView.inventoryCount(
+                player,
+                Objects.requireNonNull(
+                        expectedItem, "expectedItem"));
     }
 
     public static BlockTargetFingerprint block(
