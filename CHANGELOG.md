@@ -80,6 +80,13 @@
   事务、`clicked()` 故障注入、生命周期 `PENDING` continuation、TaskSensor/Reservation
   生产接线、Checkpoint、工具/副手、自卫、craft/chest/furnace/DAG，以及两次启动、独立
   专用服和多 Bot soak 仍未完成。
+- 新增原版死亡消费的 V2 pre-drop tombstone 与 playerdata handoff：只有真实进入
+  `keepInventory=false` 背包消费才登记事务，死亡体和 successor 分别执行两次精确保存、
+  主副本/目录刷盘和有界回读；精确经验交接、4 次/20 Tick 有界重试、全服同 UUID topology
+  验权和旧 predecessor 永久 no-save poison 防止已掉落物品被旧 NBT 或迟到保存复活。
+  该协议优先防复制，不是掉落实体的 exactly-once 世界 WAL；真实二次启动与断电仍未验收。
+- 接受 [ADR-0016](docs/adr/0016-durable-vanilla-death-consumption-handoff.md)，冻结死亡
+  tombstone、双份 playerdata 提交、经验 handoff、失败关闭与回滚边界。
 
 ### 加固
 
@@ -99,9 +106,13 @@
   `176×256` 画布在可用逻辑高度不足时需要降低 GUI Scale；
 - 普通世界交互使用服务端玩家路径，并以方块、实体和物品前后状态验证，不以调用成功代替
   世界成功。
-- 将 GameTest 拆为 25 个 batch，静态 Bot 预算均不超过默认 `server_player.maxBots=8`；
-  Build #133/#135 暴露的 batch 超配已通过定向声音、绑定拒绝和生命周期场景拆批修复，
-  未提高 `maxBots` 掩盖资源合同。
+- 当前 GameTest 在 Build #163 实际运行 40 个 batch，并在默认
+  `server_player.maxBots=8` 下完成；Build #133/#135 暴露的 batch 超配已通过定向声音、
+  绑定拒绝和生命周期场景拆批修复，未提高 `maxBots` 掩盖资源合同。
+- 死亡保存许可改为一次性外层 owner，同步递归保存一律抑制；生命周期事务 fence 与旧
+  body 永久 poison 分离，successor 只释放自己继承的 fence。ItemEntity 回调内嵌套
+  `die()` 只允许外层执行一次物品/经验掉落，迟到 predecessor 的死亡与保存不能扰动当前
+  ACTIVE successor；修改 `AUTO_RESPAWN` 的场景拆为独立 batch，消除全局配置竞态。
 - P3 事件、快照、事实、revision scope、声音候选、扫描和证据全部有界；死亡、重生、
   换维度、卸载、回滚和停服关闭旧 generation 认知；
 - 定向声音 ingress 按 generation 分队列、限制动态公平份额并 round-robin 抽取；全局
@@ -220,6 +231,11 @@
   `9fec0388c36870248a204d7ff21b1b663b62bebf` 使用 Temurin Java 21.0.11 执行完整
   `clean build runGameTestServer`；严格编译、Gradle `test`、55/55 GameTest、clean
   build 与 JAR upload 全部通过。
+- [Build #163](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30897970406) 使用
+  Temurin Java 21 执行完整 `clean build runGameTestServer`；Gradle `test`、91/91
+  GameTest、clean build 与 JAR 上传均通过，日志实际运行 40 个 batch。当前源码静态计数
+  为 437 个 JUnit `@Test` 方法、34 个 P5 GameTest 和 378 个 Java 源文件；这些不是 CI
+  日志逐项执行数，P5A 退出门仍未关闭。
 
 ### 文档
 
@@ -231,6 +247,7 @@
 - 记录虚拟连接仍缺发送回调、keepalive/teleport ack 和长时间在线验证；
 - 补充当前真实配置键、命令语义、开发构件安装边界和排错；
 - 扩充 ADR 索引及第三方研究/许可证边界；
+- 新增 ADR-0016，并同步死亡持久化的当前实现、故障边界与 Build #163 证据；
 - 明确 DeepSeek、技能和长期记忆仍未实现；P2 动作、bot 自身背包与 P3 感知按实际自动化
   验证状态报告；客户端 API Key 仍只完成本地管理基础。
 - 明确临时名称 UUID 的大小写语义、审查分支过渡规则和双端开发测试边界。

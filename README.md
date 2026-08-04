@@ -14,14 +14,16 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 > 真实玩家伤害/效果兼容基线和默认关闭的受限 Terrain Assist；Build #97 已通过全仓
 > 55/55 GameTest，其中 P4 直接场景 28 个。P5 以
 > [Draft PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 作为远端验收载体；
-> [Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812) 已通过
-> Java 21 `clean build`、Gradle `test`、83/83 NeoForge GameTest 和 JAR 上传。当前源码
-> 静态计数为 380 个 JUnit `@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件；这些是
+> [Build #163](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30897970406) 已通过
+> Java 21 `clean build`、Gradle `test`、91/91 NeoForge GameTest 和 JAR 上传。当前源码
+> 静态计数为 437 个 JUnit `@Test` 方法、34 个 P5 GameTest、378 个 Java 源文件；这些是
 > 源码计数，不是 CI 日志逐项报告的测试执行数。通用 `InventoryMenu SWAP_SEQUENCE` 已支持
 > 1～16 次点击、最多 8 个槽位，每 Tick 只执行一次点击；真实五步场景验证了跨 Tick
 > `PENDING`、固定安全端点、旧 owner/新 claimant 双 ticket 阻塞和精确 progress revision。
 > 通用 equipment/offhand 槽仍返回 `UNSUPPORTED`，盔甲继续走独立专用路径，不能据此计入
-> P5A 退出门。项目还没有完整生存技能、跨 menu 统一事务、通用世界
+> P5A 退出门。新增死亡纵切会在原版实际消费背包前发布耐久 tombstone，只有主副本、备份
+> 与 successor 的精确交接全部提交后才激活新 generation；这优先防复制，但不承诺掉落
+> exactly-once。项目还没有完整生存技能、跨 menu 统一事务、通用世界
 > 容器、聊天、DeepSeek 或长期记忆。保存 Key 不代表 AI 已经接通，方块观察也不代表能读取
 > 箱子内容。
 > 请以
@@ -66,6 +68,10 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - 登录时替换 packet listener 的窄 Mixin；
 - 重生时保持 `BotServerPlayer` 类型的窄 Mixin；
 - 只在原版死亡真正完成后进入重生流程；
+- `keepInventory=false` 且原版实际进入背包消费时，先发布 V2 pre-drop tombstone；旧 body
+  以空背包死亡态双保存、刷盘并回读 `.dat/.dat_old`，successor 再按精确经验 handoff
+  双保存后才进入 ACTIVE；已移除 predecessor 永久禁存，marker 到世界掉落保存之间仍有
+  选择防复制而可能丢物的崩溃窗口；
 - 临时、确定性的名字派生 UUID；
 - schema v1 持久 roster、规范名字、稳定 bot/player UUID、owner 和服务器实例 ID；
 - 只有持久 owner 可进入客户端凭据配置；
@@ -73,8 +79,9 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - 客户端可创建/替换凭据 profile、绑定/解绑 bot；每 bot 使用独立 agentId，profile 删除
   尚未实现；
 - `PlayerListMixin` 除登录 listener 与重生类型包装外，还为 P5 异常隔离提供一次性
-  no-save `PlayerList.remove` 保存包装；它不影响正常玩家或正常卸载，当前生命周期路径已由
-  Build #137 的 GameTest 验证，`clicked()` 回调故障注入仍待补；
+  no-save `PlayerList.remove` 保存包装；事务期 fence 与已移除旧 body 的永久 no-save
+  poison 分离，Build #163 已验证迟到旧 body 不能覆盖 successor；跨 menu `clicked()`
+  故障注入仍待补；
 - 既有 playerdata 检测与保存位置保留；
 - 服务器线程生命周期管理；
 - 自动重生、维度切换基础路径和区块跟踪刷新；
@@ -222,6 +229,13 @@ JAR upload 均通过；GameTest 日志明确报告 `All 55 required tests passed
 不是 CI 日志打印的执行数。构件 ID 为 `8721162398`，大小 `838883` bytes，SHA-256
 `b36a69f607e4f0e028e2afff15946a03bddd64004638c2d64d479c704706ddcd`。
 
+P5 当前候选由
+[GitHub Actions Build #163](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30897970406)
+使用 Temurin Java 21 执行同一完整命令。严格编译、Gradle `test`、clean build、JAR 上传
+均通过；日志明确报告 `All 91 required tests passed`，实际运行 40 个 batch。当前源码
+静态计数为 437 个 JUnit `@Test` 方法、34 个 P5 GameTest、378 个 Java 源文件；真实二次
+服务器启动、断电、跨平台目录刷盘、独立专用服和多 Bot soak 尚未验收。
+
 更完整的步骤见：
 
 - [安装与当前用法](docs/INSTALLATION_AND_USAGE_CN.md)
@@ -334,9 +348,9 @@ P0 工程基线
 → P10 硬化与发布
 ```
 
-P2、P3 与 P4 自动化退出门均已关闭。P5 的 PR #6 已由 Build #137 完成 Java 21
-`clean build`、Gradle `test`、83/83 GameTest 和 JAR 上传；25 个 GameTest batch 的静态
-Bot 预算均不超过默认 8，Build #133/#135 暴露的超配已通过拆批修复。P5A 仍缺跨 menu
+P2、P3 与 P4 自动化退出门均已关闭。P5 候选已由 Build #163 完成 Java 21
+`clean build`、Gradle `test`、91/91 GameTest 和 JAR 上传；40 个实际运行 batch 在默认
+`maxBots=8` 下完成，Build #133/#135 暴露的超配仍由拆批而非提高上限修复。P5A 仍缺跨 menu
 统一事务、`clicked()` 故障注入、生命周期 `PENDING` continuation、TaskSensor/Reservation
 生产接线、Checkpoint、工具/副手、自卫、craft/chest/furnace/DAG，以及两次启动、独立
 专用服和多 bot soak；模组自定义 menu 和专用语义属于 P8。

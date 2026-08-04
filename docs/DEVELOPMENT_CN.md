@@ -44,9 +44,9 @@ gradlew.bat --no-daemon clean build
 P2 已加入生命周期、移动、交互和库存 GameTest；P3 加入有限感知与世界事实场景；P4
 加入导航、安全、玩家规则兼容与 Terrain Assist 场景；P5 以
 [Draft PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 作为远端验收载体，
-[Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812) 已通过
-Java 21 `clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传。源码静态计数为
-380 个 JUnit `@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件，不是 CI 日志逐项
+[Build #163](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30897970406) 已通过
+Java 21 `clean build`、Gradle `test`、91/91 GameTest 与 JAR 上传。源码静态计数为
+437 个 JUnit `@Test` 方法、34 个 P5 GameTest、378 个 Java 源文件，不是 CI 日志逐项
 执行数；P5A 阶段退出门仍未通过。涉及
 Minecraft 行为的提交必须运行：
 
@@ -171,8 +171,8 @@ src/main/templates/
 | 类 | 目的 | 修改行为 |
 |---|---|---|
 | `ConnectionAccessor` | 为本地连接设置私有 channel | 只暴露字段写入 |
-| `PlayerListMixin` | 登录时换 listener；重生时保持 bot 类型；异常隔离时抑制一次不安全保存 | 两个精确 `NEW` 包装和一个精确 `save` 调用包装 |
-| `ServerPlayerDeathMixin` | 正常死亡完成后通知 manager | TAIL 观察，不改变死亡结果 |
+| `PlayerListMixin` | 登录时换 listener；重生时保持 bot 类型；按精确 fence/permit 拦截不安全保存 | 两处 `NEW` 包装、`save` HEAD 可取消注入和 `remove` 内 `save` 包装 |
+| `ServerPlayerDeathMixin` | 标记正常死亡 TAIL 并通知 manager | 取消死亡的早退路径不进入；业务收口留在 BotPlayer/生命周期层 |
 
 修改 Mixin 时必须：
 
@@ -319,7 +319,7 @@ P4 主线程/异步边界是：
 
 P5 当前源码建立有界 Skill 核心、确定性 DAG 校验、TTL 资源预留、Safety handoff、
 主动进食、扫描 carried inventory `0..35` 的基础盔甲升级，以及通用
-`InventoryMenu SWAP_SEQUENCE`。Build #137 已验证 1～16 次点击、最多 8 个槽位、逐 Tick
+`InventoryMenu SWAP_SEQUENCE`。Build #163 已验证 1～16 次点击、最多 8 个槽位、逐 Tick
 一击、跨 Tick `PENDING`、固定端点、双 ticket 阻塞和精确 revision；真实五步场景直接
 覆盖该合同。单条纵切不能据此计入 P5A 退出门。
 管理入口为：
@@ -354,6 +354,19 @@ P5 当前源码建立有界 Skill 核心、确定性 DAG 校验、TTL 资源预�
   retirement 回执只能保持或降级，不能用二次 cleanup 把 unsafe 改写为 safe；
 - replacement/respawn 收敛只允许一个真实排队重试；异常身份的 teardown 必须使用
   一次性 no-save removal 门闩，不能让 `PlayerList.remove` 隐式保存未验证布局；
+- 只有 `dropEquipment()` 真实进入 `keepInventory=false` 消费、pre-drop tombstone 已耐久
+  发布且原版方法正常返回，才能产生 `VANILLA_DEATH_CONSUMED`；死亡 TAIL 未取得该回执时
+  必须按 `PRESERVED` 收口，不能只看 gamerule 推断；
+- 原版已经掉落的布局只允许“消费并关闭”，不得再执行普通菜单补偿把物品回滚进旧 body；
+  ticket 必须绑定 transaction、bot、generation、Tick 与精确经验策略；
+- 死亡 playerdata 提交顺序固定为 `save × 2 → force .dat/.dat_old/目录 → bounded read × 2
+  → clear marker → force marker 目录`。任一步失败都不能清票、释放 fence 或开放重生；
+- 死亡体和 successor 的持久化各最多尝试 4 次，名义间隔 20 Tick，接近原 retirement
+  deadline 时向截止 Tick 收敛；耗尽后保留当前阶段已耐久的 marker、handoff 或
+  canonical-alive NBT 并 no-save 隔离，不得每 Tick 无限写盘；
+- successor 只有在两份 NBT 都证明存活、空背包、精确经验且 handoff 消失后，才可释放
+  继承 fence；已移除 predecessor 必须永久 no-save。精确保存许可只放行首个外层 save，
+  同步递归保存必须被抑制；
 - 食物属性通过当前 `ItemStack` 与 Bot 身体动态查询；当前只接受无剩余容器、无声明
   有害效果且无自定义完成逻辑的原版基础 `Item` 食物，可疑炖菜、紫颂果、蜂蜜瓶和模组
   食物默认拒绝；
@@ -376,7 +389,8 @@ P5 当前源码建立有界 Skill 核心、确定性 DAG 校验、TTL 资源预�
 
 完整冻结合同与退出门见
 [P5 调研设计](AI_PLAYER_RESEARCH_AND_P5_DESIGN_CN.md)和
-[ADR-0015](adr/0015-bounded-skill-runtime-and-menu-transactions.md)。
+[ADR-0015](adr/0015-bounded-skill-runtime-and-menu-transactions.md)。死亡消费的磁盘与交接合同见
+[ADR-0016](adr/0016-durable-vanilla-death-consumption-handoff.md)。
 
 ## 测试层次
 
@@ -413,11 +427,12 @@ build 与 JAR upload，日志明确 `All 55 required tests passed`，其中 P4 �
 客户端组合、独立专用服、保护模组矩阵和多 Bot soak 仍需专项验证。
 
 P5 当前远端证据为
-[Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812)：Java 21
-`clean build`、Gradle `test`、83/83 GameTest 和 JAR 上传均成功。源码静态计数为 380 个
-JUnit `@Test` 方法、26 个 P5 GameTest 与 353 个 Java 源文件；这些不是 CI 日志逐项计数。
-25 个 GameTest batch 的静态 Bot 预算均不超过默认 8；Build #133/#135 暴露的超配通过
-拆批修复，没有提高 `server_player.maxBots`。两次服务器启动、独立专用服和多 Bot soak
+[Build #163](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30897970406)：Java 21
+`clean build`、Gradle `test`、91/91 GameTest 和 JAR 上传均成功。源码静态计数为 437 个
+JUnit `@Test` 方法、34 个 P5 GameTest 与 378 个 Java 源文件；这些不是 CI 日志逐项计数。
+日志中的 40 个实际运行 batch 在默认 `server_player.maxBots=8` 下完成；Build #133/#135
+暴露的超配仍通过拆批修复，没有提高上限。真实进程崩溃/断电、第二次服务器启动恢复、
+Windows 或其他文件系统的目录刷盘、模组化 XP/掉落事件矩阵、独立专用服和多 Bot soak
 仍需专项验证。
 
 P5 GameTest 使用 `P5GameTestSupport` 显式传入固定 Bot 名字；清理只卸载活动 Bot，
