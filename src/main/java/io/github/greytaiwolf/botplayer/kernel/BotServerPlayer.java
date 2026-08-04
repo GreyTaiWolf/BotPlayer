@@ -156,6 +156,12 @@ public final class BotServerPlayer extends ServerPlayer {
             armDeathRetirementSaveFence();
             return false;
         }
+        /*
+         * 正常伤害与 kill 路径会在 die 之前把生命降到零，但公开 die 调用
+         * 本身不负责这一步。TAIL 已证明死亡未被取消，此处只规范死亡活性，
+         * 完整背包、carried 与经验仍由后续持久化事务按原顺序收口。
+         */
+        setHealth(0.0F);
         attempt.normalCompletionObserved = true;
         return true;
     }

@@ -71,8 +71,10 @@ public final class P5DeathRetirementGameTests {
             "p5_death_retirement_vanilla_consumed";
     private static final String SPECTATOR_BATCH =
             "p5_death_retirement_spectator_preserved";
-    private static final String REENTRY_BATCH =
-            "p5_death_retirement_reentry";
+    private static final String LATE_PREDECESSOR_BATCH =
+            "p5_death_retirement_late_predecessor";
+    private static final String DROP_REENTRY_BATCH =
+            "p5_death_retirement_drop_reentry";
     private static final int TIMEOUT_TICKS = 420;
     private static final int WAIT_TICKS = 180;
     private static final int WAL_TIMEOUT_TICKS = 540;
@@ -480,7 +482,7 @@ public final class P5DeathRetirementGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = REENTRY_BATCH,
+            batch = LATE_PREDECESSOR_BATCH,
             timeoutTicks = WAL_TIMEOUT_TICKS)
     public static void latePredecessorDeathCannotDisturbActiveSuccessor(
             GameTestHelper helper) {
@@ -579,7 +581,7 @@ public final class P5DeathRetirementGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = REENTRY_BATCH,
+            batch = DROP_REENTRY_BATCH,
             timeoutTicks = WAL_TIMEOUT_TICKS)
     public static void itemDropCallbackReentrantDeathConsumesOnlyOnce(
             GameTestHelper helper) {
@@ -645,6 +647,9 @@ public final class P5DeathRetirementGameTests {
             predecessor.experienceLevel = 1;
             predecessor.totalExperience = 7;
             predecessor.experienceProgress = 0.0F;
+            P2GameTestSupport.require(
+                    predecessor.getHealth() > 0.0F,
+                    "Direct-die reentry fixture did not start from a live body");
 
             AtomicInteger reentrantDeaths = new AtomicInteger();
             Consumer<EntityJoinLevelEvent> listener = event -> {
@@ -669,6 +674,10 @@ public final class P5DeathRetirementGameTests {
                     predecessor.damageSources().generic());
             P2GameTestSupport.require(
                     reentrantDeaths.get() == 1
+                            && predecessor.isDeadOrDying()
+                            && Float.floatToRawIntBits(
+                                            predecessor.getHealth())
+                                    == Float.floatToRawIntBits(0.0F)
                             && exactNearbyItemCount(
                                             predecessor,
                                             Items.DIAMOND)
@@ -679,7 +688,7 @@ public final class P5DeathRetirementGameTests {
                                     == 1
                             && nearbyExperienceTotal(predecessor)
                                     == 7,
-                    "Synchronous item-join death reentry duplicated or lost item/XP drops");
+                    "Synchronous item-join death reentry lost death liveness or duplicated item/XP drops");
 
             P2GameTestSupport.awaitCondition(
                     helper,
