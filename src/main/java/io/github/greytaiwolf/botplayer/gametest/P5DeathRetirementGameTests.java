@@ -46,6 +46,7 @@ import net.minecraft.nbt.Tag;
 import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.level.GameType;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.GameRules;
@@ -715,6 +716,192 @@ public final class P5DeathRetirementGameTests {
         }
     }
 
+    private static void beginLatePredecessorDeath(
+            GameTestHelper helper,
+            TestBot bot,
+            BotServerPlayer predecessor,
+            Path primary,
+            Path backup,
+            Path marker,
+            UUID botId,
+            long generation,
+            P2GameTestSupport.Cleanup cleanup) {
+        try {
+            BotServerPlayer successor = bot.manager()
+                    .resolveActive(botId, generation + 1L)
+                    .orElseThrow();
+            PlayerListAccessor playerList =
+                    (PlayerListAccessor)
+                            (Object) helper.getLevel()
+                                    .getServer()
+                                    .getPlayerList();
+            successor.getInventory().clearContent();
+            successor.getInventory().selected = 6;
+            successor.getInventory().setItem(
+                    12, new ItemStack(Items.EMERALD));
+            successor.inventoryMenu.setCarried(ItemStack.EMPTY);
+            successor.inventoryMenu.broadcastChanges();
+            playerList.botplayer$saveExactPlayer(successor);
+            playerList.botplayer$saveExactPlayer(successor);
+            PlayerDataFiles committed =
+                    snapshotPlayerData(primary, backup);
+
+            long lateDeathTick = currentTick(bot);
+            predecessor.die(
+                    predecessor.damageSources().generic());
+            P2GameTestSupport.require(
+                    !Files.exists(marker)
+                            && bot.manager()
+                                    .resolveActive(
+                                            botId,
+                                            generation + 1L)
+                                    .orElse(null)
+                                    == successor
+                            && successor.getInventory()
+                                    .getItem(12)
+                                    .is(Items.EMERALD),
+                    "Late predecessor death disturbed the ACTIVE successor or armed a tombstone");
+
+            predecessor.getInventory().clearContent();
+            predecessor.getInventory().selected = 8;
+            predecessor.getInventory().setItem(
+                    10, new ItemStack(Items.DIAMOND));
+            playerList.botplayer$saveExactPlayer(predecessor);
+            playerList.botplayer$saveExactPlayer(predecessor);
+            P2GameTestSupport.require(
+                    playerDataMatches(
+                            primary, backup, committed),
+                    "Late predecessor exact save crossed its permanent no-save poison");
+
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    12,
+                    () -> currentTick(bot) >= lateDeathTick + 2L,
+                    "Late predecessor death did not reach its observation window",
+                    cleanup,
+                    () -> verifyLatePredecessorDeath(
+                            helper,
+                            bot,
+                            predecessor,
+                            successor,
+                            primary,
+                            backup,
+                            marker,
+                            committed,
+                            botId,
+                            generation,
+                            cleanup));
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            helper.fail(safeMessage(exception));
+        }
+    }
+
+    private static void verifyLatePredecessorDeath(
+            GameTestHelper helper,
+            TestBot bot,
+            BotServerPlayer predecessor,
+            BotServerPlayer successor,
+            Path primary,
+            Path backup,
+            Path marker,
+            PlayerDataFiles committed,
+            UUID botId,
+            long generation,
+            P2GameTestSupport.Cleanup cleanup) {
+        try {
+            PlayerListAccessor playerList =
+                    (PlayerListAccessor)
+                            (Object) helper.getLevel()
+                                    .getServer()
+                                    .getPlayerList();
+            playerList.botplayer$saveExactPlayer(predecessor);
+            P2GameTestSupport.require(
+                    bot.manager()
+                                    .resolveActive(
+                                            botId,
+                                            generation + 1L)
+                                    .orElse(null)
+                                    == successor
+                            && successor.runtimeHandle()
+                                    == predecessor.runtimeHandle()
+                            && successor.runtimeHandle()
+                                    .generation()
+                                    == generation + 1L
+                            && bot.manager()
+                                    .inspectActionTarget(
+                                            botId,
+                                            generation + 1L)
+                                    .status()
+                                    == BotActionTargetStatus.ACTIVE
+                            && helper.getLevel()
+                                            .getServer()
+                                            .getPlayerList()
+                                            .getPlayer(botId)
+                                    == successor
+                            && helper.getLevel()
+                                            .getPlayerByUUID(botId)
+                                    == successor
+                            && successor.getInventory()
+                                    .getItem(12)
+                                    .is(Items.EMERALD)
+                            && successor.getInventory()
+                                            .getItem(12)
+                                            .getCount()
+                                    == 1
+                            && !Files.exists(marker)
+                            && playerDataMatches(
+                                    primary, backup, committed),
+                    "Late predecessor death changed successor authority, generation, inventory, or persistence");
+            cleanup.run();
+            helper.succeed();
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            helper.fail(safeMessage(exception));
+        }
+    }
+
+    private static void verifyReentrantDeathDrops(
+            GameTestHelper helper,
+            TestBot bot,
+            BotServerPlayer predecessor,
+            Path marker,
+            UUID botId,
+            long generation,
+            AtomicInteger reentrantDeaths,
+            P2GameTestSupport.Cleanup cleanup) {
+        try {
+            P2GameTestSupport.require(
+                    reentrantDeaths.get() == 1
+                            && exactNearbyItemCount(
+                                            predecessor,
+                                            Items.DIAMOND)
+                                    == 1
+                            && exactNearbyItemCount(
+                                            predecessor,
+                                            Items.EMERALD)
+                                    == 1
+                            && nearbyExperienceTotal(predecessor)
+                                    == 7
+                            && predecessor.getInventory().isEmpty()
+                            && predecessor.runtimeHandle()
+                                    .generation()
+                                    == generation
+                            && bot.manager()
+                                    .inspectActionTarget(
+                                            botId, generation)
+                                    .status()
+                                    == BotActionTargetStatus.NOT_ACTIVE
+                            && !Files.exists(marker),
+                    "Reentrant death produced a second physical item/XP consumption or changed retirement authority");
+            cleanup.run();
+            helper.succeed();
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            helper.fail(safeMessage(exception));
+        }
+    }
+
     private static void beginVanillaConsumedDeath(
             GameTestHelper helper,
             TestBot bot,
@@ -1381,6 +1568,32 @@ public final class P5DeathRetirementGameTests {
                 player.getBoundingBox().inflate(8.0D));
     }
 
+    private static int exactNearbyItemCount(
+            BotServerPlayer player, Item expectedItem) {
+        return nearbyItemDrops(player).stream()
+                .filter(item -> item.getItem().is(expectedItem))
+                .mapToInt(item -> item.getItem().getCount())
+                .sum();
+    }
+
+    private static int nearbyExperienceTotal(
+            BotServerPlayer player) {
+        return player.serverLevel()
+                .getEntitiesOfClass(
+                        ExperienceOrb.class,
+                        player.getBoundingBox().inflate(8.0D))
+                .stream()
+                .mapToInt(orb -> orb.getValue()
+                        * experienceOrbCount(orb))
+                .sum();
+    }
+
+    private static int experienceOrbCount(ExperienceOrb orb) {
+        CompoundTag saved = new CompoundTag();
+        orb.saveWithoutId(saved);
+        return Math.max(1, saved.getInt("Count"));
+    }
+
     private static boolean isCanonicalEmptyAlive(
             CompoundTag playerData) {
         return playerData.getList(
@@ -1413,6 +1626,30 @@ public final class P5DeathRetirementGameTests {
             Path primary, Path backup) {
         return new PlayerDataFiles(
                 snapshotFile(primary), snapshotFile(backup));
+    }
+
+    private static boolean playerDataMatches(
+            Path primary,
+            Path backup,
+            PlayerDataFiles expected) {
+        return fileMatches(primary, expected.primary())
+                && fileMatches(backup, expected.backup());
+    }
+
+    private static boolean fileMatches(
+            Path file, FileSnapshot expected) {
+        try {
+            boolean exists = Files.exists(file);
+            return exists == expected.existed()
+                    && (!exists
+                            || Arrays.equals(
+                                    Files.readAllBytes(file),
+                                    expected.bytes()));
+        } catch (IOException exception) {
+            throw new IllegalStateException(
+                    "Could not verify death-retirement player data",
+                    exception);
+        }
     }
 
     private static FileSnapshot snapshotFile(Path file) {
