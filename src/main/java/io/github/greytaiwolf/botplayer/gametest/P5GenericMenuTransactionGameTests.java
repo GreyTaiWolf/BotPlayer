@@ -499,8 +499,32 @@ public final class P5GenericMenuTransactionGameTests {
             P2GameTestSupport.require(
                     !predecessor.hasDisconnectPreSaveFence()
                             && !replacement
-                                    .hasDisconnectPreSaveFence(),
-                    "Listener-body-drift fail-closed path retained a save fence after exact removal");
+                                    .hasDisconnectPreSaveFence()
+                            && !predecessor
+                                    .hasDeathRetirementSaveFence()
+                            && !replacement
+                                    .hasDeathRetirementSaveFence(),
+                    "Listener-body-drift fail-closed path retained a transient save fence after exact removal");
+            predecessor.getInventory().clearContent();
+            predecessor.getInventory().setItem(
+                    0, new ItemStack(Items.DIAMOND));
+            replacement.getInventory().clearContent();
+            replacement.getInventory().setItem(
+                    1, new ItemStack(Items.DIAMOND));
+            PlayerListAccessor playerList =
+                    (PlayerListAccessor)
+                            (Object) helper.getLevel()
+                                    .getServer()
+                                    .getPlayerList();
+            playerList.botplayer$saveExactPlayer(predecessor);
+            playerList.botplayer$saveExactPlayer(replacement);
+            P2GameTestSupport.require(
+                    Arrays.equals(
+                                    baselineBytes,
+                                    readAllBytes(playerData))
+                            && savedInventoryLayout(playerData)
+                                    .equals(baseline),
+                    "A retired listener-drift body overwrote playerdata after transient fences cleared");
 
             P2GameTestSupport.awaitOutcome(
                     helper,

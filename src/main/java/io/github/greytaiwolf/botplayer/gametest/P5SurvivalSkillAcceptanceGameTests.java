@@ -782,6 +782,11 @@ public final class P5SurvivalSkillAcceptanceGameTests {
                     1, new ItemStack(Items.COBBLESTONE));
             playerList.botplayer$saveExactPlayer(predecessor);
             PersistedLayout baseline = savedLayout(playerData);
+            P2GameTestSupport.require(
+                    baseline.equals(
+                            new PersistedLayout(
+                                    1, Set.of(1))),
+                    "Respawn-fence fixture did not persist the predecessor baseline");
 
             predecessor.suppressPlayerDataSaveUntilReleased();
             predecessor.kill();
@@ -835,20 +840,28 @@ public final class P5SurvivalSkillAcceptanceGameTests {
                                 replacement[0]);
                         P2GameTestSupport.require(
                                 savedLayout(playerData)
-                                        .equals(baseline),
-                                "Authoritative respawn body did not inherit the persistent no-save fence");
+                                        .equals(
+                                                new PersistedLayout(
+                                                        6,
+                                                        Set.of(12))),
+                                "Authoritative successor did not release its inherited persistent fence");
 
-                        replacement[0]
-                                .releasePlayerDataSaveSuppression();
+                        predecessor.getInventory().clearContent();
+                        predecessor.getInventory().selected = 8;
+                        predecessor.getInventory().setItem(
+                                10,
+                                new ItemStack(Items.DIAMOND));
                         playerList.botplayer$saveExactPlayer(
-                                replacement[0]);
+                                predecessor);
+                        playerList.botplayer$saveExactPlayer(
+                                predecessor);
                         P2GameTestSupport.require(
                                 savedLayout(playerData)
                                         .equals(
                                                 new PersistedLayout(
                                                         6,
                                                         Set.of(12))),
-                                "Explicit authoritative respawn-body fence release did not restore exact saves");
+                                "A delayed predecessor save overwrote the authoritative successor layout");
                         cleanup.run();
                         helper.succeed();
                     });
