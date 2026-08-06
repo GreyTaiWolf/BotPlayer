@@ -9,7 +9,7 @@
 | 想了解项目 | 根目录 [README](../README.md) → [当前实现状态](IMPLEMENTATION_STATUS_CN.md) |
 | 想安装测试 | [安装与当前用法](INSTALLATION_AND_USAGE_CN.md) → [配置说明](CONFIGURATION_CN.md) |
 | 想参与开发 | 根目录 [AGENTS.md](../AGENTS.md) → [开发指南](DEVELOPMENT_CN.md) → [参与开发](../CONTRIBUTING.md) |
-| 想理解整体设计 | [AI 玩家调研与 P2 重新基线](AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md) → [P3 感知调研设计](AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md) → [P4 导航与安全反射设计](AI_PLAYER_RESEARCH_AND_P4_DESIGN_CN.md) → [架构与 P0–P10 路线图](ARCHITECTURE_AND_ROADMAP_CN.md) |
+| 想理解整体设计 | [AI 玩家调研与 P2 重新基线](AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md) → [P3 感知调研设计](AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md) → [P4 导航与安全反射设计](AI_PLAYER_RESEARCH_AND_P4_DESIGN_CN.md) → [P5 技能与第一条生存闭环设计](AI_PLAYER_RESEARCH_AND_P5_DESIGN_CN.md) → [玩家技术动作、真实建造与战斗设计](PLAYER_TECHNIQUE_BUILDING_COMBAT_DESIGN_CN.md) → [架构与 P0–P10 路线图](ARCHITECTURE_AND_ROADMAP_CN.md) |
 | 想核对 P2 验收 | [P2 完成验收报告](P2_COMPLETION_REPORT_CN.md) |
 | 想核对 P3 验收状态 | [P3 完成验收报告](P3_COMPLETION_REPORT_CN.md) |
 | 想核对 P4 验收状态 | [P4 完成验收报告](P4_COMPLETION_REPORT_CN.md) |
@@ -29,6 +29,8 @@
 | [P3_COMPLETION_REPORT_CN.md](P3_COMPLETION_REPORT_CN.md) | P3 自动化验收证据、已知限制与未验证边界 | 把自动化通过扩大成客户端、专用服或 soak 已验证 |
 | [AI_PLAYER_RESEARCH_AND_P4_DESIGN_CN.md](AI_PLAYER_RESEARCH_AND_P4_DESIGN_CN.md) | P4 调研、导航/L0、真实伤害/效果继承、模组兼容基线、预算与验收计划 | 代替最终实现与 CI 证据 |
 | [P4_COMPLETION_REPORT_CN.md](P4_COMPLETION_REPORT_CN.md) | P4 已实现能力、直接 GameTest、CI 证据和保留边界 | 宣称会主动使用药水、自动进食、正式战斗或兼容所有模组 |
+| [AI_PLAYER_RESEARCH_AND_P5_DESIGN_CN.md](AI_PLAYER_RESEARCH_AND_P5_DESIGN_CN.md) | P5A Skill/DAG、安全交接、菜单事务、检查点、资源预留与第一条生存闭环 | 宣称 P5A、制作、容器、正式战斗或生产链已经完成 |
+| [PLAYER_TECHNIQUE_BUILDING_COMBAT_DESIGN_CN.md](PLAYER_TECHNIQUE_BUILDING_COMBAT_DESIGN_CN.md) | `Action → Technique → Skill` 边界、跳劈/走位/瞄准、真实站位施工、蓝图工作包、拟人表现与 PT0–PT6 计划 | 代替实现状态，或宣称 Bot 已经会跳劈、盖房和完整战斗 |
 | [ARCHITECTURE_AND_ROADMAP_CN.md](ARCHITECTURE_AND_ROADMAP_CN.md) | 最终设计、代码边界、P0–P10 任务与验收 | 宣称路线图已经实现 |
 | [VANILLA_CAPABILITY_MATRIX_CN.md](VANILLA_CAPABILITY_MATRIX_CN.md) | 原版玩法逐项能力、成熟度和发布门槛 | 模组专用兼容承诺 |
 | [INSTALLATION_AND_USAGE_CN.md](INSTALLATION_AND_USAGE_CN.md) | 当前开发构件的安装、命令和排错 | 正式版承诺 |
@@ -82,6 +84,8 @@
 12. 是否把全服权威事件错误写成 bot 已感知知识，或把未加载区域写成空气；
 13. 是否把 P3 方块观察错误描述成容器内容读取；世界容器仍属于 P5A/P5B/P8。
 14. 是否把 P4 的通用避险错误描述成自动进食、主动用药或完整战斗；
-15. Terrain Assist 是否仍保持请求与服务端双门控、默认关闭和动作后重规划。
+15. Terrain Assist 是否仍保持请求与服务端双门控、默认关闭和动作后重规划；
+16. 是否把原子 `Action`、短时 `Technique`、任务级 `Skill` 和长期 `Plan/Goal` 混写；
+17. 是否把 Technique 设计或测试原语错误描述成跳劈、真实建造或完整战斗已经可用。
 
 文档默认使用中文；代码符号、命令、路径、协议字段和错误码保留原文。
