@@ -35,6 +35,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0014](0014-bounded-navigation-and-safety-plane.md) | 有界导航快照、分段路径与独立 L0 安全平面 | Accepted | P4 自动化退出门已通过 |
 | [ADR-0015](0015-bounded-skill-runtime-and-menu-transactions.md) | 有界技能运行时与统一菜单事务 | Accepted | P5A-0 设计冻结、开发中 |
 | [ADR-0016](0016-durable-vanilla-death-consumption-handoff.md) | 原版死亡消费的耐久交接与失败关闭 | Accepted | P5 死亡纵切已由 Build #163 验证 |
+| [ADR-0017](0017-bounded-player-technique-runtime.md) | `Action → Technique → Skill` 有界玩家技术动作层 | Accepted | PT0 设计基线；Technique、跳劈与真实施工尚未实现 |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
@@ -46,6 +47,12 @@ menu 事务、检查点和运行时资源预留；对应纵切片尚未通过前
 ADR-0016 固定 `keepInventory=false` 消费的 pre-drop tombstone、双份 playerdata 提交、
 一次性经验 handoff、旧 body 永久禁存和有界失败恢复；Build #163 只验证单进程故障边界，
 真实跨进程恢复仍未验收，且它不承诺掉落实体 exactly-once。
+
+ADR-0017 在 P2 原子 Action 与 P5 任务级 Skill 之间增加短生命周期 Technique FSM，用于
+渐进瞄准、跳劈、侧移攻击、蹲边放置、垫柱和临时脚手架。Technique 只编排已有 Action、
+Navigation 和 menu 合同，允许在互不冲突的 `ActionChannel` 上持有最多三个有界 child，
+且始终受 generation、L0 安全、权限、世界 revision、cleanup 和真实结果证据约束。该决策
+进入仓库只表示 PT0 设计完成，不表示任何战斗或建筑能力成熟度提升。
 
 ## 新 ADR 文件规则
 
