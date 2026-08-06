@@ -82,12 +82,20 @@ CREATED
 初始实现采用以下硬边界：
 
 - 每个 bot 同时最多一个会改变身体、视角、主副手或背包的前台 Technique；
-- 每个 Technique 同时最多持有一个未终结 Action/Navigation ticket；
+- 每个 `ActionChannel` 最多存在一个由该 Technique 持有的活动 child；
+- 一个 Technique 可同时持有少量互不冲突的 child Action，初始总并发硬上限为 3；
+- Navigation follower 与手工 `MOVE` child 不得同时占用移动控制；
 - 阶段数、动作数、局部重试、候选站位和总运行 Tick 均有明确上限；
 - 每 Tick 只进行 O(1) 状态推进和有限 DTO 判断，不进行无界方块/实体扫描；
 - 所有 world read 通过服务器线程构造的有界快照或现有服务接口完成；
 - Technique 只保存 `botId`、generation、ID、枚举、坐标、计数、revision 和不可变 DTO，
   不跨 Tick 长期持有 `Level`、`Entity`、`ItemStack`、`Menu` 等活动对象。
+
+允许少量不冲突 child 的理由是，真实玩家技巧需要同时维持不同输入通道，例如：
+
+- `MOVE` 保持冲刺或侧移，同时 `MAIN_HAND + INTERACT` 攻击；
+- `MOVE` 保持蹲姿，同时 `LOOK` 对准并 `MAIN_HAND + INTERACT` 放置；
+- `LOOK` 跟踪目标，同时 `MAIN_HAND` 维持拉弓。
 
 ### 3. Technique 不建立第二套动作或输入所有权
 
@@ -97,18 +105,20 @@ Technique 只能通过既有 `BotActionRuntime`、`NavigationService`、菜单�
 - 直接调用 `setBlock`、`hurt`、`teleportTo` 或修改背包/NBT；
 - 绕过 `ActionChannel`、`ControlArbiter`、`PlayerInputController` 或保护事件；
 - 伪造攻击命中、暴击、方块放置或物品消耗；
-- 在 Action 尚未终结时提交冲突动作；
+- 在任一目标通道仍由未终结 child 占用时提交冲突动作；
+- 同时运行 Navigation follower 与冲突的手工移动 child；
 - 把“没有抛异常”当作成功。
 
 Technique 可以拥有自己的 `techniqueRunId` 与阶段 revision，但 Action 的幂等键、通道租约、
-副作用和 cleanup 仍由 P2 动作层权威管理。
+副作用和 cleanup 仍由 P2 动作层权威管理。Technique 终结前必须取得全部 child 的终态或
+安全 cleanup 回执。
 
 ### 4. L0 安全拥有最高抢占权
 
 L0 安全反射可在任意 Technique 阶段抢占。Technique 收到安全 handoff 后必须：
 
 1. 停止提交新动作；
-2. 等待当前 Action 按既有合同完成或清理；
+2. 等待所有活动 child Action 按既有合同完成或清理；
 3. 释放临时 Technique 资源；
 4. 返回可恢复的安全边界或明确失败；
 5. 由 Skill 在危险解除后重新观察并决定是否重新启动 Technique。
@@ -242,10 +252,11 @@ ActionOutcome、失败码、超时、清理和最终世界验证。
 ### 纯 Java
 
 - FSM 合法/非法转换；
-- 阶段、动作数、Tick、重试和候选上限；
+- 阶段、动作数、Tick、重试、并发 child 和候选上限；
+- 相同/不同 ActionChannel 的并发与冲突；
 - generation/revision 失效；
 - Action 成功、失败、取消、迟到和重复回执；
-- L0 抢占、cleanup 与重新创建；
+- L0 抢占、全部 child cleanup 与重新创建；
 - 确定性风格种子与回放一致性。
 
 ### NeoForge GameTest
