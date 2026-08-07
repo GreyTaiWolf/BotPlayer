@@ -22,13 +22,14 @@ public record ProviderHealth(
         observedAt = AiChecks.instant(observedAt, "observedAt");
         retryAfter = Objects.requireNonNull(
                 retryAfter, "retryAfter");
-        retryAfter.ifPresent(value -> {
-            AiChecks.instant(value, "retryAfter value");
-            if (value.isBefore(observedAt)) {
+        if (retryAfter.isPresent()) {
+            Instant retryAt = AiChecks.instant(
+                    retryAfter.orElseThrow(), "retryAfter value");
+            if (retryAt.isBefore(observedAt)) {
                 throw new IllegalArgumentException(
                         "retryAfter must not be before observedAt");
             }
-        });
+        }
         reasonCode = AiChecks.optionalReasonCode(
                 reasonCode, "reasonCode");
     }
