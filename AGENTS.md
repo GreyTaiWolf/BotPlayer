@@ -27,6 +27,9 @@
    `docs/adr/README.md` 和总架构对应章节。改变已接受决定必须新增 ADR。
 5. 涉及构建、测试或提交时再读 `docs/DEVELOPMENT_CN.md` 与 `CONTRIBUTING.md`。
 6. 开始前明确代码、测试、文档三类交付；不要创建未使用的空包或占位类来伪装阶段完成。
+7. 如果任务发生在 P5A、PT、P6 并行开发、旧任务因 Token/额度暂停、需要切轨或恢复旧分支时，
+   **必须先读 `docs/PARALLEL_DEVELOPMENT_PLAN_CN.md`**，核对共享核心、Contract PR、Port、
+   handoff 和最新 `main` 基线；不得直接在落后的长期分支继续叠加无关功能。
 
 优先使用：
 
@@ -50,7 +53,9 @@ rg -n '^#{1,4} ' docs/ARCHITECTURE_AND_ROADMAP_CN.md
 | Mixin 或映射敏感行为 | `mixin/`、`botplayer.mixins.json` | ADR、精确 descriptor、真人路径回归 |
 | 客户端 UI、本地凭据、网络 | `client/`、`network/` 及注册入口 | ADR-0012、SECURITY、配置/安装/开发文档、双端验证 |
 | AI Provider、对话、智能体状态 | 当前实现状态列出的 AI 包；目标边界见架构 §8、§11 | 不得把“保存 Key”写成“AI 已接通” |
+| 玩家技术动作、跳劈、走位、真实施工 | `technique/`（建立后）与现有 `action/`、`navigation/`、`safety/` | ADR-0017、`PLAYER_TECHNIQUE_BUILDING_COMBAT_DESIGN_CN.md`；不得复制 Action/Skill runtime |
 | 动作、背包、感知、导航、安全、技能、记忆 | 对应功能包；未建立时先读架构 §5–§12 | 能力矩阵、阶段门和测试证据 |
+| P5A/PT/P6 并行、Token 暂停/恢复、分支切换 | `docs/PARALLEL_DEVELOPMENT_PLAN_CN.md` + 当前目标包 | 共享核心是否需要 Contract PR；是否有 handoff；是否基于最新 `main` |
 | 客户端文字 | `assets/botplayer/lang/zh_cn.json`、`en_us.json` | UI 不硬编码用户可见文本 |
 | 当前能力与缺口 | `docs/IMPLEMENTATION_STATUS_CN.md` | README、CHANGELOG |
 
@@ -70,6 +75,10 @@ rg -n '^#{1,4} ' docs/ARCHITECTURE_AND_ROADMAP_CN.md
 - LLM 只提出受限高层计划；Java 动作/技能层校验并执行。模型文本不是事实、权限或成功证据。
 - 普通世界变化必须经过玩家动作、原版/NeoForge 校验与结果验证；不得直接改方块、背包、
   NBT 或传送来伪造完成。
+- `Action → Technique → Skill → Plan/Goal` 分层必须保持：Action 是原子副作用，Technique
+  是短时玩家操作 FSM，Skill 是任务级可恢复执行，Plan/Goal 是高层任务和承诺。P6 不能
+  直接调用 Technique，Technique 不能复制 Skill checkpoint/DAG，Skill 不能绕过 Action
+  直接修改世界。
 - Mixin 保持最小、版本精确且 `require = 1`。新增行为注入需先新增 ADR 和测试。
 - `PlayerListMixin` 当前还精确包装 `PlayerList.remove` 内的一次 `save(player)`：只有
   P5 异常隔离设置的一次性 no-save 门闩可以抑制该次保存；正常真人与正常卸载必须调用
@@ -85,13 +94,36 @@ rg -n '^#{1,4} ' docs/ARCHITECTURE_AND_ROADMAP_CN.md
 
 ## P5 当前开发基线
 
-- 有界 Skill/DAG/TTL 预留、背包到快捷栏交换与主动进食是已编码开发切片；Java 21/
-  NeoForge 运行验证尚未执行，不计入 P5A 退出门。
+- 有界 Skill/DAG/TTL 预留、背包到快捷栏交换、主动进食、基础盔甲、通用
+  `InventoryMenu SWAP_SEQUENCE` 与原版死亡恢复纵切已经进入 `main`；PR #6 的最终远端
+  Build #165/#166 已通过 Java 21 `clean build`、Gradle `test`、91/91 GameTest 与 JAR
+  上传。它们仍不等于 P5A 总退出门完成。
+- P5A 仍缺跨 menu 统一事务、`clicked()` 故障注入、生命周期 `PENDING` continuation、
+  TaskSensor/Reservation 生产接线、Checkpoint、工具/副手、有限自卫、craft/chest/furnace/
+  DAG、木头到铁镐生产链，以及真实二次启动、独立专用服和多 Bot soak 等验证。
 - `/botplayer skill inspect <name>` 是权限等级 `2` 的只读诊断，只查看 run，不启动技能。
 - P5 GameTest 通过 `P5GameTestSupport` 显式传入固定 Bot 名字，以便在同一持久测试世界
   复用 roster 身份与 playerdata；统一 cleanup 只卸载活动 Bot，不删除 roster/profile。
 - 真正的测试 profile 清理仍是测试债。不得为测试向生产 roster 增加永久删除后门；修改
   `AUTO_RESPAWN`、`keepInventory` 等全局状态的场景必须放入独立 batch 并恢复原值。
+
+## 并行开发与暂停恢复
+
+- P5A 因 Token、模型额度或上下文限制暂停时，可以继续 PT/P6 的**绿色低耦合切片**，但不
+  改写 P5A 阶段门。当前绿色范围包括 PT1 纯 Java Technique Core/Aim Core，以及 P6
+  Provider SPI、Mock、Redaction、CircuitBreaker、解析器和严格 ToolCallCodec。
+- 需要修改 `BotActionRuntime`、`ControlArbiter`、`SafetyService`、`NavigationService`、
+  `SkillRegistry`、`SkillPlan*`、`SurvivalSkillService`、menu、lifecycle 或 network 等共享
+  核心时，先按 `PARALLEL_DEVELOPMENT_PLAN_CN.md` 做独立 **Contract PR**；Contract PR
+  只改窄接口和测试，不同时实现业务能力。
+- P6 的 `AI → SkillPlan → 执行` 生产接线在 P5A Checkpoint、TaskSensor/Reservation、DAG
+  和 Skill runtime 合同稳定前禁止提前；PT2 自卫/战斗与 PT3/4 建筑也按文档中的前置关系
+  分阶段接线。
+- 每个并行切片从当时最新 `main` 开短分支，小 PR 合并后下一切片重新基于 `main`；不维护
+  数周不合并的 `p5a/pt/p6` 三条长期产品分支。
+- 暂停复杂任务必须留下 handoff：基线 SHA、分支、最后验证提交、已完成/进行中/未开始、
+  失败测试、共享合同、当前文件 ownership、恢复第一步和禁止修改项。恢复时先比较最新
+  `main`，不在明显落后的旧分支直接继续叠加。
 
 ## 客户端 API Key 边界
 
@@ -161,13 +193,16 @@ git diff --check
 | 能力成熟度 | 能力矩阵，并提供测试证据 |
 | 新依赖或第三方内容 | `THIRD_PARTY_NOTICES.md`、构建文件、相关 ADR |
 | 分支、版本或构建方式 | README、安装、开发、贡献、安全支持表、实现状态 |
+| P5A/PT/P6 并行、暂停/恢复或共享 Contract | `PARALLEL_DEVELOPMENT_PLAN_CN.md`、AGENTS；必要时对应设计文档 |
 
 `CHANGELOG.md` 只记录已经进入仓库的变化；路线图只写目标。凭据存储进入代码不代表 P6
-完成，也不代表 DeepSeek 已连接。
+完成，也不代表 DeepSeek 已连接；Technique Core 进入代码也不代表 Bot 已会跳劈或盖房。
 
 ## Git 与交付
 
 - 保留并避开用户已有改动，不使用破坏性 reset/checkout。
 - 改动范围单一，提交摘要使用 `类型: 中文摘要`。
+- 并行开发默认使用从最新 `main` 建立的短生命周期分支；共享核心先 Contract PR，后续依赖
+  切片重新基于 Contract 已合并的 `main`。
 - 推送前复查 `git status --short`、完整 diff、验证结果和文档一致性。
 - 最终说明分别列出实现内容、验证证据、未验证/已知限制、提交与推送目标。
