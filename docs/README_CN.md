@@ -9,6 +9,7 @@
 | 想了解项目 | 根目录 [README](../README.md) → [当前实现状态](IMPLEMENTATION_STATUS_CN.md) |
 | 想安装测试 | [安装与当前用法](INSTALLATION_AND_USAGE_CN.md) → [配置说明](CONFIGURATION_CN.md) |
 | 想参与开发 | 根目录 [AGENTS.md](../AGENTS.md) → [开发指南](DEVELOPMENT_CN.md) → [参与开发](../CONTRIBUTING.md) |
+| 想在 P5A 暂停期间安全并行开发 | [P5A 暂停期间并行开发规划](PARALLEL_DEVELOPMENT_PLAN_CN.md) → 对应 P5/PT/P6 设计文档 |
 | 想理解整体设计 | [AI 玩家调研与 P2 重新基线](AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md) → [P3 感知调研设计](AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md) → [P4 导航与安全反射设计](AI_PLAYER_RESEARCH_AND_P4_DESIGN_CN.md) → [P5 技能与第一条生存闭环设计](AI_PLAYER_RESEARCH_AND_P5_DESIGN_CN.md) → [玩家技术动作、真实建造与战斗设计](PLAYER_TECHNIQUE_BUILDING_COMBAT_DESIGN_CN.md) → [架构与 P0–P10 路线图](ARCHITECTURE_AND_ROADMAP_CN.md) |
 | 想核对 P2 验收 | [P2 完成验收报告](P2_COMPLETION_REPORT_CN.md) |
 | 想核对 P3 验收状态 | [P3 完成验收报告](P3_COMPLETION_REPORT_CN.md) |
@@ -23,6 +24,7 @@
 | [AGENTS.md](../AGENTS.md) | 开发代理阅读顺序、需求到源码路由、验证与文档同步规则 | 代替当前实现状态或总架构 |
 | [README.md](../README.md) | 项目入口、当前能力摘要、快速构建 | 完整架构细节 |
 | [IMPLEMENTATION_STATUS_CN.md](IMPLEMENTATION_STATUS_CN.md) | 当前代码真实状态、已知缺口、下一批任务 | 描述尚未实现的完整方案 |
+| [PARALLEL_DEVELOPMENT_PLAN_CN.md](PARALLEL_DEVELOPMENT_PLAN_CN.md) | P5A 暂停/恢复期间 P5A、PT、P6 的低耦合并行边界、分支/Contract PR/Port/合并和 handoff 规则 | 改变 P0–P10 阶段门、替代具体功能设计或把并行基础设施算成能力完成 |
 | [AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md](AI_PLAYER_RESEARCH_AND_P2_REBASELINE_CN.md) | 外部调研、六层 FSM、P2-A～E 与 P3–P10 阶段门 | 代替实时测试结果 |
 | [P2_COMPLETION_REPORT_CN.md](P2_COMPLETION_REPORT_CN.md) | P2 已编码、已验证、未覆盖与最终命令/CI 证据 | 宣称完整 AI 玩家 |
 | [AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md](AI_PLAYER_RESEARCH_AND_P3_DESIGN_CN.md) | P3 外部调研、权威/认知双平面、有限感知、revision 与容器边界 | 代替编译、GameTest 或 CI 证据 |
@@ -86,6 +88,7 @@
 14. 是否把 P4 的通用避险错误描述成自动进食、主动用药或完整战斗；
 15. Terrain Assist 是否仍保持请求与服务端双门控、默认关闭和动作后重规划；
 16. 是否把原子 `Action`、短时 `Technique`、任务级 `Skill` 和长期 `Plan/Goal` 混写；
-17. 是否把 Technique 设计或测试原语错误描述成跳劈、真实建造或完整战斗已经可用。
+17. 是否把 Technique 设计或测试原语错误描述成跳劈、真实建造或完整战斗已经可用；
+18. 并行开发是否遵守最新 `main` 开短分支、共享核心先 Contract PR、P6 不直连 Technique、暂停任务留下 handoff 的规则。
 
 文档默认使用中文；代码符号、命令、路径、协议字段和错误码保留原文。
