@@ -15,6 +15,7 @@ public enum ActionKind {
    USE_ITEM,
    RELEASE_USE,
    USE_ON_BLOCK,
+   PLACE_BLOCK,
    BREAK_BLOCK,
    ATTACK_ENTITY,
    INTERACT_ENTITY,

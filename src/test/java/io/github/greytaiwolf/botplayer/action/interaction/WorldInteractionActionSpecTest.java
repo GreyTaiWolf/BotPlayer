@@ -14,6 +14,9 @@ class WorldInteractionActionSpecTest {
    private static final ResourceId OVERWORLD = new ResourceId("minecraft:overworld");
    private static final ItemStackFingerprint EMPTY = ItemStackFingerprint.empty();
    private static final ItemStackFingerprint STICK = ItemStackFingerprint.of(new ResourceId("minecraft:stick"), 1, 0, "0".repeat(64));
+   private static final ItemStackFingerprint OAK_PLANKS = ItemStackFingerprint.of(
+      new ResourceId("minecraft:oak_planks"), 3, 0, "1".repeat(64)
+   );
 
    @Test
    void hotbarSelectionHasStrictSlotAndOwnsInventoryAndMainHand() {
@@ -121,6 +124,70 @@ class WorldInteractionActionSpecTest {
    }
 
    @Test
+   void placeBlockFixesMainHandAndCarriesTheExactAdjacentPlacedState() {
+      BlockHitTarget anchor = blockTarget();
+      BlockTargetFingerprint expectedPlaced = blockTargetAt(0, 65, 0, "minecraft:oak_planks");
+      WorldInteractionActionSpec.PlaceBlock action = new WorldInteractionActionSpec.PlaceBlock(anchor, expectedPlaced, OAK_PLANKS);
+
+      Assertions.assertAll(
+         () -> Assertions.assertEquals(WorldInteractionActionSpec.Kind.PLACE_BLOCK, action.kind()),
+         () -> Assertions.assertEquals(ActionKind.PLACE_BLOCK, new WorldInteractionAction(action).kind()),
+         () -> Assertions.assertEquals(Set.of(ActionChannel.MAIN_HAND, ActionChannel.INTERACT), action.channels()),
+         () -> Assertions.assertEquals(anchor, action.anchor()),
+         () -> Assertions.assertEquals(expectedPlaced, action.expectedPlaced()),
+         () -> Assertions.assertEquals(OAK_PLANKS, action.expectedHeldItem())
+      );
+      Assertions.assertThrows(UnsupportedOperationException.class, () -> action.channels().remove(ActionChannel.MAIN_HAND));
+   }
+
+   @Test
+   void placeBlockRequiresOneExactTargetOnTheAnchorFace() {
+      BlockTargetFingerprint anchorTarget = blockTargetAt(0, 64, 0, "minecraft:stone");
+      for (BlockHitTarget.Face face : BlockHitTarget.Face.values()) {
+         BlockHitTarget anchor = new BlockHitTarget(anchorTarget, face, 0.5, 0.5, 0.5, false);
+         BlockCoordinates placed = coordinateOnFace(anchorTarget.position(), face);
+         BlockTargetFingerprint expectedPlaced = blockTargetAt(placed.x(), placed.y(), placed.z(), "minecraft:oak_planks");
+         Assertions.assertDoesNotThrow(() -> new WorldInteractionActionSpec.PlaceBlock(anchor, expectedPlaced, OAK_PLANKS));
+         BlockHitTarget.Face differentFace = face == BlockHitTarget.Face.UP ? BlockHitTarget.Face.DOWN : BlockHitTarget.Face.UP;
+         BlockCoordinates wrongPlaced = coordinateOnFace(anchorTarget.position(), differentFace);
+         Assertions.assertThrows(
+            IllegalArgumentException.class,
+            () -> new WorldInteractionActionSpec.PlaceBlock(
+                  anchor,
+                  blockTargetAt(wrongPlaced.x(), wrongPlaced.y(), wrongPlaced.z(), "minecraft:oak_planks"),
+                  OAK_PLANKS
+               )
+         );
+      }
+
+      BlockHitTarget anchor = blockTarget();
+      BlockTargetFingerprint expectedPlaced = blockTargetAt(0, 65, 0, "minecraft:oak_planks");
+      BlockTargetFingerprint wrongDimension = new BlockTargetFingerprint(
+         new ResourceId("minecraft:the_nether"), expectedPlaced.position(), expectedPlaced.state()
+      );
+      Assertions.assertThrows(
+         IllegalArgumentException.class,
+         () -> new WorldInteractionActionSpec.PlaceBlock(anchor, expectedPlaced, EMPTY)
+      );
+      Assertions.assertThrows(
+         IllegalArgumentException.class,
+         () -> new WorldInteractionActionSpec.PlaceBlock(anchor, wrongDimension, OAK_PLANKS)
+      );
+      Assertions.assertThrows(
+         NullPointerException.class,
+         () -> new WorldInteractionActionSpec.PlaceBlock(null, expectedPlaced, OAK_PLANKS)
+      );
+      Assertions.assertThrows(
+         NullPointerException.class,
+         () -> new WorldInteractionActionSpec.PlaceBlock(anchor, null, OAK_PLANKS)
+      );
+      Assertions.assertThrows(
+         NullPointerException.class,
+         () -> new WorldInteractionActionSpec.PlaceBlock(anchor, expectedPlaced, null)
+      );
+   }
+
+   @Test
    void entityInteractionDistinguishesGenericAndSpecificPaths() {
       EntityTargetFingerprint var1 = entityTarget();
       WorldInteractionActionSpec.InteractEntity var2 = new WorldInteractionActionSpec.InteractEntity(
@@ -135,9 +202,24 @@ class WorldInteractionActionSpecTest {
    }
 
    private static BlockHitTarget blockTarget() {
-      BlockStateFingerprint var0 = new BlockStateFingerprint(new ResourceId("minecraft:stone"), Map.of());
-      BlockTargetFingerprint var1 = new BlockTargetFingerprint(OVERWORLD, new BlockCoordinates(0, 64, 0), var0);
+      BlockTargetFingerprint var1 = blockTargetAt(0, 64, 0, "minecraft:stone");
       return new BlockHitTarget(var1, BlockHitTarget.Face.UP, 0.5, 1.0, 0.5, false);
+   }
+
+   private static BlockTargetFingerprint blockTargetAt(int x, int y, int z, String blockId) {
+      BlockStateFingerprint state = new BlockStateFingerprint(new ResourceId(blockId), Map.of());
+      return new BlockTargetFingerprint(OVERWORLD, new BlockCoordinates(x, y, z), state);
+   }
+
+   private static BlockCoordinates coordinateOnFace(BlockCoordinates anchor, BlockHitTarget.Face face) {
+      return switch (face) {
+         case DOWN -> new BlockCoordinates(anchor.x(), anchor.y() - 1, anchor.z());
+         case UP -> new BlockCoordinates(anchor.x(), anchor.y() + 1, anchor.z());
+         case NORTH -> new BlockCoordinates(anchor.x(), anchor.y(), anchor.z() - 1);
+         case SOUTH -> new BlockCoordinates(anchor.x(), anchor.y(), anchor.z() + 1);
+         case WEST -> new BlockCoordinates(anchor.x() - 1, anchor.y(), anchor.z());
+         case EAST -> new BlockCoordinates(anchor.x() + 1, anchor.y(), anchor.z());
+      };
    }
 
    private static EntityTargetFingerprint entityTarget() {

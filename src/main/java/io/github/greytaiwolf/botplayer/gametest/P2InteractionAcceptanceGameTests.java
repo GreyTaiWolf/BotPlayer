@@ -6,6 +6,7 @@ import io.github.greytaiwolf.botplayer.action.ActionOutcome;
 import io.github.greytaiwolf.botplayer.action.ActionState;
 import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockHitTarget;
+import io.github.greytaiwolf.botplayer.action.interaction.BlockTargetFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.EntityTargetFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
@@ -114,6 +115,176 @@ public final class P2InteractionAcceptanceGameTests {
                                                     .getCount()
                                             == 1,
                                     "Use-on did not conserve the held stack");
+                        } finally {
+                            cleanup.run();
+                        }
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    /**
+     * P5A 工作站放置使用专用严格合同：成功不仅要求有任意世界变化，还必须证明指定相邻
+     * 坐标的完整原版 fingerprint、原生背包菜单和主手扣款都与请求一致。
+     */
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = P2GameTestSupport.TIMEOUT_TICKS)
+    public static void placeBlockRequiresExactAdjacentStateAndDebit(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P2StrictPlace",
+                new Vec3(4.5D, 1.0D, 3.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup =
+                cleanupBot(bot, "P2 strict placement GameTest completed");
+        try {
+            BlockPos relativeSupport = new BlockPos(4, 0, 5);
+            BlockPos support = helper.absolutePos(relativeSupport);
+            BlockPos relativePlaced = relativeSupport.above();
+            BlockPos placed = helper.absolutePos(relativePlaced);
+            BlockTargetFingerprint expectedPlaced = expectedPlacedBlock(
+                    helper, bot, relativePlaced, Blocks.COBBLESTONE);
+            bot.player().getInventory().selected = 0;
+            bot.player().getInventory().setItem(
+                    0, new ItemStack(Items.COBBLESTONE, 2));
+            BlockHitTarget anchor = MinecraftActionSnapshot.blockHit(
+                    bot.player(),
+                    new BlockHitResult(
+                            new Vec3(
+                                    support.getX() + 0.5D,
+                                    support.getY() + 1.0D,
+                                    support.getZ() + 0.5D),
+                            Direction.UP,
+                            support,
+                            false));
+
+            CompletionStage<ActionOutcome> completion =
+                    P2GameTestSupport.submit(
+                            bot,
+                            new WorldInteractionAction(
+                                    new WorldInteractionActionSpec.PlaceBlock(
+                                            anchor,
+                                            expectedPlaced,
+                                            MinecraftActionSnapshot.selectedItem(
+                                                    bot.player()))),
+                            40);
+            P2GameTestSupport.awaitOutcome(
+                    helper,
+                    completion,
+                    120,
+                    cleanup,
+                    outcome -> {
+                        try {
+                            requireState(
+                                    outcome,
+                                    ActionState.SUCCEEDED,
+                                    ActionFailureCode.NONE);
+                            P2GameTestSupport.require(
+                                    MinecraftActionSnapshot.block(
+                                                    bot.player(), placed)
+                                            .equals(expectedPlaced),
+                                    "Strict placement reported success without the exact expected block state");
+                            P2GameTestSupport.require(
+                                    bot.player().containerMenu
+                                                    == bot.player().inventoryMenu
+                                            && bot.player().inventoryMenu
+                                                    .getCarried().isEmpty(),
+                                    "Strict placement left a non-native menu or cursor");
+                            P2GameTestSupport.require(
+                                    bot.player().getInventory().getSelected()
+                                                    .is(Items.COBBLESTONE)
+                                            && bot.player().getInventory()
+                                                    .getSelected().getCount()
+                                                    == 1,
+                                    "Strict placement did not debit exactly one held block");
+                            P2GameTestSupport.require(
+                                    evidence(outcome, "block.matches_expected")
+                                            .equals("true"),
+                                    "Strict placement omitted exact-state evidence");
+                        } finally {
+                            cleanup.run();
+                        }
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = P2GameTestSupport.TIMEOUT_TICKS)
+    public static void placeBlockRejectsOccupiedDestinationBeforeDispatch(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P2PlaceBusy",
+                new Vec3(4.5D, 1.0D, 3.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup =
+                cleanupBot(bot, "P2 occupied placement GameTest completed");
+        try {
+            BlockPos relativeSupport = new BlockPos(4, 0, 5);
+            BlockPos support = helper.absolutePos(relativeSupport);
+            BlockPos relativePlaced = relativeSupport.above();
+            BlockPos placed = helper.absolutePos(relativePlaced);
+            BlockTargetFingerprint expectedPlaced = expectedPlacedBlock(
+                    helper, bot, relativePlaced, Blocks.COBBLESTONE);
+            helper.setBlock(relativePlaced, Blocks.DIRT);
+            bot.player().getInventory().selected = 0;
+            bot.player().getInventory().setItem(
+                    0, new ItemStack(Items.COBBLESTONE, 2));
+            BlockHitTarget anchor = MinecraftActionSnapshot.blockHit(
+                    bot.player(),
+                    new BlockHitResult(
+                            new Vec3(
+                                    support.getX() + 0.5D,
+                                    support.getY() + 1.0D,
+                                    support.getZ() + 0.5D),
+                            Direction.UP,
+                            support,
+                            false));
+
+            CompletionStage<ActionOutcome> completion =
+                    P2GameTestSupport.submit(
+                            bot,
+                            new WorldInteractionAction(
+                                    new WorldInteractionActionSpec.PlaceBlock(
+                                            anchor,
+                                            expectedPlaced,
+                                            MinecraftActionSnapshot.selectedItem(
+                                                    bot.player()))),
+                            40);
+            P2GameTestSupport.awaitOutcome(
+                    helper,
+                    completion,
+                    80,
+                    cleanup,
+                    outcome -> {
+                        try {
+                            requireState(
+                                    outcome,
+                                    ActionState.FAILED,
+                                    ActionFailureCode.PRECONDITION_FAILED);
+                            P2GameTestSupport.require(
+                                    bot.player().serverLevel().getBlockState(
+                                                    placed).is(Blocks.DIRT)
+                                            && bot.player().getInventory()
+                                                    .getSelected().getCount()
+                                                    == 2,
+                                    "Rejected placement mutated its occupied destination or held stack");
                         } finally {
                             cleanup.run();
                         }
@@ -735,6 +906,20 @@ public final class P2InteractionAcceptanceGameTests {
                         hit,
                         MinecraftActionSnapshot.selectedItem(
                                 bot.player())));
+    }
+
+    private static BlockTargetFingerprint expectedPlacedBlock(
+            GameTestHelper helper,
+            TestBot bot,
+            BlockPos relativePosition,
+            net.minecraft.world.level.block.Block block) {
+        helper.setBlock(relativePosition, block);
+        try {
+            return MinecraftActionSnapshot.block(
+                    bot.player(), helper.absolutePos(relativePosition));
+        } finally {
+            helper.setBlock(relativePosition, Blocks.AIR);
+        }
     }
 
     private static int countItem(

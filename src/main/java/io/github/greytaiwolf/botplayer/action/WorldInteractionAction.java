@@ -22,6 +22,7 @@ public record WorldInteractionAction(WorldInteractionActionSpec spec) implements
          case USE_ITEM -> ActionKind.USE_ITEM;
          case RELEASE_USE -> ActionKind.RELEASE_USE;
          case USE_ON_BLOCK -> ActionKind.USE_ON_BLOCK;
+         case PLACE_BLOCK -> ActionKind.PLACE_BLOCK;
          case BREAK_BLOCK -> ActionKind.BREAK_BLOCK;
          case ATTACK_ENTITY -> ActionKind.ATTACK_ENTITY;
          case INTERACT_ENTITY -> ActionKind.INTERACT_ENTITY;

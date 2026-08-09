@@ -22,6 +22,7 @@ public sealed interface WorldInteractionActionSpec
    WorldInteractionActionSpec.UseItem,
    WorldInteractionActionSpec.ReleaseUse,
    WorldInteractionActionSpec.UseOnBlock,
+   WorldInteractionActionSpec.PlaceBlock,
    WorldInteractionActionSpec.BreakBlock,
    WorldInteractionActionSpec.AttackEntity,
    WorldInteractionActionSpec.InteractEntity,
@@ -156,6 +157,7 @@ public sealed interface WorldInteractionActionSpec
       USE_ITEM,
       RELEASE_USE,
       USE_ON_BLOCK,
+      PLACE_BLOCK,
       BREAK_BLOCK,
       ATTACK_ENTITY,
       INTERACT_ENTITY,
@@ -416,6 +418,73 @@ public sealed interface WorldInteractionActionSpec
       @Override
       public Set<ActionChannel> channels() {
          return CHANNELS;
+      }
+   }
+
+   /**
+    * 用主手在精确锚点面放置方块，并要求相邻目标落入完整的预期状态。
+    */
+   public static record PlaceBlock(
+      BlockHitTarget anchor, BlockTargetFingerprint expectedPlaced, ItemStackFingerprint expectedHeldItem
+   ) implements WorldInteractionActionSpec {
+      private static final Set<ActionChannel> CHANNELS = Set.of(ActionChannel.MAIN_HAND, ActionChannel.INTERACT);
+
+      public PlaceBlock(BlockHitTarget anchor, BlockTargetFingerprint expectedPlaced, ItemStackFingerprint expectedHeldItem) {
+         Objects.requireNonNull(anchor, "anchor");
+         Objects.requireNonNull(expectedPlaced, "expectedPlaced");
+         Objects.requireNonNull(expectedHeldItem, "expectedHeldItem");
+         if (expectedHeldItem.isEmpty()) {
+            throw new IllegalArgumentException("block placement requires a non-empty main-hand item");
+         }
+         if (!anchor.target().dimension().equals(expectedPlaced.dimension())) {
+            throw new IllegalArgumentException("placed block must remain in the anchor dimension");
+         }
+         if (!isPlacedOnAnchorFace(anchor, expectedPlaced)) {
+            throw new IllegalArgumentException("placed block must be adjacent to the anchor face");
+         }
+         this.anchor = anchor;
+         this.expectedPlaced = expectedPlaced;
+         this.expectedHeldItem = expectedHeldItem;
+      }
+
+      @Override
+      public WorldInteractionActionSpec.Kind kind() {
+         return WorldInteractionActionSpec.Kind.PLACE_BLOCK;
+      }
+
+      @Override
+      public Set<ActionChannel> channels() {
+         return CHANNELS;
+      }
+
+      private static boolean isPlacedOnAnchorFace(BlockHitTarget anchor, BlockTargetFingerprint expectedPlaced) {
+         BlockCoordinates anchorPosition = anchor.target().position();
+         long expectedX = anchorPosition.x();
+         long expectedY = anchorPosition.y();
+         long expectedZ = anchorPosition.z();
+         switch (anchor.face()) {
+            case DOWN:
+               expectedY--;
+               break;
+            case UP:
+               expectedY++;
+               break;
+            case NORTH:
+               expectedZ--;
+               break;
+            case SOUTH:
+               expectedZ++;
+               break;
+            case WEST:
+               expectedX--;
+               break;
+            case EAST:
+               expectedX++;
+         }
+         BlockCoordinates placedPosition = expectedPlaced.position();
+         return placedPosition.x() == expectedX
+            && placedPosition.y() == expectedY
+            && placedPosition.z() == expectedZ;
       }
    }
 

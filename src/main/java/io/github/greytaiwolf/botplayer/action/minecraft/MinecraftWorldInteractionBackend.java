@@ -61,6 +61,7 @@ import java.util.Optional;
 import java.util.UUID;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.protocol.game.ServerboundInteractPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
@@ -80,6 +81,7 @@ import net.minecraft.world.inventory.ResultContainer;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.crafting.CraftingInput;
 import net.minecraft.world.item.crafting.CraftingRecipe;
@@ -167,7 +169,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                 .WorldMenuTransfer
                 || action.spec()
                         instanceof WorldInteractionActionSpec
-                                .WorldMenuRecipe) {
+                                .WorldMenuRecipe
+                || action.spec()
+                        instanceof WorldInteractionActionSpec.PlaceBlock) {
             if (!lifecycleManager.mayActionMutateInventory(
                     envelope.botId(), envelope.botGeneration())) {
                 return failure(
@@ -191,6 +195,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 || action.spec()
                         instanceof WorldInteractionActionSpec
                                 .WorldMenuRecipe
+                || action.spec()
+                        instanceof WorldInteractionActionSpec.PlaceBlock
                 || action.spec()
                         instanceof WorldInteractionActionSpec
                                 .SelectHotbar) {
@@ -230,7 +236,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                     .WorldMenuTransfer
                     || state.spec
                             instanceof WorldInteractionActionSpec
-                                    .WorldMenuRecipe) {
+                                    .WorldMenuRecipe
+                    || state.spec
+                            instanceof WorldInteractionActionSpec.PlaceBlock) {
                 closeWorldMenuDuringCleanup(player, state);
             } else {
                 state.sideEffectDispatched = false;
@@ -349,6 +357,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     verifyRelease(envelope, player, releaseUse);
             case WorldInteractionActionSpec.UseOnBlock useOnBlock ->
                     verifyUseOn(envelope, player, state, useOnBlock);
+            case WorldInteractionActionSpec.PlaceBlock placeBlock ->
+                    verifyPlaceBlock(envelope, player, state, placeBlock);
             case WorldInteractionActionSpec.BreakBlock breakBlock ->
                     verifyBreak(envelope, player, state, breakBlock);
             case WorldInteractionActionSpec.AttackEntity attackEntity ->
@@ -1366,6 +1376,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                             useOnBlock.target(),
                             MinecraftInteractionView.hand(useOnBlock.hand()),
                             useOnBlock.expectedHeldItem());
+            case WorldInteractionActionSpec.PlaceBlock placeBlock ->
+                    validatePlaceBlock(envelope, player, placeBlock);
             case WorldInteractionActionSpec.BreakBlock breakBlock ->
                     validateBlockInteraction(
                             envelope,
@@ -1860,6 +1872,72 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         return BackendResult.accepted(envelope);
     }
 
+    /**
+     * 生产工作站放置不能借用泛用 {@code UseOnBlock} 的“任意可观察变化”语义。锚点、空目标、
+     * 主手方块物品和预期原版 block id 都必须在 packet 前再次成立；完整 placement state 则在
+     * {@link #verifyPlaceBlock(ActionEnvelope, BotServerPlayer, InteractionState,
+     * WorldInteractionActionSpec.PlaceBlock)} 中核验。
+     */
+    private BackendResult validatePlaceBlock(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            WorldInteractionActionSpec.PlaceBlock placeBlock) {
+        if (player.containerMenu != player.inventoryMenu
+                || !player.inventoryMenu.stillValid(player)
+                || !player.inventoryMenu.getCarried().isEmpty()) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Block placement requires the native inventory menu with an empty cursor");
+        }
+        BackendResult anchor = validateBlockInteraction(
+                envelope,
+                player,
+                placeBlock.anchor(),
+                InteractionHand.MAIN_HAND,
+                placeBlock.expectedHeldItem());
+        if (anchor.step() != BackendStep.ACCEPTED) {
+            return anchor;
+        }
+        BlockPos destination = MinecraftInteractionView.position(
+                placeBlock.expectedPlaced().position());
+        if (!player.serverLevel().isLoaded(destination)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.TARGET_UNAVAILABLE,
+                    "Block placement destination chunk is not loaded");
+        }
+        if (!player.serverLevel().getBlockState(destination).isAir()) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Block placement destination is not strictly air");
+        }
+        if (!player.canInteractWithBlock(destination, 0.0D)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Block placement destination is out of reach");
+        }
+        ItemStack held = player.getMainHandItem();
+        if (!(held.getItem() instanceof BlockItem blockItem)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.INVALID_REQUEST,
+                    "Block placement held item is not a block item");
+        }
+        ResourceId heldBlockId = new ResourceId(BuiltInRegistries.BLOCK
+                .getKey(blockItem.getBlock()).toString());
+        if (!heldBlockId.equals(placeBlock.expectedPlaced().state()
+                .blockId())) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.INVALID_REQUEST,
+                    "Block placement expected state does not match the held block item");
+        }
+        return BackendResult.accepted(envelope);
+    }
+
     private BackendResult validateEntity(
             ActionEnvelope envelope,
             BotServerPlayer player,
@@ -1956,6 +2034,13 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                             useOnBlock.hand()),
                                     MinecraftInteractionView.hit(
                                             useOnBlock.target()),
+                                    nextSequence()));
+            case WorldInteractionActionSpec.PlaceBlock placeBlock ->
+                    player.connection.handleUseItemOn(
+                            new ServerboundUseItemOnPacket(
+                                    InteractionHand.MAIN_HAND,
+                                    MinecraftInteractionView.hit(
+                                            placeBlock.anchor()),
                                     nextSequence()));
             case WorldInteractionActionSpec.BreakBlock breakBlock ->
                     dispatchBreak(
@@ -3504,6 +3589,76 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 "Verified block use");
     }
 
+    private BackendResult verifyPlaceBlock(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            InteractionState state,
+            WorldInteractionActionSpec.PlaceBlock placeBlock) {
+        BlockPos destination = MinecraftInteractionView.position(
+                placeBlock.expectedPlaced().position());
+        if (!player.serverLevel().isLoaded(destination)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.TARGET_UNAVAILABLE,
+                    "Block placement destination became unavailable before verification");
+        }
+        if (player.containerMenu != player.inventoryMenu
+                || player.containerMenu.containerId != state.containerIdBefore
+                || !player.inventoryMenu.stillValid(player)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Block placement did not retain the native inventory menu");
+        }
+        BlockTargetFingerprint actual = MinecraftInteractionView.blockFingerprint(
+                player, destination);
+        if (!actual.equals(placeBlock.expectedPlaced())) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Block placement did not produce the exact expected block state");
+        }
+        BlockPos anchorPosition = MinecraftInteractionView.position(
+                placeBlock.anchor().target().position());
+        if (!MinecraftInteractionView.blockFingerprint(player, anchorPosition)
+                .equals(placeBlock.anchor().target())) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Block placement changed its anchor block");
+        }
+        ItemStackFingerprint heldAfter = MinecraftInteractionView.itemFingerprint(
+                player, player.getMainHandItem());
+        boolean consumedExactlyOne = state.heldBefore.count() == 1
+                ? heldAfter.isEmpty()
+                : heldAfter.sameItemAndComponents(state.heldBefore)
+                        && heldAfter.count() == state.heldBefore.count() - 1;
+        if (!consumedExactlyOne) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.UNSAFE_CONTROL_STATE,
+                    "Block placement did not consume exactly one held block");
+        }
+        return success(
+                envelope,
+                List.of(
+                        evidence(
+                                "block.position",
+                                destination.getX()
+                                        + ","
+                                        + destination.getY()
+                                        + ","
+                                        + destination.getZ()),
+                        evidence("block.matches_expected", "true"),
+                        evidence(
+                                "item.before_count",
+                                Integer.toString(state.heldBefore.count())),
+                        evidence(
+                                "item.after_count",
+                                Integer.toString(heldAfter.count()))),
+                "Verified exact block placement");
+    }
+
     private BackendResult verifyBreak(
             ActionEnvelope envelope,
             BotServerPlayer player,
@@ -3779,6 +3934,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                             instanceof WorldInteractionActionSpec.WorldMenuTransfer
                     || state.spec
                             instanceof WorldInteractionActionSpec.WorldMenuRecipe) {
+                closeWorldMenuDuringCleanup(player, state);
+            } else if (state.spec
+                    instanceof WorldInteractionActionSpec.PlaceBlock) {
                 closeWorldMenuDuringCleanup(player, state);
             } else if (state.spec
                     instanceof WorldInteractionActionSpec
@@ -4278,6 +4436,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         instanceof WorldInteractionActionSpec
                                 .WorldMenuRecipe
                 || state.spec
+                        instanceof WorldInteractionActionSpec.PlaceBlock
+                || state.spec
                         instanceof WorldInteractionActionSpec
                                 .SelectHotbar
                 || state.spec
@@ -4598,6 +4758,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         MinecraftInteractionView.hand(releaseUse.hand());
                 case WorldInteractionActionSpec.UseOnBlock useOnBlock ->
                         MinecraftInteractionView.hand(useOnBlock.hand());
+                case WorldInteractionActionSpec.PlaceBlock ignored ->
+                        InteractionHand.MAIN_HAND;
                 case WorldInteractionActionSpec.WorldMenuTransaction menu ->
                         MinecraftInteractionView.hand(menu.hand());
                 case WorldInteractionActionSpec.WorldMenuTransfer menu ->
@@ -4620,6 +4782,12 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                 MinecraftInteractionView.position(
                                         useOnBlock.target()
                                                 .target()
+                                                .position()));
+                case WorldInteractionActionSpec.PlaceBlock placeBlock ->
+                        MinecraftInteractionView.blockFingerprint(
+                                player,
+                                MinecraftInteractionView.position(
+                                        placeBlock.expectedPlaced()
                                                 .position()));
                 case WorldInteractionActionSpec.BreakBlock breakBlock ->
                         MinecraftInteractionView.blockFingerprint(
@@ -4708,6 +4876,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                     || spec
                                             instanceof WorldInteractionActionSpec
                                                     .WorldMenuRecipe
+                                    || spec
+                                            instanceof WorldInteractionActionSpec
+                                                    .PlaceBlock
                             ? MinecraftInteractionView
                                     .inventoryMultisetDigest(player)
                             : null,
