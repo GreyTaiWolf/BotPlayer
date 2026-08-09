@@ -17,6 +17,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.network.chat.Component;
@@ -180,6 +181,25 @@ final class P2GameTestSupport {
             String failureMessage,
             Runnable failureCleanup,
             Runnable continuation) {
+        Objects.requireNonNull(failureMessage, "failureMessage");
+        awaitCondition(
+                helper,
+                remainingTicks,
+                condition,
+                () -> failureMessage,
+                failureCleanup,
+                continuation);
+    }
+
+    static void awaitCondition(
+            GameTestHelper helper,
+            int remainingTicks,
+            BooleanSupplier condition,
+            Supplier<String> failureMessageSupplier,
+            Runnable failureCleanup,
+            Runnable continuation) {
+        Objects.requireNonNull(failureMessageSupplier,
+                "failureMessageSupplier");
         try {
             if (condition.getAsBoolean()) {
                 continuation.run();
@@ -195,7 +215,8 @@ final class P2GameTestSupport {
         }
         if (remainingTicks <= 0) {
             failureCleanup.run();
-            helper.fail(failureMessage);
+            helper.fail(Objects.requireNonNull(
+                    failureMessageSupplier.get(), "failureMessage"));
             return;
         }
         helper.runAfterDelay(
@@ -204,7 +225,7 @@ final class P2GameTestSupport {
                         helper,
                         remainingTicks - 1,
                         condition,
-                        failureMessage,
+                        failureMessageSupplier,
                         failureCleanup,
                         continuation));
     }

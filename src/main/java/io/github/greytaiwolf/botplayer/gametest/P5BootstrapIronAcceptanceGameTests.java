@@ -89,7 +89,7 @@ public final class P5BootstrapIronAcceptanceGameTests {
                     helper,
                     TIMEOUT_TICKS - 20,
                     () -> terminalView(bot, runId).isPresent(),
-                    "P5A bootstrap iron never reached a terminal runtime state",
+                    () -> bootstrapTimeoutMessage(bot, runId),
                     cleanup,
                     () -> verifySuccessfulBootstrap(helper, bot, runId,
                             cleanup));
@@ -275,6 +275,23 @@ public final class P5BootstrapIronAcceptanceGameTests {
     private static java.util.Optional<SkillRunView> terminalView(
             TestBot bot, UUID runId) {
         return runView(bot, runId).filter(view -> view.state().isTerminal());
+    }
+
+    private static String bootstrapTimeoutMessage(TestBot bot, UUID runId) {
+        return runView(bot, runId)
+                .map(view -> "P5A bootstrap iron never reached a terminal "
+                        + "runtime state: state=" + view.state()
+                        + ", completedNodes=" + view.completedNodes()
+                        + "/" + view.totalNodes()
+                        + ", activeNodeId=" + view.activeNodeId()
+                                .map(UUID::toString).orElse("none")
+                        + ", activeSkillId=" + view.activeSkillId()
+                                .map(Object::toString).orElse("none")
+                        + ", failureCode=" + view.failureCode()
+                                .map(Object::toString).orElse("none")
+                        + ", safeSummary=" + view.safeSummary())
+                .orElse("P5A bootstrap iron never reached a terminal runtime "
+                        + "state: no current SkillRunView for submitted run");
     }
 
     /**
