@@ -18,13 +18,17 @@ import java.util.function.Function;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.AbstractFurnaceMenu;
 import net.minecraft.world.inventory.ChestMenu;
 import net.minecraft.world.inventory.CraftingMenu;
 import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.entity.EntityTypeTest;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
 
 /**
  * TaskSensor 的唯一 Minecraft 适配器。
@@ -35,6 +39,8 @@ import net.minecraft.world.level.block.state.BlockState;
  */
 public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
     private static final int PLAYER_INVENTORY_SLOTS = 41;
+    /** 掉落物只能在当前任务已定位的近场读取，不能退化为整区块实体枚举。 */
+    private static final int MAX_DROPPED_ITEM_SCOPE_RADIUS = 8;
 
     private final BiFunction<UUID, Long, Optional<BotServerPlayer>> resolver;
     private final Function<UUID, Optional<SafetyFrame>> safetyFrames;
@@ -66,7 +72,9 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
             case TARGET_BLOCK -> targetBlock(query, currentTick, player);
             case RESOURCE_CANDIDATES -> resources(
                     query, currentTick, player);
-            case DROPPED_ITEMS, RECIPE_FEASIBILITY -> unavailable(
+            case DROPPED_ITEMS -> droppedItems(
+                    query, currentTick, player);
+            case RECIPE_FEASIBILITY -> unavailable(
                     query, currentTick);
         };
     }
@@ -240,6 +248,128 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
             }
         }
         return available(query, currentTick, truncated, evidence);
+    }
+
+    /**
+     * 只复制近场已加载 ItemEntity 的标量候选。
+     *
+     * <p>实体索引直接以 {@code maximumCandidates + 1} 截断，额外的一项只用于把不完整
+     * 结果标记为 truncated；因此不会先构造无界的实体候选列表。结果按相对 scope 中心的
+     * 距离和 UUID 稳定排序。由于已加载边界和实体预算都会使结果不完整，任一边界都显式
+     * 返回 truncated，调用方不得将空集解释为“附近没有掉落物”。
+     */
+    private static TaskSensorSnapshot droppedItems(
+            TaskSensorQuery query, long currentTick, BotServerPlayer player) {
+        TaskSensorScope scope = query.scope();
+        int maximumCandidates = query.budget().maximumCandidates();
+        int maximumEvidence = query.budget().maximumEvidence();
+        if (scope.radius() > MAX_DROPPED_ITEM_SCOPE_RADIUS) {
+            return unavailable(query, currentTick);
+        }
+        if (maximumCandidates == 0 || maximumEvidence == 0) {
+            return available(query, currentTick, true, List.of());
+        }
+
+        List<ItemEntity> candidates = new ArrayList<>(
+                Math.incrementExact(maximumCandidates));
+        player.serverLevel().getEntities(
+                EntityTypeTest.<Entity, ItemEntity>forClass(ItemEntity.class),
+                droppedItemBounds(scope),
+                item -> readableDroppedItem(player, scope, item),
+                candidates,
+                Math.incrementExact(maximumCandidates));
+        candidates.sort(Comparator.comparingDouble(
+                        item -> squaredDistanceToScopeCenter(item, scope))
+                .thenComparing(item -> item.getUUID().toString()));
+
+        int limit = Math.min(maximumCandidates, maximumEvidence);
+        boolean truncated = scopeHasUnloadedChunks(player, scope)
+                || candidates.size() > limit;
+        List<TaskSensorEvidence> evidence = new ArrayList<>(
+                Math.min(candidates.size(), limit));
+        for (int index = 0; index < candidates.size() && index < limit;
+                index++) {
+            evidence.add(droppedItemEvidence(candidates.get(index)));
+        }
+        return available(query, currentTick, truncated, evidence);
+    }
+
+    private static AABB droppedItemBounds(TaskSensorScope scope) {
+        int radius = scope.radius();
+        return new AABB(
+                scope.centerX() - radius,
+                scope.centerY() - radius,
+                scope.centerZ() - radius,
+                scope.centerX() + radius + 1.0D,
+                scope.centerY() + radius + 1.0D,
+                scope.centerZ() + radius + 1.0D);
+    }
+
+    private static boolean readableDroppedItem(
+            BotServerPlayer player,
+            TaskSensorScope scope,
+            ItemEntity item) {
+        if (item.isRemoved() || item.getItem().isEmpty()) {
+            return false;
+        }
+        BlockPos position = item.blockPosition();
+        return player.serverLevel().isLoaded(position)
+                && withinScope(scope, position);
+    }
+
+    private static boolean withinScope(
+            TaskSensorScope scope, BlockPos position) {
+        int radius = scope.radius();
+        return Math.abs(position.getX() - scope.centerX()) <= radius
+                && Math.abs(position.getY() - scope.centerY()) <= radius
+                && Math.abs(position.getZ() - scope.centerZ()) <= radius;
+    }
+
+    private static boolean scopeHasUnloadedChunks(
+            BotServerPlayer player, TaskSensorScope scope) {
+        int radius = scope.radius();
+        int minimumChunkX = Math.floorDiv(scope.centerX() - radius, 16);
+        int maximumChunkX = Math.floorDiv(scope.centerX() + radius, 16);
+        int minimumChunkZ = Math.floorDiv(scope.centerZ() - radius, 16);
+        int maximumChunkZ = Math.floorDiv(scope.centerZ() + radius, 16);
+        for (int chunkX = minimumChunkX;
+                chunkX <= maximumChunkX;
+                chunkX++) {
+            for (int chunkZ = minimumChunkZ;
+                    chunkZ <= maximumChunkZ;
+                    chunkZ++) {
+                if (!player.serverLevel().isLoaded(new BlockPos(
+                        chunkX << 4,
+                        scope.centerY(),
+                        chunkZ << 4))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static double squaredDistanceToScopeCenter(
+            ItemEntity item, TaskSensorScope scope) {
+        double deltaX = item.getX() - (scope.centerX() + 0.5D);
+        double deltaY = item.getY() - (scope.centerY() + 0.5D);
+        double deltaZ = item.getZ() - (scope.centerZ() + 0.5D);
+        return deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
+    }
+
+    private static TaskSensorEvidence droppedItemEvidence(ItemEntity item) {
+        ItemStack stack = item.getItem();
+        BlockPos position = item.blockPosition();
+        String itemId = BuiltInRegistries.ITEM.getKey(stack.getItem())
+                .toString();
+        return new TaskSensorEvidence("dropped_item.candidate",
+                new SkillParameters(Map.of(
+                        "entity.id", item.getUUID().toString(),
+                        "item", itemId,
+                        "count", stack.getCount(),
+                        "x", position.getX(),
+                        "y", position.getY(),
+                        "z", position.getZ())));
     }
 
     private static TaskSensorEvidence inventoryEvidence(

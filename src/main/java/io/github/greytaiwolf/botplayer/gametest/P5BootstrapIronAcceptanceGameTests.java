@@ -11,11 +11,15 @@ import java.util.UUID;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -40,6 +44,13 @@ public final class P5BootstrapIronAcceptanceGameTests {
     private static final String BATCH = "p5a_bootstrap_iron";
     private static final int TIMEOUT_TICKS = 1_900;
     private static final int CHECKPOINT_SCOPE_RADIUS = 8;
+    private static final int ACTIVE_DROP_COLLECTION_TIMEOUT_TICKS = 900;
+    private static final BlockPos RELOCATED_LOG_SOURCE =
+            new BlockPos(4, 1, 3);
+    private static final BlockPos RELOCATED_LOG_DESTINATION =
+            new BlockPos(6, 1, 1);
+    private static final int RELOCATED_LOG_PICKUP_DELAY_TICKS = 24;
+    private static final double PASSIVE_PICKUP_DISTANCE_SQUARED = 2.25D;
 
     private P5BootstrapIronAcceptanceGameTests() {
     }
@@ -80,6 +91,64 @@ public final class P5BootstrapIronAcceptanceGameTests {
                     cleanup,
                     () -> verifySuccessfulBootstrap(helper, bot, runId,
                             cleanup));
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    /**
+     * 验证资源 fragment 不是只延长被动拾取轮询。
+     *
+     * <p>测试只移动 {@code BREAK_BLOCK} 后实际出现的那一枚原版 oak-log 实体：不新增物品、
+     * 不改背包，也不替 Bot 破坏方块。它保持同一 UUID，落点仍在生产端受限的 source 半径二
+     * envelope 内，但位于当前身体的 collision pickup 范围外。短暂原版 pickup delay 使该
+     * 实体在导航到达时仍可被 UUID {@code PickupWait} 回读。旧的被动轮询不会走到此格，因而
+     * 无法让此测试通过。
+     */
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = ACTIVE_DROP_COLLECTION_TIMEOUT_TICKS)
+    public static void bootstrapActivelyCollectsRelocatedVanillaResourceDrop(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        placeLocalSourceVein(helper);
+        P5GameTestSupport.IsolatedFixture fixture =
+                P5GameTestSupport.isolatedFixture(helper,
+                        "bootstrap_iron_active_drop_collection");
+        TestBot bot = fixture.spawn("drop");
+        P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
+        try {
+            prepareEmptyBackpack(bot);
+            loadCheckpointScopeChunks(bot.player());
+            requireEmptyBootstrapInventory(bot);
+
+            SkillRunSubmission submission = bot.manager()
+                    .startBootstrapIron(bot.name());
+            P2GameTestSupport.require(
+                    submission.status() == SkillRunSubmission.Status.ACCEPTED,
+                    "P5A active drop collection submission was rejected: "
+                            + submission.status() + "/"
+                            + submission.safeSummary());
+            UUID runId = submission.runId().orElseThrow();
+            RelocatedLogDropProbe probe = new RelocatedLogDropProbe(
+                    helper.absolutePos(RELOCATED_LOG_SOURCE),
+                    helper.absolutePos(RELOCATED_LOG_DESTINATION));
+
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    ACTIVE_DROP_COLLECTION_TIMEOUT_TICKS - 20,
+                    () -> {
+                        probe.observe(bot, runId);
+                        SkillRunView view = runView(bot, runId).orElse(null);
+                        return view != null && (view.state().isTerminal()
+                                || probe.fragmentCommitted(view));
+                    },
+                    "P5A never committed the relocated vanilla resource drop fragment",
+                    cleanup,
+                    () -> verifyRelocatedDropCollection(
+                            helper, bot, runId, probe, cleanup));
         } catch (RuntimeException | AssertionError exception) {
             cleanup.run();
             throw exception;
@@ -175,11 +244,35 @@ public final class P5BootstrapIronAcceptanceGameTests {
         helper.succeed();
     }
 
-    private static java.util.Optional<SkillRunView> terminalView(
+    private static void verifyRelocatedDropCollection(
+            GameTestHelper helper,
+            TestBot bot,
+            UUID runId,
+            RelocatedLogDropProbe probe,
+            P2GameTestSupport.Cleanup cleanup) {
+        try {
+            SkillRunView view = runView(bot, runId).orElseThrow();
+            P2GameTestSupport.require(
+                    !view.state().isTerminal(),
+                    "P5A terminalized before the relocated drop fragment "
+                            + "could be committed: " + view.state() + "/"
+                            + view.failureCode() + "/" + view.safeSummary());
+            probe.requireCommitted(view);
+        } finally {
+            cleanup.run();
+        }
+        helper.succeed();
+    }
+
+    private static java.util.Optional<SkillRunView> runView(
             TestBot bot, UUID runId) {
         return bot.manager().skillRun(bot.player().getUUID())
-                .filter(view -> view.runId().equals(runId)
-                        && view.state().isTerminal());
+                .filter(view -> view.runId().equals(runId));
+    }
+
+    private static java.util.Optional<SkillRunView> terminalView(
+            TestBot bot, UUID runId) {
+        return runView(bot, runId).filter(view -> view.state().isTerminal());
     }
 
     /**
@@ -292,6 +385,114 @@ public final class P5BootstrapIronAcceptanceGameTests {
         private SourceBlock {
             position = java.util.Objects.requireNonNull(position, "position");
             block = java.util.Objects.requireNonNull(block, "block");
+        }
+    }
+
+    /** Server-thread-only observation for one real block-drop entity. */
+    private static final class RelocatedLogDropProbe {
+        private final BlockPos source;
+        private final BlockPos destination;
+        private UUID entityId;
+        private int expectedCount;
+        private int inventoryBefore = -1;
+        private int completedNodesBefore = -1;
+        private boolean outsidePassivePickupRange;
+        private boolean reachedExactDropCell;
+        private boolean entityCollected;
+        private int observedInventoryDelta = Integer.MIN_VALUE;
+
+        private RelocatedLogDropProbe(BlockPos source, BlockPos destination) {
+            this.source = java.util.Objects.requireNonNull(source, "source");
+            this.destination = java.util.Objects.requireNonNull(destination,
+                    "destination");
+        }
+
+        private void observe(TestBot bot, UUID runId) {
+            if (entityId == null) {
+                relocateFreshVanillaDrop(bot, runId);
+                return;
+            }
+            Entity entity = bot.player().serverLevel().getEntity(entityId);
+            if (entity != null && !entity.isRemoved()) {
+                P2GameTestSupport.require(entity instanceof ItemEntity,
+                        "Relocated resource UUID no longer resolves to ItemEntity");
+                if (bot.player().onGround()
+                        && bot.player().blockPosition().equals(destination)) {
+                    reachedExactDropCell = true;
+                }
+                return;
+            }
+            if (!entityCollected) {
+                entityCollected = true;
+                observedInventoryDelta = count(bot, Items.OAK_LOG)
+                        - inventoryBefore;
+            }
+        }
+
+        private void relocateFreshVanillaDrop(TestBot bot, UUID runId) {
+            if (!bot.player().serverLevel().getBlockState(source).isAir()) {
+                return;
+            }
+            List<ItemEntity> candidates = bot.player().serverLevel()
+                    .getEntitiesOfClass(ItemEntity.class,
+                            sourceDropBounds(source),
+                            item -> item.getItem().is(Items.OAK_LOG)
+                                    && item.getItem().getCount() == 1
+                                    && item.blockPosition().equals(source));
+            if (candidates.isEmpty()) {
+                return;
+            }
+            P2GameTestSupport.require(candidates.size() == 1,
+                    "Expected exactly one new vanilla oak-log drop at " + source
+                            + ", found " + candidates.size());
+            ItemEntity candidate = candidates.getFirst();
+            inventoryBefore = count(bot, Items.OAK_LOG);
+            expectedCount = candidate.getItem().getCount();
+            candidate.setPos(destination.getX() + 0.5D,
+                    destination.getY(), destination.getZ() + 0.5D);
+            candidate.setDeltaMovement(Vec3.ZERO);
+            candidate.setPickUpDelay(RELOCATED_LOG_PICKUP_DELAY_TICKS);
+            entityId = candidate.getUUID();
+            outsidePassivePickupRange = bot.player().distanceToSqr(candidate)
+                    > PASSIVE_PICKUP_DISTANCE_SQUARED;
+            completedNodesBefore = runView(bot, runId)
+                    .map(SkillRunView::completedNodes)
+                    .orElse(-1);
+        }
+
+        private boolean fragmentCommitted(SkillRunView view) {
+            return entityId != null && entityCollected
+                    && completedNodesBefore >= 0
+                    && view.completedNodes() > completedNodesBefore;
+        }
+
+        private void requireCommitted(SkillRunView view) {
+            P2GameTestSupport.require(entityId != null,
+                    "The configured source block never produced a relocatable vanilla drop");
+            P2GameTestSupport.require(expectedCount == 1,
+                    "Relocated resource drop did not retain the exact one-item stack");
+            P2GameTestSupport.require(outsidePassivePickupRange,
+                    "Relocated resource drop remained in passive pickup range");
+            P2GameTestSupport.require(reachedExactDropCell,
+                    "Bot never reached the exact grounded UUID drop cell "
+                            + destination);
+            P2GameTestSupport.require(entityCollected,
+                    "UUID-bound relocated resource entity was never collected");
+            P2GameTestSupport.require(observedInventoryDelta == expectedCount,
+                    "Relocated UUID pickup inventory delta was not exact: expected="
+                            + expectedCount + ", actual="
+                            + observedInventoryDelta);
+            P2GameTestSupport.require(fragmentCommitted(view),
+                    "Resource fragment did not commit after UUID pickup");
+        }
+
+        private static AABB sourceDropBounds(BlockPos source) {
+            return new AABB(source.getX() - 0.25D,
+                    source.getY() - 0.25D,
+                    source.getZ() - 0.25D,
+                    source.getX() + 1.25D,
+                    source.getY() + 2.25D,
+                    source.getZ() + 1.25D);
         }
     }
 }

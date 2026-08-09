@@ -17,6 +17,14 @@ import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
 import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.P5ARecipe;
+import io.github.greytaiwolf.botplayer.navigation.GridPoint;
+import io.github.greytaiwolf.botplayer.navigation.NavigationArrivalRequirement;
+import io.github.greytaiwolf.botplayer.navigation.NavigationFailure;
+import io.github.greytaiwolf.botplayer.navigation.NavigationGoal;
+import io.github.greytaiwolf.botplayer.navigation.NavigationOutcome;
+import io.github.greytaiwolf.botplayer.navigation.NavigationRequest;
+import io.github.greytaiwolf.botplayer.navigation.NavigationState;
+import io.github.greytaiwolf.botplayer.navigation.NavigationSubmission;
 import io.github.greytaiwolf.botplayer.skill.builtin.P5ABuiltinSkillIds;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionLedger;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionMaterials;
@@ -361,7 +369,7 @@ class MinecraftProductionSkillNodeHandlerTest {
         Assertions.assertEquals(SkillNodeDirective.Kind.WAIT_ACTION,
                 handler.begin(context(operation("harvest_logs"), 10L, 0L))
                         .kind());
-        actions.completeSuccess();
+        actions.completeSuccess(resourceDropEvidence(new UUID(0L, 43L)));
         SkillNodeDirective waitingForPickup = handler.signal(context(
                 operation("harvest_logs"), 11L, 1L), signals.get(0));
         SkillNodeDirective completed = handler.tick(context(
@@ -373,6 +381,140 @@ class MinecraftProductionSkillNodeHandlerTest {
                 () -> Assertions.assertEquals(SkillNodeDirective.Kind.COMPLETE,
                         completed.kind()),
                 () -> Assertions.assertEquals(3, completionReads[0]));
+    }
+
+    @Test
+    void navigatesToAFreshDropThenUsesItsExactUuidForPickup() {
+        SequencedGateway actions = new SequencedGateway();
+        RecordingDropNavigation navigation = new RecordingDropNavigation();
+        List<SkillSignal> signals = new ArrayList<>();
+        UUID dropId = new UUID(0L, 44L);
+        MinecraftProductionSkillNodeHandler.ResourceDropCandidate drop =
+                new MinecraftProductionSkillNodeHandler.ResourceDropCandidate(
+                        dropId, "minecraft:overworld",
+                        new GridPoint(4, 1, 4), "minecraft:oak_log", 1);
+        boolean[] pickedUp = {false};
+        MinecraftProductionSkillNodeHandler handler =
+                new MinecraftProductionSkillNodeHandler(
+                        (botId, generation) -> Optional.of(
+                                new MinecraftProductionSkillNodeHandler
+                                        .ActiveBot(botId, generation)),
+                        new MinecraftProductionSkillNodeHandler
+                                .ProductionObservationPort() {
+                            @Override
+                            public Optional<MinecraftProductionSkillNodeHandler
+                                    .PreflightObservation> observeForDispatch(
+                                            MinecraftProductionSkillNodeHandler
+                                                    .ActiveBot bot,
+                                            SkillNodeContext context,
+                                            MinecraftProductionSkillNodeHandler
+                                                    .ApprovedOperation operation) {
+                                return Optional.of(acquisitionPreflight(
+                                        context.currentTick()));
+                            }
+
+                            @Override
+                            public Optional<MinecraftProductionSkillNodeHandler
+                                    .CompletionObservation> observeAfterAction(
+                                            MinecraftProductionSkillNodeHandler
+                                                    .ExecutionTicket ticket,
+                                            SkillNodeContext context,
+                                            SkillSignal signal) {
+                                return Optional.of(acquisitionCompletion(
+                                        context.currentTick(), pickedUp[0]
+                                                ? ProductionLedger.of(
+                                                        ProductionMaterials
+                                                                .OAK_LOG,
+                                                        1)
+                                                : ProductionLedger.empty()));
+                            }
+                        },
+                        taskSensors(),
+                        new MinecraftProductionSkillNodeHandler
+                                .ResourceAcquisitionActionPort() {
+                            @Override
+                            public Optional<MinecraftProductionSkillNodeHandler
+                                    .ProductionAction> plan(
+                                            MinecraftProductionSkillNodeHandler
+                                                    .ExecutionTicket ticket,
+                                            TaskSensorService suppliedSensors) {
+                                return Optional.of(testAction());
+                            }
+
+                            @Override
+                            public MinecraftProductionSkillNodeHandler
+                                    .ResourceDropObservation observeResourceDrop(
+                                            MinecraftProductionSkillNodeHandler
+                                                    .ExecutionTicket ticket,
+                                            SkillNodeContext context) {
+                                return MinecraftProductionSkillNodeHandler
+                                        .ResourceDropObservation.found(drop);
+                            }
+
+                            @Override
+                            public Optional<MinecraftProductionSkillNodeHandler
+                                    .ProductionAction> planResourceDropPickup(
+                                            MinecraftProductionSkillNodeHandler
+                                                    .ExecutionTicket ticket,
+                                            SkillNodeContext context,
+                                            MinecraftProductionSkillNodeHandler
+                                                    .ResourceDropCandidate candidate) {
+                                return candidate.equals(drop)
+                                        ? Optional.of(pickupAction(dropId))
+                                        : Optional.empty();
+                            }
+                        },
+                        ticket -> Optional.empty(),
+                        navigation,
+                        actions,
+                        signal -> {
+                            signals.add(signal);
+                            return SkillSignalInbox.OfferStatus.ENQUEUED;
+                        });
+
+        String operation = operation("harvest_logs");
+        Assertions.assertEquals(SkillNodeDirective.Kind.WAIT_ACTION,
+                handler.begin(context(operation, 10L, 0L)).kind());
+        actions.completeNextSuccess(resourceDropEvidence(dropId));
+
+        Assertions.assertEquals(SkillNodeDirective.Kind.CONTINUE,
+                handler.signal(context(operation, 11L, 1L), signals.get(0))
+                        .kind());
+        Assertions.assertEquals(SkillNodeDirective.Kind.WAIT_NAVIGATION,
+                handler.tick(context(operation, 12L, 2L)).kind());
+        Assertions.assertAll(
+                () -> Assertions.assertInstanceOf(
+                        NavigationGoal.ExactPosition.class,
+                        navigation.request.goal()),
+                () -> Assertions.assertEquals(
+                        NavigationArrivalRequirement.GROUNDED_GRID_CELL,
+                        navigation.request.arrivalRequirement()),
+                () -> Assertions.assertEquals(drop.position(),
+                        ((NavigationGoal.ExactPosition) navigation.request.goal())
+                                .position()));
+
+        navigation.succeed(13L);
+        SkillSignal navigationSignal = signals.get(1);
+        Assertions.assertEquals(SkillNodeDirective.Kind.CONTINUE,
+                handler.signal(context(operation, 13L, 3L), navigationSignal)
+                        .kind());
+        Assertions.assertEquals(SkillNodeDirective.Kind.WAIT_ACTION,
+                handler.tick(context(operation, 14L, 3L)).kind());
+        WorldInteractionAction pickupWorldAction =
+                (WorldInteractionAction) actions.submitted.get(1).action();
+        Assertions.assertInstanceOf(WorldInteractionActionSpec.PickupWait.class,
+                pickupWorldAction.spec());
+        WorldInteractionActionSpec.PickupWait pickup =
+                (WorldInteractionActionSpec.PickupWait) pickupWorldAction.spec();
+        Assertions.assertEquals(Optional.of(dropId),
+                pickup.expectedItemEntityId());
+
+        pickedUp[0] = true;
+        actions.completeNextSuccess(List.of(new ActionEvidence("entity.id",
+                dropId.toString())));
+        Assertions.assertEquals(SkillNodeDirective.Kind.COMPLETE,
+                handler.signal(context(operation, 15L, 4L), signals.get(2))
+                        .kind());
     }
 
     private static MinecraftProductionSkillNodeHandler handler(
@@ -496,6 +638,25 @@ class MinecraftProductionSkillNodeHandlerTest {
                                 ItemStackFingerprint.empty())),
                 20,
                 "等待测试原版世界动作");
+    }
+
+    private static MinecraftProductionSkillNodeHandler.ProductionAction
+            pickupAction(UUID itemEntityId) {
+        return new MinecraftProductionSkillNodeHandler.ProductionAction(
+                new WorldInteractionAction(
+                        new WorldInteractionActionSpec.PickupWait(
+                                80, Optional.of(itemEntityId))),
+                80,
+                "等待测试 UUID 绑定掉落实体进入背包");
+    }
+
+    private static List<ActionEvidence> resourceDropEvidence(UUID itemEntityId) {
+        return List.of(
+                new ActionEvidence("block.after", "minecraft:air"),
+                new ActionEvidence("block.drop.entity.id",
+                        itemEntityId.toString()),
+                new ActionEvidence("block.drop.item", "minecraft:oak_log"),
+                new ActionEvidence("block.drop.count", "1"));
     }
 
     private static MinecraftProductionSkillNodeHandler.ProductionAction
@@ -646,6 +807,11 @@ class MinecraftProductionSkillNodeHandlerTest {
         }
 
         private void completeSuccess() {
+            completeSuccess(List.of(new ActionEvidence("production.receipt",
+                    "ok")));
+        }
+
+        private void completeSuccess(List<ActionEvidence> evidence) {
             Assertions.assertNotNull(envelope,
                     "handler must submit a frozen action before completion");
             completion.complete(new ActionOutcome(
@@ -654,8 +820,74 @@ class MinecraftProductionSkillNodeHandlerTest {
                     ActionFailureCode.NONE,
                     10L,
                     10L,
-                    List.of(new ActionEvidence("production.receipt", "ok")),
+                    evidence,
                     "测试原版动作已完成"));
+        }
+    }
+
+    private static final class SequencedGateway
+            implements ActionBackedSkillNodeHandler.ActionGateway {
+        private final List<ActionEnvelope> submitted = new ArrayList<>();
+        private final List<CompletableFuture<ActionOutcome>> completions =
+                new ArrayList<>();
+        private int nextCompletion;
+
+        @Override
+        public ActionMailbox.Submission submit(
+                ActionEnvelope actionEnvelope, ActionPriority priority) {
+            CompletableFuture<ActionOutcome> completion =
+                    new CompletableFuture<>();
+            submitted.add(actionEnvelope);
+            completions.add(completion);
+            return new ActionMailbox.Submission(
+                    ActionMailbox.SubmissionStatus.ENQUEUED,
+                    Optional.<CompletionStage<ActionOutcome>>of(completion));
+        }
+
+        @Override
+        public void cancel(
+                UUID botId,
+                UUID actionId,
+                ActionCancellationReason reason) {
+            // The focused happy path never cancels an action.
+        }
+
+        private void completeNextSuccess(List<ActionEvidence> evidence) {
+            ActionEnvelope envelope = submitted.get(nextCompletion);
+            completions.get(nextCompletion++).complete(new ActionOutcome(
+                    envelope.actionId(), ActionState.SUCCEEDED,
+                    ActionFailureCode.NONE, 10L, 10L, evidence,
+                    "测试原版动作已完成"));
+        }
+    }
+
+    private static final class RecordingDropNavigation
+            implements MinecraftProductionSkillNodeHandler
+                    .ResourceDropNavigationGateway {
+        private final CompletableFuture<NavigationOutcome> completion =
+                new CompletableFuture<>();
+        private NavigationRequest request;
+
+        @Override
+        public NavigationSubmission submit(
+                NavigationRequest navigationRequest, long currentTick) {
+            request = navigationRequest;
+            return NavigationSubmission.enqueued(completion);
+        }
+
+        @Override
+        public boolean cancel(
+                UUID navigationId, long currentTick, String reason) {
+            return false;
+        }
+
+        private void succeed(long tick) {
+            NavigationGoal.ExactPosition goal =
+                    (NavigationGoal.ExactPosition) request.goal();
+            completion.complete(new NavigationOutcome(
+                    request.navigationId(), NavigationState.SUCCEEDED,
+                    NavigationFailure.NONE, goal.position(), tick, tick,
+                    0, 0, 0, 0L, 0, 0, "测试掉落实体导航成功"));
         }
     }
 }

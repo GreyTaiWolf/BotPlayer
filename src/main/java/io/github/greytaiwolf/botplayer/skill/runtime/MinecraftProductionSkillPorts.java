@@ -11,6 +11,7 @@ import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionAction
 import io.github.greytaiwolf.botplayer.action.interaction.menu.P5ARecipe;
 import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftActionSnapshot;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
+import io.github.greytaiwolf.botplayer.navigation.GridPoint;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionLedger;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionMaterial;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionMaterials;
@@ -33,6 +34,8 @@ import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftProductionSkillNod
 import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftProductionSkillNodeHandler.ProductionAction;
 import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftProductionSkillNodeHandler.ProductionObservationPort;
 import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftProductionSkillNodeHandler.ResourceAcquisitionActionPort;
+import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftProductionSkillNodeHandler.ResourceDropCandidate;
+import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftProductionSkillNodeHandler.ResourceDropObservation;
 import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillNodeContext;
 import io.github.greytaiwolf.botplayer.skill.task.MinecraftTaskSensorAdapter;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorAvailability;
@@ -46,6 +49,7 @@ import io.github.greytaiwolf.botplayer.skill.task.TaskSensorRunIdentity;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorScope;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorService;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorSnapshot;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -56,6 +60,8 @@ import java.util.UUID;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.phys.Vec3;
 
@@ -82,6 +88,11 @@ public final class MinecraftProductionSkillPorts
     static final int RESOURCE_MAX_CANDIDATES = 24;
     static final int RESOURCE_MAX_BLOCKS = 256;
     static final int RESOURCE_MAX_EVIDENCE = 24;
+    /** 破块前后只观察 source 周围 2 格内至多 12 枚掉落实体，不能退化为广域扫描。 */
+    static final int RESOURCE_DROP_RADIUS = 2;
+    static final int RESOURCE_DROP_MAX_CANDIDATES = 12;
+    static final int RESOURCE_DROP_MAX_EVIDENCE = 12;
+    static final int MAXIMUM_RESOURCE_DROP_PICKUP_TICKS = 80;
     static final int INVENTORY_SLOTS = 41;
     static final int INVENTORY_EVIDENCE = INVENTORY_SLOTS + 1;
     static final int NATIVE_MENU_SLOTS = MenuFamily.INVENTORY_2X2.slotCount();
@@ -107,6 +118,8 @@ public final class MinecraftProductionSkillPorts
             "empty", "count");
     private static final Set<String> RESOURCE_CANDIDATE_FIELDS = Set.of(
             "x", "y", "z", "block");
+    private static final Set<String> DROPPED_ITEM_CANDIDATE_FIELDS = Set.of(
+            "entity.id", "item", "count", "x", "y", "z");
 
     private final PlayerResolver players;
     private final TaskSensorService taskSensors;
@@ -169,12 +182,18 @@ public final class MinecraftProductionSkillPorts
             if (candidate == null) {
                 return Optional.empty();
             }
+            Set<UUID> preexistingDropIds = observedDropIds(
+                    player, context, candidate.target()).orElse(null);
+            if (preexistingDropIds == null) {
+                return Optional.empty();
+            }
             binding = new ResourceBinding(
                     bot,
                     approved.operationId(),
                     context.currentTick(),
                     baseline,
-                    candidate.target());
+                    candidate.target(),
+                    preexistingDropIds);
             snapshotBuilder.noOpenMenu();
         } else if (operation instanceof RecipeExecution recipeExecution) {
             P5ARecipe recipe = approvedRecipe(recipeExecution,
@@ -331,6 +350,138 @@ public final class MinecraftProductionSkillPorts
                 new WorldInteractionAction(breakBlock),
                 MAXIMUM_RESOURCE_ACTION_TICKS,
                 "等待原版方块破坏与资源掉落回读"));
+    }
+
+    /**
+     * 只在已经严格破坏 source 且玩家账本仍完全等于 before 时，扫描 source 附近新出现的
+     * ItemEntity 标量。preflight 已冻结所有旧 UUID，因此现存的旧掉落物不能被误收。
+     */
+    @Override
+    public ResourceDropObservation observeResourceDrop(
+            ExecutionTicket ticket, SkillNodeContext context) {
+        requireOwnerThread();
+        Objects.requireNonNull(ticket, "ticket");
+        Objects.requireNonNull(context, "context");
+        if (!(ticket.resolved().node().operation()
+                instanceof ResourceAcquisition acquisition)) {
+            return ResourceDropObservation.unavailable();
+        }
+        FrozenBinding frozen = bindings.get(ticket.before().worldBinding());
+        if (!(frozen instanceof ResourceBinding binding)
+                || !binding.matches(ticket)) {
+            return ResourceDropObservation.unavailable();
+        }
+        BotServerPlayer player = resolveCurrent(ticket.bot()).orElse(null);
+        if (player == null || !currentTick(player, context.currentTick())
+                || !binding.worldStillValidAfter(player)
+                || observeNativeBaseline(player, context).isEmpty()) {
+            return ResourceDropObservation.unavailable();
+        }
+        ResourceDropExpectation expectation = resourceDropExpectation(
+                acquisition).orElse(null);
+        if (expectation == null) {
+            return ResourceDropObservation.unavailable();
+        }
+        TaskSensorSnapshot snapshot = query(new TaskSensorQuery(
+                identity(context),
+                TaskSensorQueryType.DROPPED_ITEMS,
+                dropScope(player, context, binding.target()),
+                new TaskSensorBudget(
+                        RESOURCE_DROP_MAX_CANDIDATES,
+                        0,
+                        0,
+                        0,
+                        RESOURCE_DROP_MAX_EVIDENCE,
+                        0L)), context.currentTick()).orElse(null);
+        if (snapshot == null || snapshot.truncated()) {
+            return ResourceDropObservation.unavailable();
+        }
+        List<ResourceDropCandidate> matching = new ArrayList<>();
+        Set<UUID> seenIds = new java.util.LinkedHashSet<>();
+        for (TaskSensorEvidence evidence : snapshot.evidence()) {
+            ResourceDropCandidate candidate = droppedItemCandidate(evidence,
+                    binding.target().dimension().value()).orElse(null);
+            if (candidate == null || !seenIds.add(candidate.entityId())
+                    || !candidate.dimensionId().equals(
+                            binding.target().dimension().value())
+                    || !withinDropEnvelope(candidate.position(),
+                            binding.target().position())) {
+                return ResourceDropObservation.unavailable();
+            }
+            if (!binding.preexistingDropIds().contains(candidate.entityId())
+                    && expectation.itemId().equals(candidate.itemId())
+                    && expectation.count() == candidate.count()) {
+                matching.add(candidate);
+            }
+        }
+        if (matching.isEmpty()) {
+            return ResourceDropObservation.absent();
+        }
+        return matching.size() == 1
+                ? ResourceDropObservation.found(matching.get(0))
+                : ResourceDropObservation.ambiguous();
+    }
+
+    /**
+     * 在 action 入队前重新读取 live UUID、物品、source air 和 native menu。PickupWait 后端还会
+     * 以同一 UUID 做可达性、实体消失和库存增量校验，因此这里不直接移动玩家或写入库存。
+     */
+    @Override
+    public Optional<ProductionAction> planResourceDropPickup(
+            ExecutionTicket ticket,
+            SkillNodeContext context,
+            ResourceDropCandidate candidate) {
+        requireOwnerThread();
+        Objects.requireNonNull(ticket, "ticket");
+        Objects.requireNonNull(context, "context");
+        Objects.requireNonNull(candidate, "candidate");
+        if (!(ticket.resolved().node().operation()
+                instanceof ResourceAcquisition acquisition)) {
+            return Optional.empty();
+        }
+        FrozenBinding frozen = bindings.get(ticket.before().worldBinding());
+        if (!(frozen instanceof ResourceBinding binding)
+                || !binding.matches(ticket)
+                || binding.preexistingDropIds().contains(candidate.entityId())
+                || !binding.target().dimension().value().equals(
+                        candidate.dimensionId())) {
+            return Optional.empty();
+        }
+        ResourceDropExpectation expectation = resourceDropExpectation(
+                acquisition).orElse(null);
+        if (expectation == null
+                || !expectation.itemId().equals(candidate.itemId())
+                || expectation.count() != candidate.count()) {
+            return Optional.empty();
+        }
+        BotServerPlayer player = resolveCurrent(ticket.bot()).orElse(null);
+        NativeBaseline currentBaseline = player == null ? null
+                : observeNativeBaseline(player, context).orElse(null);
+        if (player == null || !currentTick(player, context.currentTick())
+                || !binding.worldStillValidAfter(player)
+                || !sameSafePickupBaseline(currentBaseline, binding.baseline(),
+                        ticket.before().snapshot().playerLedger())) {
+            return Optional.empty();
+        }
+        Entity entity = player.serverLevel().getEntity(candidate.entityId());
+        if (!(entity instanceof ItemEntity itemEntity)
+                || itemEntity.isRemoved()
+                || !itemEntity.blockPosition().equals(
+                        candidate.position().toBlockPos())
+                || !withinDropEnvelope(candidate.position(),
+                        binding.target().position())
+                || !candidate.itemId().equals(BuiltInRegistries.ITEM
+                        .getKey(itemEntity.getItem().getItem()).toString())
+                || itemEntity.getItem().getCount() != candidate.count()) {
+            return Optional.empty();
+        }
+        return Optional.of(new ProductionAction(
+                new WorldInteractionAction(
+                        new WorldInteractionActionSpec.PickupWait(
+                                MAXIMUM_RESOURCE_DROP_PICKUP_TICKS,
+                                Optional.of(candidate.entityId()))),
+                MAXIMUM_RESOURCE_DROP_PICKUP_TICKS,
+                "等待 UUID 绑定的原版资源掉落实体进入背包"));
     }
 
     @Override
@@ -756,6 +907,112 @@ public final class MinecraftProductionSkillPorts
         return !held.isEmpty()
                 && held.itemId().filter(placement.workstation().material()
                         .id()::equals).isPresent();
+    }
+
+    private Optional<Set<UUID>> observedDropIds(
+            BotServerPlayer player,
+            SkillNodeContext context,
+            BlockTargetFingerprint source) {
+        try {
+            TaskSensorSnapshot snapshot = query(new TaskSensorQuery(
+                    identity(context),
+                    TaskSensorQueryType.DROPPED_ITEMS,
+                    dropScope(player, context, source),
+                    new TaskSensorBudget(
+                            RESOURCE_DROP_MAX_CANDIDATES,
+                            0,
+                            0,
+                            0,
+                            RESOURCE_DROP_MAX_EVIDENCE,
+                            0L)), context.currentTick()).orElse(null);
+            if (snapshot == null || snapshot.truncated()) {
+                return Optional.empty();
+            }
+            Set<UUID> result = new java.util.LinkedHashSet<>();
+            for (TaskSensorEvidence evidence : snapshot.evidence()) {
+                ResourceDropCandidate candidate = droppedItemCandidate(
+                        evidence, source.dimension().value()).orElse(null);
+                if (candidate == null
+                        || !result.add(candidate.entityId())
+                        || !withinDropEnvelope(candidate.position(),
+                                source.position())) {
+                    return Optional.empty();
+                }
+            }
+            return Optional.of(Set.copyOf(result));
+        } catch (RuntimeException exception) {
+            return Optional.empty();
+        }
+    }
+
+    private static TaskSensorScope dropScope(
+            BotServerPlayer player,
+            SkillNodeContext context,
+            BlockTargetFingerprint source) {
+        Objects.requireNonNull(player, "player");
+        Objects.requireNonNull(context, "context");
+        Objects.requireNonNull(source, "source");
+        return new TaskSensorScope(source.dimension().value(),
+                source.position().x(), source.position().y(),
+                source.position().z(), RESOURCE_DROP_RADIUS,
+                Math.incrementExact(context.stateRevision()));
+    }
+
+    private static Optional<ResourceDropCandidate> droppedItemCandidate(
+            TaskSensorEvidence evidence, String dimensionId) {
+        if (evidence == null || !"dropped_item.candidate".equals(
+                evidence.kind())) {
+            return Optional.empty();
+        }
+        Map<String, Object> fields = evidence.fields().values();
+        if (!fields.keySet().equals(DROPPED_ITEM_CANDIDATE_FIELDS)
+                || !(fields.get("entity.id") instanceof String entityId)
+                || !(fields.get("item") instanceof String itemId)
+                || !(fields.get("count") instanceof Integer count)
+                || !(fields.get("x") instanceof Integer x)
+                || !(fields.get("y") instanceof Integer y)
+                || !(fields.get("z") instanceof Integer z)) {
+            return Optional.empty();
+        }
+        try {
+            UUID uuid = UUID.fromString(entityId);
+            if (uuid.getMostSignificantBits() == 0L
+                    && uuid.getLeastSignificantBits() == 0L) {
+                return Optional.empty();
+            }
+            return Optional.of(new ResourceDropCandidate(uuid, dimensionId,
+                    new GridPoint(x, y, z), itemId, count));
+        } catch (IllegalArgumentException exception) {
+            return Optional.empty();
+        }
+    }
+
+    private static boolean withinDropEnvelope(
+            GridPoint candidate, BlockCoordinates source) {
+        long deltaX = (long) Objects.requireNonNull(candidate,
+                "candidate").x() - source.x();
+        long deltaY = (long) candidate.y() - source.y();
+        long deltaZ = (long) candidate.z() - source.z();
+        return Math.abs(deltaX) <= RESOURCE_DROP_RADIUS
+                && Math.abs(deltaY) <= RESOURCE_DROP_RADIUS
+                && Math.abs(deltaZ) <= RESOURCE_DROP_RADIUS;
+    }
+
+    private static Optional<ResourceDropExpectation> resourceDropExpectation(
+            ResourceAcquisition acquisition) {
+        Objects.requireNonNull(acquisition, "acquisition");
+        Map<ProductionMaterial, Integer> quantities = acquisition.expectedGain()
+                .quantities();
+        if (quantities.size() != 1) {
+            return Optional.empty();
+        }
+        Map.Entry<ProductionMaterial, Integer> entry = quantities.entrySet()
+                .iterator().next();
+        if (entry.getValue() != 1) {
+            return Optional.empty();
+        }
+        return Optional.of(new ResourceDropExpectation(
+                entry.getKey().id().value(), entry.getValue()));
     }
 
     private Optional<TaskSensorSnapshot> query(
@@ -1202,6 +1459,17 @@ public final class MinecraftProductionSkillPorts
         }
     }
 
+    /** 已审核资源 fragment 的单一原版掉落实体预期。 */
+    private record ResourceDropExpectation(String itemId, int count) {
+        private ResourceDropExpectation {
+            new ResourceId(Objects.requireNonNull(itemId, "itemId"));
+            if (count != 1) {
+                throw new IllegalArgumentException(
+                        "P5A resource drop expectation must be exactly one item");
+            }
+        }
+    }
+
     /**
      * preflight 观察得到的纯值放置位：锚点完整指纹、目标严格空气指纹以及原版 placement
      * context 预测出的完整结果 state 都必须成对保存，不能只保存坐标或 block id。
@@ -1276,6 +1544,24 @@ public final class MinecraftProductionSkillPorts
         }
     }
 
+    /**
+     * PickUpWait 入队前必须仍处于同一原生背包、同一维度、空 cursor，并且 P5A 白名单账本
+     * 精确等于破块前。故其他生产材料在导航间隙发生变化时不会先收取实体再事后失败；不比较
+     * {@code stateId}，因为原版挖掘可合法改变工具耐久并推进 menu state。
+     */
+    private static boolean sameSafePickupBaseline(
+            NativeBaseline current,
+            NativeBaseline frozen,
+            ProductionLedger expectedPlayerLedger) {
+        return current != null
+                && frozen != null
+                && current.dimensionId().equals(frozen.dimensionId())
+                && current.containerId() == frozen.containerId()
+                && current.cursorEmpty()
+                && current.ledger().equals(Objects.requireNonNull(
+                        expectedPlayerLedger, "expectedPlayerLedger"));
+    }
+
     private sealed interface FrozenBinding permits ResourceBinding,
             NativeRecipeBinding, WorldRecipeBinding,
             WorkstationPlacementBinding {
@@ -1310,12 +1596,15 @@ public final class MinecraftProductionSkillPorts
             String operationId,
             long observedAtTick,
             NativeBaseline baseline,
-            BlockTargetFingerprint target) implements FrozenBinding {
+            BlockTargetFingerprint target,
+            Set<UUID> preexistingDropIds) implements FrozenBinding {
         private ResourceBinding {
             Objects.requireNonNull(bot, "bot");
             Objects.requireNonNull(operationId, "operationId");
             Objects.requireNonNull(baseline, "baseline");
             Objects.requireNonNull(target, "target");
+            preexistingDropIds = Set.copyOf(Objects.requireNonNull(
+                    preexistingDropIds, "preexistingDropIds"));
         }
 
         @Override

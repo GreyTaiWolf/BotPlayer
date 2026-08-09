@@ -1,12 +1,23 @@
 package io.github.greytaiwolf.botplayer.skill.runtime;
 
+import io.github.greytaiwolf.botplayer.action.ActionEvidence;
 import io.github.greytaiwolf.botplayer.action.ActionPriority;
 import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
 import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.P5ARecipe;
+import io.github.greytaiwolf.botplayer.navigation.GridPoint;
+import io.github.greytaiwolf.botplayer.navigation.NavigationArrivalRequirement;
+import io.github.greytaiwolf.botplayer.navigation.NavigationFailure;
+import io.github.greytaiwolf.botplayer.navigation.NavigationGoal;
+import io.github.greytaiwolf.botplayer.navigation.NavigationOutcome;
+import io.github.greytaiwolf.botplayer.navigation.NavigationPolicy;
+import io.github.greytaiwolf.botplayer.navigation.NavigationRequest;
+import io.github.greytaiwolf.botplayer.navigation.NavigationService;
+import io.github.greytaiwolf.botplayer.navigation.NavigationSubmission;
 import io.github.greytaiwolf.botplayer.skill.builtin.P5ABuiltinSkillIds;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.PlaceWorkstation;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionLedger;
+import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionMaterial;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionOperation;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionPreconditionRejection;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionPreconditionResult;
@@ -20,6 +31,8 @@ import io.github.greytaiwolf.botplayer.skill.builtin.production.SingleChestTrans
 import io.github.greytaiwolf.botplayer.skill.core.SkillFailureCode;
 import io.github.greytaiwolf.botplayer.skill.core.SkillParameters;
 import io.github.greytaiwolf.botplayer.skill.core.SkillSignal;
+import io.github.greytaiwolf.botplayer.skill.core.SkillSignalStatus;
+import io.github.greytaiwolf.botplayer.skill.core.SkillSignalType;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuFamily;
 import io.github.greytaiwolf.botplayer.skill.reservation.ReservationKey;
 import io.github.greytaiwolf.botplayer.skill.reservation.ReservationMode;
@@ -36,6 +49,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletionStage;
 
 /**
  * P5A 木头到铁镐生产 DAG 的真实动作边界。
@@ -66,8 +80,22 @@ public final class MinecraftProductionSkillNodeHandler
     private static final String WORKSTATION_PLACEMENT_SCOPE =
             "minecraft.production.place-workstation";
     private static final int MAX_BINDING_LENGTH = 256;
-    /** 方块已由原版打碎但掉落物尚未被身体拾取时的最大重观察次数。 */
-    private static final int MAX_RESOURCE_PICKUP_POLLS = 20;
+    /** 破块后等待受限 TaskSensor 首次看到新掉落实体的最大观察次数。 */
+    private static final int MAX_RESOURCE_DROP_OBSERVATIONS = 40;
+    /** 单一掉落实体的局部收集导航不应占满整个生产节点预算。 */
+    private static final int MAXIMUM_RESOURCE_DROP_NAVIGATION_TICKS = 240;
+    /** 到达精确掉落实体附近后，仅允许有限 collision-driven PickupWait。 */
+    private static final int MAXIMUM_RESOURCE_DROP_PICKUP_TICKS = 80;
+    private static final String DROP_NAVIGATION_EVIDENCE_KEY =
+            "navigation.resource-drop";
+    private static final String BREAK_DROP_ENTITY_ID_EVIDENCE_KEY =
+            "block.drop.entity.id";
+    private static final String BREAK_DROP_ITEM_EVIDENCE_KEY =
+            "block.drop.item";
+    private static final String BREAK_DROP_COUNT_EVIDENCE_KEY =
+            "block.drop.count";
+    private static final String DROP_NAVIGATION_CANCELLATION_REASON =
+            "P5A 资源掉落收集节点已被取消";
 
     private final ActiveBotResolver bots;
     private final ProductionObservationPort observations;
@@ -77,7 +105,10 @@ public final class MinecraftProductionSkillNodeHandler
     private final ProductionPreconditionValidator preconditions =
             new ProductionPreconditionValidator();
     private final ActionBackedSkillNodeHandler actionDelegate;
-    private final Map<UUID, ResourcePickupPoll> resourcePickupPolls =
+    private final ActionBackedSkillNodeHandler pickupActionDelegate;
+    private final ResourceDropNavigationGateway resourceDropNavigation;
+    private final ActionBackedSkillNodeHandler.SignalSink signals;
+    private final Map<UUID, ResourceDropCollection> resourceDropCollections =
             new LinkedHashMap<>();
     private final Thread ownerThread;
 
@@ -98,6 +129,37 @@ public final class MinecraftProductionSkillNodeHandler
             MenuActionPort menuActions,
             ActionBackedSkillNodeHandler.ActionGateway actions,
             ActionBackedSkillNodeHandler.SignalSink signals) {
+        this(bots, observations, taskSensors, acquisitionActions, menuActions,
+                unavailableResourceDropNavigation(), actions, signals);
+    }
+
+    /**
+     * 生命周期构造器额外注入受控导航服务，用于破块后的短暂掉落实体收集；计划本身仍不
+     * 保存实体 UUID 或坐标。
+     */
+    public MinecraftProductionSkillNodeHandler(
+            ActiveBotResolver bots,
+            ProductionObservationPort observations,
+            TaskSensorService taskSensors,
+            ResourceAcquisitionActionPort acquisitionActions,
+            MenuActionPort menuActions,
+            NavigationService navigationService,
+            ActionBackedSkillNodeHandler.ActionGateway actions,
+            ActionBackedSkillNodeHandler.SignalSink signals) {
+        this(bots, observations, taskSensors, acquisitionActions, menuActions,
+                resourceDropNavigationGateway(navigationService), actions,
+                signals);
+    }
+
+    MinecraftProductionSkillNodeHandler(
+            ActiveBotResolver bots,
+            ProductionObservationPort observations,
+            TaskSensorService taskSensors,
+            ResourceAcquisitionActionPort acquisitionActions,
+            MenuActionPort menuActions,
+            ResourceDropNavigationGateway resourceDropNavigation,
+            ActionBackedSkillNodeHandler.ActionGateway actions,
+            ActionBackedSkillNodeHandler.SignalSink signals) {
         this.bots = Objects.requireNonNull(bots, "bots");
         this.observations = Objects.requireNonNull(
                 observations, "observations");
@@ -105,10 +167,21 @@ public final class MinecraftProductionSkillNodeHandler
         this.acquisitionActions = Objects.requireNonNull(
                 acquisitionActions, "acquisitionActions");
         this.menuActions = Objects.requireNonNull(menuActions, "menuActions");
+        this.resourceDropNavigation = Objects.requireNonNull(
+                resourceDropNavigation, "resourceDropNavigation");
+        ActionBackedSkillNodeHandler.ActionGateway actionGateway =
+                Objects.requireNonNull(actions, "actions");
+        ActionBackedSkillNodeHandler.SignalSink signalSink =
+                Objects.requireNonNull(signals, "signals");
+        this.signals = signalSink;
         actionDelegate = new ActionBackedSkillNodeHandler(
                 this::planAction,
-                Objects.requireNonNull(actions, "actions"),
-                Objects.requireNonNull(signals, "signals"));
+                actionGateway,
+                signalSink);
+        pickupActionDelegate = new ActionBackedSkillNodeHandler(
+                this::planPickupAction,
+                actionGateway,
+                signalSink);
         ownerThread = Thread.currentThread();
     }
 
@@ -157,53 +230,95 @@ public final class MinecraftProductionSkillNodeHandler
     public SkillNodeDirective signal(
             SkillNodeContext context, SkillSignal signal) {
         requireOwnerThread();
+        Objects.requireNonNull(context, "context");
+        Objects.requireNonNull(signal, "signal");
+        ResourceDropCollection collection = resourceDropCollections.get(
+                context.runId());
+        if (collection instanceof PendingResourceDropNavigation pending) {
+            return handleResourceDropNavigationSignal(context, signal, pending);
+        }
+        if (collection instanceof PendingResourceDropPickup pending) {
+            if (signal.type() != SkillSignalType.ACTION) {
+                resourceDropCollections.remove(context.runId(), pending);
+                return SkillNodeDirective.fail(
+                        SkillFailureCode.INTERNAL_ERROR,
+                        "资源掉落收集等待原版拾取动作时收到了错误回执类型");
+            }
+            SkillNodeDirective result = pickupActionDelegate.signal(context,
+                    signal);
+            if (result.kind() == SkillNodeDirective.Kind.COMPLETE
+                    || result.kind() == SkillNodeDirective.Kind.FAIL) {
+                resourceDropCollections.remove(context.runId(), pending);
+            }
+            return result;
+        }
         return actionDelegate.signal(context, signal);
     }
 
     /**
-     * {@link WorldInteractionActionSpec.BreakBlock} 只证明方块已经由原版破坏；掉落实体到达
-     * 玩家背包可能晚一小段 tick。若且仅若第一次完成观察证明所有 binding/menu 都仍准确、
-     * 玩家白名单账本恰好尚未变化，才有限重观察；任何额外物品变化、菜单漂移或超时都失败，
-     * 不会把等待当成补发物品的授权。
+     * {@link WorldInteractionActionSpec.BreakBlock} 只证明方块已经由原版破坏。掉落实体并不
+     * 保证已在身体碰撞范围内：在原账本仍未变化时，节点只会短暂观察一枚新鲜、精确匹配的
+     * {@code ItemEntity}，导航到其格点后走 UUID 绑定的 {@code PickupWait}。任何候选、world
+     * binding、菜单或账本漂移都会失败，绝不把等待当成补发物品的授权。
      */
     @Override
     public SkillNodeDirective tick(SkillNodeContext context) {
         requireOwnerThread();
         Objects.requireNonNull(context, "context");
-        ResourcePickupPoll poll = resourcePickupPolls.get(context.runId());
-        if (poll == null) {
+        ResourceDropCollection collection = resourceDropCollections.get(
+                context.runId());
+        if (collection == null) {
             return SkillNodeDirective.continueRunning("生产节点继续运行");
         }
-        if (!poll.matches(context)) {
-            resourcePickupPolls.remove(context.runId(), poll);
+        if (!collection.matches(context)) {
+            resourceDropCollections.remove(context.runId(), collection);
             return SkillNodeDirective.fail(
                     SkillFailureCode.WORLD_CHANGED,
-                    "资源掉落等待期间节点身份或 operation 已变化");
+                    "资源掉落收集期间节点身份或 operation 已变化");
         }
-        SkillNodeDirective verified = verify(poll.ticket(), context,
-                poll.signal());
-        if (!mayAwaitResourcePickup(poll.ticket(), context, poll.signal(),
-                verified)) {
-            resourcePickupPolls.remove(context.runId(), poll);
-            return verified;
+        if (collection instanceof AwaitingResourceDrop awaiting) {
+            return advanceResourceDropObservation(context, awaiting);
         }
-        if (poll.remainingPolls() <= 1) {
-            resourcePickupPolls.remove(context.runId(), poll);
-            return SkillNodeDirective.fail(
-                    SkillFailureCode.MISSING_ITEM,
-                    "原版方块已破坏，但资源掉落在有限等待内未进入背包");
+        if (collection instanceof ReadyResourceDropPickup ready) {
+            if (!ready.provenance().matches(ready.candidate())) {
+                resourceDropCollections.remove(context.runId(), ready);
+                return SkillNodeDirective.fail(
+                        SkillFailureCode.WORLD_CHANGED,
+                        "资源掉落实体来源凭据在拾取前不再匹配");
+            }
+            SkillNodeDirective result = pickupActionDelegate.begin(context);
+            if (result.kind() == SkillNodeDirective.Kind.WAIT_ACTION) {
+                resourceDropCollections.put(context.runId(),
+                        new PendingResourceDropPickup(
+                                ready.ticket(), ready.signal(),
+                                ready.nodeId(), ready.provenance(),
+                                ready.candidate()));
+            } else {
+                resourceDropCollections.remove(context.runId(), ready);
+            }
+            return result;
         }
-        resourcePickupPolls.put(context.runId(), poll.next());
-        return SkillNodeDirective.continueRunning(
-                "等待原版资源掉落进入背包（剩余 "
-                        + (poll.remainingPolls() - 1) + " tick）");
+        resourceDropCollections.remove(context.runId(), collection);
+        return SkillNodeDirective.fail(
+                SkillFailureCode.INTERNAL_ERROR,
+                "资源掉落收集状态在非等待阶段被运行时推进");
     }
 
     @Override
     public void cancelled(SkillNodeContext context, String reason) {
         requireOwnerThread();
-        resourcePickupPolls.remove(context.runId());
+        ResourceDropCollection collection = resourceDropCollections.remove(
+                context.runId());
+        if (collection instanceof PendingResourceDropNavigation pending) {
+            try {
+                resourceDropNavigation.cancel(pending.navigationId(),
+                        context.currentTick(), DROP_NAVIGATION_CANCELLATION_REASON);
+            } catch (RuntimeException ignored) {
+                // 生命周期关闭 generation 时也会回收导航会话；不可因取消异常遗留 reservation。
+            }
+        }
         actionDelegate.cancelled(context, reason);
+        pickupActionDelegate.cancelled(context, reason);
     }
 
     /**
@@ -251,7 +366,44 @@ public final class MinecraftProductionSkillNodeHandler
                         instanceof ResourceAcquisition
                                 ? verifyResourceAction(ticket,
                                         signalContext, signal)
-                                : verify(ticket, signalContext, signal)));
+                                        : verify(ticket, signalContext, signal)));
+    }
+
+    /**
+     * 只有在本节点已经破坏资源、观察到一枚新鲜 UUID 且导航回执成功后，才允许提交第二条
+     * {@link WorldInteractionActionSpec.PickupWait}。这条 action 不能替代原始 BREAK_BLOCK，
+     * 也不能由端口在其他 production operation 中伪造。
+     */
+    private Optional<ActionBackedSkillNodeHandler.Operation> planPickupAction(
+            SkillNodeContext context) {
+        ResourceDropCollection collection = resourceDropCollections.get(
+                context.runId());
+        if (!(collection instanceof ReadyResourceDropPickup ready)
+                || !ready.matches(context)
+                || !ready.provenance().matches(ready.candidate())) {
+            return Optional.empty();
+        }
+        ProductionAction action;
+        try {
+            action = acquisitionActions.planResourceDropPickup(
+                    ready.ticket(), context, ready.candidate()).orElse(null);
+        } catch (RuntimeException exception) {
+            action = null;
+        }
+        if (action == null || !matchesResourceDropPickup(
+                action, ready.candidate())) {
+            return Optional.empty();
+        }
+        return Optional.of(new ActionBackedSkillNodeHandler.Operation(
+                "production-pickup",
+                action.action(),
+                ActionPriority.AUTONOMOUS,
+                action.maximumTicks(),
+                SkillNodeDirective.Kind.WAIT_ACTION,
+                action.waitingSummary(),
+                (signalContext, signal) -> verifyResourceDropPickup(
+                        ready.ticket(), ready.candidate(), signalContext,
+                        signal)));
     }
 
     private Optional<ProductionAction> planConcreteAction(
@@ -322,6 +474,20 @@ public final class MinecraftProductionSkillNodeHandler
         return false;
     }
 
+    private static boolean matchesResourceDropPickup(
+            ProductionAction action, ResourceDropCandidate candidate) {
+        if (action.maximumTicks() > MAXIMUM_RESOURCE_DROP_PICKUP_TICKS
+                || !(action.action().spec()
+                        instanceof WorldInteractionActionSpec.PickupWait pickup)
+                || pickup.expectedItemEntityId().isEmpty()
+                || !pickup.expectedItemEntityId().orElseThrow().equals(
+                        candidate.entityId())) {
+            return false;
+        }
+        return pickup.ticks() >= 1
+                && pickup.ticks() <= MAXIMUM_RESOURCE_DROP_PICKUP_TICKS;
+    }
+
     private SkillNodeDirective verifyResourceAction(
             ExecutionTicket ticket,
             SkillNodeContext context,
@@ -330,13 +496,21 @@ public final class MinecraftProductionSkillNodeHandler
         if (!mayAwaitResourcePickup(ticket, context, signal, verified)) {
             return verified;
         }
-        resourcePickupPolls.put(context.runId(), new ResourcePickupPoll(
+        ResourceDropProvenance provenance = resourceDropProvenance(ticket,
+                signal).orElse(null);
+        if (provenance == null) {
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.WORLD_CHANGED,
+                    "原版破块未提供精确资源掉落实体来源凭据");
+        }
+        resourceDropCollections.put(context.runId(), new AwaitingResourceDrop(
                 ticket,
                 signal,
                 context.node().nodeId(),
-                MAX_RESOURCE_PICKUP_POLLS));
+                provenance,
+                MAX_RESOURCE_DROP_OBSERVATIONS));
         return SkillNodeDirective.continueRunning(
-                "方块已由原版破坏，有限等待资源掉落进入背包");
+                "方块已由原版破坏，正在受限观察资源掉落实体");
     }
 
     /**
@@ -376,6 +550,396 @@ public final class MinecraftProductionSkillNodeHandler
                         ticket.before().snapshot().chestLedger())
                 && completion.snapshot().playerLedger().equals(
                         ticket.before().snapshot().playerLedger());
+    }
+
+    /**
+     * The active collection branch may only follow a UUID emitted by the exact synchronous
+     * {@code BlockDropsEvent} capture for this break. A spatial TaskSensor delta alone is not
+     * sufficient provenance: an outside actor could add an otherwise identical item entity
+     * between preflight and observation.
+     */
+    private static Optional<ResourceDropProvenance> resourceDropProvenance(
+            ExecutionTicket ticket, SkillSignal signal) {
+        Objects.requireNonNull(ticket, "ticket");
+        Objects.requireNonNull(signal, "signal");
+        if (!(ticket.resolved().node().operation()
+                instanceof ResourceAcquisition acquisition)) {
+            return Optional.empty();
+        }
+        Map<ProductionMaterial, Integer> expected = acquisition.expectedGain()
+                .quantities();
+        if (expected.size() != 1) {
+            return Optional.empty();
+        }
+        Map.Entry<ProductionMaterial, Integer> entry = expected.entrySet()
+                .iterator().next();
+        if (entry.getValue() == null || entry.getValue() != 1) {
+            return Optional.empty();
+        }
+        String entityId = null;
+        String itemId = null;
+        String countText = null;
+        for (ActionEvidence evidence : signal.evidence()) {
+            if (BREAK_DROP_ENTITY_ID_EVIDENCE_KEY.equals(evidence.key())) {
+                if (entityId != null) {
+                    return Optional.empty();
+                }
+                entityId = evidence.value();
+            } else if (BREAK_DROP_ITEM_EVIDENCE_KEY.equals(evidence.key())) {
+                if (itemId != null) {
+                    return Optional.empty();
+                }
+                itemId = evidence.value();
+            } else if (BREAK_DROP_COUNT_EVIDENCE_KEY.equals(evidence.key())) {
+                if (countText != null) {
+                    return Optional.empty();
+                }
+                countText = evidence.value();
+            }
+        }
+        if (entityId == null || itemId == null || countText == null
+                || !entry.getKey().id().value().equals(itemId)) {
+            return Optional.empty();
+        }
+        try {
+            ResourceDropProvenance provenance = new ResourceDropProvenance(
+                    UUID.fromString(entityId), itemId,
+                    Integer.parseInt(countText));
+            return provenance.count() == entry.getValue()
+                    ? Optional.of(provenance)
+                    : Optional.empty();
+        } catch (IllegalArgumentException exception) {
+            return Optional.empty();
+        }
+    }
+
+    private SkillNodeDirective advanceResourceDropObservation(
+            SkillNodeContext context, AwaitingResourceDrop awaiting) {
+        SkillNodeDirective verified = verify(awaiting.ticket(), context,
+                awaiting.signal());
+        if (verified.kind() == SkillNodeDirective.Kind.COMPLETE) {
+            resourceDropCollections.remove(context.runId(), awaiting);
+            return verified;
+        }
+        if (!mayAwaitResourcePickup(awaiting.ticket(), context,
+                awaiting.signal(), verified)) {
+            resourceDropCollections.remove(context.runId(), awaiting);
+            return verified;
+        }
+        ResourceDropObservation observation;
+        try {
+            observation = acquisitionActions.observeResourceDrop(
+                    awaiting.ticket(), context);
+        } catch (RuntimeException exception) {
+            observation = ResourceDropObservation.unavailable();
+        }
+        if (observation == null) {
+            resourceDropCollections.remove(context.runId(), awaiting);
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.WORLD_CHANGED,
+                    "资源掉落实体观察没有返回受限当前 tick 结果");
+        }
+        return switch (observation.status()) {
+            case FOUND -> {
+                ResourceDropCandidate candidate = observation.candidate()
+                        .orElseThrow();
+                if (!awaiting.provenance().matches(candidate)) {
+                    resourceDropCollections.remove(context.runId(), awaiting);
+                    yield SkillNodeDirective.fail(
+                            SkillFailureCode.WORLD_CHANGED,
+                            "受限掉落实体观察与原版破块来源凭据不一致");
+                }
+                yield beginResourceDropNavigation(context, awaiting, candidate);
+            }
+            case ABSENT -> {
+                if (awaiting.remainingObservations() <= 1) {
+                    resourceDropCollections.remove(context.runId(), awaiting);
+                    yield SkillNodeDirective.fail(
+                            SkillFailureCode.MISSING_ITEM,
+                            "原版方块已破坏，但有限范围内未观察到可验证资源掉落实体");
+                }
+                resourceDropCollections.put(context.runId(), awaiting.next());
+                yield SkillNodeDirective.continueRunning(
+                        "等待受限范围内出现原版资源掉落实体（剩余 "
+                                + (awaiting.remainingObservations() - 1)
+                                + " tick）");
+            }
+            case AMBIGUOUS -> {
+                resourceDropCollections.remove(context.runId(), awaiting);
+                yield SkillNodeDirective.fail(
+                        SkillFailureCode.WORLD_CHANGED,
+                        "资源掉落实体候选不唯一，拒绝猜测要收集的实体");
+            }
+            case UNAVAILABLE -> {
+                resourceDropCollections.remove(context.runId(), awaiting);
+                yield SkillNodeDirective.fail(
+                        SkillFailureCode.WORLD_CHANGED,
+                        "资源掉落实体观察不完整或绑定已漂移");
+            }
+        };
+    }
+
+    private SkillNodeDirective beginResourceDropNavigation(
+            SkillNodeContext context,
+            AwaitingResourceDrop awaiting,
+            ResourceDropCandidate candidate) {
+        NavigationRequest request;
+        try {
+            request = resourceDropNavigationRequest(context, candidate);
+        } catch (RuntimeException exception) {
+            resourceDropCollections.remove(context.runId(), awaiting);
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.TIMEOUT,
+                    "资源掉落实体收集没有足够的剩余导航预算");
+        }
+        NavigationSubmission submission;
+        try {
+            submission = resourceDropNavigation.submit(request,
+                    context.currentTick());
+        } catch (RuntimeException exception) {
+            resourceDropCollections.remove(context.runId(), awaiting);
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.INTERNAL_ERROR,
+                    "资源掉落实体导航提交抛出异常");
+        }
+        if (submission.status() != NavigationSubmission.Status.ENQUEUED) {
+            resourceDropCollections.remove(context.runId(), awaiting);
+            return SkillNodeDirective.fail(
+                    mapNavigationSubmissionFailure(submission.status()),
+                    "资源掉落实体导航未入队："
+                            + submission.status().name());
+        }
+        CompletionStage<NavigationOutcome> completion = submission.completion()
+                .orElse(null);
+        if (completion == null) {
+            resourceDropCollections.remove(context.runId(), awaiting);
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.INTERNAL_ERROR,
+                    "资源掉落实体导航入队结果缺少 completion 句柄");
+        }
+        PendingResourceDropNavigation pending =
+                new PendingResourceDropNavigation(
+                        awaiting.ticket(), awaiting.signal(),
+                        awaiting.nodeId(), awaiting.provenance(), candidate,
+                        request.navigationId(),
+                        context.nextStateRevision());
+        resourceDropCollections.put(context.runId(), pending);
+        completion.whenComplete((outcome, throwable) ->
+                offerResourceDropNavigationCompletion(context.runId(), pending,
+                        outcome, throwable, context.currentTick()));
+        return SkillNodeDirective.waitFor(
+                SkillNodeDirective.Kind.WAIT_NAVIGATION,
+                "正在导航到一枚已冻结 UUID 的原版资源掉落实体");
+    }
+
+    private SkillNodeDirective handleResourceDropNavigationSignal(
+            SkillNodeContext context,
+            SkillSignal signal,
+            PendingResourceDropNavigation pending) {
+        if (signal.type() != SkillSignalType.NAVIGATION
+                || !pending.navigationId().equals(signal.operationId())
+                || pending.runRevision() != signal.runRevision()
+                || !pending.matches(context)
+                || (signal.status() == SkillSignalStatus.SUCCEEDED
+                        && !hasExactResourceDropNavigationEvidence(signal,
+                                pending.candidate()))) {
+            resourceDropCollections.remove(context.runId(), pending);
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.INTERNAL_ERROR,
+                    "资源掉落实体收集收到不属于当前导航的回执");
+        }
+        if (signal.status() != SkillSignalStatus.SUCCEEDED
+                || signal.failureCode() != SkillFailureCode.NONE) {
+            resourceDropCollections.remove(context.runId(), pending);
+            return SkillNodeDirective.fail(
+                    signal.failureCode() == SkillFailureCode.NONE
+                            ? SkillFailureCode.NAVIGATION_FAILED
+                            : signal.failureCode(),
+                    "资源掉落实体导航没有成功到达冻结格点");
+        }
+        SkillNodeDirective verified = verify(pending.ticket(), context,
+                pending.signal());
+        if (verified.kind() == SkillNodeDirective.Kind.COMPLETE) {
+            resourceDropCollections.remove(context.runId(), pending);
+            return verified;
+        }
+        if (!mayAwaitResourcePickup(pending.ticket(), context,
+                pending.signal(), verified)) {
+            resourceDropCollections.remove(context.runId(), pending);
+            return verified;
+        }
+        resourceDropCollections.put(context.runId(),
+                new ReadyResourceDropPickup(
+                        pending.ticket(), pending.signal(), pending.nodeId(),
+                        pending.provenance(), pending.candidate()));
+        return SkillNodeDirective.continueRunning(
+                "已到达资源掉落实体附近，准备以 UUID 绑定回读拾取");
+    }
+
+    private SkillNodeDirective verifyResourceDropPickup(
+            ExecutionTicket ticket,
+            ResourceDropCandidate candidate,
+            SkillNodeContext context,
+            SkillSignal signal) {
+        ResourceDropCollection collection = resourceDropCollections.get(
+                context.runId());
+        if (!(collection instanceof PendingResourceDropPickup pending)
+                || !pending.ticket().equals(ticket)
+                || !pending.candidate().equals(candidate)
+                || !pending.provenance().matches(candidate)
+                || !pending.matches(context)
+                || !hasExactResourceDropPickupEvidence(signal, candidate)) {
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.INTERNAL_ERROR,
+                    "资源掉落实体拾取回执未能匹配冻结 UUID");
+        }
+        return verify(ticket, context, signal);
+    }
+
+    private static boolean hasExactResourceDropNavigationEvidence(
+            SkillSignal signal, ResourceDropCandidate candidate) {
+        return signal.evidence().size() == 1
+                && DROP_NAVIGATION_EVIDENCE_KEY.equals(
+                        signal.evidence().get(0).key())
+                && candidate.entityId().toString().equals(
+                        signal.evidence().get(0).value());
+    }
+
+    private static boolean hasExactResourceDropPickupEvidence(
+            SkillSignal signal, ResourceDropCandidate candidate) {
+        return signal.evidence().stream().anyMatch(evidence ->
+                "entity.id".equals(evidence.key())
+                        && candidate.entityId().toString().equals(
+                                evidence.value()));
+    }
+
+    private static NavigationRequest resourceDropNavigationRequest(
+            SkillNodeContext context, ResourceDropCandidate candidate) {
+        long remaining = Math.subtractExact(
+                context.deadlineTick(), context.currentTick());
+        long maximumDuration = Math.min(
+                MAXIMUM_RESOURCE_DROP_NAVIGATION_TICKS, remaining - 1L);
+        if (maximumDuration < 1L) {
+            throw new IllegalArgumentException(
+                    "resource drop navigation has no remaining tick budget");
+        }
+        return new NavigationRequest(
+                UUID.randomUUID(),
+                context.botId(),
+                context.botGeneration(),
+                new NavigationGoal.ExactPosition(candidate.dimensionId(),
+                        candidate.position(), 0, 0),
+                NavigationArrivalRequirement.GROUNDED_GRID_CELL,
+                NavigationPolicy.safeDefault(),
+                Math.addExact(context.currentTick(), maximumDuration),
+                Math.toIntExact(maximumDuration),
+                "p5a-drop-collect:"
+                        + context.runId()
+                        + ":"
+                        + context.node().nodeId());
+    }
+
+    private void offerResourceDropNavigationCompletion(
+            UUID runId,
+            PendingResourceDropNavigation pending,
+            NavigationOutcome outcome,
+            Throwable throwable,
+            long submittedTick) {
+        SkillSignalStatus status;
+        SkillFailureCode failureCode;
+        List<ActionEvidence> evidence;
+        String summary;
+        long finishedTick;
+        if (throwable != null || outcome == null
+                || !pending.navigationId().equals(outcome.navigationId())) {
+            status = SkillSignalStatus.FAILED;
+            failureCode = SkillFailureCode.INTERNAL_ERROR;
+            evidence = List.of();
+            summary = "资源掉落实体导航 completion 无法核验";
+            finishedTick = submittedTick;
+        } else if (outcome.state()
+                        == io.github.greytaiwolf.botplayer.navigation
+                                .NavigationState.SUCCEEDED
+                && outcome.failure() == NavigationFailure.NONE
+                && pending.candidate().position().equals(
+                        outcome.finalPosition())) {
+            status = SkillSignalStatus.SUCCEEDED;
+            failureCode = SkillFailureCode.NONE;
+            evidence = List.of(new ActionEvidence(DROP_NAVIGATION_EVIDENCE_KEY,
+                    pending.candidate().entityId().toString()));
+            summary = outcome.safeSummary();
+            finishedTick = outcome.finishedTick();
+        } else {
+            status = switch (outcome.state()) {
+                case CANCELLED -> SkillSignalStatus.CANCELLED;
+                case STALE -> SkillSignalStatus.STALE;
+                case FAILED -> SkillSignalStatus.FAILED;
+                case CREATED,
+                        SNAPSHOTTING,
+                        PLANNING,
+                        FOLLOWING,
+                        INTERACTING,
+                        REPLANNING,
+                        RECOVERING,
+                        SUSPENDED_BY_SAFETY,
+                        VERIFYING,
+                        SUCCEEDED -> SkillSignalStatus.FAILED;
+            };
+            failureCode = outcome.state()
+                            == io.github.greytaiwolf.botplayer.navigation
+                                    .NavigationState.SUCCEEDED
+                    ? SkillFailureCode.NAVIGATION_FAILED
+                    : mapNavigationFailure(outcome.failure());
+            evidence = List.of();
+            summary = outcome.safeSummary();
+            finishedTick = outcome.finishedTick();
+        }
+        signals.offer(new SkillSignal(
+                UUID.randomUUID(), runId, pending.ticket().bot().botId(),
+                pending.ticket().bot().generation(), pending.runRevision(),
+                pending.navigationId(), SkillSignalType.NAVIGATION, status,
+                failureCode, evidence, summary, finishedTick));
+    }
+
+    private static SkillFailureCode mapNavigationSubmissionFailure(
+            NavigationSubmission.Status status) {
+        return switch (Objects.requireNonNull(status, "status")) {
+            case BOT_NOT_ACTIVE -> SkillFailureCode.BOT_NOT_ACTIVE;
+            case STALE_GENERATION -> SkillFailureCode.STALE_GENERATION;
+            case RUNTIME_CLOSED -> SkillFailureCode.RUNTIME_CLOSED;
+            case BOT_BUSY -> SkillFailureCode.NAVIGATION_FAILED;
+            case SUPPLY_REQUIRED -> SkillFailureCode.MISSING_ITEM;
+            case GOAL_OUT_OF_RANGE,
+                    WRONG_DIMENSION -> SkillFailureCode.WORLD_CHANGED;
+            case DUPLICATE -> SkillFailureCode.INTERNAL_ERROR;
+            case ENQUEUED -> throw new IllegalArgumentException(
+                    "enqueued navigation is not a rejection");
+        };
+    }
+
+    private static SkillFailureCode mapNavigationFailure(
+            NavigationFailure failure) {
+        return switch (Objects.requireNonNull(failure, "failure")) {
+            case NONE -> SkillFailureCode.INTERNAL_ERROR;
+            case BOT_NOT_ACTIVE -> SkillFailureCode.BOT_NOT_ACTIVE;
+            case STALE_GENERATION -> SkillFailureCode.STALE_GENERATION;
+            case NO_PATH -> SkillFailureCode.NO_PATH;
+            case STUCK -> SkillFailureCode.STUCK;
+            case DANGER_PREEMPTED -> SkillFailureCode.DANGER_PREEMPTED;
+            case SUPPLY_REQUIRED -> SkillFailureCode.MISSING_ITEM;
+            case SERVER_OVERLOADED,
+                    BUDGET_EXHAUSTED -> SkillFailureCode.SERVER_OVERLOADED;
+            case DEADLINE_EXCEEDED -> SkillFailureCode.TIMEOUT;
+            case CANCELLED -> SkillFailureCode.DANGER_PREEMPTED;
+            case INVALID_REQUEST,
+                    WRONG_DIMENSION,
+                    GOAL_OUT_OF_RANGE,
+                    SNAPSHOT_INCOMPLETE,
+                    UNLOADED_FRONTIER_TIMEOUT -> SkillFailureCode.WORLD_CHANGED;
+            case POLICY_BLOCKED -> SkillFailureCode.NAVIGATION_FAILED;
+            case ACTION_FAILED -> SkillFailureCode.ACTION_FAILED;
+            case INTERNAL_ERROR -> SkillFailureCode.INTERNAL_ERROR;
+        };
     }
 
     private Preparation prepare(SkillNodeContext context) {
@@ -643,6 +1207,53 @@ public final class MinecraftProductionSkillNodeHandler
         Optional<ActiveBot> resolve(UUID botId, long generation);
     }
 
+    /**
+     * 仅供节点内掉落收集使用的窄导航边界。completion 回调只会投递不可变
+     * {@link SkillSignal}，不会在后台线程读取 Minecraft body。
+     */
+    interface ResourceDropNavigationGateway {
+        NavigationSubmission submit(NavigationRequest request, long currentTick);
+
+        boolean cancel(UUID navigationId, long currentTick, String reason);
+    }
+
+    private static ResourceDropNavigationGateway resourceDropNavigationGateway(
+            NavigationService service) {
+        NavigationService navigation = Objects.requireNonNull(service,
+                "navigationService");
+        return new ResourceDropNavigationGateway() {
+            @Override
+            public NavigationSubmission submit(
+                    NavigationRequest request, long currentTick) {
+                return navigation.submit(request, currentTick);
+            }
+
+            @Override
+            public boolean cancel(
+                    UUID navigationId, long currentTick, String reason) {
+                return navigation.cancel(navigationId, currentTick, reason);
+            }
+        };
+    }
+
+    private static ResourceDropNavigationGateway unavailableResourceDropNavigation() {
+        return new ResourceDropNavigationGateway() {
+            @Override
+            public NavigationSubmission submit(
+                    NavigationRequest request, long currentTick) {
+                return NavigationSubmission.rejected(
+                        NavigationSubmission.Status.RUNTIME_CLOSED,
+                        "资源掉落导航未接线");
+            }
+
+            @Override
+            public boolean cancel(
+                    UUID navigationId, long currentTick, String reason) {
+                return false;
+            }
+        };
+    }
+
     /** 只保存稳定 identity；具体 Minecraft body 必须由每次端口调用重新解析。 */
     public record ActiveBot(UUID botId, long generation) {
         public ActiveBot {
@@ -763,6 +1374,121 @@ public final class MinecraftProductionSkillNodeHandler
     public interface ResourceAcquisitionActionPort {
         Optional<ProductionAction> plan(
                 ExecutionTicket ticket, TaskSensorService taskSensors);
+
+        /**
+         * 破块完成且精确账本尚未变化时，观察一枚新鲜的、受 source binding 约束的掉落实体。
+         * 默认实现 fail closed，因此旧的测试 lambda 或未接线端口不能把被动等待当成收集。
+         */
+        default ResourceDropObservation observeResourceDrop(
+                ExecutionTicket ticket, SkillNodeContext context) {
+            return ResourceDropObservation.unavailable();
+        }
+
+        /**
+         * 仅对 {@link ResourceDropCandidate} 所绑定的 UUID 规划一个 collision-driven 拾取动作。
+         * 返回空表示 live entity、source binding 或原生菜单状态已不可证明。
+         */
+        default Optional<ProductionAction> planResourceDropPickup(
+                ExecutionTicket ticket,
+                SkillNodeContext context,
+                ResourceDropCandidate candidate) {
+            return Optional.empty();
+        }
+    }
+
+    /** 受限掉落实体观察的四种结果；不传递 live Entity 或 ItemStack。 */
+    public enum ResourceDropObservationStatus {
+        ABSENT,
+        FOUND,
+        AMBIGUOUS,
+        UNAVAILABLE
+    }
+
+    /**
+     * 短暂收集状态绑定的纯值实体身份。它只在当前运行节点内保留，绝不进入 SkillPlan 或
+     * checkpoint；中断后会被丢弃并由恢复边界 fail closed。
+     */
+    public record ResourceDropCandidate(
+            UUID entityId,
+            String dimensionId,
+            GridPoint position,
+            String itemId,
+            int count) {
+        public ResourceDropCandidate {
+            requireNonZero(entityId, "entityId");
+            new io.github.greytaiwolf.botplayer.action.interaction.ResourceId(
+                    Objects.requireNonNull(dimensionId, "dimensionId"));
+            position = Objects.requireNonNull(position, "position");
+            new io.github.greytaiwolf.botplayer.action.interaction.ResourceId(
+                    Objects.requireNonNull(itemId, "itemId"));
+            if (count < 1 || count > 64) {
+                throw new IllegalArgumentException(
+                        "resource drop count must be within 1..64");
+            }
+        }
+    }
+
+    /**
+     * Immutable action receipt for the one ItemEntity that NeoForge reported as the exact
+     * native drop of the frozen source block. It is transient node state, never plan or
+     * checkpoint data.
+     */
+    private record ResourceDropProvenance(
+            UUID entityId, String itemId, int count) {
+        private ResourceDropProvenance {
+            requireNonZero(entityId, "entityId");
+            new io.github.greytaiwolf.botplayer.action.interaction.ResourceId(
+                    Objects.requireNonNull(itemId, "itemId"));
+            if (count < 1 || count > 64) {
+                throw new IllegalArgumentException(
+                        "resource drop provenance count must be within 1..64");
+            }
+        }
+
+        private boolean matches(ResourceDropCandidate candidate) {
+            return entityId.equals(Objects.requireNonNull(candidate,
+                    "candidate").entityId())
+                    && itemId.equals(candidate.itemId())
+                    && count == candidate.count();
+        }
+    }
+
+    /** 不携带 live world 引用的受限掉落实体观察结果。 */
+    public record ResourceDropObservation(
+            ResourceDropObservationStatus status,
+            Optional<ResourceDropCandidate> candidate) {
+        public ResourceDropObservation {
+            status = Objects.requireNonNull(status, "status");
+            candidate = Objects.requireNonNull(candidate, "candidate");
+            if ((status == ResourceDropObservationStatus.FOUND)
+                    != candidate.isPresent()) {
+                throw new IllegalArgumentException(
+                        "only FOUND resource drop observations carry a candidate");
+            }
+        }
+
+        public static ResourceDropObservation absent() {
+            return new ResourceDropObservation(
+                    ResourceDropObservationStatus.ABSENT, Optional.empty());
+        }
+
+        public static ResourceDropObservation found(
+                ResourceDropCandidate candidate) {
+            return new ResourceDropObservation(
+                    ResourceDropObservationStatus.FOUND,
+                    Optional.of(Objects.requireNonNull(candidate,
+                            "candidate")));
+        }
+
+        public static ResourceDropObservation ambiguous() {
+            return new ResourceDropObservation(
+                    ResourceDropObservationStatus.AMBIGUOUS, Optional.empty());
+        }
+
+        public static ResourceDropObservation unavailable() {
+            return new ResourceDropObservation(
+                    ResourceDropObservationStatus.UNAVAILABLE, Optional.empty());
+        }
     }
 
     /**
@@ -797,38 +1523,117 @@ public final class MinecraftProductionSkillNodeHandler
         }
     }
 
-    /**
-     * 只保存纯 ticket、原 action signal 和当前 node id；不缓存掉落实体、player 或世界对象。
-     */
-    private record ResourcePickupPoll(
-            ExecutionTicket ticket,
-            SkillSignal signal,
-            UUID nodeId,
-            int remainingPolls) {
-        private ResourcePickupPoll {
-            ticket = Objects.requireNonNull(ticket, "ticket");
-            signal = Objects.requireNonNull(signal, "signal");
-            nodeId = Objects.requireNonNull(nodeId, "nodeId");
-            if (remainingPolls < 1
-                    || remainingPolls > MAX_RESOURCE_PICKUP_POLLS) {
-                throw new IllegalArgumentException(
-                        "resource pickup poll count is outside its bound");
-            }
-        }
+    private sealed interface ResourceDropCollection permits
+            AwaitingResourceDrop,
+            PendingResourceDropNavigation,
+            ReadyResourceDropPickup,
+            PendingResourceDropPickup {
+        ExecutionTicket ticket();
 
-        private boolean matches(SkillNodeContext context) {
-            return ticket.bot().botId().equals(context.botId())
-                    && ticket.bot().generation() == context.botGeneration()
-                    && nodeId.equals(context.node().nodeId())
-                    && ticket.operationId().equals(
+        SkillSignal signal();
+
+        UUID nodeId();
+
+        default boolean matches(SkillNodeContext context) {
+            return ticket().bot().botId().equals(context.botId())
+                    && ticket().bot().generation() == context.botGeneration()
+                    && nodeId().equals(context.node().nodeId())
+                    && ticket().operationId().equals(
                             approvedOperation(context.node().parameters())
                                     .map(ApprovedOperation::operationId)
                                     .orElse(null));
         }
+    }
 
-        private ResourcePickupPoll next() {
-            return new ResourcePickupPoll(ticket, signal, nodeId,
-                    remainingPolls - 1);
+    /** 破块后仅短暂观察新实体；到期或观察不完整均 fail closed。 */
+    private record AwaitingResourceDrop(
+            ExecutionTicket ticket,
+            SkillSignal signal,
+            UUID nodeId,
+            ResourceDropProvenance provenance,
+            int remainingObservations) implements ResourceDropCollection {
+        private AwaitingResourceDrop {
+            ticket = Objects.requireNonNull(ticket, "ticket");
+            signal = Objects.requireNonNull(signal, "signal");
+            nodeId = Objects.requireNonNull(nodeId, "nodeId");
+            provenance = Objects.requireNonNull(provenance, "provenance");
+            if (remainingObservations < 1
+                    || remainingObservations > MAX_RESOURCE_DROP_OBSERVATIONS) {
+                throw new IllegalArgumentException(
+                        "resource drop observation count is outside its bound");
+            }
+        }
+
+        private AwaitingResourceDrop next() {
+            return new AwaitingResourceDrop(ticket, signal, nodeId, provenance,
+                    remainingObservations - 1);
+        }
+    }
+
+    /** 等待导航服务对冻结掉落实体格点的不可变回执。 */
+    private record PendingResourceDropNavigation(
+            ExecutionTicket ticket,
+            SkillSignal signal,
+            UUID nodeId,
+            ResourceDropProvenance provenance,
+            ResourceDropCandidate candidate,
+            UUID navigationId,
+            long runRevision) implements ResourceDropCollection {
+        private PendingResourceDropNavigation {
+            ticket = Objects.requireNonNull(ticket, "ticket");
+            signal = Objects.requireNonNull(signal, "signal");
+            nodeId = Objects.requireNonNull(nodeId, "nodeId");
+            provenance = Objects.requireNonNull(provenance, "provenance");
+            candidate = Objects.requireNonNull(candidate, "candidate");
+            if (!provenance.matches(candidate)) {
+                throw new IllegalArgumentException(
+                        "resource drop navigation candidate lacks exact provenance");
+            }
+            requireNonZero(navigationId, "navigationId");
+            if (runRevision < 1L) {
+                throw new IllegalArgumentException(
+                        "resource drop navigation revision must be positive");
+            }
+        }
+    }
+
+    /** 导航成功后、拾取 action 入队前的一 tick transition 边界。 */
+    private record ReadyResourceDropPickup(
+            ExecutionTicket ticket,
+            SkillSignal signal,
+            UUID nodeId,
+            ResourceDropProvenance provenance,
+            ResourceDropCandidate candidate) implements ResourceDropCollection {
+        private ReadyResourceDropPickup {
+            ticket = Objects.requireNonNull(ticket, "ticket");
+            signal = Objects.requireNonNull(signal, "signal");
+            nodeId = Objects.requireNonNull(nodeId, "nodeId");
+            provenance = Objects.requireNonNull(provenance, "provenance");
+            candidate = Objects.requireNonNull(candidate, "candidate");
+            if (!provenance.matches(candidate)) {
+                throw new IllegalArgumentException(
+                        "resource drop pickup candidate lacks exact provenance");
+            }
+        }
+    }
+
+    /** PickupWait 已入队，后续只能接受它自己的 action 回执。 */
+    private record PendingResourceDropPickup(
+            ExecutionTicket ticket,
+            SkillSignal signal,
+            UUID nodeId,
+            ResourceDropProvenance provenance,
+            ResourceDropCandidate candidate) implements ResourceDropCollection {
+        private PendingResourceDropPickup {
+            ticket = Objects.requireNonNull(ticket, "ticket");
+            signal = Objects.requireNonNull(signal, "signal");
+            nodeId = Objects.requireNonNull(nodeId, "nodeId");
+            provenance = Objects.requireNonNull(provenance, "provenance");
+            candidate = Objects.requireNonNull(candidate, "candidate");
+            if (!provenance.matches(candidate)) {
+                throw new IllegalArgumentException(
+                        "pending resource drop pickup lacks exact provenance");
+            }
         }
     }
 

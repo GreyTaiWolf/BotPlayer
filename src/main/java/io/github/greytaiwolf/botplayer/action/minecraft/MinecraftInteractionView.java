@@ -87,21 +87,29 @@ final class MinecraftInteractionView {
     static BlockTargetFingerprint blockFingerprint(
             BotServerPlayer player, BlockPos position) {
         BlockState state = player.serverLevel().getBlockState(position);
-        ResourceId blockId = new ResourceId(
-                BuiltInRegistries.BLOCK
-                        .getKey(state.getBlock())
-                        .toString());
-        Map<String, String> properties = new TreeMap<>();
-        state.getValues().forEach((property, value) ->
-                properties.put(property.getName(), propertyValueName(
-                        property, value)));
         return new BlockTargetFingerprint(
                 dimension(player),
                 new BlockCoordinates(
                         position.getX(),
                         position.getY(),
                         position.getZ()),
-                new BlockStateFingerprint(blockId, properties));
+                blockStateFingerprint(state));
+    }
+
+    /**
+     * Converts a native state to the same canonical representation used by a block target.
+     * Package-private so the synchronous break-drop capture can compare a NeoForge event to
+     * the frozen action target without retaining a live level or block state.
+     */
+    static BlockStateFingerprint blockStateFingerprint(BlockState state) {
+        Objects.requireNonNull(state, "state");
+        ResourceId blockId = new ResourceId(BuiltInRegistries.BLOCK
+                .getKey(state.getBlock()).toString());
+        Map<String, String> properties = new TreeMap<>();
+        state.getValues().forEach((property, value) ->
+                properties.put(property.getName(), propertyValueName(
+                        property, value)));
+        return new BlockStateFingerprint(blockId, properties);
     }
 
     static Optional<Entity> entity(

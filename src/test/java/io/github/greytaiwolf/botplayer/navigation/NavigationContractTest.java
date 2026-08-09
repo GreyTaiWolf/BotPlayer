@@ -119,4 +119,41 @@ class NavigationContractTest {
                         NavigationService.requiresGroundedArrivalReplan(
                                 legacy, true, false)));
     }
+
+    @Test
+    void unstablePlanningStartUsesExistingRetryBudgets() {
+        NavigationPolicy policy = new NavigationPolicy(
+                true,
+                true,
+                true,
+                true,
+                false,
+                false,
+                0,
+                false,
+                0,
+                3,
+                5,
+                6.0F,
+                2,
+                1);
+
+        Assertions.assertAll(
+                () -> Assertions.assertFalse(
+                        NavigationService
+                                .unstablePlanningStartRetryBudgetExhausted(
+                                        0, 0, policy)),
+                () -> Assertions.assertFalse(
+                        NavigationService
+                                .unstablePlanningStartRetryBudgetExhausted(
+                                        2, 1, policy)),
+                () -> Assertions.assertTrue(
+                        NavigationService
+                                .unstablePlanningStartRetryBudgetExhausted(
+                                        3, 1, policy)),
+                () -> Assertions.assertTrue(
+                        NavigationService
+                                .unstablePlanningStartRetryBudgetExhausted(
+                                        2, 2, policy)));
+    }
 }

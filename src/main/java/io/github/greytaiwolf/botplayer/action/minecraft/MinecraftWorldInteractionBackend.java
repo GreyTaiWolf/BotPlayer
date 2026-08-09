@@ -3151,11 +3151,26 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         long elapsed = currentTick - state.startedTick + 1L;
         if (progressPerTick > 0.0F
                 && progressPerTick * (double) elapsed >= 1.0D) {
-            dispatchBreak(
-                    player,
-                    breakBlock,
-                    ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK);
-            state.breakStopSent = true;
+            BreakDropProvenanceCapture.Scope capture;
+            try {
+                capture = BreakDropProvenanceCapture.arm(player,
+                        breakBlock.target().target(), state.botGeneration);
+            } catch (RuntimeException exception) {
+                return failure(
+                        envelope,
+                        ActionFailureCode.INTERNAL_ERROR,
+                        "Could not arm exact vanilla block-drop provenance");
+            }
+            try {
+                dispatchBreak(
+                        player,
+                        breakBlock,
+                        ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK);
+                state.breakStopSent = true;
+            } finally {
+                capture.close();
+            }
+            state.breakDropProvenance = capture.provenance();
             return BackendResult.readyToVerify(envelope);
         }
         return BackendResult.running(envelope);
@@ -3679,24 +3694,27 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                             ? "Block break was denied by world rules"
                             : "Block target changed before break completion");
         }
-        return success(
-                envelope,
-                List.of(
-                        evidence(
-                                "block.position",
-                                position.getX()
-                                        + ","
-                                        + position.getY()
-                                        + ","
-                                        + position.getZ()),
-                        evidence("block.after", "minecraft:air"),
-                        evidence(
-                                "inventory.changed",
-                                Boolean.toString(
-                                        !MinecraftInteractionView
-                                                .inventoryDigest(player)
-                                                .equals(
-                                                        state.inventoryBefore)))),
+        List<ActionEvidence> evidence = new ArrayList<>(6);
+        evidence.add(evidence(
+                "block.position",
+                position.getX()
+                        + ","
+                        + position.getY()
+                        + ","
+                        + position.getZ()));
+        evidence.add(evidence("block.after", "minecraft:air"));
+        evidence.add(evidence(
+                "inventory.changed",
+                Boolean.toString(!MinecraftInteractionView.inventoryDigest(player)
+                        .equals(state.inventoryBefore))));
+        state.breakDropProvenance.ifPresent(drop -> {
+            evidence.add(evidence("block.drop.entity.id",
+                    drop.entityId().toString()));
+            evidence.add(evidence("block.drop.item", drop.itemId()));
+            evidence.add(evidence("block.drop.count",
+                    Integer.toString(drop.count())));
+        });
+        return success(envelope, List.copyOf(evidence),
                 "Verified block break");
     }
 
@@ -4677,6 +4695,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         private boolean startedUsing;
         private boolean releaseSent;
         private boolean breakStopSent;
+        private Optional<BreakDropProvenanceCapture.Provenance>
+                breakDropProvenance = Optional.empty();
         private InventoryMenuTransaction menuTransaction;
         private MenuTransaction worldMenuTransaction;
         private MenuSnapshot worldMenuLastSnapshot;

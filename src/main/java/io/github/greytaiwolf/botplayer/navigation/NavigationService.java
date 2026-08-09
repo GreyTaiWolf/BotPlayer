@@ -466,12 +466,7 @@ public final class NavigationService implements AutoCloseable {
         Optional<GridPoint> normalizedStart =
                 normalizePlanningStart(snapshot, start);
         if (normalizedStart.isEmpty()) {
-            terminate(
-                    session,
-                    NavigationState.FAILED,
-                    NavigationFailure.SNAPSHOT_INCOMPLETE,
-                    currentTick,
-                    "真实脚位及相邻接地层均不在可通行快照中");
+            retryUnstablePlanningStartOrFail(session, currentTick);
             return;
         }
         GridPoint planningStart = normalizedStart.orElseThrow();
@@ -538,6 +533,48 @@ public final class NavigationService implements AutoCloseable {
             }
         }
         return Optional.empty();
+    }
+
+    /**
+     * A completed snapshot can legitimately miss a player's usable cell when
+     * the body is still crossing a block boundary or falling after a jump.
+     * Rebuild from the later real body position, but charge the attempt to the
+     * same bounded recovery and replan budgets as every other route recovery.
+     */
+    private void retryUnstablePlanningStartOrFail(
+            Session session, long currentTick) {
+        session.recoveryAttempts++;
+        session.replans++;
+        if (unstablePlanningStartRetryBudgetExhausted(
+                session.replans,
+                session.recoveryAttempts,
+                session.request.policy())) {
+            terminate(
+                    session,
+                    NavigationState.FAILED,
+                    NavigationFailure.SNAPSHOT_INCOMPLETE,
+                    currentTick,
+                    "真实脚位及相邻接地层均不在可通行快照中，重采样预算已耗尽");
+            return;
+        }
+        session.route = List.of();
+        session.routeIndex = 0;
+        session.state = NavigationState.REPLANNING;
+        session.safeSummary = "真实脚位及相邻接地层暂不在可通行快照中，将从真实位置重新采样";
+        session.lastStateTick = currentTick;
+    }
+
+    static boolean unstablePlanningStartRetryBudgetExhausted(
+            int replans,
+            int recoveryAttempts,
+            NavigationPolicy policy) {
+        if (replans < 0 || recoveryAttempts < 0) {
+            throw new IllegalArgumentException(
+                    "navigation retry counters must not be negative");
+        }
+        Objects.requireNonNull(policy, "policy");
+        return replans > policy.maximumReplans()
+                || recoveryAttempts > policy.maximumRecoveryAttempts();
     }
 
     private void drainPlanningResults(long currentTick) {

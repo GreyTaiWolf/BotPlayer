@@ -707,6 +707,7 @@ public final class BotLifecycleManager {
                         taskSensorService,
                         productionSkillPorts,
                         productionSkillPorts,
+                        navigationService,
                         actions,
                         skillRuntime::offerSignal));
     }
