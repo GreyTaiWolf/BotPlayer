@@ -2,6 +2,7 @@ package io.github.greytaiwolf.botplayer.navigation;
 
 import io.github.greytaiwolf.botplayer.action.ActionOrigin;
 import io.github.greytaiwolf.botplayer.action.ControllerKind;
+import io.github.greytaiwolf.botplayer.navigation.path.TraversalKind;
 import java.util.UUID;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -136,6 +137,35 @@ class NavigationContractTest {
                 () -> Assertions.assertFalse(
                         NavigationService.requiresGroundedArrivalReplan(
                                 legacy, true, false)));
+    }
+
+    @Test
+    void safeDropWaypointWaitsForTheDestinationBlockLayer() {
+        GridPoint dropTarget = new GridPoint(3, 1, 3);
+        GridPoint stillFalling = new GridPoint(3, 2, 3);
+
+        Assertions.assertAll(
+                () -> Assertions.assertFalse(
+                        NavigationService.waypointVerticalPositionReached(
+                                TraversalKind.DROP_SAFE,
+                                stillFalling,
+                                dropTarget,
+                                2.0D),
+                        "a final safe-drop waypoint must not be consumed one layer above its target"),
+                () -> Assertions.assertTrue(
+                        NavigationService.waypointVerticalPositionReached(
+                                TraversalKind.DROP_SAFE,
+                                dropTarget,
+                                dropTarget,
+                                1.0D),
+                        "the exact destination grid can be consumed before an arrival policy checks onGround"),
+                () -> Assertions.assertTrue(
+                        NavigationService.waypointVerticalPositionReached(
+                                TraversalKind.WALK_CARDINAL,
+                                stillFalling,
+                                dropTarget,
+                                2.0D),
+                        "ordinary legacy walking waypoints retain their existing vertical tolerance"));
     }
 
     @Test

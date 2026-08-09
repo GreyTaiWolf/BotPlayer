@@ -1196,23 +1196,43 @@ public final class NavigationService implements AutoCloseable {
                         * settings.waypointTolerance()) {
             return false;
         }
-        return switch (node.traversalKind()) {
+        return waypointVerticalPositionReached(
+                node.traversalKind(),
+                GridPoint.from(player.blockPosition()),
+                point,
+                player.getY());
+    }
+
+    /**
+     * Checks the vertical half of waypoint completion after the caller has already verified
+     * horizontal waypoint tolerance. A safe drop must not be consumed while the body is still in
+     * the source layer: that used to let a final falling waypoint enter VERIFYING one block above
+     * its target, where an exact grounded request could exhaust recovery attempts.
+     */
+    static boolean waypointVerticalPositionReached(
+            TraversalKind traversalKind,
+            GridPoint playerPosition,
+            GridPoint waypoint,
+            double playerY) {
+        Objects.requireNonNull(traversalKind, "traversalKind");
+        Objects.requireNonNull(playerPosition, "playerPosition");
+        Objects.requireNonNull(waypoint, "waypoint");
+        return switch (traversalKind) {
             /*
              * 垂直节点必须由真实脚部方块层确认。通用的 1.1 格容差会在玩家仍处于
              * 下一层时提前跳过梯子、游泳和跳跃节点，随后只能在终点复核阶段反复重算。
              */
             case JUMP_UP_ONE, STEP_UP, CLIMB_UP, SWIM_UP ->
-                    player.blockPosition().getY() >= point.y();
-            case CLIMB_DOWN, SWIM_DOWN ->
-                    player.blockPosition().getY() <= point.y();
+                    playerPosition.y() >= waypoint.y();
+            case DROP_SAFE, CLIMB_DOWN, SWIM_DOWN ->
+                    playerPosition.y() <= waypoint.y();
             case START,
                     WALK_CARDINAL,
                     WALK_DIAGONAL,
-                    DROP_SAFE,
                     OPEN_DOOR,
                     SWIM_HORIZONTAL,
                     WAIT_FOR_OBSTACLE ->
-                    Math.abs(player.getY() - point.y()) <= 1.1D;
+                    Math.abs(playerY - waypoint.y()) <= 1.1D;
         };
     }
 
