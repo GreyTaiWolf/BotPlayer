@@ -219,15 +219,18 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
                         if (state.isAir()) {
                             continue;
                         }
+                        String blockId = BuiltInRegistries.BLOCK
+                                .getKey(state.getBlock()).toString();
+                        if (!query.resourceFilter().accepts(blockId)) {
+                            continue;
+                        }
                         evidence.add(new TaskSensorEvidence(
                                 "resource.candidate",
                                 new SkillParameters(Map.of(
                                         "x", position.getX(),
                                         "y", position.getY(),
                                         "z", position.getZ(),
-                                        "block", BuiltInRegistries.BLOCK
-                                                .getKey(state.getBlock())
-                                                .toString()))));
+                                        "block", blockId))));
                         if (evidence.size() >= maximumCandidates) {
                             truncated = true;
                             break scan;

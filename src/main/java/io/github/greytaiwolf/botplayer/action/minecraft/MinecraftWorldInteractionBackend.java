@@ -2423,8 +2423,12 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         Optional<MenuClick> click = transaction.issueNextClick(
                 currentTick, before);
         if (transaction.state() == MenuTransactionState.FAILED) {
-            return menuTransactionFailure(
-                    envelope, transaction.failure().orElseThrow());
+            MenuTransactionFailure failure = transaction.failure()
+                    .orElseThrow();
+            return failure == MenuTransactionFailure.SNAPSHOT_DRIFT
+                    ? menuSnapshotDriftFailure(
+                            envelope, transaction, before, false)
+                    : menuTransactionFailure(envelope, failure);
         }
         if (click.isEmpty()) {
             return BackendResult.running(envelope);
@@ -2445,8 +2449,12 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         MenuSnapshot after = snapshotMenu(
                 player, family).orElse(null);
         if (!transaction.acknowledge(after, currentTick)) {
-            return menuTransactionFailure(
-                    envelope, transaction.failure().orElseThrow());
+            MenuTransactionFailure failure = transaction.failure()
+                    .orElseThrow();
+            return failure == MenuTransactionFailure.SNAPSHOT_DRIFT
+                    ? menuSnapshotDriftFailure(
+                            envelope, transaction, after, true)
+                    : menuTransactionFailure(envelope, failure);
         }
         state.worldMenuLastSnapshot = after;
         return BackendResult.running(envelope);
@@ -2700,6 +2708,73 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         };
         return MinecraftWorldInteractionBackend.failure(
                 envelope, code, "World menu transaction failed: " + failure);
+    }
+
+    /**
+     * Preserves the strict snapshot rejection while making a native menu mismatch
+     * diagnosable without dumping the full inventory or component digests.
+     */
+    private static BackendResult menuSnapshotDriftFailure(
+            ActionEnvelope envelope,
+            MenuTransaction transaction,
+            MenuSnapshot observed,
+            boolean afterClick) {
+        MenuSnapshot expected = expectedMenuSnapshot(
+                transaction, afterClick);
+        return MinecraftWorldInteractionBackend.failure(
+                envelope,
+                ActionFailureCode.PRECONDITION_FAILED,
+                "World menu transaction failed: SNAPSHOT_DRIFT "
+                        + describeMenuSnapshotDifference(expected, observed));
+    }
+
+    private static MenuSnapshot expectedMenuSnapshot(
+            MenuTransaction transaction, boolean afterClick) {
+        MenuTransactionPlan plan = transaction.plan().orElse(null);
+        int index = transaction.confirmedClicks();
+        if (plan == null || index < 0
+                || index >= plan.orderedSteps().size()) {
+            return null;
+        }
+        return afterClick
+                ? plan.orderedSteps().get(index).expectedAfter()
+                : plan.orderedSteps().get(index).expectedBefore();
+    }
+
+    private static String describeMenuSnapshotDifference(
+            MenuSnapshot expected, MenuSnapshot observed) {
+        if (expected == null || observed == null) {
+            return "(menu snapshot unavailable)";
+        }
+        if (!expected.sameMenu(observed)) {
+            return "(native menu identity changed)";
+        }
+        if (!expected.carried().equals(observed.carried())) {
+            return "(cursor expected=" + describeMenuStack(
+                    expected.carried()) + ", actual="
+                    + describeMenuStack(observed.carried()) + ")";
+        }
+        for (int slot = 0; slot < expected.slots().size(); slot++) {
+            if (!expected.itemAt(slot).equals(observed.itemAt(slot))) {
+                return "(slot " + slot + " expected="
+                        + describeMenuStack(expected.itemAt(slot))
+                        + ", actual="
+                        + describeMenuStack(observed.itemAt(slot)) + ")";
+            }
+        }
+        return "(layout differed outside the bounded diagnostic)";
+    }
+
+    private static String describeMenuStack(ItemStackFingerprint stack) {
+        if (stack.isEmpty()) {
+            return "empty";
+        }
+        String itemId = stack.itemId().orElseThrow().value();
+        if (itemId.length() > 48) {
+            itemId = itemId.substring(0, 45) + "...";
+        }
+        return itemId + "x"
+                + stack.count() + " damage=" + stack.damage();
     }
 
     private void applyNextMenuSwapStep(

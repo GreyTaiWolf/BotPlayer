@@ -28,8 +28,10 @@ import java.util.Optional;
 import java.util.UUID;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.ChestBlock;
 import net.minecraft.world.level.block.entity.ChestBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.ChestType;
 
 /**
  * 将一份已经审核的“单箱完整堆叠 transfer”节点接到真实原版菜单动作。
@@ -348,9 +350,8 @@ public final class MinecraftSingleChestTransferSkillNodeHandler
     }
 
     private static boolean isSingleChestState(BlockState state) {
-        return state.getValues().entrySet().stream().anyMatch(entry ->
-                entry.getKey().getName().equals("type")
-                        && entry.getValue().toString().equals("single"));
+        return state.hasProperty(ChestBlock.TYPE)
+                && state.getValue(ChestBlock.TYPE) == ChestType.SINGLE;
     }
 
     private static String reservationSubject(BlockCoordinates target) {

@@ -33,6 +33,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
@@ -92,7 +93,8 @@ final class MinecraftInteractionView {
                         .toString());
         Map<String, String> properties = new TreeMap<>();
         state.getValues().forEach((property, value) ->
-                properties.put(property.getName(), value.toString()));
+                properties.put(property.getName(), propertyValueName(
+                        property, value)));
         return new BlockTargetFingerprint(
                 dimension(player),
                 new BlockCoordinates(
@@ -118,6 +120,17 @@ final class MinecraftInteractionView {
             return Optional.empty();
         }
         return Optional.of(entity);
+    }
+
+    /**
+     * {@link Comparable#toString()} is not the block-state wire format for every vanilla
+     * property (notably enum-backed values).  Use the property's serialized name so a
+     * fingerprint can be replayed against the same native block state.
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static String propertyValueName(
+            Property property, Comparable value) {
+        return property.getName(value);
     }
 
     static ItemStackFingerprint itemFingerprint(

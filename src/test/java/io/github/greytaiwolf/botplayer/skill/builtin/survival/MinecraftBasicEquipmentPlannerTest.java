@@ -4,6 +4,7 @@ import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSnapshot;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.PlayerInventoryMenuLayout;
+import io.github.greytaiwolf.botplayer.skill.builtin.survival.MinecraftBasicEquipmentPlanner.ExactMainHandItem;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -94,6 +95,97 @@ class MinecraftBasicEquipmentPlannerTest {
                                 true, false, false));
 
         Assertions.assertFalse(selection.requiresInventorySwap());
+    }
+
+    @Test
+    void exactMainHandWhitelistRejectsAllButFiveP5aItems() {
+        Assertions.assertEquals(5, ExactMainHandItem.values().length);
+        Assertions.assertEquals(Optional.of(
+                        ExactMainHandItem.WOODEN_PICKAXE),
+                ExactMainHandItem.fromItemId("minecraft:wooden_pickaxe"));
+        Assertions.assertEquals(Optional.of(
+                        ExactMainHandItem.STONE_PICKAXE),
+                ExactMainHandItem.fromItemId("minecraft:stone_pickaxe"));
+        Assertions.assertEquals(Optional.of(
+                        ExactMainHandItem.IRON_PICKAXE),
+                ExactMainHandItem.fromItemId("minecraft:iron_pickaxe"));
+        Assertions.assertEquals(Optional.of(
+                        ExactMainHandItem.CRAFTING_TABLE),
+                ExactMainHandItem.fromItemId("minecraft:crafting_table"));
+        Assertions.assertEquals(Optional.of(ExactMainHandItem.FURNACE),
+                ExactMainHandItem.fromItemId("minecraft:furnace"));
+        Assertions.assertTrue(ExactMainHandItem
+                .fromItemId("minecraft:diamond_pickaxe").isEmpty());
+        Assertions.assertTrue(ExactMainHandItem
+                .fromItemId("Minecraft:iron_pickaxe").isEmpty());
+        Assertions.assertTrue(ExactMainHandItem.fromItemId(null).isEmpty());
+    }
+
+    @Test
+    void exactMainHandSelectionReturnsEmptyWhenRequestedItemIsAbsent() {
+        Assertions.assertTrue(MinecraftBasicEquipmentPlanner
+                .selectExactMainHand(snapshot(3, 3,
+                                fingerprint("minecraft:torch")),
+                        ExactMainHandItem.CRAFTING_TABLE)
+                .isEmpty());
+    }
+
+    @Test
+    void exactMainHandSelectionUsesSelectedTargetAsNoOp() {
+        ItemStackFingerprint selected = fingerprint(
+                "minecraft:crafting_table", 3, 0, "a".repeat(64));
+
+        MinecraftBasicEquipmentPlanner.ExactMainHandSelection selection =
+                MinecraftBasicEquipmentPlanner.selectExactMainHand(
+                        snapshot(3, 3, selected),
+                        ExactMainHandItem.CRAFTING_TABLE).orElseThrow();
+
+        Assertions.assertEquals(3, selection.sourceInventorySlot());
+        Assertions.assertEquals(3, selection.targetHotbarSlot());
+        Assertions.assertEquals(selected, selection.expectedItem());
+        Assertions.assertFalse(selection.requiresInventorySwap());
+    }
+
+    @Test
+    void exactMainHandSelectionMovesWhitelistedItemFromMainInventory() {
+        ItemStackFingerprint furnace = fingerprint(
+                "minecraft:furnace", 2, 0, "b".repeat(64));
+
+        MinecraftBasicEquipmentPlanner.ExactMainHandSelection selection =
+                MinecraftBasicEquipmentPlanner.selectExactMainHand(
+                        snapshot(3, 14, furnace),
+                        ExactMainHandItem.FURNACE).orElseThrow();
+
+        Assertions.assertEquals(14, selection.sourceInventorySlot());
+        Assertions.assertEquals(3, selection.targetHotbarSlot());
+        Assertions.assertEquals(furnace, selection.expectedItem());
+        Assertions.assertTrue(selection.requiresInventorySwap());
+    }
+
+    @Test
+    void exactMainHandSelectionBindsFullComponentFingerprint() {
+        ItemStackFingerprint planned = fingerprint(
+                "minecraft:furnace", 2, 0, "a".repeat(64));
+        ItemStackFingerprint changedComponents = fingerprint(
+                "minecraft:furnace", 2, 0, "b".repeat(64));
+
+        MinecraftBasicEquipmentPlanner.ExactMainHandSelection selection =
+                new MinecraftBasicEquipmentPlanner.ExactMainHandSelection(
+                        snapshot(3, 14, planned),
+                        ExactMainHandItem.FURNACE,
+                        14,
+                        3,
+                        planned);
+
+        Assertions.assertEquals(planned, selection.expectedItem());
+        Assertions.assertThrows(IllegalArgumentException.class,
+                () -> new MinecraftBasicEquipmentPlanner
+                        .ExactMainHandSelection(
+                                snapshot(3, 14, changedComponents),
+                                ExactMainHandItem.FURNACE,
+                                14,
+                                3,
+                                planned));
     }
 
     @Test
@@ -265,8 +357,13 @@ class MinecraftBasicEquipmentPlannerTest {
     }
 
     private static ItemStackFingerprint fingerprint(String itemId) {
-        return ItemStackFingerprint.of(new ResourceId(itemId), 1, 0,
-                DIGEST);
+        return fingerprint(itemId, 1, 0, DIGEST);
+    }
+
+    private static ItemStackFingerprint fingerprint(
+            String itemId, int count, int damage, String digest) {
+        return ItemStackFingerprint.of(new ResourceId(itemId), count, damage,
+                digest);
     }
 
     private static InventoryMenuSnapshot snapshot(

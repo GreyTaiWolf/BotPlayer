@@ -7,9 +7,11 @@ import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionAction
 import io.github.greytaiwolf.botplayer.action.interaction.menu.PlayerInventoryMenuLayout;
 import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftActionSnapshot;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
+import io.github.greytaiwolf.botplayer.skill.builtin.P5ABuiltinSkillIds;
 import io.github.greytaiwolf.botplayer.skill.builtin.survival.ArmorUpgradeSelection;
 import io.github.greytaiwolf.botplayer.skill.builtin.survival.MinecraftBasicArmorPlanner;
 import io.github.greytaiwolf.botplayer.skill.builtin.survival.MinecraftBasicEquipmentPlanner;
+import io.github.greytaiwolf.botplayer.skill.builtin.survival.MinecraftBasicEquipmentPlanner.ExactMainHandItem;
 import io.github.greytaiwolf.botplayer.skill.builtin.survival.ToolKind;
 import io.github.greytaiwolf.botplayer.skill.core.SkillFailureCode;
 import io.github.greytaiwolf.botplayer.skill.core.SkillSignal;
@@ -35,7 +37,7 @@ import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.inventory.Slot;
 
 /**
- * 将基础盔甲、指定用途工具及显式普通副手接到 P5A 的通用菜单事务。
+ * 将基础盔甲、指定用途工具、封闭精确主手物品及显式普通副手接到 P5A 的通用菜单事务。
  *
  * <p>这个适配器只在服务器线程读取原版 InventoryMenu，并把完整 46 槽快照冻结进
  * {@link MenuTransactionTemplate}。它不会直接写 {@code Inventory}；真正的变更始终
@@ -44,10 +46,11 @@ import net.minecraft.world.inventory.Slot;
  */
 public final class MinecraftEquipmentSkillNodeHandler
         implements SkillNodeHandler {
-    /** 节点可表达的三种 P5A 基础装备工作。 */
+    /** 节点可表达的四种 P5A 基础装备工作。 */
     public enum Kind {
         BASIC_ARMOR,
         REQUESTED_TOOL,
+        REQUESTED_EXACT_MAIN_HAND,
         REQUESTED_OFFHAND
     }
 
@@ -181,6 +184,8 @@ public final class MinecraftEquipmentSkillNodeHandler
         return switch (kind) {
             case BASIC_ARMOR -> planArmor(player);
             case REQUESTED_TOOL -> planTool(player, context);
+            case REQUESTED_EXACT_MAIN_HAND -> planExactMainHand(player,
+                    context);
             case REQUESTED_OFFHAND -> planOffhand(player, context);
         };
     }
@@ -227,6 +232,42 @@ public final class MinecraftEquipmentSkillNodeHandler
         return template(player,
                 choice.sourceInventorySlot(), choice.targetHotbarSlot(),
                 "equip-tool");
+    }
+
+    private static Optional<Prepared> planExactMainHand(
+            BotServerPlayer player, SkillNodeContext context) {
+        ExactMainHandItem requested = parseExactMainHandItem(
+                context.node().parameters().value(
+                        P5ABuiltinSkillIds
+                                .EXACT_MAIN_HAND_ITEM_ID_PARAMETER)
+                        .orElse(null)).orElse(null);
+        if (requested == null) {
+            return Optional.empty();
+        }
+        MinecraftBasicEquipmentPlanner.ExactMainHandSelection choice =
+                MinecraftBasicEquipmentPlanner.planExactMainHand(
+                        player, requested).orElse(null);
+        if (choice == null) {
+            return Optional.empty();
+        }
+        if (!choice.requiresInventorySwap()) {
+            return Optional.of(Prepared.noOperation(
+                    player, "请求的精确物品已经位于主手选中栏"));
+        }
+        return template(player,
+                choice.sourceInventorySlot(), choice.targetHotbarSlot(),
+                "equip-exact-main-hand:" + requested.itemId().value());
+    }
+
+    /**
+     * 将 SkillParameters 中未经信任的标量映射回 P5A 封闭白名单；这一步不接受
+     * 任意 ResourceId、注册表别名或大小写归一化。
+     */
+    static Optional<ExactMainHandItem> parseExactMainHandItem(
+            Object parameter) {
+        return parameter instanceof String itemId
+                ? ExactMainHandItem.fromItemId(itemId)
+                : Optional.empty();
     }
 
     private static Optional<Prepared> planOffhand(

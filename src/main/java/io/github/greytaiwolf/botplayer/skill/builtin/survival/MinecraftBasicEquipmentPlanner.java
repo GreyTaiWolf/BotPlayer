@@ -1,6 +1,7 @@
 package io.github.greytaiwolf.botplayer.skill.builtin.survival;
 
 import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
+import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSnapshot;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.PlayerInventoryMenuLayout;
 import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftActionSnapshot;
@@ -27,7 +28,7 @@ import net.minecraft.world.item.enchantment.EnchantmentEffectComponents;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
 
 /**
- * 从真实玩家库存冻结工具或普通副手的确定性选择。
+ * 从真实玩家库存冻结工具、P5A 精确主手物品或普通副手的确定性选择。
  *
  * <p>本类只读取原版玩家快照，不会改变选中栏、背包、装备槽或菜单。工具仅接受
  * {@link TieredItem} 的精确原版类别；副手必须由调用方同时给出源库存槽和完整物品
@@ -96,6 +97,97 @@ public final class MinecraftBasicEquipmentPlanner {
              */
             return Optional.empty();
         }
+    }
+
+    /**
+     * 将一项 P5A 编译期认可的精确物品切入当前主手热栏位。
+     *
+     * <p>该入口刻意不接收任意 {@link ResourceId}：只有
+     * {@link ExactMainHandItem} 的五项固定白名单可以进入菜单事务。选择始终冻结源槽的
+     * 完整 {@link ItemStackFingerprint}（包括 component digest），因此同 item id 但组件、
+     * 耐久或数量不同的堆叠不能在动作开始后替换原先观察到的物品。
+     *
+     * <p>若所选热栏已经是请求的精确物品，会返回 source 与 target 相同的选择，调用方必须
+     * 将其作为无点击的安全完成，而不是从另一个同类堆叠进行多余交换。
+     *
+     * @param player 权威服务器线程上的 BotPlayer
+     * @param requestedItem P5A 的封闭精确物品白名单项
+     * @return 可审核的主手选择；未发现请求项或任何快照前提不成立时为空
+     */
+    public static Optional<ExactMainHandSelection> planExactMainHand(
+            BotServerPlayer player, ExactMainHandItem requestedItem) {
+        requireServerThread(player);
+        Objects.requireNonNull(requestedItem, "requestedItem");
+
+        try {
+            Inventory inventory = player.getInventory();
+            InventoryMenuSnapshot menuSnapshot =
+                    MinecraftActionSnapshot.inventoryMenu(player);
+            int targetHotbarSlot = menuSnapshot.selectedHotbar();
+            if (!PlayerInventoryMenuLayout
+                    .isHotbarInventorySlot(targetHotbarSlot)
+                    || targetHotbarSlot != inventory.selected
+                    || !menuSnapshot.cursor().isEmpty()) {
+                return Optional.empty();
+            }
+            ExactMainHandSelection selection = selectExactMainHand(
+                    menuSnapshot, requestedItem).orElse(null);
+            if (selection == null) {
+                return Optional.empty();
+            }
+            ItemStackFingerprint actual = MinecraftActionSnapshot.item(
+                    player,
+                    inventory.getItem(selection.sourceInventorySlot()));
+            if (!actual.equals(selection.expectedItem())) {
+                return Optional.empty();
+            }
+            return Optional.of(selection);
+        } catch (RuntimeException exception) {
+            /*
+             * 注册表、data component 或菜单读取故障不能放宽成按显示名/类别的猜测；
+             * 主手切换没有副作用，因而保守拒绝本次快照。
+             */
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * 仅消费不可变快照的精确主手选择。保留为 package-private，以便纯 Java 合同测试覆盖
+     * “没有目标 / 已在选中位 / 主背包换入”三个路径，而无需构造 Minecraft 活玩家。
+     */
+    static Optional<ExactMainHandSelection> selectExactMainHand(
+            InventoryMenuSnapshot menuSnapshot,
+            ExactMainHandItem requestedItem) {
+        Objects.requireNonNull(menuSnapshot, "menuSnapshot");
+        Objects.requireNonNull(requestedItem, "requestedItem");
+        if (!menuSnapshot.cursor().isEmpty()) {
+            return Optional.empty();
+        }
+        int targetHotbarSlot = menuSnapshot.selectedHotbar();
+        ItemStackFingerprint selected = menuSnapshot.itemAt(targetHotbarSlot);
+        if (isExactMainHandItem(selected, requestedItem)) {
+            return Optional.of(new ExactMainHandSelection(
+                    menuSnapshot,
+                    requestedItem,
+                    targetHotbarSlot,
+                    targetHotbarSlot,
+                    selected));
+        }
+        for (int inventorySlot = FIRST_CARRIED_SLOT;
+                inventorySlot <= LAST_CARRIED_SLOT;
+                inventorySlot++) {
+            ItemStackFingerprint candidate = menuSnapshot.itemAt(
+                    inventorySlot);
+            if (isExactMainHandItem(candidate, requestedItem)) {
+                return Optional.of(new ExactMainHandSelection(
+                        menuSnapshot,
+                        requestedItem,
+                        inventorySlot,
+                        targetHotbarSlot,
+                        candidate));
+            }
+        }
+        return Optional.empty();
     }
 
     /**
@@ -229,6 +321,15 @@ public final class MinecraftBasicEquipmentPlanner {
         } catch (RuntimeException exception) {
             return Optional.empty();
         }
+    }
+
+    private static boolean isExactMainHandItem(
+            ItemStackFingerprint fingerprint,
+            ExactMainHandItem requestedItem) {
+        return !fingerprint.isEmpty()
+                && fingerprint.itemId()
+                        .filter(requestedItem.itemId()::equals)
+                        .isPresent();
     }
 
     /**
@@ -375,6 +476,89 @@ public final class MinecraftBasicEquipmentPlanner {
 
         /**
          * 候选已经在主手选中位时不需要菜单 SWAP。
+         */
+        public boolean requiresInventorySwap() {
+            return sourceInventorySlot != targetHotbarSlot;
+        }
+    }
+
+    /**
+     * P5A 封闭白名单中的精确主手物品。
+     *
+     * <p>这里的枚举既是 parser 的唯一真相，也是 planner 的唯一请求类型；不能用
+     * {@code ResourceId} 替代它来扩大为任意主手切换能力。
+     */
+    public enum ExactMainHandItem {
+        WOODEN_PICKAXE("minecraft:wooden_pickaxe"),
+        STONE_PICKAXE("minecraft:stone_pickaxe"),
+        IRON_PICKAXE("minecraft:iron_pickaxe"),
+        CRAFTING_TABLE("minecraft:crafting_table"),
+        FURNACE("minecraft:furnace");
+
+        private final ResourceId itemId;
+
+        ExactMainHandItem(String itemId) {
+            this.itemId = new ResourceId(itemId);
+        }
+
+        public ResourceId itemId() {
+            return itemId;
+        }
+
+        /**
+         * 严格解析编译进 DAG 的参数值；未知、非规范或非白名单值一律拒绝。
+         */
+        public static Optional<ExactMainHandItem> fromItemId(
+                String itemId) {
+            if (itemId == null) {
+                return Optional.empty();
+            }
+            return switch (itemId) {
+                case "minecraft:wooden_pickaxe" ->
+                        Optional.of(WOODEN_PICKAXE);
+                case "minecraft:stone_pickaxe" ->
+                        Optional.of(STONE_PICKAXE);
+                case "minecraft:iron_pickaxe" ->
+                        Optional.of(IRON_PICKAXE);
+                case "minecraft:crafting_table" ->
+                        Optional.of(CRAFTING_TABLE);
+                case "minecraft:furnace" -> Optional.of(FURNACE);
+                default -> Optional.empty();
+            };
+        }
+    }
+
+    /**
+     * 精确物品到当前主手选中热栏位的纯值映射。
+     */
+    public record ExactMainHandSelection(
+            InventoryMenuSnapshot menuSnapshot,
+            ExactMainHandItem requestedItem,
+            int sourceInventorySlot,
+            int targetHotbarSlot,
+            ItemStackFingerprint expectedItem) {
+        public ExactMainHandSelection {
+            Objects.requireNonNull(menuSnapshot, "menuSnapshot");
+            Objects.requireNonNull(requestedItem, "requestedItem");
+            Objects.requireNonNull(expectedItem, "expectedItem");
+            if (!isCarriedSlot(sourceInventorySlot)
+                    || !PlayerInventoryMenuLayout
+                            .isHotbarInventorySlot(targetHotbarSlot)
+                    || targetHotbarSlot != menuSnapshot.selectedHotbar()
+                    || !menuSnapshot.cursor().isEmpty()
+                    || expectedItem.isEmpty()
+                    || expectedItem.itemId()
+                            .filter(requestedItem.itemId()::equals)
+                            .isEmpty()
+                    || !menuSnapshot.itemAt(sourceInventorySlot)
+                            .equals(expectedItem)) {
+                throw new IllegalArgumentException(
+                        "exact main-hand selection must bind a whitelisted full source fingerprint");
+            }
+        }
+
+        /**
+         * 源已是所选热栏时没有可安全且必要的菜单点击。
          */
         public boolean requiresInventorySwap() {
             return sourceInventorySlot != targetHotbarSlot;
