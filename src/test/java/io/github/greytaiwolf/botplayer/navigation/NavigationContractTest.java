@@ -34,6 +34,24 @@ class NavigationContractTest {
     }
 
     @Test
+    void sprintCanBeDisabledWithoutChangingSafeTraversalBounds() {
+        NavigationPolicy safe = NavigationPolicy.safeDefault();
+        NavigationPolicy controlled = safe.withSprint(false);
+
+        Assertions.assertAll(
+                () -> Assertions.assertTrue(safe.allowSprint()),
+                () -> Assertions.assertFalse(controlled.allowSprint()),
+                () -> Assertions.assertEquals(safe.allowSwim(),
+                        controlled.allowSwim()),
+                () -> Assertions.assertEquals(safe.allowClimb(),
+                        controlled.allowClimb()),
+                () -> Assertions.assertEquals(safe.maximumReplans(),
+                        controlled.maximumReplans()),
+                () -> Assertions.assertEquals(safe.maximumRecoveryAttempts(),
+                        controlled.maximumRecoveryAttempts()));
+    }
+
+    @Test
     void controllerOriginIsDistinctFromPlanAndSkill() {
         UUID runId =
                 UUID.fromString("00000000-0000-0000-0000-000000000403");

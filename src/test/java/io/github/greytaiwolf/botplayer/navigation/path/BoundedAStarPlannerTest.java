@@ -15,6 +15,8 @@ class BoundedAStarPlannerTest {
             new TraversalCell(true, true, true, false, false, false, false);
     private static final TraversalCell BLOCKED =
             new TraversalCell(true, false, false, false, false, false, false);
+    private static final TraversalCell CLEAR_AIR =
+            new TraversalCell(true, true, false, false, false, false, false);
 
     @Test
     void straightRouteIsCompleteAndDeterministic() {
@@ -61,6 +63,44 @@ class BoundedAStarPlannerTest {
                 () -> false);
 
         Assertions.assertEquals(RoutePlanStatus.NO_PATH, plan.status());
+    }
+
+    @Test
+    void raisedDiagonalTargetRoutesThroughCardinalJump() {
+        TraversalCell[] cells = filled(3, 2, 3, FLOOR);
+        cells[index(1, 0, 1, 3, 3)] = BLOCKED;
+        cells[index(0, 1, 0, 3, 3)] = CLEAR_AIR;
+        cells[index(1, 1, 0, 3, 3)] = CLEAR_AIR;
+        cells[index(1, 1, 1, 3, 3)] = FLOOR;
+        NavigationSnapshot snapshot = snapshot(3, 2, 3, cells, true);
+
+        RoutePlan plan = new BoundedAStarPlanner(100).plan(
+                snapshot,
+                new GridPoint(0, 0, 0),
+                goal(1, 1, 1),
+                NavigationPolicy.safeDefault(),
+                () -> false);
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(
+                        RoutePlanStatus.COMPLETE, plan.status()),
+                () -> Assertions.assertEquals(
+                        new GridPoint(1, 1, 1),
+                        plan.nodes().getLast().point()),
+                () -> Assertions.assertTrue(plan.nodes().stream()
+                        .anyMatch(node -> node.traversalKind()
+                                == TraversalKind.JUMP_UP_ONE)),
+                () -> Assertions.assertTrue(plan.nodes().stream()
+                        .filter(node -> node.traversalKind()
+                                == TraversalKind.JUMP_UP_ONE)
+                        .allMatch(node -> {
+                            int index = plan.nodes().indexOf(node);
+                            GridPoint previous = plan.nodes()
+                                    .get(index - 1)
+                                    .point();
+                            return node.point().x() == previous.x()
+                                    || node.point().z() == previous.z();
+                        }));
     }
 
     @Test

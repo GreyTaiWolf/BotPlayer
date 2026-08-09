@@ -86,6 +86,9 @@ public final class MinecraftProductionSkillNodeHandler
     private static final int MAXIMUM_RESOURCE_DROP_NAVIGATION_TICKS = 240;
     /** 到达精确掉落实体附近后，仅允许有限 collision-driven PickupWait。 */
     private static final int MAXIMUM_RESOURCE_DROP_PICKUP_TICKS = 80;
+    /** Exact UUID-drop goals are deliberately approached without sprint overshoot. */
+    private static final NavigationPolicy RESOURCE_DROP_NAVIGATION_POLICY =
+            NavigationPolicy.safeDefault().withSprint(false);
     private static final String DROP_NAVIGATION_EVIDENCE_KEY =
             "navigation.resource-drop";
     private static final String BREAK_DROP_ENTITY_ID_EVIDENCE_KEY =
@@ -830,7 +833,7 @@ public final class MinecraftProductionSkillNodeHandler
                 new NavigationGoal.ExactPosition(candidate.dimensionId(),
                         candidate.position(), 0, 0),
                 NavigationArrivalRequirement.GROUNDED_GRID_CELL,
-                NavigationPolicy.safeDefault(),
+                RESOURCE_DROP_NAVIGATION_POLICY,
                 Math.addExact(context.currentTick(), maximumDuration),
                 Math.toIntExact(maximumDuration),
                 "p5a-drop-collect:"

@@ -71,6 +71,13 @@ public final class MinecraftProductionNavigationSkillNodeHandler
      */
     static final NavigationArrivalRequirement RESOURCE_ARRIVAL_REQUIREMENT =
             NavigationArrivalRequirement.GROUNDED_GRID_CELL;
+    /**
+     * A resource top is one block wide. Sprinting into its final jump makes a valid discrete
+     * path overshoot the exact grounded pickup stand, so this P5A-only request retains the
+     * normal safe policy but uses controlled walking input for its final approach.
+     */
+    static final NavigationPolicy RESOURCE_NAVIGATION_POLICY =
+            NavigationPolicy.safeDefault().withSprint(false);
     static final int MAXIMUM_NAVIGATION_TICKS = 1_200;
 
     private static final String NAVIGATION_EVIDENCE_KEY =
@@ -423,7 +430,7 @@ public final class MinecraftProductionNavigationSkillNodeHandler
                         pickupStand,
                         RESOURCE_GOAL_RADIUS),
                 RESOURCE_ARRIVAL_REQUIREMENT,
-                NavigationPolicy.safeDefault(),
+                RESOURCE_NAVIGATION_POLICY,
                 deadline,
                 Math.toIntExact(maximumDuration),
                 "p5a-resource-nav:"

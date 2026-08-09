@@ -42,6 +42,8 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @PrefixGameTestTemplate(false)
 public final class P5BootstrapIronAcceptanceGameTests {
     private static final String BATCH = "p5a_bootstrap_iron";
+    private static final String ACTIVE_DROP_COLLECTION_BATCH =
+            "p5a_bootstrap_active_drop_collection";
     private static final int TIMEOUT_TICKS = 1_900;
     private static final int CHECKPOINT_SCOPE_RADIUS = 8;
     private static final int ACTIVE_DROP_COLLECTION_TIMEOUT_TICKS = 900;
@@ -108,7 +110,7 @@ public final class P5BootstrapIronAcceptanceGameTests {
      */
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = ACTIVE_DROP_COLLECTION_BATCH,
             timeoutTicks = ACTIVE_DROP_COLLECTION_TIMEOUT_TICKS)
     public static void bootstrapActivelyCollectsRelocatedVanillaResourceDrop(
             GameTestHelper helper) {
@@ -424,6 +426,8 @@ public final class P5BootstrapIronAcceptanceGameTests {
             }
             if (!entityCollected) {
                 entityCollected = true;
+                reachedExactDropCell |= bot.player().onGround()
+                        && bot.player().blockPosition().equals(destination);
                 observedInventoryDelta = count(bot, Items.OAK_LOG)
                         - inventoryBefore;
             }

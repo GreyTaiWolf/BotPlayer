@@ -144,7 +144,12 @@ public final class BoundedAStarPlanner implements RoutePlanner {
 
                 GridPoint up = new GridPoint(
                         same.x(), same.y() + 1, same.z());
-                if (snapshot.contains(up)
+                // The action backend only has a reliable physical contract for a
+                // cardinal one-block jump.  A diagonal raised waypoint can be
+                // consumed while the player is still airborne, so route through
+                // cardinal ground cells instead of claiming that shortcut.
+                if ((dx == 0 || dz == 0)
+                        && snapshot.contains(up)
                         && snapshot.cell(up).traversable()
                         && hasJumpClearance(snapshot, current, same, up)) {
                     relax(

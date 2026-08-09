@@ -491,7 +491,7 @@ class MinecraftProductionSkillNodeHandlerTest {
                         navigation.request.arrivalRequirement()),
                 () -> Assertions.assertEquals(drop.position(),
                         ((NavigationGoal.ExactPosition) navigation.request.goal())
-                                .position()));
+                                .center()));
 
         navigation.succeed(13L);
         SkillSignal navigationSignal = signals.get(1);
@@ -886,7 +886,7 @@ class MinecraftProductionSkillNodeHandlerTest {
                     (NavigationGoal.ExactPosition) request.goal();
             completion.complete(new NavigationOutcome(
                     request.navigationId(), NavigationState.SUCCEEDED,
-                    NavigationFailure.NONE, goal.position(), tick, tick,
+                    NavigationFailure.NONE, goal.center(), tick, tick,
                     0, 0, 0, 0L, 0, 0, "测试掉落实体导航成功"));
         }
     }
