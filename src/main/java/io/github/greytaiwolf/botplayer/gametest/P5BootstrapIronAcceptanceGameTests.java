@@ -283,12 +283,16 @@ public final class P5BootstrapIronAcceptanceGameTests {
                         + "runtime state: state=" + view.state()
                         + ", completedNodes=" + view.completedNodes()
                         + "/" + view.totalNodes()
+                        + ", stateRevision=" + view.stateRevision()
                         + ", activeNodeId=" + view.activeNodeId()
                                 .map(UUID::toString).orElse("none")
                         + ", activeSkillId=" + view.activeSkillId()
                                 .map(Object::toString).orElse("none")
                         + ", failureCode=" + view.failureCode()
                                 .map(Object::toString).orElse("none")
+                        + ", startedTick=" + view.startedTick()
+                        + ", updatedTick=" + view.updatedTick()
+                        + ", deadlineTick=" + view.deadlineTick()
                         + ", safeSummary=" + view.safeSummary())
                 .orElse("P5A bootstrap iron never reached a terminal runtime "
                         + "state: no current SkillRunView for submitted run");

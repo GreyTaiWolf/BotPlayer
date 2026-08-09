@@ -214,9 +214,10 @@ final class P2GameTestSupport {
             return;
         }
         if (remainingTicks <= 0) {
+            String failureMessage = Objects.requireNonNull(
+                    failureMessageSupplier.get(), "failureMessage");
             failureCleanup.run();
-            helper.fail(Objects.requireNonNull(
-                    failureMessageSupplier.get(), "failureMessage"));
+            helper.fail(failureMessage);
             return;
         }
         helper.runAfterDelay(
