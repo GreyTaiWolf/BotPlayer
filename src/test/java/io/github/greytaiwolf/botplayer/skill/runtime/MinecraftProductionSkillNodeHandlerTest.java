@@ -551,6 +551,119 @@ class MinecraftProductionSkillNodeHandlerTest {
                         .kind());
     }
 
+    @Test
+    void rejectsWhenFreshDropPickupPortCannotFreezeUuidPickupWait() {
+        SequencedGateway actions = new SequencedGateway();
+        RecordingDropNavigation navigation = new RecordingDropNavigation();
+        List<SkillSignal> signals = new ArrayList<>();
+        UUID dropId = new UUID(0L, 45L);
+        MinecraftProductionSkillNodeHandler.ResourceDropCandidate drop =
+                new MinecraftProductionSkillNodeHandler.ResourceDropCandidate(
+                        dropId, "minecraft:overworld",
+                        new GridPoint(4, 1, 4), "minecraft:oak_log", 1);
+        int[] pickupPlanningCalls = {0};
+        MinecraftProductionSkillNodeHandler handler =
+                new MinecraftProductionSkillNodeHandler(
+                        (botId, generation) -> Optional.of(
+                                new MinecraftProductionSkillNodeHandler
+                                        .ActiveBot(botId, generation)),
+                        new MinecraftProductionSkillNodeHandler
+                                .ProductionObservationPort() {
+                            @Override
+                            public Optional<MinecraftProductionSkillNodeHandler
+                                    .PreflightObservation> observeForDispatch(
+                                            MinecraftProductionSkillNodeHandler
+                                                    .ActiveBot bot,
+                                            SkillNodeContext context,
+                                            MinecraftProductionSkillNodeHandler
+                                                    .ApprovedOperation operation) {
+                                return Optional.of(acquisitionPreflight(
+                                        context.currentTick()));
+                            }
+
+                            @Override
+                            public Optional<MinecraftProductionSkillNodeHandler
+                                    .CompletionObservation> observeAfterAction(
+                                            MinecraftProductionSkillNodeHandler
+                                                    .ExecutionTicket ticket,
+                                            SkillNodeContext context,
+                                            SkillSignal signal) {
+                                return Optional.of(acquisitionCompletion(
+                                        context.currentTick(),
+                                        ProductionLedger.empty()));
+                            }
+                        },
+                        taskSensors(),
+                        new MinecraftProductionSkillNodeHandler
+                                .ResourceAcquisitionActionPort() {
+                            @Override
+                            public Optional<MinecraftProductionSkillNodeHandler
+                                    .ProductionAction> plan(
+                                            MinecraftProductionSkillNodeHandler
+                                                    .ExecutionTicket ticket,
+                                            TaskSensorService suppliedSensors) {
+                                return Optional.of(testAction());
+                            }
+
+                            @Override
+                            public MinecraftProductionSkillNodeHandler
+                                    .ResourceDropObservation observeResourceDrop(
+                                            MinecraftProductionSkillNodeHandler
+                                                    .ExecutionTicket ticket,
+                                            SkillNodeContext context) {
+                                return MinecraftProductionSkillNodeHandler
+                                        .ResourceDropObservation.found(drop);
+                            }
+
+                            @Override
+                            public Optional<MinecraftProductionSkillNodeHandler
+                                    .ProductionAction> planResourceDropPickup(
+                                            MinecraftProductionSkillNodeHandler
+                                                    .ExecutionTicket ticket,
+                                            SkillNodeContext context,
+                                            MinecraftProductionSkillNodeHandler
+                                                    .ResourceDropCandidate candidate) {
+                                pickupPlanningCalls[0]++;
+                                return Optional.empty();
+                            }
+                        },
+                        ticket -> Optional.empty(),
+                        navigation,
+                        actions,
+                        signal -> {
+                            signals.add(signal);
+                            return SkillSignalInbox.OfferStatus.ENQUEUED;
+                        });
+
+        String operation = operation("harvest_logs");
+        Assertions.assertEquals(SkillNodeDirective.Kind.WAIT_ACTION,
+                handler.begin(context(operation, 10L, 0L)).kind());
+        actions.completeNextSuccess(resourceDropEvidence(dropId));
+        Assertions.assertEquals(SkillNodeDirective.Kind.CONTINUE,
+                handler.signal(context(operation, 11L, 1L), signals.get(0))
+                        .kind());
+        Assertions.assertEquals(SkillNodeDirective.Kind.WAIT_NAVIGATION,
+                handler.tick(context(operation, 12L, 2L)).kind());
+
+        navigation.succeed(13L);
+        Assertions.assertEquals(SkillNodeDirective.Kind.CONTINUE,
+                handler.signal(context(operation, 13L, 3L), signals.get(1))
+                        .kind());
+        SkillNodeDirective rejected = handler.tick(context(operation, 14L, 3L));
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillNodeDirective.Kind.FAIL,
+                        rejected.kind()),
+                () -> Assertions.assertEquals(Optional.of(
+                        SkillFailureCode.ACTION_REJECTED),
+                        rejected.failureCode()),
+                () -> Assertions.assertEquals(
+                        "资源掉落实体拾取端口未能冻结当前 tick 的 UUID PickupWait 动作",
+                        rejected.safeSummary()),
+                () -> Assertions.assertEquals(1, pickupPlanningCalls[0]),
+                () -> Assertions.assertEquals(1, actions.submitted.size()));
+    }
+
     private static MinecraftProductionSkillNodeHandler handler(
             java.util.function.Function<SkillNodeContext, Optional<
                     MinecraftProductionSkillNodeHandler.PreflightObservation>>

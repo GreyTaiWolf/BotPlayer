@@ -417,21 +417,41 @@ public final class MinecraftProductionSkillNodeHandler
             SkillNodeContext context) {
         ResourceDropCollection collection = resourceDropCollections.get(
                 context.runId());
-        if (!(collection instanceof ReadyResourceDropPickup ready)
-                || !ready.matches(context)
-                || !ready.provenance().matches(ready.candidate())) {
-            return Optional.empty();
+        if (!(collection instanceof ReadyResourceDropPickup ready)) {
+            throw new ActionBackedSkillNodeHandler.PlanningFailure(
+                    SkillFailureCode.INTERNAL_ERROR,
+                    "资源掉落实体拾取开始时没有可验证的就绪状态");
+        }
+        if (!ready.matches(context)) {
+            throw new ActionBackedSkillNodeHandler.PlanningFailure(
+                    SkillFailureCode.WORLD_CHANGED,
+                    "资源掉落实体拾取开始时节点身份或 operation 已变化");
+        }
+        if (!ready.provenance().matches(ready.candidate())) {
+            throw new ActionBackedSkillNodeHandler.PlanningFailure(
+                    SkillFailureCode.WORLD_CHANGED,
+                    "资源掉落实体来源凭据在拾取前不再匹配");
         }
         ProductionAction action;
         try {
             action = acquisitionActions.planResourceDropPickup(
                     ready.ticket(), context, ready.candidate()).orElse(null);
+        } catch (ActionBackedSkillNodeHandler.PlanningFailure failure) {
+            throw failure;
         } catch (RuntimeException exception) {
-            action = null;
+            throw new ActionBackedSkillNodeHandler.PlanningFailure(
+                    SkillFailureCode.WORLD_CHANGED,
+                    "资源掉落实体拾取端口冻结动作时发生异常");
         }
-        if (action == null || !matchesResourceDropPickup(
-                action, ready.candidate())) {
-            return Optional.empty();
+        if (action == null) {
+            throw new ActionBackedSkillNodeHandler.PlanningFailure(
+                    SkillFailureCode.ACTION_REJECTED,
+                    "资源掉落实体拾取端口未能冻结当前 tick 的 UUID PickupWait 动作");
+        }
+        if (!matchesResourceDropPickup(action, ready.candidate())) {
+            throw new ActionBackedSkillNodeHandler.PlanningFailure(
+                    SkillFailureCode.ACTION_REJECTED,
+                    "资源掉落实体拾取端口返回的动作不符合 UUID PickupWait 合同");
         }
         return Optional.of(new ActionBackedSkillNodeHandler.Operation(
                 "production-pickup",
