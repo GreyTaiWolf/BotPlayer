@@ -176,20 +176,23 @@ class MinecraftProductionSkillPortsTest {
     }
 
     @Test
-    void resourceAcquisitionRequiresGroundedBodyAboveTheSelectedBlock() {
+    void resourceAcquisitionRequiresGroundedReachableResourceApproach() {
         BlockCoordinates resource = new BlockCoordinates(3, 1, 4);
 
         Assertions.assertTrue(MinecraftProductionSkillPorts
-                .groundedAboveResource(new BlockPos(3, 2, 4), true,
+                .groundedAtResourceApproach(new BlockPos(4, 1, 4), true,
+                        resource));
+        Assertions.assertTrue(MinecraftProductionSkillPorts
+                .groundedAtResourceApproach(new BlockPos(3, 2, 4), true,
                         resource));
         Assertions.assertFalse(MinecraftProductionSkillPorts
-                        .groundedAboveResource(new BlockPos(3, 2, 4), false,
+                        .groundedAtResourceApproach(new BlockPos(4, 1, 4), false,
                                 resource),
-                "an airborne body must not break its apparent footing");
+                "an airborne body must not break an apparent nearby resource");
         Assertions.assertFalse(MinecraftProductionSkillPorts
-                        .groundedAboveResource(new BlockPos(4, 2, 4), true,
+                        .groundedAtResourceApproach(new BlockPos(4, 1, 5), true,
                                 resource),
-                "an adjacent resource must not replace the navigated footing");
+                "a diagonal cell must not satisfy the radius-one approach");
     }
 
     private static ResourceAcquisition acquisition(

@@ -338,10 +338,10 @@ public final class MinecraftProductionSkillPorts
                 expectedResourceBlock(acquisition))) {
             return rejectResourceActionPlan(ticket, "expected-resource-block");
         }
-        if (!groundedAboveResource(
+        if (!groundedAtResourceApproach(
                 player.blockPosition(), player.onGround(),
                 target.position())) {
-            return rejectResourceActionPlan(ticket, "grounded-resource-footing");
+            return rejectResourceActionPlan(ticket, "grounded-resource-approach");
         }
         if (!isCurrentReachableBlock(player, target)) {
             return rejectResourceActionPlan(ticket, "current-resource-reach");
@@ -722,15 +722,16 @@ public final class MinecraftProductionSkillPorts
     }
 
     /**
-     * 对 P5A 资源采集，前置导航门已经把 body 带到待采资源顶部。这里只接受其脚下精确资源，
-     * 因而不会在导航回执与 BREAK_BLOCK 之间换成一块相邻资源并把掉落留在碰撞范围外。
-     * 工作台/熔炉候选仍可使用普通可达性选择，故该要求是显式而窄的。
+     * 对 P5A 资源采集，前置导航门只保证 body 在同层或相邻一格的已接地可交互范围内。
+     * 这里重新选择并冻结当前最近的精确资源方块；破块后的掉落由独立 UUID 导航与 PickupWait
+     * 合同收集，因此不能再把“站在待破资源顶部”误当作采集安全前提。工作台/熔炉候选仍可
+     * 使用普通可达性选择，故该要求是显式而窄的。
      */
     private Optional<Candidate> selectCandidate(
             BotServerPlayer player,
             SkillNodeContext context,
             String expectedBlockId,
-            boolean requireGroundedFooting) {
+            boolean requireGroundedApproach) {
         try {
             TaskSensorSnapshot candidates = query(new TaskSensorQuery(
                     identity(context),
@@ -761,8 +762,8 @@ public final class MinecraftProductionSkillPorts
                 if (!expectedBlockId.equals(candidate.blockId())) {
                     continue;
                 }
-                if (requireGroundedFooting
-                        && !groundedAboveResource(
+                if (requireGroundedApproach
+                        && !groundedAtResourceApproach(
                                 player.blockPosition(),
                                 player.onGround(),
                                 candidate.position())) {
@@ -799,8 +800,8 @@ public final class MinecraftProductionSkillPorts
 
     /**
      * 导航门不会把动态资源坐标写进计划；采集节点因而必须重新查询。优先选择距离当前
-     * 身体最近且仍可交互的候选，确保刚刚站到某资源顶部后会破坏脚下的同一方块，而不是
-     * 重新按扫描顺序选到相邻方块并把掉落留在拾取碰撞范围外。
+     * 身体最近且仍可交互的候选，并要求其位于已接地的一格 approach 范围内；随后由 UUID
+     * 绑定的掉落收集合同处理真实掉落物，不能依赖被动碰撞拾取。
      */
     static int compareReachableResourceCandidates(
             Vec3 playerPosition,
@@ -815,18 +816,22 @@ public final class MinecraftProductionSkillPorts
         return distance != 0 ? distance : comparePosition(left, right);
     }
 
-    static boolean groundedAboveResource(
+    static boolean groundedAtResourceApproach(
             BlockPos bodyPosition,
             boolean onGround,
             BlockCoordinates resourcePosition) {
-        return onGround
-                && Objects.requireNonNull(bodyPosition, "bodyPosition")
-                        .below()
-                        .equals(new BlockPos(
-                                Objects.requireNonNull(resourcePosition,
-                                        "resourcePosition").x(),
-                                resourcePosition.y(),
-                                resourcePosition.z()));
+        Objects.requireNonNull(bodyPosition, "bodyPosition");
+        Objects.requireNonNull(resourcePosition, "resourcePosition");
+        if (!onGround) {
+            return false;
+        }
+        long dx = (long) bodyPosition.getX() - resourcePosition.x();
+        long dy = (long) bodyPosition.getY() - resourcePosition.y();
+        long dz = (long) bodyPosition.getZ() - resourcePosition.z();
+        if (Math.abs(dx) > 1L || Math.abs(dy) > 1L || Math.abs(dz) > 1L) {
+            return false;
+        }
+        return dx * dx + dz * dz <= 1L;
     }
 
     private static double resourceDistanceSquared(

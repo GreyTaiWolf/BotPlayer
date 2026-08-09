@@ -61,19 +61,19 @@ public final class MinecraftProductionNavigationSkillNodeHandler
     static final int RESOURCE_MAX_BLOCKS = 256;
     static final int RESOURCE_MAX_EVIDENCE = 24;
     /*
-     * 资源方块本身不是可站立的 goal。导航必须到达它正上方的精确脚位：这样原版
-     * BREAK_BLOCK 会让 Bot 落入刚产生的掉落物，而不是停在相邻格后只被动轮询。
+     * 资源导航只需到达资源格附近的一层接地点。破块后的掉落由 UUID 绑定的主动收集
+     * 阶段处理，不能再把“必须站在资源顶部”当作前置条件；那会把正常的平地采集收窄
+     * 成一格上跳目标。r=1 仍拒绝平面对角格（距离 sqrt(2)）。
      */
-    static final int RESOURCE_GOAL_RADIUS = 0;
+    static final int RESOURCE_GOAL_RADIUS = 1;
     /**
      * Resource acquisition must keep the navigation action alive until the
-     * body has actually landed on the resource's top cell.
+     * body has actually landed at a bounded, reachable resource approach cell.
      */
     static final NavigationArrivalRequirement RESOURCE_ARRIVAL_REQUIREMENT =
             NavigationArrivalRequirement.GROUNDED_GRID_CELL;
     /**
-     * A resource top is one block wide. Sprinting into its final jump makes a valid discrete
-     * path overshoot the exact grounded pickup stand, so this P5A-only request retains the
+     * Sprinting can overshoot the bounded final approach, so this P5A-only request retains the
      * normal safe policy but uses controlled walking input for its final approach.
      */
     static final NavigationPolicy RESOURCE_NAVIGATION_POLICY =
@@ -173,10 +173,9 @@ public final class MinecraftProductionNavigationSkillNodeHandler
                     "局部精确资源候选不存在或不再可信");
         }
 
-        GridPoint pickupStand = pickupStandGoal(target);
         NavigationRequest request;
         try {
-            request = navigationRequest(context, player, pickupStand);
+            request = navigationRequest(context, player, target);
         } catch (RuntimeException exception) {
             return SkillNodeDirective.fail(
                     SkillFailureCode.TIMEOUT,
@@ -211,7 +210,7 @@ public final class MinecraftProductionNavigationSkillNodeHandler
                 context.nextStateRevision(),
                 context.node().nodeId(),
                 expectedBlockId,
-                pickupStand);
+                target);
         pendingByRun.put(context.runId(), pending);
         completion.whenComplete(
                 (outcome, throwable) -> offerCompletion(
@@ -260,16 +259,21 @@ public final class MinecraftProductionNavigationSkillNodeHandler
                     SkillFailureCode.TARGET_GONE,
                     "资源导航完成后原始资源候选已经变化");
         }
-        if (!groundedAtPickupStand(
+        if (!groundedAtResourceApproach(
                 GridPoint.from(player.blockPosition()),
                 player.onGround(),
-                pending.pickupStand())) {
+                pending.resourceTarget())) {
             return SkillNodeDirective.fail(
                     SkillFailureCode.NAVIGATION_FAILED,
-                    "资源导航违反了稳定落地到达合同");
+                    "资源导航违反了稳定资源邻接落地合同");
+        }
+        if (!currentResourceReachable(player, pending.resourceTarget())) {
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.NAVIGATION_FAILED,
+                    "资源导航完成后原始资源候选不再可交互");
         }
         return SkillNodeDirective.complete(
-                "已在资源顶部稳定落地；后续采集节点将重新观察并冻结目标");
+                "已在资源可交互邻接格稳定落地；后续采集节点将重新观察并冻结目标");
     }
 
     @Override
@@ -409,7 +413,7 @@ public final class MinecraftProductionNavigationSkillNodeHandler
     private static NavigationRequest navigationRequest(
             SkillNodeContext context,
             BotServerPlayer player,
-            GridPoint pickupStand) {
+            GridPoint resourceTarget) {
         long remaining = Math.subtractExact(
                 context.deadlineTick(), context.currentTick());
         long maximumDuration = Math.min(
@@ -427,7 +431,7 @@ public final class MinecraftProductionNavigationSkillNodeHandler
                 context.botGeneration(),
                 new NavigationGoal.NearPosition(
                         player.serverLevel().dimension().location().toString(),
-                        pickupStand,
+                        resourceTarget,
                         RESOURCE_GOAL_RADIUS),
                 RESOURCE_ARRIVAL_REQUIREMENT,
                 RESOURCE_NAVIGATION_POLICY,
@@ -440,33 +444,49 @@ public final class MinecraftProductionNavigationSkillNodeHandler
     }
 
     /**
-     * 资源候选只是一格实心方块；其正上方才是导航快照可验证的站立格。该坐标只存在于
-     * 当前 navigation request，后续采集节点仍会重新查询并冻结实际要破坏的资源方块。
+     * Mirrors the resource {@link NavigationGoal.NearPosition}: the body must be grounded,
+     * within one non-diagonal horizontal cell, and no more than one vertical cell from the
+     * sensed resource. The later production port re-observes and freezes the exact break target.
      */
-    static GridPoint pickupStandGoal(GridPoint resource) {
-        Objects.requireNonNull(resource, "resource");
-        return new GridPoint(resource.x(), Math.addExact(resource.y(), 1),
-                resource.z());
-    }
-
-    static boolean groundedAtPickupStand(
+    static boolean groundedAtResourceApproach(
             GridPoint currentPosition,
             boolean onGround,
-            GridPoint pickupStand) {
+            GridPoint resourceTarget) {
+        GridPoint current = Objects.requireNonNull(currentPosition,
+                "currentPosition");
+        GridPoint target = Objects.requireNonNull(resourceTarget,
+                "resourceTarget");
+        long horizontalTolerance = (long) RESOURCE_GOAL_RADIUS
+                * RESOURCE_GOAL_RADIUS;
         return onGround
-                && Objects.requireNonNull(pickupStand, "pickupStand")
-                        .equals(currentPosition);
+                && current.horizontalDistanceSquared(target)
+                        <= horizontalTolerance
+                && Math.abs((long) current.y() - target.y())
+                        <= RESOURCE_GOAL_RADIUS;
     }
 
     private static boolean expectedResourceStillAt(
             BotServerPlayer player,
             PendingNavigation pending) {
-        BlockPos resource = pending.pickupStand().toBlockPos().below();
+        BlockPos resource = pending.resourceTarget().toBlockPos();
         return player.serverLevel().isLoaded(resource)
                 && pending.expectedBlockId().equals(BuiltInRegistries.BLOCK
                         .getKey(player.serverLevel().getBlockState(resource)
                                 .getBlock())
                         .toString());
+    }
+
+    private static boolean currentResourceReachable(
+            BotServerPlayer player,
+            GridPoint resourceTarget) {
+        try {
+            BlockPos resource = Objects.requireNonNull(resourceTarget,
+                    "resourceTarget").toBlockPos();
+            return player.serverLevel().isLoaded(resource)
+                    && player.canInteractWithBlock(resource, 0.0D);
+        } catch (RuntimeException exception) {
+            return false;
+        }
     }
 
     private Optional<BotServerPlayer> resolveCurrent(
@@ -676,13 +696,13 @@ public final class MinecraftProductionNavigationSkillNodeHandler
             long runRevision,
             UUID nodeId,
             String expectedBlockId,
-            GridPoint pickupStand) {
+            GridPoint resourceTarget) {
         private PendingNavigation {
             Objects.requireNonNull(navigationId, "navigationId");
             Objects.requireNonNull(botId, "botId");
             Objects.requireNonNull(nodeId, "nodeId");
             Objects.requireNonNull(expectedBlockId, "expectedBlockId");
-            Objects.requireNonNull(pickupStand, "pickupStand");
+            Objects.requireNonNull(resourceTarget, "resourceTarget");
             if (generation <= 0L || runRevision < 1L) {
                 throw new IllegalArgumentException(
                         "pending resource navigation identity is invalid");

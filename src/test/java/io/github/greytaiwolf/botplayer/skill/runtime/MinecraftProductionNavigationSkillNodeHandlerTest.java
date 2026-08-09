@@ -86,39 +86,43 @@ class MinecraftProductionNavigationSkillNodeHandlerTest {
     }
 
     @Test
-    void resourceNavigationGoalRequiresStandingAboveTheSensedBlock() {
+    void resourceNavigationGoalAllowsCardinalResourceApproach() {
         GridPoint resource = new GridPoint(3, 64, 3);
-        GridPoint pickupStand = MinecraftProductionNavigationSkillNodeHandler
-                .pickupStandGoal(resource);
         NavigationGoal.NearPosition goal = new NavigationGoal.NearPosition(
                 "minecraft:overworld",
-                pickupStand,
+                resource,
                 MinecraftProductionNavigationSkillNodeHandler
                         .RESOURCE_GOAL_RADIUS);
 
-        assertEquals(new GridPoint(3, 65, 3), pickupStand);
-        assertTrue(goal.reached(pickupStand));
-        assertFalse(goal.reached(resource),
-                "the solid resource itself is not a safe pickup stand");
-        assertFalse(goal.reached(new GridPoint(4, 65, 3)),
-                "radius zero must not complete from an adjacent cell");
+        assertTrue(goal.reached(new GridPoint(4, 64, 3)),
+                "a same-layer cardinal neighbor is a valid resource approach");
+        assertTrue(goal.reached(new GridPoint(3, 65, 3)),
+                "the resource top remains within the bounded approach");
+        assertFalse(goal.reached(new GridPoint(4, 64, 4)),
+                "radius one must reject a diagonal resource approach");
+        assertFalse(goal.reached(new GridPoint(5, 64, 3)),
+                "the approach remains bounded to one horizontal cell");
     }
 
     @Test
-    void resourceNavigationCompletionRequiresGroundedTopCell() {
+    void resourceNavigationCompletionRequiresGroundedApproachCell() {
         GridPoint resource = new GridPoint(3, 64, 3);
-        GridPoint pickupStand = MinecraftProductionNavigationSkillNodeHandler
-                .pickupStandGoal(resource);
+        GridPoint cardinalApproach = new GridPoint(4, 64, 3);
 
         assertTrue(MinecraftProductionNavigationSkillNodeHandler
-                .groundedAtPickupStand(pickupStand, true, pickupStand));
+                .groundedAtResourceApproach(cardinalApproach, true,
+                        resource));
+        assertTrue(MinecraftProductionNavigationSkillNodeHandler
+                .groundedAtResourceApproach(new GridPoint(3, 65, 3), true,
+                        resource));
         assertFalse(MinecraftProductionNavigationSkillNodeHandler
-                        .groundedAtPickupStand(pickupStand, false, pickupStand),
+                        .groundedAtResourceApproach(cardinalApproach, false,
+                                resource),
                 "a jump apex must not hand off to BREAK_BLOCK");
         assertFalse(MinecraftProductionNavigationSkillNodeHandler
-                        .groundedAtPickupStand(
-                                new GridPoint(4, 65, 3), true, pickupStand),
-                "an adjacent ground cell must not impersonate the resource top");
+                        .groundedAtResourceApproach(
+                                new GridPoint(4, 64, 4), true, resource),
+                "a diagonal cell must not impersonate a cardinal approach");
     }
 
     @Test
