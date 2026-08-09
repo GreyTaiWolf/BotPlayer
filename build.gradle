@@ -97,7 +97,6 @@ neoForge {
             type = "gameTestServer"
             sourceSet = sourceSets.gameTestFixtures
             // Phase two is a dependent Gradle task, so this run must return.
-            setForceExit false
             gameDirectory = project.layout.buildDirectory
                     .dir("p5a-restart-gametest").get().asFile
             systemProperty 'neoforge.enabledGameTestNamespaces',
@@ -107,7 +106,6 @@ neoForge {
         p5aRestartPhaseTwo {
             type = "gameTestServer"
             sourceSet = sourceSets.gameTestFixtures
-            setForceExit false
             gameDirectory = project.layout.buildDirectory
                     .dir("p5a-restart-gametest").get().asFile
             systemProperty 'neoforge.enabledGameTestNamespaces',
