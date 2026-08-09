@@ -1,5 +1,6 @@
 package io.github.greytaiwolf.botplayer.skill.runtime;
 
+import io.github.greytaiwolf.botplayer.BotPlayer;
 import io.github.greytaiwolf.botplayer.action.ActionEvidence;
 import io.github.greytaiwolf.botplayer.action.ActionPriority;
 import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
@@ -348,11 +349,22 @@ public final class MinecraftProductionSkillNodeHandler
             SkillNodeContext context) {
         Preparation preparation = prepare(context);
         if (!preparation.ready()) {
+            SkillNodeDirective failure = preparation.failure().orElseThrow();
+            logActionPlanningRejection(context, "re-preflight",
+                    failure.failureCode().orElseThrow().name()
+                            + ":" + failure.safeSummary());
             return Optional.empty();
         }
         ExecutionTicket ticket = preparation.ticket().orElseThrow();
         ProductionAction action = planConcreteAction(ticket).orElse(null);
-        if (action == null || !actionMatchesOperation(ticket, action)) {
+        if (action == null) {
+            logActionPlanningRejection(context, "concrete-action",
+                    "port-returned-empty");
+            return Optional.empty();
+        }
+        if (!actionMatchesOperation(ticket, action)) {
+            logActionPlanningRejection(context, "action-kind",
+                    action.action().spec().kind().name());
             return Optional.empty();
         }
         boolean menuOperation = ticket.resolved().menuContract().isPresent();
@@ -423,8 +435,27 @@ public final class MinecraftProductionSkillNodeHandler
             }
             return Optional.empty();
         } catch (RuntimeException exception) {
+            BotPlayer.LOGGER.warn(
+                    "P5A production concrete action planning failed: operation={}, bot={}, generation={}, tick={}",
+                    operation.getClass().getSimpleName(),
+                    ticket.bot().botId(),
+                    ticket.bot().generation(),
+                    ticket.before().observedAtTick(),
+                    exception);
             return Optional.empty();
         }
+    }
+
+    private static void logActionPlanningRejection(
+            SkillNodeContext context, String stage, String detail) {
+        BotPlayer.LOGGER.warn(
+                "P5A production action planning rejected: stage={}, node={}, run={}, revision={}, tick={}, detail={}",
+                Objects.requireNonNull(stage, "stage"),
+                context.node().nodeId(),
+                context.runId(),
+                context.stateRevision(),
+                context.currentTick(),
+                Objects.requireNonNull(detail, "detail"));
     }
 
     /**

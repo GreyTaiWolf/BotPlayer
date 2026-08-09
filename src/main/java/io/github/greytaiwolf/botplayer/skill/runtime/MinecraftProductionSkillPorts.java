@@ -1,5 +1,6 @@
 package io.github.greytaiwolf.botplayer.skill.runtime;
 
+import io.github.greytaiwolf.botplayer.BotPlayer;
 import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockCoordinates;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockHitTarget;
@@ -315,32 +316,35 @@ public final class MinecraftProductionSkillPorts
         requireOwnerThread();
         Objects.requireNonNull(ticket, "ticket");
         if (suppliedSensors != taskSensors) {
-            return Optional.empty();
+            return rejectResourceActionPlan(ticket, "task-sensor-instance");
         }
         if (!(ticket.resolved().node().operation()
                 instanceof ResourceAcquisition acquisition)) {
-            return Optional.empty();
+            return rejectResourceActionPlan(ticket, "non-resource-operation");
         }
         FrozenBinding frozen = bindings.get(ticket.before().worldBinding());
         if (!(frozen instanceof ResourceBinding binding)
                 || !binding.matches(ticket)) {
-            return Optional.empty();
+            return rejectResourceActionPlan(ticket, "frozen-binding");
         }
         BotServerPlayer player = resolveCurrent(ticket.bot()).orElse(null);
         if (player == null || !currentTick(player,
                 ticket.before().observedAtTick())
                 || !binding.baseline().matchesCurrent(player)) {
-            return Optional.empty();
+            return rejectResourceActionPlan(ticket, "player-or-native-baseline");
         }
         BlockTargetFingerprint target = binding.target();
         if (!target.state().blockId().value().equals(
-                expectedResourceBlock(acquisition))
-                || !groundedAboveResource(
-                        player.blockPosition(),
-                        player.onGround(),
-                        target.position())
-                || !isCurrentReachableBlock(player, target)) {
-            return Optional.empty();
+                expectedResourceBlock(acquisition))) {
+            return rejectResourceActionPlan(ticket, "expected-resource-block");
+        }
+        if (!groundedAboveResource(
+                player.blockPosition(), player.onGround(),
+                target.position())) {
+            return rejectResourceActionPlan(ticket, "grounded-resource-footing");
+        }
+        if (!isCurrentReachableBlock(player, target)) {
+            return rejectResourceActionPlan(ticket, "current-resource-reach");
         }
         ItemStackFingerprint tool = MinecraftActionSnapshot.item(
                 player, player.getMainHandItem());
@@ -351,6 +355,24 @@ public final class MinecraftProductionSkillPorts
                 new WorldInteractionAction(breakBlock),
                 MAXIMUM_RESOURCE_ACTION_TICKS,
                 "等待原版方块破坏与资源掉落回读"));
+    }
+
+    /**
+     * 资源采集在真正提交 BREAK_BLOCK 前拒绝时留下有限诊断。这个分支没有 world 写入；日志
+     * 只包含 run/operation 身份和封闭原因，便于区分导航落地、冻结 binding 与原生基线漂移。
+     */
+    private static Optional<ProductionAction> rejectResourceActionPlan(
+            ExecutionTicket ticket, String reason) {
+        Objects.requireNonNull(ticket, "ticket");
+        BotPlayer.LOGGER.warn(
+                "P5A resource action plan rejected: reason={}, operation={}, bot={}, generation={}, tick={}, binding={}",
+                Objects.requireNonNull(reason, "reason"),
+                ticket.operationId(),
+                ticket.bot().botId(),
+                ticket.bot().generation(),
+                ticket.before().observedAtTick(),
+                ticket.before().worldBinding());
+        return Optional.empty();
     }
 
     /**
