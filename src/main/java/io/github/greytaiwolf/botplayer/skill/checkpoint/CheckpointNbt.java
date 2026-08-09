@@ -113,17 +113,13 @@ final class CheckpointNbt {
         }
         Set<String> allowed = new java.util.HashSet<>(required);
         allowed.addAll(optional);
-        if (!allowed.equals(tag.getAllKeys())) {
-            List<String> unexpected = new ArrayList<>(tag.getAllKeys());
-            unexpected.removeAll(allowed);
-            List<String> missing = new ArrayList<>(required);
-            missing.removeAll(tag.getAllKeys());
+        List<String> unexpected = new ArrayList<>(tag.getAllKeys());
+        unexpected.removeAll(allowed);
+        if (!unexpected.isEmpty()) {
+            unexpected.sort(String::compareTo);
             throw invalid(
                     subject,
-                    "contains unexpected or missing fields; unexpected="
-                            + unexpected
-                            + ", missing="
-                            + missing,
+                    "contains unexpected fields: " + unexpected,
                     null);
         }
     }

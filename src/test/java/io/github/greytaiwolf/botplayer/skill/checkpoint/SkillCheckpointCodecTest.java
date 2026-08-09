@@ -2,6 +2,7 @@ package io.github.greytaiwolf.botplayer.skill.checkpoint;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import net.minecraft.nbt.CompoundTag;
 import org.junit.jupiter.api.Assertions;
@@ -55,6 +56,23 @@ class SkillCheckpointCodecTest {
         Assertions.assertThrows(
                 IllegalStateException.class,
                 () -> SkillCheckpoint.load(unknown));
+    }
+
+    @Test
+    void permitsOmittedOptionalKeysButRejectsUnknownKeys() {
+        CompoundTag tag = new CompoundTag();
+        tag.putInt("Required", 1);
+
+        CheckpointNbt.requireExactKeys(
+                tag, Set.of("Required"), Set.of("Optional"), "test tag");
+
+        tag.putInt("Unexpected", 2);
+        Assertions.assertThrows(IllegalStateException.class,
+                () -> CheckpointNbt.requireExactKeys(
+                        tag,
+                        Set.of("Required"),
+                        Set.of("Optional"),
+                        "test tag"));
     }
 
     @Test
