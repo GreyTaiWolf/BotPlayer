@@ -17,6 +17,9 @@ tasks.named('wrapper', Wrapper).configure {
 version = mod_version
 group = mod_group_id
 
+def p5aRestartPhaseOneNamespace = 'botplayer_p5a_restart_one'
+def p5aRestartPhaseTwoNamespace = 'botplayer_p5a_restart_two'
+
 sourceSets {
     main {
         resources {
@@ -33,6 +36,21 @@ sourceSets {
     gameTestFixtures {
         compileClasspath += sourceSets.main.output
         runtimeClasspath += sourceSets.main.output
+    }
+}
+
+/*
+ * The restart lanes deliberately register in private GameTest namespaces so
+ * each GameTestServer process receives exactly one phase.  Both phases use
+ * the ordinary empty test template, but GameTest loads it from the test's
+ * template namespace; Copy preserves the source basename in each target.
+ */
+tasks.named('processGameTestFixturesResources', ProcessResources).configure {
+    from(file("src/main/resources/data/${project.mod_id}/structure/empty_9x5x9.nbt")) {
+        into "data/${p5aRestartPhaseOneNamespace}/structure"
+    }
+    from(file("src/main/resources/data/${project.mod_id}/structure/empty_9x5x9.nbt")) {
+        into "data/${p5aRestartPhaseTwoNamespace}/structure"
     }
 }
 
@@ -100,7 +118,7 @@ neoForge {
             gameDirectory = project.layout.buildDirectory
                     .dir("p5a-restart-gametest").get().asFile
             systemProperty 'neoforge.enabledGameTestNamespaces',
-                    'botplayer_p5a_restart_one'
+                    p5aRestartPhaseOneNamespace
         }
 
         p5aRestartPhaseTwo {
@@ -109,7 +127,7 @@ neoForge {
             gameDirectory = project.layout.buildDirectory
                     .dir("p5a-restart-gametest").get().asFile
             systemProperty 'neoforge.enabledGameTestNamespaces',
-                    'botplayer_p5a_restart_two'
+                    p5aRestartPhaseTwoNamespace
         }
 
         data {

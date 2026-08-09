@@ -1,6 +1,5 @@
 package io.github.greytaiwolf.botplayer.gametest;
 
-import io.github.greytaiwolf.botplayer.BotPlayer;
 import io.github.greytaiwolf.botplayer.persistence.BotRosterSavedData;
 import io.github.greytaiwolf.botplayer.profile.BotProfile;
 import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpoint;
@@ -29,7 +28,7 @@ public final class P5ARestartPhaseTwoGameTests {
     private P5ARestartPhaseTwoGameTests() {}
 
     @GameTest(
-            templateNamespace = BotPlayer.MOD_ID,
+            templateNamespace = P5ARestartGameTestSupport.PHASE_TWO_NAMESPACE,
             template = P2GameTestSupport.TEMPLATE,
             batch = BATCH,
             timeoutTicks = TIMEOUT_TICKS)
