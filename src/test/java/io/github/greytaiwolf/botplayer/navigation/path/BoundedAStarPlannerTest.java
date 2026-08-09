@@ -100,7 +100,7 @@ class BoundedAStarPlannerTest {
                                     .point();
                             return node.point().x() == previous.x()
                                     || node.point().z() == previous.z();
-                        }));
+                        })));
     }
 
     @Test
