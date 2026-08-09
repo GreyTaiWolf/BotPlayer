@@ -418,15 +418,22 @@ class MinecraftProductionSkillNodeHandlerTest {
     }
 
     @Test
-    void navigatesToAFreshDropThenUsesItsExactUuidForPickup() {
+    void redirectsFreshUuidDropWhenItMovesBeforePickup() {
         SequencedGateway actions = new SequencedGateway();
         RecordingDropNavigation navigation = new RecordingDropNavigation();
         List<SkillSignal> signals = new ArrayList<>();
         UUID dropId = new UUID(0L, 44L);
-        MinecraftProductionSkillNodeHandler.ResourceDropCandidate drop =
+        MinecraftProductionSkillNodeHandler.ResourceDropCandidate initialDrop =
                 new MinecraftProductionSkillNodeHandler.ResourceDropCandidate(
                         dropId, "minecraft:overworld",
                         new GridPoint(4, 1, 4), "minecraft:oak_log", 1);
+        MinecraftProductionSkillNodeHandler.ResourceDropCandidate movedDrop =
+                new MinecraftProductionSkillNodeHandler.ResourceDropCandidate(
+                        dropId, "minecraft:overworld",
+                        new GridPoint(5, 1, 4), "minecraft:oak_log", 1);
+        int[] dropObservations = {0};
+        MinecraftProductionSkillNodeHandler.ResourceDropCandidate[]
+                pickupCandidate = {null};
         boolean[] pickedUp = {false};
         MinecraftProductionSkillNodeHandler handler =
                 new MinecraftProductionSkillNodeHandler(
@@ -478,11 +485,14 @@ class MinecraftProductionSkillNodeHandlerTest {
                             @Override
                             public MinecraftProductionSkillNodeHandler
                                     .ResourceDropObservation observeResourceDrop(
-                                            MinecraftProductionSkillNodeHandler
+                                    MinecraftProductionSkillNodeHandler
                                                     .ExecutionTicket ticket,
                                             SkillNodeContext context) {
                                 return MinecraftProductionSkillNodeHandler
-                                        .ResourceDropObservation.found(drop);
+                                        .ResourceDropObservation.found(
+                                                dropObservations[0]++ == 0
+                                                        ? initialDrop
+                                                        : movedDrop);
                             }
 
                             @Override
@@ -493,7 +503,8 @@ class MinecraftProductionSkillNodeHandlerTest {
                                             SkillNodeContext context,
                                             MinecraftProductionSkillNodeHandler
                                                     .ResourceDropCandidate candidate) {
-                                return candidate.equals(drop)
+                                pickupCandidate[0] = candidate;
+                                return candidate.equals(movedDrop)
                                         ? Optional.of(pickupAction(dropId))
                                         : Optional.empty();
                             }
@@ -523,7 +534,7 @@ class MinecraftProductionSkillNodeHandlerTest {
                 () -> Assertions.assertEquals(
                         NavigationArrivalRequirement.GROUNDED_GRID_CELL,
                         navigation.request.arrivalRequirement()),
-                () -> Assertions.assertEquals(drop.position(),
+                () -> Assertions.assertEquals(initialDrop.position(),
                         ((NavigationGoal.ExactPosition) navigation.request.goal())
                                 .center()));
 
@@ -532,22 +543,39 @@ class MinecraftProductionSkillNodeHandlerTest {
         Assertions.assertEquals(SkillNodeDirective.Kind.CONTINUE,
                 handler.signal(context(operation, 13L, 3L), navigationSignal)
                         .kind());
+        Assertions.assertEquals(SkillNodeDirective.Kind.WAIT_NAVIGATION,
+                handler.tick(context(operation, 14L, 4L)).kind());
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(2, navigation.requests.size()),
+                () -> Assertions.assertEquals(1, actions.submitted.size()),
+                () -> Assertions.assertEquals(movedDrop.position(),
+                        ((NavigationGoal.ExactPosition) navigation.request.goal())
+                                .center()),
+                () -> Assertions.assertNull(pickupCandidate[0]));
+
+        navigation.succeed(15L);
+        Assertions.assertEquals(SkillNodeDirective.Kind.CONTINUE,
+                handler.signal(context(operation, 15L, 5L), signals.get(2))
+                        .kind());
         Assertions.assertEquals(SkillNodeDirective.Kind.WAIT_ACTION,
-                handler.tick(context(operation, 14L, 3L)).kind());
+                handler.tick(context(operation, 16L, 6L)).kind());
         WorldInteractionAction pickupWorldAction =
                 (WorldInteractionAction) actions.submitted.get(1).action();
         Assertions.assertInstanceOf(WorldInteractionActionSpec.PickupWait.class,
                 pickupWorldAction.spec());
         WorldInteractionActionSpec.PickupWait pickup =
                 (WorldInteractionActionSpec.PickupWait) pickupWorldAction.spec();
-        Assertions.assertEquals(Optional.of(dropId),
-                pickup.expectedItemEntityId());
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(Optional.of(dropId),
+                        pickup.expectedItemEntityId()),
+                () -> Assertions.assertEquals(movedDrop, pickupCandidate[0]),
+                () -> Assertions.assertEquals(3, dropObservations[0]));
 
         pickedUp[0] = true;
         actions.completeNextSuccess(List.of(new ActionEvidence("entity.id",
                 dropId.toString())));
         Assertions.assertEquals(SkillNodeDirective.Kind.COMPLETE,
-                handler.signal(context(operation, 15L, 4L), signals.get(2))
+                handler.signal(context(operation, 17L, 7L), signals.get(3))
                         .kind());
     }
 
@@ -649,7 +677,7 @@ class MinecraftProductionSkillNodeHandlerTest {
         Assertions.assertEquals(SkillNodeDirective.Kind.CONTINUE,
                 handler.signal(context(operation, 13L, 3L), signals.get(1))
                         .kind());
-        SkillNodeDirective rejected = handler.tick(context(operation, 14L, 3L));
+        SkillNodeDirective rejected = handler.tick(context(operation, 14L, 4L));
 
         Assertions.assertAll(
                 () -> Assertions.assertEquals(SkillNodeDirective.Kind.FAIL,
@@ -1022,14 +1050,20 @@ class MinecraftProductionSkillNodeHandlerTest {
     private static final class RecordingDropNavigation
             implements MinecraftProductionSkillNodeHandler
                     .ResourceDropNavigationGateway {
-        private final CompletableFuture<NavigationOutcome> completion =
-                new CompletableFuture<>();
+        private final List<CompletableFuture<NavigationOutcome>> completions =
+                new ArrayList<>();
+        private final List<NavigationRequest> requests = new ArrayList<>();
         private NavigationRequest request;
+        private int nextCompletion;
 
         @Override
         public NavigationSubmission submit(
                 NavigationRequest navigationRequest, long currentTick) {
             request = navigationRequest;
+            CompletableFuture<NavigationOutcome> completion =
+                    new CompletableFuture<>();
+            requests.add(navigationRequest);
+            completions.add(completion);
             return NavigationSubmission.enqueued(completion);
         }
 
@@ -1040,10 +1074,11 @@ class MinecraftProductionSkillNodeHandlerTest {
         }
 
         private void succeed(long tick) {
+            NavigationRequest nextRequest = requests.get(nextCompletion);
             NavigationGoal.ExactPosition goal =
-                    (NavigationGoal.ExactPosition) request.goal();
-            completion.complete(new NavigationOutcome(
-                    request.navigationId(), NavigationState.SUCCEEDED,
+                    (NavigationGoal.ExactPosition) nextRequest.goal();
+            completions.get(nextCompletion++).complete(new NavigationOutcome(
+                    nextRequest.navigationId(), NavigationState.SUCCEEDED,
                     NavigationFailure.NONE, goal.center(), tick, tick,
                     0, 0, 0, 0L, 0, 0, "测试掉落实体导航成功"));
         }

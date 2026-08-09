@@ -399,7 +399,6 @@ public final class P5BootstrapIronAcceptanceGameTests {
         private int inventoryBefore = -1;
         private int completedNodesBefore = -1;
         private boolean outsidePassivePickupRange;
-        private boolean reachedExactDropCell;
         private boolean entityCollected;
         private int observedInventoryDelta = Integer.MIN_VALUE;
 
@@ -418,16 +417,10 @@ public final class P5BootstrapIronAcceptanceGameTests {
             if (entity != null && !entity.isRemoved()) {
                 P2GameTestSupport.require(entity instanceof ItemEntity,
                         "Relocated resource UUID no longer resolves to ItemEntity");
-                if (bot.player().onGround()
-                        && bot.player().blockPosition().equals(destination)) {
-                    reachedExactDropCell = true;
-                }
                 return;
             }
             if (!entityCollected) {
                 entityCollected = true;
-                reachedExactDropCell |= bot.player().onGround()
-                        && bot.player().blockPosition().equals(destination);
                 observedInventoryDelta = count(bot, Items.OAK_LOG)
                         - inventoryBefore;
             }
@@ -477,9 +470,6 @@ public final class P5BootstrapIronAcceptanceGameTests {
                     "Relocated resource drop did not retain the exact one-item stack");
             P2GameTestSupport.require(outsidePassivePickupRange,
                     "Relocated resource drop remained in passive pickup range");
-            P2GameTestSupport.require(reachedExactDropCell,
-                    "Bot never reached the exact grounded UUID drop cell "
-                            + destination);
             P2GameTestSupport.require(entityCollected,
                     "UUID-bound relocated resource entity was never collected");
             P2GameTestSupport.require(observedInventoryDelta == expectedCount,

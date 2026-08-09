@@ -83,6 +83,8 @@ public final class MinecraftProductionSkillNodeHandler
     private static final int MAX_BINDING_LENGTH = 256;
     /** 破块后等待受限 TaskSensor 首次看到新掉落实体的最大观察次数。 */
     private static final int MAX_RESOURCE_DROP_OBSERVATIONS = 40;
+    /** 实体跨过已冻结格点时，至多重新导航一次；绝不无限追逐动态实体。 */
+    private static final int MAX_RESOURCE_DROP_RETARGETS = 1;
     /** 单一掉落实体的局部收集导航不应占满整个生产节点预算。 */
     private static final int MAXIMUM_RESOURCE_DROP_NAVIGATION_TICKS = 240;
     /** 到达精确掉落实体附近后，仅允许有限 collision-driven PickupWait。 */
@@ -284,23 +286,7 @@ public final class MinecraftProductionSkillNodeHandler
             return advanceResourceDropObservation(context, awaiting);
         }
         if (collection instanceof ReadyResourceDropPickup ready) {
-            if (!ready.provenance().matches(ready.candidate())) {
-                resourceDropCollections.remove(context.runId(), ready);
-                return SkillNodeDirective.fail(
-                        SkillFailureCode.WORLD_CHANGED,
-                        "资源掉落实体来源凭据在拾取前不再匹配");
-            }
-            SkillNodeDirective result = pickupActionDelegate.begin(context);
-            if (result.kind() == SkillNodeDirective.Kind.WAIT_ACTION) {
-                resourceDropCollections.put(context.runId(),
-                        new PendingResourceDropPickup(
-                                ready.ticket(), ready.signal(),
-                                ready.nodeId(), ready.provenance(),
-                                ready.candidate()));
-            } else {
-                resourceDropCollections.remove(context.runId(), ready);
-            }
-            return result;
+            return advanceReadyResourceDropPickup(context, ready);
         }
         resourceDropCollections.remove(context.runId(), collection);
         return SkillNodeDirective.fail(
@@ -761,11 +747,38 @@ public final class MinecraftProductionSkillNodeHandler
             SkillNodeContext context,
             AwaitingResourceDrop awaiting,
             ResourceDropCandidate candidate) {
+        return beginResourceDropNavigation(context, awaiting,
+                awaiting.provenance(), candidate,
+                MAX_RESOURCE_DROP_RETARGETS);
+    }
+
+    /**
+     * 每次都用当前运行态重新生成导航 request。重定向只保留 UUID/source provenance 和有界
+     * 剩余额度；动态格点绝不写入 SkillPlan 或 checkpoint。
+     */
+    private SkillNodeDirective beginResourceDropNavigation(
+            SkillNodeContext context,
+            ResourceDropCollection active,
+            ResourceDropProvenance provenance,
+            ResourceDropCandidate candidate,
+            int remainingRetargets) {
+        Objects.requireNonNull(context, "context");
+        Objects.requireNonNull(active, "active");
+        Objects.requireNonNull(provenance, "provenance");
+        Objects.requireNonNull(candidate, "candidate");
+        if (!provenance.matches(candidate)
+                || remainingRetargets < 0
+                || remainingRetargets > MAX_RESOURCE_DROP_RETARGETS) {
+            resourceDropCollections.remove(context.runId(), active);
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.INTERNAL_ERROR,
+                    "资源掉落实体重定位状态不满足受限 provenance 合同");
+        }
         NavigationRequest request;
         try {
             request = resourceDropNavigationRequest(context, candidate);
         } catch (RuntimeException exception) {
-            resourceDropCollections.remove(context.runId(), awaiting);
+            resourceDropCollections.remove(context.runId(), active);
             return SkillNodeDirective.fail(
                     SkillFailureCode.TIMEOUT,
                     "资源掉落实体收集没有足够的剩余导航预算");
@@ -775,13 +788,13 @@ public final class MinecraftProductionSkillNodeHandler
             submission = resourceDropNavigation.submit(request,
                     context.currentTick());
         } catch (RuntimeException exception) {
-            resourceDropCollections.remove(context.runId(), awaiting);
+            resourceDropCollections.remove(context.runId(), active);
             return SkillNodeDirective.fail(
                     SkillFailureCode.INTERNAL_ERROR,
                     "资源掉落实体导航提交抛出异常");
         }
         if (submission.status() != NavigationSubmission.Status.ENQUEUED) {
-            resourceDropCollections.remove(context.runId(), awaiting);
+            resourceDropCollections.remove(context.runId(), active);
             return SkillNodeDirective.fail(
                     mapNavigationSubmissionFailure(submission.status()),
                     "资源掉落实体导航未入队："
@@ -790,17 +803,17 @@ public final class MinecraftProductionSkillNodeHandler
         CompletionStage<NavigationOutcome> completion = submission.completion()
                 .orElse(null);
         if (completion == null) {
-            resourceDropCollections.remove(context.runId(), awaiting);
+            resourceDropCollections.remove(context.runId(), active);
             return SkillNodeDirective.fail(
                     SkillFailureCode.INTERNAL_ERROR,
                     "资源掉落实体导航入队结果缺少 completion 句柄");
         }
         PendingResourceDropNavigation pending =
                 new PendingResourceDropNavigation(
-                        awaiting.ticket(), awaiting.signal(),
-                        awaiting.nodeId(), awaiting.provenance(), candidate,
+                        active.ticket(), active.signal(),
+                        active.nodeId(), provenance, candidate,
                         request.navigationId(),
-                        context.nextStateRevision());
+                        context.nextStateRevision(), remainingRetargets);
         resourceDropCollections.put(context.runId(), pending);
         completion.whenComplete((outcome, throwable) ->
                 offerResourceDropNavigationCompletion(context.runId(), pending,
@@ -849,9 +862,112 @@ public final class MinecraftProductionSkillNodeHandler
         resourceDropCollections.put(context.runId(),
                 new ReadyResourceDropPickup(
                         pending.ticket(), pending.signal(), pending.nodeId(),
-                        pending.provenance(), pending.candidate()));
+                        pending.provenance(), pending.candidate(),
+                        pending.remainingRetargets()));
         return SkillNodeDirective.continueRunning(
                 "已到达资源掉落实体附近，准备以 UUID 绑定回读拾取");
+    }
+
+    /**
+     * Navigation completion 与 PickupWait 入队之间可能跨一个 runtime tick。重新读取受限
+     * UUID candidate：同格才允许交给 pickup action；跨格只可有界重定向一次，避免以旧坐标
+     * 误判实体仍可达或无限追逐自然物理中的掉落物。
+     */
+    private SkillNodeDirective advanceReadyResourceDropPickup(
+            SkillNodeContext context, ReadyResourceDropPickup ready) {
+        if (!ready.provenance().matches(ready.candidate())) {
+            resourceDropCollections.remove(context.runId(), ready);
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.WORLD_CHANGED,
+                    "资源掉落实体来源凭据在拾取前不再匹配");
+        }
+        SkillNodeDirective verified = verify(ready.ticket(), context,
+                ready.signal());
+        if (verified.kind() == SkillNodeDirective.Kind.COMPLETE) {
+            resourceDropCollections.remove(context.runId(), ready);
+            return verified;
+        }
+        if (!mayAwaitResourcePickup(ready.ticket(), context,
+                ready.signal(), verified)) {
+            resourceDropCollections.remove(context.runId(), ready);
+            return verified;
+        }
+        ResourceDropObservation observation;
+        try {
+            observation = acquisitionActions.observeResourceDrop(
+                    ready.ticket(), context);
+        } catch (RuntimeException exception) {
+            observation = ResourceDropObservation.unavailable();
+        }
+        if (observation == null) {
+            resourceDropCollections.remove(context.runId(), ready);
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.WORLD_CHANGED,
+                    "资源掉落实体在 UUID 拾取前没有返回受限当前 tick 观察");
+        }
+        return switch (observation.status()) {
+            case FOUND -> {
+                ResourceDropCandidate candidate = observation.candidate()
+                        .orElseThrow();
+                if (!ready.provenance().matches(candidate)
+                        || !ready.candidate().entityId().equals(
+                                candidate.entityId())
+                        || !ready.candidate().dimensionId().equals(
+                                candidate.dimensionId())) {
+                    resourceDropCollections.remove(context.runId(), ready);
+                    yield SkillNodeDirective.fail(
+                            SkillFailureCode.WORLD_CHANGED,
+                            "资源掉落实体重观察与冻结 UUID 来源不一致");
+                }
+                if (!ready.candidate().position().equals(
+                        candidate.position())) {
+                    if (ready.remainingRetargets() <= 0) {
+                        resourceDropCollections.remove(context.runId(), ready);
+                        yield SkillNodeDirective.fail(
+                                SkillFailureCode.WORLD_CHANGED,
+                                "资源掉落实体在有界重定位次数内持续跨格");
+                    }
+                    yield beginResourceDropNavigation(context, ready,
+                            ready.provenance(), candidate,
+                            ready.remainingRetargets() - 1);
+                }
+                ReadyResourceDropPickup refreshed =
+                        new ReadyResourceDropPickup(
+                                ready.ticket(), ready.signal(),
+                                ready.nodeId(), ready.provenance(), candidate,
+                                ready.remainingRetargets());
+                resourceDropCollections.put(context.runId(), refreshed);
+                SkillNodeDirective result = pickupActionDelegate.begin(context);
+                if (result.kind() == SkillNodeDirective.Kind.WAIT_ACTION) {
+                    resourceDropCollections.put(context.runId(),
+                            new PendingResourceDropPickup(
+                                    refreshed.ticket(), refreshed.signal(),
+                                    refreshed.nodeId(), refreshed.provenance(),
+                                    refreshed.candidate()));
+                } else {
+                    resourceDropCollections.remove(context.runId(), refreshed);
+                }
+                yield result;
+            }
+            case ABSENT -> {
+                resourceDropCollections.remove(context.runId(), ready);
+                yield SkillNodeDirective.fail(
+                        SkillFailureCode.MISSING_ITEM,
+                        "资源掉落实体在 UUID PickupWait 入队前不再可观察");
+            }
+            case AMBIGUOUS -> {
+                resourceDropCollections.remove(context.runId(), ready);
+                yield SkillNodeDirective.fail(
+                        SkillFailureCode.WORLD_CHANGED,
+                        "资源掉落实体在 UUID PickupWait 前候选不唯一");
+            }
+            case UNAVAILABLE -> {
+                resourceDropCollections.remove(context.runId(), ready);
+                yield SkillNodeDirective.fail(
+                        SkillFailureCode.WORLD_CHANGED,
+                        "资源掉落实体在 UUID PickupWait 前观察不完整或绑定已漂移");
+            }
+        };
     }
 
     private SkillNodeDirective verifyResourceDropPickup(
@@ -1455,6 +1571,7 @@ public final class MinecraftProductionSkillNodeHandler
 
         /**
          * 破块完成且精确账本尚未变化时，观察一枚新鲜的、受 source binding 约束的掉落实体。
+         * 成功的掉落导航后可为当前 tick 的 freshness/re-targeting 再次调用；实现必须无副作用。
          * 默认实现 fail closed，因此旧的测试 lambda 或未接线端口不能把被动等待当成收集。
          */
         default ResourceDropObservation observeResourceDrop(
@@ -1656,7 +1773,8 @@ public final class MinecraftProductionSkillNodeHandler
             ResourceDropProvenance provenance,
             ResourceDropCandidate candidate,
             UUID navigationId,
-            long runRevision) implements ResourceDropCollection {
+            long runRevision,
+            int remainingRetargets) implements ResourceDropCollection {
         private PendingResourceDropNavigation {
             ticket = Objects.requireNonNull(ticket, "ticket");
             signal = Objects.requireNonNull(signal, "signal");
@@ -1672,6 +1790,11 @@ public final class MinecraftProductionSkillNodeHandler
                 throw new IllegalArgumentException(
                         "resource drop navigation revision must be positive");
             }
+            if (remainingRetargets < 0
+                    || remainingRetargets > MAX_RESOURCE_DROP_RETARGETS) {
+                throw new IllegalArgumentException(
+                        "resource drop navigation retargets exceed their bound");
+            }
         }
     }
 
@@ -1681,7 +1804,8 @@ public final class MinecraftProductionSkillNodeHandler
             SkillSignal signal,
             UUID nodeId,
             ResourceDropProvenance provenance,
-            ResourceDropCandidate candidate) implements ResourceDropCollection {
+            ResourceDropCandidate candidate,
+            int remainingRetargets) implements ResourceDropCollection {
         private ReadyResourceDropPickup {
             ticket = Objects.requireNonNull(ticket, "ticket");
             signal = Objects.requireNonNull(signal, "signal");
@@ -1691,6 +1815,11 @@ public final class MinecraftProductionSkillNodeHandler
             if (!provenance.matches(candidate)) {
                 throw new IllegalArgumentException(
                         "resource drop pickup candidate lacks exact provenance");
+            }
+            if (remainingRetargets < 0
+                    || remainingRetargets > MAX_RESOURCE_DROP_RETARGETS) {
+                throw new IllegalArgumentException(
+                        "resource drop pickup retargets exceed their bound");
             }
         }
     }

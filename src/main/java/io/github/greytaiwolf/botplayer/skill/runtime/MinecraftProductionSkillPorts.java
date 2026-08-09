@@ -446,8 +446,10 @@ public final class MinecraftProductionSkillPorts
     }
 
     /**
-     * 在 action 入队前重新读取 live UUID、物品、source air 和 native menu。PickupWait 后端还会
-     * 以同一 UUID 做可达性、实体消失和库存增量校验，因此这里不直接移动玩家或写入库存。
+     * 在 action 入队前重新读取 live UUID、物品、source air 和 native menu。handler 会在同一
+     * server tick 内重新冻结候选格；这里要求 live 实体仍在该精确格和冻结 source 的有限包络
+     * 内。PickupWait 后端仍以同一 UUID 做可达性、实体消失和库存增量校验，因此这里不直接
+     * 移动玩家或写入库存。
      */
     @Override
     public Optional<ProductionAction> planResourceDropPickup(
@@ -460,7 +462,8 @@ public final class MinecraftProductionSkillPorts
         Objects.requireNonNull(candidate, "candidate");
         if (!(ticket.resolved().node().operation()
                 instanceof ResourceAcquisition acquisition)) {
-            return Optional.empty();
+            return rejectResourceDropPickupPlan(ticket, context,
+                    "non-resource-operation");
         }
         FrozenBinding frozen = bindings.get(ticket.before().worldBinding());
         if (!(frozen instanceof ResourceBinding binding)
@@ -468,14 +471,16 @@ public final class MinecraftProductionSkillPorts
                 || binding.preexistingDropIds().contains(candidate.entityId())
                 || !binding.target().dimension().value().equals(
                         candidate.dimensionId())) {
-            return Optional.empty();
+            return rejectResourceDropPickupPlan(ticket, context,
+                    "frozen-binding-or-candidate");
         }
         ResourceDropExpectation expectation = resourceDropExpectation(
                 acquisition).orElse(null);
         if (expectation == null
                 || !expectation.itemId().equals(candidate.itemId())
                 || expectation.count() != candidate.count()) {
-            return Optional.empty();
+            return rejectResourceDropPickupPlan(ticket, context,
+                    "expected-item-or-count");
         }
         BotServerPlayer player = resolveCurrent(ticket.bot()).orElse(null);
         NativeBaseline currentBaseline = player == null ? null
@@ -484,19 +489,36 @@ public final class MinecraftProductionSkillPorts
                 || !binding.worldStillValidAfter(player)
                 || !sameSafePickupBaseline(currentBaseline, binding.baseline(),
                         ticket.before().snapshot().playerLedger())) {
-            return Optional.empty();
+            return rejectResourceDropPickupPlan(ticket, context,
+                    "player-world-or-native-baseline");
         }
         Entity entity = player.serverLevel().getEntity(candidate.entityId());
         if (!(entity instanceof ItemEntity itemEntity)
-                || itemEntity.isRemoved()
-                || !itemEntity.blockPosition().equals(
-                        candidate.position().toBlockPos())
-                || !withinDropEnvelope(candidate.position(),
-                        binding.target().position())
-                || !candidate.itemId().equals(BuiltInRegistries.ITEM
-                        .getKey(itemEntity.getItem().getItem()).toString())
+                || itemEntity.isRemoved()) {
+            return rejectResourceDropPickupPlan(ticket, context,
+                    "live-item-unavailable");
+        }
+        BlockPos livePosition = itemEntity.blockPosition();
+        if (!withinDropEnvelope(candidate.position(),
+                binding.target().position())) {
+            return rejectResourceDropPickupPlan(ticket, context,
+                    "frozen-candidate-outside-source-envelope");
+        }
+        if (!player.serverLevel().isLoaded(livePosition)
+                || !withinDropEnvelope(GridPoint.from(livePosition),
+                        binding.target().position())) {
+            return rejectResourceDropPickupPlan(ticket, context,
+                    "live-item-outside-source-envelope");
+        }
+        if (!livePosition.equals(candidate.position().toBlockPos())) {
+            return rejectResourceDropPickupPlan(ticket, context,
+                    "live-item-position-changed");
+        }
+        if (!candidate.itemId().equals(BuiltInRegistries.ITEM
+                .getKey(itemEntity.getItem().getItem()).toString())
                 || itemEntity.getItem().getCount() != candidate.count()) {
-            return Optional.empty();
+            return rejectResourceDropPickupPlan(ticket, context,
+                    "live-item-or-count");
         }
         return Optional.of(new ProductionAction(
                 new WorldInteractionAction(
@@ -505,6 +527,25 @@ public final class MinecraftProductionSkillPorts
                                 Optional.of(candidate.entityId()))),
                 MAXIMUM_RESOURCE_DROP_PICKUP_TICKS,
                 "等待 UUID 绑定的原版资源掉落实体进入背包"));
+    }
+
+    /**
+     * PickupWait 之前的拒绝没有 world 写入；记录封闭原因以区分物理漂移、menu/ledger 漂移和
+     * provenance 漂移。reason 只能来自本方法内的固定字面量，避免把活动原版对象泄露到日志。
+     */
+    private static Optional<ProductionAction> rejectResourceDropPickupPlan(
+            ExecutionTicket ticket, SkillNodeContext context, String reason) {
+        Objects.requireNonNull(ticket, "ticket");
+        Objects.requireNonNull(context, "context");
+        BotPlayer.LOGGER.warn(
+                "P5A resource drop pickup plan rejected: reason={}, operation={}, bot={}, generation={}, tick={}, binding={}",
+                Objects.requireNonNull(reason, "reason"),
+                ticket.operationId(),
+                ticket.bot().botId(),
+                ticket.bot().generation(),
+                context.currentTick(),
+                ticket.before().worldBinding());
+        return Optional.empty();
     }
 
     @Override
