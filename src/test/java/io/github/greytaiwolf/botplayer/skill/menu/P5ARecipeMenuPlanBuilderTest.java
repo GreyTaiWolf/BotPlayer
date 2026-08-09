@@ -25,7 +25,8 @@ class P5ARecipeMenuPlanBuilderTest {
         MenuSnapshot opened = snapshot(recipe.family(), 7, 11, slots);
 
         MenuTransactionPlan plan = P5ACraftingMenuPlanBuilder.build(
-                opened, recipe, prototypes).orElseThrow();
+                opened, recipe, prototypes,
+                reviewedPreview(recipe, prototypes)).orElseThrow();
 
         Assertions.assertAll(
                 () -> Assertions.assertEquals(5,
@@ -53,7 +54,8 @@ class P5ARecipeMenuPlanBuilderTest {
         MenuSnapshot opened = snapshot(recipe.family(), 7, 11, slots);
 
         Assertions.assertTrue(P5ACraftingMenuPlanBuilder.build(
-                opened, recipe, prototypes).isEmpty());
+                opened, recipe, prototypes,
+                reviewedPreview(recipe, prototypes)).isEmpty());
     }
 
     @Test
@@ -65,7 +67,8 @@ class P5ARecipeMenuPlanBuilderTest {
         MenuSnapshot opened = snapshot(recipe.family(), 7, 11, slots);
 
         MenuTransactionPlan plan = P5ACraftingMenuPlanBuilder.build(
-                opened, recipe, 4, prototypes).orElseThrow();
+                opened, recipe, 4, prototypes,
+                reviewedPreview(recipe, prototypes)).orElseThrow();
         List<ItemStackFingerprint> beforeInventory = inventorySlots();
         beforeInventory.set(0, stack("minecraft:oak_log", 4, 'e'));
         List<ItemStackFingerprint> afterInventory = inventorySlots();
@@ -84,7 +87,41 @@ class P5ARecipeMenuPlanBuilderTest {
                                 4,
                                 prototypes)),
                 () -> Assertions.assertTrue(P5ACraftingMenuPlanBuilder.build(
-                        opened, recipe, 5, prototypes).isEmpty()));
+                        opened, recipe, 5, prototypes,
+                        reviewedPreview(recipe, prototypes)).isEmpty()));
+    }
+
+    @Test
+    void preservesAnExactIntermediateNativePreviewUntilTheReviewedRecipeCompletes() {
+        P5ARecipe recipe = P5ARecipe.OAK_PLANKS_TO_STICKS;
+        Map<ResourceId, ItemStackFingerprint> prototypes = prototypes(recipe);
+        List<ItemStackFingerprint> slots = emptySlots(recipe.family());
+        slots.set(9, stack("minecraft:oak_planks", 2, 'a'));
+        MenuSnapshot opened = snapshot(recipe.family(), 7, 11, slots);
+        ItemStackFingerprint button = stack("minecraft:oak_button", 1, 'd');
+
+        MenuTransactionPlan plan = P5ACraftingMenuPlanBuilder.build(
+                opened, recipe, prototypes, postInput -> {
+                    if (postInput.itemAt(1).equals(
+                                    stack("minecraft:oak_planks", 1, 'a'))
+                            && postInput.itemAt(3).isEmpty()) {
+                        return Optional.of(button);
+                    }
+                    return reviewedPreview(recipe, prototypes)
+                            .resolve(postInput);
+                }).orElseThrow();
+
+        MenuClickStep firstInput = plan.orderedSteps().get(1);
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(button,
+                        firstInput.expectedAfter().itemAt(0)),
+                () -> Assertions.assertTrue(firstInput.conservation()
+                        .matches(firstInput.expectedBefore(),
+                                firstInput.expectedAfter())),
+                () -> Assertions.assertEquals(
+                        stack("minecraft:stick", 4, 'c'),
+                        plan.orderedSteps().get(2)
+                                .expectedAfter().itemAt(0)));
     }
 
     @Test
@@ -198,6 +235,51 @@ class P5ARecipeMenuPlanBuilderTest {
             result.put(material, stack(material.value(), 1, digest));
         }
         return Map.copyOf(result);
+    }
+
+    private static CraftingPreviewResolver reviewedPreview(
+            P5ARecipe recipe,
+            Map<ResourceId, ItemStackFingerprint> prototypes) {
+        return postInput -> Optional.of(matchesReviewedGrid(
+                        postInput, recipe, prototypes)
+                ? withCount(prototypes.get(recipe.output()),
+                        recipe.outputCount())
+                : ItemStackFingerprint.empty());
+    }
+
+    private static boolean matchesReviewedGrid(
+            MenuSnapshot snapshot,
+            P5ARecipe recipe,
+            Map<ResourceId, ItemStackFingerprint> prototypes) {
+        Map<Integer, P5ARecipe.Ingredient> expected =
+                new LinkedHashMap<>();
+        for (P5ARecipe.Ingredient ingredient : recipe.ingredients()) {
+            expected.put(ingredient.slot(), ingredient);
+        }
+        for (int slot = 0; slot < snapshot.slots().size(); slot++) {
+            if (snapshot.family().roleAt(slot)
+                    != MenuSlotRole.CRAFTING_INPUT) {
+                continue;
+            }
+            P5ARecipe.Ingredient ingredient = expected.get(slot);
+            ItemStackFingerprint actual = snapshot.itemAt(slot);
+            if (ingredient == null) {
+                if (!actual.isEmpty()) {
+                    return false;
+                }
+            } else if (!actual.equals(withCount(
+                    prototypes.get(ingredient.item()), ingredient.count()))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static ItemStackFingerprint withCount(
+            ItemStackFingerprint prototype, int count) {
+        return new ItemStackFingerprint(
+                prototype.itemId(), count, prototype.damage(),
+                prototype.componentsDigest());
     }
 
     private static MenuSnapshot snapshot(

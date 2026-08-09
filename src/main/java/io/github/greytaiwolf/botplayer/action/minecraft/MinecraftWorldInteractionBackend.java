@@ -38,6 +38,7 @@ import io.github.greytaiwolf.botplayer.action.interaction.menu.PlayerInventoryMe
 import io.github.greytaiwolf.botplayer.action.interaction.menu.P5ARecipe;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.lifecycle.BotLifecycleManager;
+import io.github.greytaiwolf.botplayer.skill.menu.CraftingPreviewResolver;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuClick;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuClickType;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuFamily;
@@ -75,10 +76,15 @@ import net.minecraft.world.inventory.ChestMenu;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.inventory.CraftingMenu;
 import net.minecraft.world.inventory.InventoryMenu;
+import net.minecraft.world.inventory.ResultContainer;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.crafting.CraftingInput;
+import net.minecraft.world.item.crafting.CraftingRecipe;
+import net.minecraft.world.item.crafting.RecipeHolder;
+import net.minecraft.world.item.crafting.RecipeType;
 import net.minecraft.world.item.enchantment.EnchantmentEffectComponents;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
 import net.minecraft.world.level.block.state.BlockState;
@@ -2111,7 +2117,11 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 vanillaRecipePrototypes(player, menu.recipe());
         if (menu.recipe().isCrafting()) {
             MenuTransactionPlan plan = P5ACraftingMenuPlanBuilder.build(
-                    opened, menu.recipe(), menu.batches(), prototypes)
+                    opened,
+                    menu.recipe(),
+                    menu.batches(),
+                    prototypes,
+                    nativeCraftingPreviewResolver(player, prototypes))
                     .orElseThrow(
                             MenuPreconditionChangedException::new);
             if (plan.orderedSteps().size() > menu.limits().maxClicks()) {
@@ -2692,6 +2702,89 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     "P5A recipe exposes an unbound vanilla material: "
                             + material.value());
         };
+    }
+
+    /**
+     * 以与 {@link CraftingMenu} 相同的服务端 RecipeManager 路径解析每一个计划中间格形。
+     * 不能只预测最终 P5A 配方：例如一个木板已经会在原版菜单显示木按钮 preview。
+     */
+    private static CraftingPreviewResolver nativeCraftingPreviewResolver(
+            BotServerPlayer player,
+            Map<ResourceId, ItemStackFingerprint> prototypes) {
+        Objects.requireNonNull(player, "player");
+        Objects.requireNonNull(prototypes, "prototypes");
+        return postInput -> {
+            try {
+                CraftingInput input = craftingInputForPreview(
+                        player, postInput, prototypes);
+                Optional<RecipeHolder<CraftingRecipe>> matched = player
+                        .serverLevel()
+                        .getRecipeManager()
+                        .getRecipeFor(
+                                RecipeType.CRAFTING,
+                                input,
+                                player.serverLevel());
+                ResultContainer previewResult = new ResultContainer();
+                ItemStack result = matched.filter(recipe -> previewResult
+                        .setRecipeUsed(player.serverLevel(), player, recipe))
+                        .map(recipe -> recipe.value().assemble(input,
+                                player.serverLevel().registryAccess()))
+                        .orElse(ItemStack.EMPTY);
+                if (!result.isEmpty()
+                        && !result.isItemEnabled(player.serverLevel()
+                                .enabledFeatures())) {
+                    result = ItemStack.EMPTY;
+                }
+                return Optional.of(MinecraftInteractionView.itemFingerprint(
+                        player, result));
+            } catch (RuntimeException exception) {
+                return Optional.empty();
+            }
+        };
+    }
+
+    private static CraftingInput craftingInputForPreview(
+            BotServerPlayer player,
+            MenuSnapshot postInput,
+            Map<ResourceId, ItemStackFingerprint> prototypes) {
+        int width = switch (postInput.family()) {
+            case INVENTORY_2X2 -> 2;
+            case CRAFTING_3X3 -> 3;
+            case FURNACE,
+                    CHEST_3X9 -> throw new IllegalArgumentException(
+                            "only native crafting menus have a crafting preview");
+        };
+        List<ItemStack> inputs = new ArrayList<>(width * width);
+        for (int slot = 1; slot <= width * width; slot++) {
+            inputs.add(craftingPreviewStack(
+                    player, postInput.itemAt(slot), prototypes));
+        }
+        return CraftingInput.of(width, width, inputs);
+    }
+
+    private static ItemStack craftingPreviewStack(
+            BotServerPlayer player,
+            ItemStackFingerprint fingerprint,
+            Map<ResourceId, ItemStackFingerprint> prototypes) {
+        if (fingerprint.isEmpty()) {
+            return ItemStack.EMPTY;
+        }
+        ResourceId material = fingerprint.itemId().orElseThrow();
+        ItemStackFingerprint prototype = prototypes.get(material);
+        if (prototype == null
+                || !fingerprint.sameItemAndComponents(prototype)
+                || fingerprint.damage() != prototype.damage()) {
+            throw new IllegalArgumentException(
+                    "crafting preview contains a non-default P5A material");
+        }
+        ItemStack result = new ItemStack(vanillaRecipeItem(material),
+                fingerprint.count());
+        if (!MinecraftInteractionView.itemFingerprint(player, result)
+                .equals(fingerprint)) {
+            throw new IllegalArgumentException(
+                    "crafting preview material did not round-trip to its full fingerprint");
+        }
+        return result;
     }
 
     private static BackendResult menuTransactionFailure(

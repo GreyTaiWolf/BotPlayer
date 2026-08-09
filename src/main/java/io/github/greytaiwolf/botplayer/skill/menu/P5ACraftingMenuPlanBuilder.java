@@ -22,29 +22,32 @@ public final class P5ACraftingMenuPlanBuilder {
     private P5ACraftingMenuPlanBuilder() {
     }
 
-    /**
-     * 以完整权威快照和每种默认原版材料的精确组件指纹构造逐 Tick 点击计划。
-     */
+    /** 单批兼容入口；调用方仍必须提供权威中间 result preview 解析器。 */
     public static Optional<MenuTransactionPlan> build(
             MenuSnapshot opened,
             P5ARecipe recipe,
-            Map<ResourceId, ItemStackFingerprint> vanillaPrototypes) {
-        return build(opened, recipe, 1, vanillaPrototypes);
+            Map<ResourceId, ItemStackFingerprint> vanillaPrototypes,
+            CraftingPreviewResolver previewResolver) {
+        return build(opened, recipe, 1, vanillaPrototypes, previewResolver);
     }
 
     /**
-     * 构造经过 recipe 白名单审核的有限多批计划。每一批都重新从上一个精确 prefix 选择
-     * source，完成 preview、领取和空 grid 收口；不会把多个 batch 折叠成一次虚假的库存
-     * delta。
+     * 以完整权威快照和每种默认原版材料的精确组件指纹构造经过 recipe 白名单审核的有限多批
+     * 逐 Tick 点击计划。每一批都重新从上一个精确 prefix 选择 source，完成 preview、领取和
+     * 空 grid 收口；不会把多个 batch 折叠成一次虚假的库存 delta。每次输入格变更都必须通过
+     * {@code previewResolver} 预测真实原版结果格，而不能把中间有效配方（例如单块木板的按钮）
+     * 假定为空。
      */
     public static Optional<MenuTransactionPlan> build(
             MenuSnapshot opened,
             P5ARecipe recipe,
             int batches,
-            Map<ResourceId, ItemStackFingerprint> vanillaPrototypes) {
+            Map<ResourceId, ItemStackFingerprint> vanillaPrototypes,
+            CraftingPreviewResolver previewResolver) {
         Objects.requireNonNull(opened, "opened");
         Objects.requireNonNull(recipe, "recipe");
         Objects.requireNonNull(vanillaPrototypes, "vanillaPrototypes");
+        Objects.requireNonNull(previewResolver, "previewResolver");
         if (!recipe.isCrafting()
                 || batches < 1
                 || batches > recipe.maximumBatches()
@@ -97,7 +100,8 @@ public final class P5ACraftingMenuPlanBuilder {
                                     placement.slot(),
                                     prototypes,
                                     recipe,
-                                    output);
+                                    output,
+                                    previewResolver);
                         }
                     }
                     if (!current.carried().isEmpty()) {
@@ -303,7 +307,8 @@ public final class P5ACraftingMenuPlanBuilder {
             int target,
             Map<ResourceId, ItemStackFingerprint> prototypes,
             P5ARecipe recipe,
-            ItemStackFingerprint output) {
+            ItemStackFingerprint output,
+            CraftingPreviewResolver previewResolver) {
         if (before.family().roleAt(target)
                         != MenuSlotRole.CRAFTING_INPUT
                 || !before.itemAt(target).isEmpty()
@@ -317,18 +322,21 @@ public final class P5ACraftingMenuPlanBuilder {
         slots.set(target, placed);
         ItemStackFingerprint carried = decrement(before.carried());
         MenuSnapshot shape = next(before, carried, slots);
+        ItemStackFingerprint preview = previewResolver.resolve(shape)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "native crafting preview is unavailable"));
+        slots = new ArrayList<>(shape.slots());
+        slots.set(0, preview);
+        shape = next(before, carried, slots);
         boolean completesRecipe = gridMatchesRecipe(shape, recipe, prototypes);
-        if (completesRecipe) {
-            slots = new ArrayList<>(shape.slots());
-            slots.set(0, output);
-            shape = next(before, carried, slots);
+        if (completesRecipe && !preview.equals(output)) {
+            throw new IllegalArgumentException(
+                    "native crafting preview does not match the reviewed recipe output");
         }
-        MenuConservationRule conservation = completesRecipe
-                ? outputPreviewRule(output)
-                : MenuConservationRule.strict();
         add(steps, before, shape,
                 new MenuClick(target, MenuClickType.PICKUP, 1),
-                conservation);
+                new MenuConservationRule(MenuConservationRule.delta(
+                        before, shape)));
         return shape;
     }
 
@@ -388,13 +396,6 @@ public final class P5ACraftingMenuPlanBuilder {
                 new MenuClick(outputTarget, MenuClickType.PICKUP, 0),
                 MenuConservationRule.strict());
         return after;
-    }
-
-    private static MenuConservationRule outputPreviewRule(
-            ItemStackFingerprint output) {
-        return rule(Map.of(
-                MenuItemKey.from(output).orElseThrow(),
-                (long) output.count()));
     }
 
     private static MenuConservationRule consumedInputRule(
