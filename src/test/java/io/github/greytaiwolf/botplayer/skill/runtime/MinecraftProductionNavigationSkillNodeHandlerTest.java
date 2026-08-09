@@ -8,6 +8,7 @@ import io.github.greytaiwolf.botplayer.navigation.GridPoint;
 import io.github.greytaiwolf.botplayer.navigation.NavigationArrivalRequirement;
 import io.github.greytaiwolf.botplayer.navigation.NavigationGoal;
 import io.github.greytaiwolf.botplayer.skill.builtin.P5ABuiltinSkillIds;
+import io.github.greytaiwolf.botplayer.skill.core.SkillFailureCode;
 import io.github.greytaiwolf.botplayer.skill.core.SkillParameters;
 import io.github.greytaiwolf.botplayer.skill.plan.SkillPlanNode;
 import io.github.greytaiwolf.botplayer.skill.reservation.ResourceReservationService;
@@ -83,6 +84,32 @@ class MinecraftProductionNavigationSkillNodeHandlerTest {
                 outsideScope, query, "minecraft:oak_log").isEmpty());
         assertTrue(MinecraftProductionNavigationSkillNodeHandler.selectGoal(
                 malformed, query, "minecraft:oak_log").isEmpty());
+    }
+
+    @Test
+    void distinguishesAnIncompleteEmptyScanFromAConfirmedMissingResource() {
+        TaskSensorQuery query = query();
+        TaskSensorSnapshot incomplete = new TaskSensorSnapshot(
+                query,
+                10L,
+                TaskSensorAvailability.AVAILABLE,
+                true,
+                List.of());
+        TaskSensorSnapshot complete = new TaskSensorSnapshot(
+                query,
+                10L,
+                TaskSensorAvailability.AVAILABLE,
+                false,
+                List.of());
+
+        assertEquals(SkillFailureCode.WORLD_CHANGED,
+                MinecraftProductionNavigationSkillNodeHandler
+                        .noCurrentGoal(incomplete)
+                        .failureCode().orElseThrow());
+        assertEquals(SkillFailureCode.TARGET_GONE,
+                MinecraftProductionNavigationSkillNodeHandler
+                        .noCurrentGoal(complete)
+                        .failureCode().orElseThrow());
     }
 
     @Test

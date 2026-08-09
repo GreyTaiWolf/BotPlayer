@@ -199,55 +199,155 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
             return available(query, currentTick, true, List.of());
         }
         TaskSensorScope scope = query.scope();
-        BlockPos center = center(scope);
-        int radius = scope.radius();
         List<TaskSensorEvidence> evidence = new ArrayList<>(maximumCandidates);
-        int inspected = 0;
-        boolean truncated = false;
-        scan:
-        for (int distance = 0; distance <= radius; distance++) {
-            for (int x = -distance; x <= distance; x++) {
-                for (int y = -distance; y <= distance; y++) {
-                    for (int z = -distance; z <= distance; z++) {
+        ResourceScanPlan plan = resourceScanPlan(scope, maximumBlocks,
+                query.resourceFilter());
+        boolean truncated = plan.truncatedByBudget();
+        for (BlockPos position : plan.positions()) {
+            if (!player.serverLevel().isLoaded(position)) {
+                truncated = true;
+                continue;
+            }
+            BlockState state = player.serverLevel().getBlockState(position);
+            if (state.isAir()) {
+                continue;
+            }
+            String blockId = BuiltInRegistries.BLOCK.getKey(state.getBlock())
+                    .toString();
+            if (!query.resourceFilter().accepts(blockId)) {
+                continue;
+            }
+            evidence.add(new TaskSensorEvidence("resource.candidate",
+                    new SkillParameters(Map.of(
+                            "x", position.getX(),
+                            "y", position.getY(),
+                            "z", position.getZ(),
+                            "block", blockId))));
+            if (evidence.size() >= maximumCandidates) {
+                truncated = true;
+                break;
+            }
+        }
+        return available(query, currentTick, truncated, evidence);
+    }
+
+    /**
+     * Builds the finite read order for a resource query without reading or loading a block.
+     *
+     * <p>Legacy unfiltered callers keep the historical 3-D Chebyshev-shell order. A reviewed
+     * exact resource filter instead keeps the complete nearby 3-D cube through distance two and
+     * spends its remaining read budget on the current body layer. The latter matters for normal
+     * mining: a 256-read budget cannot cover an {@code r=8} 3-D cube, and spending its entire
+     * prefix on air above and below the player can hide a same-layer resource that is still in
+     * the declared local scope. This only changes observation priority; it neither increases the
+     * cap nor makes a truncated observation authoritative.
+     */
+    static ResourceScanPlan resourceScanPlan(
+            TaskSensorScope scope,
+            int maximumBlocks,
+            TaskSensorResourceFilter resourceFilter) {
+        Objects.requireNonNull(scope, "scope");
+        Objects.requireNonNull(resourceFilter, "resourceFilter");
+        if (maximumBlocks < 0) {
+            throw new IllegalArgumentException(
+                    "maximumBlocks must be non-negative");
+        }
+        int capacity = Math.min(maximumBlocks,
+                Math.toIntExact(Math.min(totalScopePositions(scope.radius()),
+                        (long) Integer.MAX_VALUE)));
+        List<BlockPos> positions = new ArrayList<>(capacity);
+        if (maximumBlocks == 0) {
+            return new ResourceScanPlan(List.of(),
+                    totalScopePositions(scope.radius()) > 0L);
+        }
+        BlockPos center = center(scope);
+        if (resourceFilter.isUnfiltered()
+                || maximumBlocks >= totalScopePositions(scope.radius())) {
+            appendCubeShells(positions, center, 0, scope.radius(),
+                    maximumBlocks);
+        } else {
+            /*
+             * Preserve the old complete near-body 3-D coverage first. With r=8 and the reviewed
+             * 256-read cap this consumes 125 positions, leaving the rest for useful same-height
+             * mining candidates rather than the arbitrary prefix of the d=3 cube shell.
+             */
+            int nearRadius = Math.min(2, scope.radius());
+            appendCubeShells(positions, center, 0, nearRadius,
+                    maximumBlocks);
+            appendCurrentLayerRings(positions, center, nearRadius + 1,
+                    scope.radius(), maximumBlocks);
+        }
+        return new ResourceScanPlan(List.copyOf(positions),
+                positions.size() < totalScopePositions(scope.radius()));
+    }
+
+    private static void appendCubeShells(
+            List<BlockPos> positions,
+            BlockPos center,
+            int minimumDistance,
+            int maximumDistance,
+            int maximumBlocks) {
+        for (int distance = minimumDistance;
+                distance <= maximumDistance
+                        && positions.size() < maximumBlocks;
+                distance++) {
+            for (int x = -distance;
+                    x <= distance && positions.size() < maximumBlocks;
+                    x++) {
+                for (int y = -distance;
+                        y <= distance && positions.size() < maximumBlocks;
+                        y++) {
+                    for (int z = -distance;
+                            z <= distance && positions.size() < maximumBlocks;
+                            z++) {
                         if (Math.max(Math.max(Math.abs(x), Math.abs(y)),
                                 Math.abs(z)) != distance) {
                             continue;
                         }
-                        if (inspected++ >= maximumBlocks) {
-                            truncated = true;
-                            break scan;
-                        }
-                        BlockPos position = center.offset(x, y, z);
-                        if (!player.serverLevel().isLoaded(position)) {
-                            truncated = true;
-                            continue;
-                        }
-                        BlockState state = player.serverLevel()
-                                .getBlockState(position);
-                        if (state.isAir()) {
-                            continue;
-                        }
-                        String blockId = BuiltInRegistries.BLOCK
-                                .getKey(state.getBlock()).toString();
-                        if (!query.resourceFilter().accepts(blockId)) {
-                            continue;
-                        }
-                        evidence.add(new TaskSensorEvidence(
-                                "resource.candidate",
-                                new SkillParameters(Map.of(
-                                        "x", position.getX(),
-                                        "y", position.getY(),
-                                        "z", position.getZ(),
-                                        "block", blockId))));
-                        if (evidence.size() >= maximumCandidates) {
-                            truncated = true;
-                            break scan;
-                        }
+                        positions.add(center.offset(x, y, z));
                     }
                 }
             }
         }
-        return available(query, currentTick, truncated, evidence);
+    }
+
+    private static void appendCurrentLayerRings(
+            List<BlockPos> positions,
+            BlockPos center,
+            int minimumDistance,
+            int maximumDistance,
+            int maximumBlocks) {
+        for (int distance = minimumDistance;
+                distance <= maximumDistance
+                        && positions.size() < maximumBlocks;
+                distance++) {
+            for (int x = -distance;
+                    x <= distance && positions.size() < maximumBlocks;
+                    x++) {
+                for (int z = -distance;
+                        z <= distance && positions.size() < maximumBlocks;
+                        z++) {
+                    if (Math.max(Math.abs(x), Math.abs(z)) != distance) {
+                        continue;
+                    }
+                    positions.add(center.offset(x, 0, z));
+                }
+            }
+        }
+    }
+
+    private static long totalScopePositions(int radius) {
+        long side = Math.addExact(Math.multiplyExact((long) radius, 2L),
+                1L);
+        return Math.multiplyExact(Math.multiplyExact(side, side), side);
+    }
+
+    record ResourceScanPlan(List<BlockPos> positions,
+                            boolean truncatedByBudget) {
+        ResourceScanPlan {
+            positions = List.copyOf(Objects.requireNonNull(positions,
+                    "positions"));
+        }
     }
 
     /**

@@ -168,9 +168,7 @@ public final class MinecraftProductionNavigationSkillNodeHandler
         GridPoint target = selectGoal(snapshot, query, expectedBlockId)
                 .orElse(null);
         if (target == null) {
-            return SkillNodeDirective.fail(
-                    SkillFailureCode.TARGET_GONE,
-                    "局部精确资源候选不存在或不再可信");
+            return noCurrentGoal(snapshot);
         }
 
         NavigationRequest request;
@@ -397,6 +395,22 @@ public final class MinecraftProductionNavigationSkillNodeHandler
                     candidate.position().z()));
         }
         return Optional.empty();
+    }
+
+    /**
+     * A truncated scan is a current-tick observation whose empty result is not authoritative.
+     * It must never be represented as a vanished resource: the sampler may simply have reached
+     * its reviewed read cap before seeing the requested exact block.
+     */
+    static SkillNodeDirective noCurrentGoal(TaskSensorSnapshot snapshot) {
+        Objects.requireNonNull(snapshot, "snapshot");
+        return snapshot.truncated()
+                ? SkillNodeDirective.fail(
+                        SkillFailureCode.WORLD_CHANGED,
+                        "资源导航的受限局部候选观察不完整")
+                : SkillNodeDirective.fail(
+                        SkillFailureCode.TARGET_GONE,
+                        "局部精确资源候选不存在或不再可信");
     }
 
     private static boolean withinScope(
