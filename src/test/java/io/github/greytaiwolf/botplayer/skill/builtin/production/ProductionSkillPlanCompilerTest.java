@@ -33,7 +33,10 @@ class ProductionSkillPlanCompilerTest {
     private static final Set<ProductionPlanEdge>
             EXACT_MAIN_HAND_REROUTED_EDGES = Set.of(
                     new ProductionPlanEdge(
+                            "crafting_table", "place_crafting_table"),
+                    new ProductionPlanEdge(
                             "wooden_pickaxe", "mine_cobblestone"),
+                    new ProductionPlanEdge("craft_furnace", "place_furnace"),
                     new ProductionPlanEdge(
                             "stone_pickaxe", "mine_raw_iron"),
                     new ProductionPlanEdge(
@@ -48,12 +51,12 @@ class ProductionSkillPlanCompilerTest {
                 compiler.compileWoodToIronPick(SECOND_BOT, 99L);
         ProductionPlanTemplate template = WoodToIronPickTemplate.create();
 
-        assertEquals(12, template.nodes().size(),
-                "模板仍是 12 个逻辑生产节点");
-        assertEquals(34, first.nodes().size(),
-                "31 个物理生产动作外，还必须有三道独立精确主手门");
-        assertEquals(39, first.edges().size(),
-                "17 条逻辑边和 19 条 fragment 串行边经三道装备门重接线");
+        assertEquals(14, template.nodes().size(),
+                "模板包含两个真实工作站放置逻辑节点");
+        assertEquals(38, first.nodes().size(),
+                "33 个物理生产动作外，还必须有五道独立精确主手门");
+        assertEquals(45, first.edges().size(),
+                "21 条逻辑边和 19 条 fragment 串行边经五道装备门重接线");
         assertEquals(first.planId(), sameTemplateDifferentRunContext.planId());
         assertNotEquals(first.botId(), sameTemplateDifferentRunContext.botId());
         assertNotEquals(first.revision(), sameTemplateDifferentRunContext.revision());
@@ -89,9 +92,9 @@ class ProductionSkillPlanCompilerTest {
             }
         }
 
-        assertEquals(31, byOperationId.size());
-        assertEquals(3, byExactMainHandItemId.size());
-        assertEquals(31, ProductionSkillPlanCompiler.approvedOperationIds()
+        assertEquals(33, byOperationId.size());
+        assertEquals(5, byExactMainHandItemId.size());
+        assertEquals(33, ProductionSkillPlanCompiler.approvedOperationIds()
                 .size());
         Map<String, SkillPlanNode> secondByOperationId = new LinkedHashMap<>();
         Map<String, SkillPlanNode> secondByExactMainHandItemId =
@@ -175,9 +178,19 @@ class ProductionSkillPlanCompilerTest {
         }
         appendExactMainHandEdges(expectedEdges, byOperationId,
                 byExactMainHandItemId,
+                "minecraft:crafting_table",
+                "crafting_table",
+                List.of("place_crafting_table"));
+        appendExactMainHandEdges(expectedEdges, byOperationId,
+                byExactMainHandItemId,
                 "minecraft:wooden_pickaxe",
                 "wooden_pickaxe",
                 List.of("mine_cobblestone"));
+        appendExactMainHandEdges(expectedEdges, byOperationId,
+                byExactMainHandItemId,
+                "minecraft:furnace",
+                "craft_furnace",
+                List.of("place_furnace"));
         appendExactMainHandEdges(expectedEdges, byOperationId,
                 byExactMainHandItemId,
                 "minecraft:stone_pickaxe",
@@ -191,7 +204,11 @@ class ProductionSkillPlanCompilerTest {
         assertEquals(expectedEdges, first.edges());
         assertEquals(first.edges(), sameTemplateDifferentRunContext.edges());
         assertExactMainHandNode(byExactMainHandItemId,
+                secondByExactMainHandItemId, "minecraft:crafting_table");
+        assertExactMainHandNode(byExactMainHandItemId,
                 secondByExactMainHandItemId, "minecraft:wooden_pickaxe");
+        assertExactMainHandNode(byExactMainHandItemId,
+                secondByExactMainHandItemId, "minecraft:furnace");
         assertExactMainHandNode(byExactMainHandItemId,
                 secondByExactMainHandItemId, "minecraft:stone_pickaxe");
         assertExactMainHandNode(byExactMainHandItemId,

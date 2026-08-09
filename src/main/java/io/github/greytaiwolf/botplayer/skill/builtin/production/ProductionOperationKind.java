@@ -6,5 +6,6 @@ package io.github.greytaiwolf.botplayer.skill.builtin.production;
 public enum ProductionOperationKind {
     ACQUIRE_RESOURCES,
     EXECUTE_RECIPE,
-    SINGLE_CHEST_TRANSFER
+    SINGLE_CHEST_TRANSFER,
+    PLACE_WORKSTATION
 }

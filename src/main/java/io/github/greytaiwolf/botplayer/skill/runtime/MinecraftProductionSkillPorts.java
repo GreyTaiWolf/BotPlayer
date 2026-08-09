@@ -3,6 +3,7 @@ package io.github.greytaiwolf.botplayer.skill.runtime;
 import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockCoordinates;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockHitTarget;
+import io.github.greytaiwolf.botplayer.action.interaction.BlockStateFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockTargetFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
@@ -14,9 +15,11 @@ import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionLedger
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionMaterial;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionMaterials;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionOperation;
+import io.github.greytaiwolf.botplayer.skill.builtin.production.PlaceWorkstation;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.RecipeExecution;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ResourceAcquisition;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.SingleChestTransfer;
+import io.github.greytaiwolf.botplayer.skill.builtin.production.WorkstationKind;
 import io.github.greytaiwolf.botplayer.skill.core.SkillParameters;
 import io.github.greytaiwolf.botplayer.skill.core.SkillSignal;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuFamily;
@@ -51,6 +54,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.inventory.InventoryMenu;
 
@@ -60,8 +64,8 @@ import net.minecraft.world.inventory.InventoryMenu;
  * <p>这是 production handler 允许接触原版活动对象的唯一适配器。它不直接写 Inventory、
  * 方块、block entity 或 menu：库存、菜单和资源候选都先经 {@link TaskSensorService} 的当前
  * run identity/额度，再把一次冻结的 {@link WorldInteractionAction} 交给 P2 action backend。
- * 右键工作台/炉子和菜单 {@code clicked()} 都由后端在同一 action 内执行，本类只冻结现有
- * 原版方块指纹并在完成后重新观察。
+ * 工作站放置、右键工作台/炉子和菜单 {@code clicked()} 都由后端在各自受控 action 内执行；本类
+ * 只冻结不可变指纹并在完成后重新观察。
  *
  * <p>binding 字符串只是有界、不可伪造的索引；实际语义保存在服务器线程私有的不可变
  * {@link FrozenBinding} 中。它不会持有 player、level、menu、block entity 或 ItemStack。
@@ -84,6 +88,10 @@ public final class MinecraftProductionSkillPorts
     static final int MAX_FROZEN_BINDINGS = 1_024;
     static final int MAXIMUM_RESOURCE_ACTION_TICKS = 1_200;
     static final int MAXIMUM_RECIPE_ACTION_TICKS = 1_200;
+    /** 仅寻找当前身体附近可达的原版放置位；跨越这个半径须由独立导航切片完成。 */
+    static final int WORKSTATION_PLACEMENT_RADIUS = 3;
+    static final int MAXIMUM_WORKSTATION_PLACEMENT_BLOCKS = 64;
+    static final int MAXIMUM_WORKSTATION_PLACEMENT_ACTION_TICKS = 240;
 
     private static final String MENU_BINDING_PREFIX = "native-inventory:";
     private static final Map<String, ProductionMaterial> MATERIALS_BY_ID =
@@ -199,6 +207,26 @@ public final class MinecraftProductionSkillPorts
              * 对应的 menu contract，而不会要求玩家预先打开世界菜单。
              */
             snapshotBuilder.nativeInventoryMenu();
+        } else if (operation instanceof PlaceWorkstation placement) {
+            WorkstationPlacement placementTarget = selectWorkstationPlacement(
+                    player, placement).orElse(null);
+            ItemStackFingerprint held = MinecraftActionSnapshot.item(
+                    player, player.getMainHandItem());
+            if (placementTarget == null
+                    || !matchesWorkstationHeldItem(placement, held)) {
+                return Optional.empty();
+            }
+            binding = new WorkstationPlacementBinding(
+                    bot,
+                    approved.operationId(),
+                    context.currentTick(),
+                    baseline,
+                    placement,
+                    placementTarget.anchor(),
+                    placementTarget.targetAir(),
+                    placementTarget.expectedPlaced(),
+                    held);
+            snapshotBuilder.noOpenMenu();
         } else if (operation instanceof SingleChestTransfer) {
             // canonical wood-to-iron DAG 当前没有 chest operation；不得猜坐标或容器。
             return Optional.empty();
@@ -301,8 +329,11 @@ public final class MinecraftProductionSkillPorts
     public Optional<ProductionAction> plan(ExecutionTicket ticket) {
         requireOwnerThread();
         Objects.requireNonNull(ticket, "ticket");
-        if (!(ticket.resolved().node().operation()
-                instanceof RecipeExecution execution)) {
+        ProductionOperation operation = ticket.resolved().node().operation();
+        if (operation instanceof PlaceWorkstation placement) {
+            return planWorkstationPlacement(ticket, placement);
+        }
+        if (!(operation instanceof RecipeExecution execution)) {
             return Optional.empty();
         }
         P5ARecipe recipe = approvedRecipe(execution,
@@ -353,6 +384,52 @@ public final class MinecraftProductionSkillPorts
                 recipe.isFurnace()
                         ? "等待原版炉子投入、轮询与领取"
                         : "等待原版白名单配方菜单事务完成"));
+    }
+
+    /**
+     * 把 preflight 中冻结的工作站放置位重新逐项核对后，才构造严格的原版
+     * {@link WorldInteractionActionSpec.PlaceBlock}。没有路径请求：当前身体不能同时触及锚点和
+     * 空目标时返回空，由上层以后续导航/重试策略决定，而不是扩张这个原子放置动作的范围。
+     */
+    private Optional<ProductionAction> planWorkstationPlacement(
+            ExecutionTicket ticket, PlaceWorkstation placement) {
+        FrozenBinding frozen = bindings.get(ticket.before().worldBinding());
+        if (!(frozen instanceof WorkstationPlacementBinding binding)
+                || !binding.matches(ticket)
+                || !binding.placement().equals(placement)) {
+            return Optional.empty();
+        }
+        BotServerPlayer player = resolveCurrent(ticket.bot()).orElse(null);
+        if (player == null || !currentTick(player,
+                ticket.before().observedAtTick())
+                || !binding.baseline().matchesCurrent(player)
+                || !isCurrentReachableBlock(player,
+                        binding.anchor().target())
+                || !isCurrentReachableBlock(player, binding.targetAir())) {
+            return Optional.empty();
+        }
+        ItemStackFingerprint held = MinecraftActionSnapshot.item(
+                player, player.getMainHandItem());
+        BlockTargetFingerprint currentExpectedPlaced =
+                expectedWorkstationPlacement(
+                        player,
+                        position(binding.expectedPlaced()),
+                        placement.workstation());
+        if (!held.equals(binding.expectedHeldItem())
+                || !matchesWorkstationHeldItem(placement, held)
+                || !currentExpectedPlaced.equals(binding.expectedPlaced())
+                || !placement.workstation().matchesExpectedPlacedState(
+                        binding.expectedPlaced().state())) {
+            return Optional.empty();
+        }
+        return Optional.of(new ProductionAction(
+                new WorldInteractionAction(
+                        new WorldInteractionActionSpec.PlaceBlock(
+                                binding.anchor(),
+                                binding.expectedPlaced(),
+                                held)),
+                MAXIMUM_WORKSTATION_PLACEMENT_ACTION_TICKS,
+                "等待原版工作站精确放置与账本扣款回读"));
     }
 
     /**
@@ -467,6 +544,132 @@ public final class MinecraftProductionSkillPorts
         } catch (RuntimeException exception) {
             return Optional.empty();
         }
+    }
+
+    /**
+     * 在固定的小范围内寻找一个当前可达的非空气锚点及其正上方严格空气位。这个扫描只读已加载
+     * 方块，不加载区块、不开导航；每次 dispatch 都会重新构造并冻结完整 anchor/air/state 指纹。
+     */
+    private static Optional<WorkstationPlacement> selectWorkstationPlacement(
+            BotServerPlayer player, PlaceWorkstation placement) {
+        try {
+            BlockPos center = BlockPos.containing(
+                    player.getX(), player.getY(), player.getZ());
+            int inspected = 0;
+            for (int distance = 0;
+                    distance <= WORKSTATION_PLACEMENT_RADIUS;
+                    distance++) {
+                for (int x = -distance; x <= distance; x++) {
+                    for (int z = -distance; z <= distance; z++) {
+                        if (Math.max(Math.abs(x), Math.abs(z)) != distance) {
+                            continue;
+                        }
+                        if (inspected++ >= MAXIMUM_WORKSTATION_PLACEMENT_BLOCKS) {
+                            return Optional.empty();
+                        }
+                        BlockPos anchorPosition = center.offset(x, -1, z);
+                        BlockPos destination = anchorPosition.above();
+                        if (occupiesCurrentPlayerSpace(player, destination)
+                                || !player.serverLevel().isLoaded(
+                                        anchorPosition)
+                                || !player.serverLevel().isLoaded(destination)
+                                || player.serverLevel().getBlockState(
+                                        anchorPosition).isAir()
+                                || !player.serverLevel().getBlockState(
+                                        destination).isAir()
+                                || !player.canInteractWithBlock(
+                                        anchorPosition, 0.0D)
+                                || !player.canInteractWithBlock(
+                                        destination, 0.0D)) {
+                            continue;
+                        }
+                        BlockTargetFingerprint anchor = MinecraftActionSnapshot
+                                .block(player, anchorPosition);
+                        BlockTargetFingerprint targetAir = MinecraftActionSnapshot
+                                .block(player, destination);
+                        if (!isAirFingerprint(targetAir)) {
+                            continue;
+                        }
+                        BlockTargetFingerprint expectedPlaced =
+                                expectedWorkstationPlacement(
+                                        player, destination,
+                                        placement.workstation());
+                        if (!placement.workstation()
+                                .matchesExpectedPlacedState(
+                                        expectedPlaced.state())) {
+                            return Optional.empty();
+                        }
+                        return Optional.of(new WorkstationPlacement(
+                                hit(anchor), targetAir, expectedPlaced));
+                    }
+                }
+            }
+            return Optional.empty();
+        } catch (RuntimeException exception) {
+            return Optional.empty();
+        }
+    }
+
+    private static BlockTargetFingerprint expectedWorkstationPlacement(
+            BotServerPlayer player,
+            BlockPos destination,
+            WorkstationKind workstation) {
+        Direction facing = player.getDirection().getOpposite();
+        BlockStateFingerprint state = workstation.expectedPlacedState(
+                facing.getSerializedName());
+        return new BlockTargetFingerprint(
+                new ResourceId(player.serverLevel().dimension().location()
+                        .toString()),
+                MinecraftActionSnapshot.coordinates(destination),
+                state);
+    }
+
+    private static BlockPos position(BlockTargetFingerprint target) {
+        return new BlockPos(
+                target.position().x(), target.position().y(),
+                target.position().z());
+    }
+
+    private static boolean occupiesCurrentPlayerSpace(
+            BotServerPlayer player, BlockPos destination) {
+        BlockPos feet = player.blockPosition();
+        return destination.equals(feet) || destination.equals(feet.above());
+    }
+
+    private static boolean isAirFingerprint(BlockTargetFingerprint target) {
+        return switch (target.state().blockId().value()) {
+            case "minecraft:air", "minecraft:cave_air", "minecraft:void_air" ->
+                    target.state().properties().isEmpty();
+            default -> false;
+        };
+    }
+
+    private static boolean isPlacementAdjacentToAnchor(
+            BlockHitTarget anchor, BlockTargetFingerprint expectedPlaced) {
+        if (!anchor.target().dimension().equals(expectedPlaced.dimension())) {
+            return false;
+        }
+        long expectedX = anchor.target().position().x();
+        long expectedY = anchor.target().position().y();
+        long expectedZ = anchor.target().position().z();
+        switch (anchor.face()) {
+            case DOWN -> expectedY--;
+            case UP -> expectedY++;
+            case NORTH -> expectedZ--;
+            case SOUTH -> expectedZ++;
+            case WEST -> expectedX--;
+            case EAST -> expectedX++;
+        }
+        return expectedPlaced.position().x() == expectedX
+                && expectedPlaced.position().y() == expectedY
+                && expectedPlaced.position().z() == expectedZ;
+    }
+
+    private static boolean matchesWorkstationHeldItem(
+            PlaceWorkstation placement, ItemStackFingerprint held) {
+        return !held.isEmpty()
+                && held.itemId().filter(placement.workstation().material()
+                        .id()::equals).isPresent();
     }
 
     private Optional<TaskSensorSnapshot> query(
@@ -913,6 +1116,29 @@ public final class MinecraftProductionSkillPorts
         }
     }
 
+    /**
+     * preflight 观察得到的纯值放置位：锚点完整指纹、目标严格空气指纹以及原版 placement
+     * context 预测出的完整结果 state 都必须成对保存，不能只保存坐标或 block id。
+     */
+    private record WorkstationPlacement(
+            BlockHitTarget anchor,
+            BlockTargetFingerprint targetAir,
+            BlockTargetFingerprint expectedPlaced) {
+        private WorkstationPlacement {
+            anchor = Objects.requireNonNull(anchor, "anchor");
+            targetAir = Objects.requireNonNull(targetAir, "targetAir");
+            expectedPlaced = Objects.requireNonNull(
+                    expectedPlaced, "expectedPlaced");
+            if (!targetAir.dimension().equals(expectedPlaced.dimension())
+                    || !targetAir.position().equals(expectedPlaced.position())
+                    || !isAirFingerprint(targetAir)
+                    || !isPlacementAdjacentToAnchor(anchor, expectedPlaced)) {
+                throw new IllegalArgumentException(
+                        "workstation placement must freeze one exact air target");
+            }
+        }
+    }
+
     private record InventoryEntry(
             int slot, boolean empty, int count, Optional<String> itemId) {
         private InventoryEntry {
@@ -965,7 +1191,8 @@ public final class MinecraftProductionSkillPorts
     }
 
     private sealed interface FrozenBinding permits ResourceBinding,
-            NativeRecipeBinding, WorldRecipeBinding {
+            NativeRecipeBinding, WorldRecipeBinding,
+            WorkstationPlacementBinding {
         ActiveBot bot();
 
         String operationId();
@@ -1069,6 +1296,55 @@ public final class MinecraftProductionSkillPorts
         @Override
         public boolean worldStillValidAfter(BotServerPlayer player) {
             return isCurrentReachableBlock(player, target);
+        }
+    }
+
+    /**
+     * 放置操作的冻结绑定。完成后不能只看到“目标非空气”就接受：锚点必须仍是原样，目标必须与
+     * 预期完整 state 相等，且原生背包 menu 已恢复为 action 前的安全基线。
+     */
+    private record WorkstationPlacementBinding(
+            ActiveBot bot,
+            String operationId,
+            long observedAtTick,
+            NativeBaseline baseline,
+            PlaceWorkstation placement,
+            BlockHitTarget anchor,
+            BlockTargetFingerprint targetAir,
+            BlockTargetFingerprint expectedPlaced,
+            ItemStackFingerprint expectedHeldItem) implements FrozenBinding {
+        private WorkstationPlacementBinding {
+            Objects.requireNonNull(bot, "bot");
+            Objects.requireNonNull(operationId, "operationId");
+            Objects.requireNonNull(baseline, "baseline");
+            placement = Objects.requireNonNull(placement, "placement");
+            anchor = Objects.requireNonNull(anchor, "anchor");
+            targetAir = Objects.requireNonNull(targetAir, "targetAir");
+            expectedPlaced = Objects.requireNonNull(
+                    expectedPlaced, "expectedPlaced");
+            expectedHeldItem = Objects.requireNonNull(
+                    expectedHeldItem, "expectedHeldItem");
+            if (expectedHeldItem.isEmpty()
+                    || !matchesWorkstationHeldItem(placement,
+                            expectedHeldItem)
+                    || !targetAir.dimension().equals(
+                            expectedPlaced.dimension())
+                    || !targetAir.position().equals(
+                            expectedPlaced.position())
+                    || !isAirFingerprint(targetAir)
+                    || !placement.workstation().matchesExpectedPlacedState(
+                            expectedPlaced.state())) {
+                throw new IllegalArgumentException(
+                        "workstation placement binding is not exact");
+            }
+            new WorldInteractionActionSpec.PlaceBlock(
+                    anchor, expectedPlaced, expectedHeldItem);
+        }
+
+        @Override
+        public boolean worldStillValidAfter(BotServerPlayer player) {
+            return isCurrentReachableBlock(player, anchor.target())
+                    && isCurrentReachableBlock(player, expectedPlaced);
         }
     }
 

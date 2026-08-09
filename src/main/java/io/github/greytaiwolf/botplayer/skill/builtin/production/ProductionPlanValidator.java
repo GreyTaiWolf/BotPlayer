@@ -179,6 +179,13 @@ public final class ProductionPlanValidator {
                     Optional.empty()), new ProductionBudgetUsage(
                             0, 0, 1, contract.maximumClicks(), 0));
         }
+        if (operation instanceof PlaceWorkstation placement) {
+            return Resolution.accepted(new ProductionResolvedNode(
+                    node,
+                    placement.expectedDelta(),
+                    Optional.empty(),
+                    Optional.empty()), zeroUsage());
+        }
         return Resolution.rejected(violation(node.nodeId(),
                 ProductionPlanViolationCode.OPERATION_OUTSIDE_LIMIT));
     }

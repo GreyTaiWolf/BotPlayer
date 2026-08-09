@@ -80,13 +80,35 @@ public final class LimitedSelfDefenseSession {
      * 接收动作层结果。仅当前 outstanding 请求可改变状态，旧回执不能复活会话。
      */
     public DefenseReceiptStatus acknowledge(DefenseActionReceipt receipt) {
+        return acknowledge(receipt, false);
+    }
+
+    /**
+     * 接收动作层结果，并可携带由精确攻击合同证明的目标已移除事实。
+     *
+     * <p>这个额外事实只能用于一份成功的当前近战回执。调用方不得把普通“实体暂时不可
+     * 观察”升级为消灭；那种情况仍应在下一次观察中保守失败。
+     */
+    public DefenseReceiptStatus acknowledge(
+            DefenseActionReceipt receipt, boolean targetEliminated) {
         Objects.requireNonNull(receipt, "receipt");
         if (outstanding == null || !outstanding.equals(receipt.request())) {
             return DefenseReceiptStatus.STALE_IGNORED;
         }
         DefenseActionKind kind = outstanding.kind();
+        if (targetEliminated
+                && (kind != DefenseActionKind.MELEE_ATTACK
+                        || receipt.outcome() != DefenseActionOutcome.SUCCEEDED)) {
+            throw new IllegalArgumentException(
+                    "only a successful melee receipt may confirm target elimination");
+        }
         outstanding = null;
         if (kind == DefenseActionKind.MELEE_ATTACK) {
+            if (targetEliminated) {
+                transitionTerminal(DefenseState.COMPLETED,
+                        DefenseReason.TARGET_ELIMINATED);
+                return DefenseReceiptStatus.ACCEPTED;
+            }
             state = DefenseState.READY;
             reason = receipt.outcome() == DefenseActionOutcome.SUCCEEDED
                     ? DefenseReason.ATTACK_COMPLETED

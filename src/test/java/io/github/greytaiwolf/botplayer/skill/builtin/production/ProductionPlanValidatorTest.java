@@ -1,5 +1,6 @@
 package io.github.greytaiwolf.botplayer.skill.builtin.production;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -61,5 +62,37 @@ class ProductionPlanValidatorTest {
         assertFalse(validation.accepted());
         assertTrue(validation.violations().stream().anyMatch(violation ->
                 violation.code() == ProductionPlanViolationCode.CYCLIC_DAG));
+    }
+
+    @Test
+    void workstationPlacementsAreResolvedAsExactNonMenuLedgerDebits() {
+        ProductionPlanValidation validation = ProductionPlanValidator
+                .p5aDefault().validate(WoodToIronPickTemplate.create());
+
+        assertTrue(validation.accepted());
+        ProductionResolvedNode craftingTable = validation.resolvedNodes()
+                .stream()
+                .filter(node -> node.node().nodeId().equals(
+                        "place_crafting_table"))
+                .findFirst()
+                .orElseThrow();
+        ProductionResolvedNode furnace = validation.resolvedNodes().stream()
+                .filter(node -> node.node().nodeId().equals("place_furnace"))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(new ProductionDelta(
+                        ProductionLedger.of(
+                                ProductionMaterials.CRAFTING_TABLE, 1),
+                        ProductionLedger.empty()),
+                craftingTable.expectedPlayerDelta());
+        assertEquals(new ProductionDelta(
+                        ProductionLedger.of(ProductionMaterials.FURNACE, 1),
+                        ProductionLedger.empty()),
+                furnace.expectedPlayerDelta());
+        assertTrue(craftingTable.menuContract().isEmpty());
+        assertTrue(furnace.menuContract().isEmpty());
+        assertTrue(craftingTable.furnaceRequirement().isEmpty());
+        assertTrue(furnace.furnaceRequirement().isEmpty());
     }
 }

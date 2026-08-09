@@ -427,7 +427,17 @@ public sealed interface WorldInteractionActionSpec
    public static record PlaceBlock(
       BlockHitTarget anchor, BlockTargetFingerprint expectedPlaced, ItemStackFingerprint expectedHeldItem
    ) implements WorldInteractionActionSpec {
-      private static final Set<ActionChannel> CHANNELS = Set.of(ActionChannel.MAIN_HAND, ActionChannel.INTERACT);
+      /*
+       * Some vanilla blocks (notably furnaces) derive their complete placed
+       * state from the player's facing.  Holding LOOK together with the hand
+       * and interaction lease prevents a competing Bot action from changing
+       * that placement context after the exact state was frozen.
+       */
+      private static final Set<ActionChannel> CHANNELS = Set.of(
+         ActionChannel.MAIN_HAND,
+         ActionChannel.INTERACT,
+         ActionChannel.LOOK
+      );
 
       public PlaceBlock(BlockHitTarget anchor, BlockTargetFingerprint expectedPlaced, ItemStackFingerprint expectedHeldItem) {
          Objects.requireNonNull(anchor, "anchor");

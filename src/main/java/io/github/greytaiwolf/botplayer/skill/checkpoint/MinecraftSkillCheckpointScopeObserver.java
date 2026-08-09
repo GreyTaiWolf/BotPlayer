@@ -47,7 +47,7 @@ public final class MinecraftSkillCheckpointScopeObserver {
     /**
      * 在一个已经由 lifecycle 证明静止的安全点捕获新的范围。
      */
-    public Optional<SkillCheckpointScope> capture(
+    public CaptureResult capture(
             BotServerPlayer player,
             SkillRuntimeCheckpoint runtime,
             SkillCheckpointPlan sourcePlan,
@@ -61,13 +61,14 @@ public final class MinecraftSkillCheckpointScopeObserver {
             requireTick(observedTick);
             if (!supportsCanonicalRuntime(
                     player, runtime, sourcePlan, restartPlan)) {
-                return Optional.empty();
+                return CaptureResult.unavailable("canonical_runtime_mismatch");
             }
-            Observation observation = observe(player).orElse(null);
+            ObservationResult observed = observe(player);
+            Observation observation = observed.observation().orElse(null);
             if (observation == null) {
-                return Optional.empty();
+                return CaptureResult.unavailable(observed.rejectionCode());
             }
-            return Optional.of(new SkillCheckpointScope(
+            return CaptureResult.available(new SkillCheckpointScope(
                     observation.dimensionId(),
                     observation.anchor().getX(),
                     observation.anchor().getY(),
@@ -76,7 +77,8 @@ public final class MinecraftSkillCheckpointScopeObserver {
                     observation.fingerprint(),
                     FORMAT));
         } catch (RuntimeException exception) {
-            return Optional.empty();
+            return CaptureResult.unavailable("observer_exception_"
+                    + exception.getClass().getSimpleName());
         }
     }
 
@@ -104,7 +106,7 @@ public final class MinecraftSkillCheckpointScopeObserver {
                             checkpoint, approvedFullPlan)) {
                 return incomplete();
             }
-            Observation observation = observe(player).orElse(null);
+            Observation observation = observe(player).observation().orElse(null);
             if (observation == null) {
                 return incomplete();
             }
@@ -222,35 +224,35 @@ public final class MinecraftSkillCheckpointScopeObserver {
         return true;
     }
 
-    private static Optional<Observation> observe(BotServerPlayer player) {
+    private static ObservationResult observe(BotServerPlayer player) {
         if (player.containerMenu != player.inventoryMenu
                 || !player.inventoryMenu.stillValid(player)
                 || player.inventoryMenu.slots.size()
                         != PlayerInventoryMenuLayout.LAST_MENU_SLOT + 1
                 || !player.inventoryMenu.getCarried().isEmpty()) {
-            return Optional.empty();
+            return ObservationResult.unavailable("native_menu_unavailable");
         }
         InventoryMenuSnapshot inventory = MinecraftActionSnapshot.inventoryMenu(
                 player);
         if (!inventory.cursor().isEmpty()) {
-            return Optional.empty();
+            return ObservationResult.unavailable("inventory_cursor_nonempty");
         }
         BlockPos anchor = BlockPos.containing(
                 player.getX(), player.getY(), player.getZ());
         if (!withinScopeBounds(anchor)) {
-            return Optional.empty();
+            return ObservationResult.unavailable("anchor_out_of_bounds");
         }
         BlockTargetFingerprint support = snapshotLoaded(
                 player, anchor.below()).orElse(null);
         BlockTargetFingerprint body = snapshotLoaded(player, anchor).orElse(null);
         BlockTargetFingerprint head = snapshotLoaded(player, anchor.above()).orElse(null);
         if (support == null || body == null || head == null) {
-            return Optional.empty();
+            return ObservationResult.unavailable("anchor_blocks_unloaded");
         }
         List<BlockTargetFingerprint> workstations = nearbyWorkstations(
                 player, anchor).orElse(null);
         if (workstations == null) {
-            return Optional.empty();
+            return ObservationResult.unavailable("workstation_area_unavailable");
         }
         String dimensionId = player.serverLevel().dimension().location().toString();
         String fingerprint = fingerprint(
@@ -261,7 +263,7 @@ public final class MinecraftSkillCheckpointScopeObserver {
                 body,
                 head,
                 workstations);
-        return Optional.of(new Observation(
+        return ObservationResult.available(new Observation(
                 dimensionId,
                 anchor,
                 fingerprint));
@@ -282,11 +284,18 @@ public final class MinecraftSkillCheckpointScopeObserver {
     private static Optional<List<BlockTargetFingerprint>> nearbyWorkstations(
             BotServerPlayer player, BlockPos anchor) {
         List<BlockTargetFingerprint> result = new ArrayList<>();
+        int minimumY = Math.max(
+                player.serverLevel().getMinBuildHeight(),
+                anchor.getY() - WORKSTATION_RADIUS);
+        int maximumY = Math.min(
+                player.serverLevel().getMaxBuildHeight() - 1,
+                anchor.getY() + WORKSTATION_RADIUS);
         for (int x = -WORKSTATION_RADIUS; x <= WORKSTATION_RADIUS; x++) {
-            for (int y = -WORKSTATION_RADIUS; y <= WORKSTATION_RADIUS; y++) {
+            for (int y = minimumY; y <= maximumY; y++) {
                 for (int z = -WORKSTATION_RADIUS;
                         z <= WORKSTATION_RADIUS; z++) {
-                    BlockPos position = anchor.offset(x, y, z);
+                    BlockPos position = new BlockPos(
+                            anchor.getX() + x, y, anchor.getZ() + z);
                     if (!player.serverLevel().isLoaded(position)) {
                         return Optional.empty();
                     }
@@ -415,6 +424,66 @@ public final class MinecraftSkillCheckpointScopeObserver {
             Objects.requireNonNull(dimensionId, "dimensionId");
             Objects.requireNonNull(anchor, "anchor");
             CheckpointNbt.requireSha256(fingerprint, "fingerprint");
+        }
+    }
+
+    /**
+     * 生命周期只用它把 fail-closed 拒绝写入安全日志；它不携带 Minecraft 活对象或可重放的
+     * 状态。这样 CI/运维能区分世界尚未完整加载与 canonical 计划身份失配。
+     */
+    public record CaptureResult(
+            Optional<SkillCheckpointScope> scope, String rejectionCode) {
+        public CaptureResult {
+            scope = Objects.requireNonNull(scope, "scope");
+            rejectionCode = Objects.requireNonNull(
+                    rejectionCode, "rejectionCode");
+            if (scope.isPresent() == !rejectionCode.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "capture result must contain either a scope or a rejection code");
+            }
+        }
+
+        private static CaptureResult available(SkillCheckpointScope scope) {
+            return new CaptureResult(Optional.of(
+                    Objects.requireNonNull(scope, "scope")), "");
+        }
+
+        private static CaptureResult unavailable(String rejectionCode) {
+            String code = Objects.requireNonNull(
+                    rejectionCode, "rejectionCode");
+            if (code.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "capture rejection code must not be empty");
+            }
+            return new CaptureResult(Optional.empty(), code);
+        }
+    }
+
+    private record ObservationResult(
+            Optional<Observation> observation, String rejectionCode) {
+        private ObservationResult {
+            observation = Objects.requireNonNull(observation, "observation");
+            rejectionCode = Objects.requireNonNull(
+                    rejectionCode, "rejectionCode");
+            if (observation.isPresent() == !rejectionCode.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "observation result must contain either an observation or a rejection code");
+            }
+        }
+
+        private static ObservationResult available(Observation observation) {
+            return new ObservationResult(Optional.of(
+                    Objects.requireNonNull(observation, "observation")), "");
+        }
+
+        private static ObservationResult unavailable(String rejectionCode) {
+            String code = Objects.requireNonNull(
+                    rejectionCode, "rejectionCode");
+            if (code.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "observation rejection code must not be empty");
+            }
+            return new ObservationResult(Optional.empty(), code);
         }
     }
 }

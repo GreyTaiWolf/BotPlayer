@@ -1,5 +1,6 @@
 package io.github.greytaiwolf.botplayer.skill.runtime;
 
+import io.github.greytaiwolf.botplayer.action.ActionEvidence;
 import io.github.greytaiwolf.botplayer.action.ActionFailureCode;
 import io.github.greytaiwolf.botplayer.action.ActionOutcome;
 import io.github.greytaiwolf.botplayer.action.ActionRequest;
@@ -15,6 +16,8 @@ import io.github.greytaiwolf.botplayer.safety.SafetyHandoffRequest;
 import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseActionKind;
 import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseObservation;
 import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefensePolicy;
+import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseReason;
+import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseState;
 import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseTarget;
 import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseTargetClass;
 import java.util.ArrayList;
@@ -72,6 +75,36 @@ class SelfDefenseSkillServiceTest {
                 .latestView(BOT_A).orElseThrow();
         Assertions.assertEquals(SelfDefenseSkillService.RunStatus.COMPLETED,
                 view.status());
+        Assertions.assertTrue(view.failure().isEmpty());
+        Assertions.assertEquals(0, fixture.service.activeRunCount());
+    }
+
+    @Test
+    void verifiedRemovedMeleeOutcomeCompletesBeforeASecondTargetRead() {
+        Fixture fixture = fixture(new SelfDefenseSkillService.Limits(
+                2, 8, 8, 20, 2));
+        fixture.hostile(BOT_A, TARGET_A);
+        Assertions.assertEquals(SafetyHandoffDecision.DELEGATED,
+                fixture.service.request(request(BOT_A, TARGET_A, INCIDENT_A, 0L)));
+        fixture.service.tick(0L);
+        SelfDefenseSkillService.ActionDispatch attack =
+                fixture.submitter.dispatches.get(0);
+
+        fixture.submitter.complete(attack, ActionState.SUCCEEDED, 0L,
+                List.of(
+                        new ActionEvidence("entity.id", TARGET_A.toString()),
+                        new ActionEvidence("entity.removed", "true")));
+        fixture.resolver.targets.remove(BOT_A);
+        fixture.service.tick(1L);
+
+        SelfDefenseSkillService.RunView view = fixture.service
+                .latestView(BOT_A).orElseThrow();
+        Assertions.assertEquals(SelfDefenseSkillService.RunStatus.COMPLETED,
+                view.status());
+        Assertions.assertEquals(DefenseState.COMPLETED,
+                view.decision().state());
+        Assertions.assertEquals(DefenseReason.TARGET_ELIMINATED,
+                view.decision().reason());
         Assertions.assertTrue(view.failure().isEmpty());
         Assertions.assertEquals(0, fixture.service.activeRunCount());
     }
@@ -305,12 +338,20 @@ class SelfDefenseSkillServiceTest {
                 SelfDefenseSkillService.ActionDispatch dispatch,
                 ActionState state,
                 long tick) {
+            complete(dispatch, state, tick, List.of());
+        }
+
+        private void complete(
+                SelfDefenseSkillService.ActionDispatch dispatch,
+                ActionState state,
+                long tick,
+                List<ActionEvidence> evidence) {
             ActionFailureCode code = state == ActionState.SUCCEEDED
                     ? ActionFailureCode.NONE
                     : ActionFailureCode.INTERNAL_ERROR;
             futures.get(dispatch.actionId()).complete(new ActionOutcome(
                     dispatch.actionId(), state, code, tick, tick,
-                    List.of(), "test completion"));
+                    evidence, "test completion"));
         }
     }
 }

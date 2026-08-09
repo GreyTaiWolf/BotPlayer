@@ -131,6 +131,22 @@ class LimitedSelfDefenseSessionTest {
         Assertions.assertTrue(completed.action().isEmpty());
     }
 
+    @Test
+    void verifiedSuccessfulMeleeEliminationClosesWithoutAnotherObservation() {
+        LimitedSelfDefenseSession session = session(hostile(true, 4.0D));
+        DefenseActionRequest attack = session.next(
+                healthy(hostile(true, 4.0D))).action().orElseThrow();
+
+        Assertions.assertEquals(DefenseReceiptStatus.ACCEPTED,
+                session.acknowledge(new DefenseActionReceipt(
+                        attack, DefenseActionOutcome.SUCCEEDED), true));
+        Assertions.assertEquals(DefenseState.COMPLETED,
+                session.decision().state());
+        Assertions.assertEquals(DefenseReason.TARGET_ELIMINATED,
+                session.decision().reason());
+        Assertions.assertTrue(session.decision().action().isEmpty());
+    }
+
     private static void assertRejected(
             DefenseTargetClass targetClass, DefenseReason expectedReason) {
         LimitedSelfDefenseSession session = session(new DefenseTarget(

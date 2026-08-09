@@ -91,11 +91,14 @@ class MinecraftProductionSkillNodeHandlerTest {
                 unused -> Optional.empty());
         String acquisition = operation("harvest_logs");
         String recipe = operation("craft_planks");
+        String placement = operation("place_crafting_table");
 
         List<ReservationRequest> acquisitionReservations =
                 handler.requiredReservations(context(acquisition, 10L, 0L));
         List<ReservationRequest> recipeReservations =
                 handler.requiredReservations(context(recipe, 10L, 0L));
+        List<ReservationRequest> placementReservations =
+                handler.requiredReservations(context(placement, 10L, 0L));
 
         Assertions.assertAll(
                 () -> Assertions.assertEquals(2,
@@ -114,7 +117,12 @@ class MinecraftProductionSkillNodeHandlerTest {
                         ReservationKey.Kind.CONTAINER,
                         recipeReservations.get(1).key().kind()),
                 () -> Assertions.assertEquals("inventory_2x2",
-                        recipeReservations.get(1).key().subject()));
+                        recipeReservations.get(1).key().subject()),
+                () -> Assertions.assertEquals(
+                        ReservationKey.Kind.WORK_AREA,
+                        placementReservations.get(1).key().kind()),
+                () -> Assertions.assertEquals(placement,
+                        placementReservations.get(1).key().subject()));
     }
 
     @Test
@@ -195,6 +203,33 @@ class MinecraftProductionSkillNodeHandlerTest {
 
         Assertions.assertEquals(SkillNodeDirective.Kind.WAIT_MENU,
                 result.kind());
+    }
+
+    @Test
+    void acceptsOnlyTheExactReviewedWorkstationPlaceBlockAction() {
+        MinecraftProductionSkillNodeHandler accepted = handler(
+                ignored -> Optional.of(placementPreflight(10L,
+                        ProductionLedger.of(
+                                ProductionMaterials.CRAFTING_TABLE, 1))),
+                unused -> Optional.of(craftingTablePlacementAction()));
+        MinecraftProductionSkillNodeHandler wrongState = handler(
+                ignored -> Optional.of(placementPreflight(10L,
+                        ProductionLedger.of(
+                                ProductionMaterials.CRAFTING_TABLE, 1))),
+                unused -> Optional.of(furnacePlacementWithCraftingTable()));
+
+        SkillNodeDirective acceptedDirective = accepted.begin(context(
+                operation("place_crafting_table"), 10L, 0L));
+        SkillNodeDirective rejectedDirective = wrongState.begin(context(
+                operation("place_crafting_table"), 10L, 0L));
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillNodeDirective.Kind.WAIT_ACTION,
+                        acceptedDirective.kind()),
+                () -> Assertions.assertEquals(SkillNodeDirective.Kind.FAIL,
+                        rejectedDirective.kind()),
+                () -> Assertions.assertEquals(SkillFailureCode.ACTION_REJECTED,
+                        rejectedDirective.failureCode().orElseThrow()));
     }
 
     @Test
@@ -425,6 +460,20 @@ class MinecraftProductionSkillNodeHandlerTest {
                 "inventory-menu");
     }
 
+    private static MinecraftProductionSkillNodeHandler.PreflightObservation
+            placementPreflight(long tick, ProductionLedger ledger) {
+        return new MinecraftProductionSkillNodeHandler.PreflightObservation(
+                new ProductionPreconditionSnapshot(
+                        1L,
+                        ledger,
+                        Optional.empty(),
+                        true,
+                        Optional.empty()),
+                tick,
+                "workstation-placement",
+                "native-inventory");
+    }
+
     private static MinecraftProductionSkillNodeHandler.ProductionAction
             testAction() {
         return new MinecraftProductionSkillNodeHandler.ProductionAction(
@@ -489,6 +538,51 @@ class MinecraftProductionSkillNodeHandlerTest {
                                 MenuTransactionLimits.defaults())),
                 160,
                 "等待测试原版工作台 crafting 动作");
+    }
+
+    private static MinecraftProductionSkillNodeHandler.ProductionAction
+            craftingTablePlacementAction() {
+        return placementAction(new BlockStateFingerprint(
+                new ResourceId("minecraft:crafting_table"), Map.of()));
+    }
+
+    private static MinecraftProductionSkillNodeHandler.ProductionAction
+            furnacePlacementWithCraftingTable() {
+        return placementAction(new BlockStateFingerprint(
+                new ResourceId("minecraft:furnace"),
+                Map.of("facing", "north", "lit", "false")));
+    }
+
+    private static MinecraftProductionSkillNodeHandler.ProductionAction
+            placementAction(BlockStateFingerprint placedState) {
+        BlockTargetFingerprint anchor = new BlockTargetFingerprint(
+                new ResourceId("minecraft:overworld"),
+                new BlockCoordinates(4, 64, 4),
+                new BlockStateFingerprint(new ResourceId("minecraft:stone"),
+                        Map.of()));
+        BlockTargetFingerprint placed = new BlockTargetFingerprint(
+                new ResourceId("minecraft:overworld"),
+                new BlockCoordinates(4, 65, 4),
+                placedState);
+        ItemStackFingerprint held = ItemStackFingerprint.of(
+                new ResourceId("minecraft:crafting_table"),
+                1,
+                0,
+                "a".repeat(64));
+        return new MinecraftProductionSkillNodeHandler.ProductionAction(
+                new WorldInteractionAction(
+                        new WorldInteractionActionSpec.PlaceBlock(
+                                new BlockHitTarget(
+                                        anchor,
+                                        BlockHitTarget.Face.UP,
+                                        0.5D,
+                                        1.0D,
+                                        0.5D,
+                                        false),
+                                placed,
+                                held)),
+                160,
+                "等待测试原版工作站放置动作");
     }
 
     private static SkillNodeContext context(

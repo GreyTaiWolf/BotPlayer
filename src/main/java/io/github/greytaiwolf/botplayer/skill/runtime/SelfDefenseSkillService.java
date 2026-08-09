@@ -1,5 +1,6 @@
 package io.github.greytaiwolf.botplayer.skill.runtime;
 
+import io.github.greytaiwolf.botplayer.action.ActionEvidence;
 import io.github.greytaiwolf.botplayer.action.ActionOutcome;
 import io.github.greytaiwolf.botplayer.action.ActionRequest;
 import io.github.greytaiwolf.botplayer.action.ActionState;
@@ -319,13 +320,21 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
                         "动作层回执已过期", currentTick);
                 continue;
             }
+            boolean verifiedTargetElimination = verifiedTargetElimination(
+                    event.dispatch, event.outcome);
             DefenseReceiptStatus status = current.session.acknowledge(
                     new DefenseActionReceipt(
                             event.dispatch.defenseAction(),
-                            mapActionOutcome(event.outcome.state())));
+                            mapActionOutcome(event.outcome.state())),
+                    verifiedTargetElimination);
             if (status != DefenseReceiptStatus.ACCEPTED) {
                 fail(current, Failure.ACTION_COMPLETION_INVALID,
                         "动作完成回执不属于当前会话", currentTick);
+                continue;
+            }
+            DefenseDecision decision = current.session.decision();
+            if (decision.state().terminal()) {
+                settleTerminalDecision(current, decision, currentTick);
             }
         }
     }
@@ -565,6 +574,39 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
                     throw new IllegalArgumentException(
                             "terminal action state was required");
         };
+    }
+
+    /**
+     * {@code AttackEntity} 后端只有在同一 UUID 的精确动作已经验证目标移除时才会给出这对
+     * evidence。缺失、重复或矛盾 evidence 都不被当作消灭，随后仍由普通目标观察决定。
+     */
+    private static boolean verifiedTargetElimination(
+            ActionDispatch dispatch, ActionOutcome outcome) {
+        if (dispatch.defenseAction().kind() != DefenseActionKind.MELEE_ATTACK
+                || outcome.state() != ActionState.SUCCEEDED) {
+            return false;
+        }
+        String targetId = dispatch.defenseAction().targetId().toString();
+        boolean matchingEntity = false;
+        boolean removed = false;
+        boolean entityIdSeen = false;
+        boolean removedSeen = false;
+        for (ActionEvidence evidence : outcome.evidence()) {
+            if ("entity.id".equals(evidence.key())) {
+                if (entityIdSeen || !targetId.equals(evidence.value())) {
+                    return false;
+                }
+                entityIdSeen = true;
+                matchingEntity = true;
+            } else if ("entity.removed".equals(evidence.key())) {
+                if (removedSeen || !"true".equals(evidence.value())) {
+                    return false;
+                }
+                removedSeen = true;
+                removed = true;
+            }
+        }
+        return matchingEntity && removed;
     }
 
     private static String requireSummary(String value) {

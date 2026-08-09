@@ -132,7 +132,10 @@ class WorldInteractionActionSpecTest {
       Assertions.assertAll(
          () -> Assertions.assertEquals(WorldInteractionActionSpec.Kind.PLACE_BLOCK, action.kind()),
          () -> Assertions.assertEquals(ActionKind.PLACE_BLOCK, new WorldInteractionAction(action).kind()),
-         () -> Assertions.assertEquals(Set.of(ActionChannel.MAIN_HAND, ActionChannel.INTERACT), action.channels()),
+         () -> Assertions.assertEquals(
+            Set.of(ActionChannel.MAIN_HAND, ActionChannel.INTERACT, ActionChannel.LOOK),
+            action.channels()
+         ),
          () -> Assertions.assertEquals(anchor, action.anchor()),
          () -> Assertions.assertEquals(expectedPlaced, action.expectedPlaced()),
          () -> Assertions.assertEquals(OAK_PLANKS, action.expectedHeldItem())

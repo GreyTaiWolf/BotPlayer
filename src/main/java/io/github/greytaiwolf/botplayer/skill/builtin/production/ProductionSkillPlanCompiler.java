@@ -384,17 +384,28 @@ public final class ProductionSkillPlanCompiler {
     }
 
     /**
-     * 生产模板本身只描述物料和工作站合同；工具装入主手必须是独立的、可由原版
-     * InventoryMenu 事务审计的节点。下列三道门重新接管 template 中相应源节点的全部
-     * 下游边：木镐在圆石前、石镐在煤和原铁前，铁镐作为最后一个确认节点。
+     * 生产模板本身只描述物料和工作站合同；精确物品装入主手必须是独立的、可由原版
+     * InventoryMenu 事务审计的节点。下列五道门重新接管 template 中相应源节点的全部
+     * 下游边：工作台和熔炉必须先装备再放置，木镐在圆石前、石镐在煤和原铁前，铁镐作为
+     * 最后一个确认节点。
      */
     private static List<ExactMainHandStep> canonicalExactMainHandSteps() {
         List<ExactMainHandStep> steps = List.of(
+                new ExactMainHandStep(
+                        "equip_crafting_table",
+                        ExactMainHandItem.CRAFTING_TABLE,
+                        "crafting_table",
+                        List.of("place_crafting_table")),
                 new ExactMainHandStep(
                         "equip_wooden_pickaxe",
                         ExactMainHandItem.WOODEN_PICKAXE,
                         "wooden_pickaxe",
                         List.of("mine_cobblestone")),
+                new ExactMainHandStep(
+                        "equip_furnace",
+                        ExactMainHandItem.FURNACE,
+                        "craft_furnace",
+                        List.of("place_furnace")),
                 new ExactMainHandStep(
                         "equip_stone_pickaxe",
                         ExactMainHandItem.STONE_PICKAXE,
@@ -542,6 +553,9 @@ public final class ProductionSkillPlanCompiler {
         if (operation instanceof SingleChestTransfer) {
             return 1;
         }
+        if (operation instanceof PlaceWorkstation) {
+            return 1;
+        }
         throw new IllegalStateException(
                 "unrecognized sealed production operation type");
     }
@@ -608,6 +622,21 @@ public final class ProductionSkillPlanCompiler {
                     source.menuContract(),
                     source.furnaceRequirement());
         }
+        if (operation instanceof PlaceWorkstation placement) {
+            if (fragmentCount != 1 || fragmentIndex != 1
+                    || !source.expectedPlayerDelta().equals(
+                            placement.expectedDelta())
+                    || source.menuContract().isPresent()
+                    || source.furnaceRequirement().isPresent()) {
+                throw new IllegalStateException(
+                        "workstation placement must remain one non-menu physical fragment");
+            }
+            return new ProductionResolvedNode(
+                    fragmentNode,
+                    placement.expectedDelta(),
+                    Optional.empty(),
+                    Optional.empty());
+        }
         throw new IllegalStateException(
                 "unrecognized sealed production operation type");
     }
@@ -645,6 +674,13 @@ public final class ProductionSkillPlanCompiler {
             if (fragmentCount != 1) {
                 throw new IllegalStateException(
                         "single chest transfer must have one physical fragment");
+            }
+            return source;
+        }
+        if (source instanceof PlaceWorkstation) {
+            if (fragmentCount != 1) {
+                throw new IllegalStateException(
+                        "workstation placement must have one physical fragment");
             }
             return source;
         }
@@ -807,6 +843,14 @@ public final class ProductionSkillPlanCompiler {
                     + ledgerSignature(transfer.withdrawFromChest())
                     + "\u0000"
                     + transfer.maximumClicks();
+        }
+        if (operation instanceof PlaceWorkstation placement) {
+            return "place-workstation\u0000"
+                    + placement.workstation().name()
+                    + "\u0000"
+                    + placement.workstation().material().id().value()
+                    + "\u0000"
+                    + placement.workstation().menuFamily().stableId();
         }
         throw new IllegalStateException(
                 "unrecognized sealed production operation type");

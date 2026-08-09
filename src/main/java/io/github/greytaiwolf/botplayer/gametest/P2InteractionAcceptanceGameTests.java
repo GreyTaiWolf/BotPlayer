@@ -42,6 +42,13 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @PrefixGameTestTemplate(false)
 public final class P2InteractionAcceptanceGameTests {
     private static final String BATCH = "p2_interaction";
+    /*
+     * The ordinary interaction batch already uses the configured eight-bot
+     * capacity.  Strict placement has its own two-test batch so adding its
+     * negative path cannot turn unrelated pickup coverage into a capacity
+     * failure before either action is dispatched.
+     */
+    private static final String STRICT_PLACEMENT_BATCH = "p2_strict_placement";
 
     private P2InteractionAcceptanceGameTests() {}
 
@@ -132,7 +139,7 @@ public final class P2InteractionAcceptanceGameTests {
      */
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = STRICT_PLACEMENT_BATCH,
             timeoutTicks = P2GameTestSupport.TIMEOUT_TICKS)
     public static void placeBlockRequiresExactAdjacentStateAndDebit(
             GameTestHelper helper) {
@@ -222,7 +229,7 @@ public final class P2InteractionAcceptanceGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = STRICT_PLACEMENT_BATCH,
             timeoutTicks = P2GameTestSupport.TIMEOUT_TICKS)
     public static void placeBlockRejectsOccupiedDestinationBeforeDispatch(
             GameTestHelper helper) {

@@ -17,14 +17,20 @@ public record ProductionResolvedNode(
         menuContract = Objects.requireNonNull(menuContract, "menuContract");
         furnaceRequirement = Objects.requireNonNull(
                 furnaceRequirement, "furnaceRequirement");
-        if (node.operation() instanceof ResourceAcquisition) {
+        if (node.operation() instanceof ResourceAcquisition
+                || node.operation() instanceof PlaceWorkstation) {
             if (menuContract.isPresent() || furnaceRequirement.isPresent()) {
                 throw new IllegalArgumentException(
-                        "resource acquisition must not require a menu contract");
+                        "non-menu production operation must not require a menu contract");
             }
         } else if (menuContract.isEmpty()) {
             throw new IllegalArgumentException(
                     "menu operation requires an exact menu contract");
+        }
+        if (furnaceRequirement.isPresent()
+                && !(node.operation() instanceof RecipeExecution)) {
+            throw new IllegalArgumentException(
+                    "only a recipe operation may require a furnace batch");
         }
     }
 }

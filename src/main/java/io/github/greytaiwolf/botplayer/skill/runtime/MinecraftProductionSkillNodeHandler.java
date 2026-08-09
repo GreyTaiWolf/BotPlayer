@@ -5,6 +5,7 @@ import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
 import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.P5ARecipe;
 import io.github.greytaiwolf.botplayer.skill.builtin.P5ABuiltinSkillIds;
+import io.github.greytaiwolf.botplayer.skill.builtin.production.PlaceWorkstation;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionLedger;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionOperation;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionPreconditionRejection;
@@ -48,8 +49,8 @@ import java.util.UUID;
  *
  * <p>{@link ResourceAcquisitionActionPort} 是 TaskSensor 到具体挖掘/采集动作的窄适配层：
  * lifecycle 注入同一份受额度约束的 {@link TaskSensorService}，端口只能据此选择已观察到的
- * 目标并返回一条冻结的原版世界动作。{@link MenuActionPort} 同样只在现有菜单动作端点能
- * 精确表达 recipe/furnace/chest 合同时返回动作；当前没有可表达的 recipe action 时它应
+ * 目标并返回一条冻结的原版世界动作。{@link MenuActionPort} 同样只在现有受控世界动作端点能
+ * 精确表达 recipe/furnace/chest 或工作站放置合同时返回动作；当前没有可表达的动作时它应
  * 返回空，本 handler 会保守拒绝而不是伪造库存变化。
  */
 public final class MinecraftProductionSkillNodeHandler
@@ -62,6 +63,8 @@ public final class MinecraftProductionSkillNodeHandler
     private static final String ACQUISITION_SCOPE =
             "minecraft.production.acquire";
     private static final String MENU_SCOPE = "minecraft.production.menu";
+    private static final String WORKSTATION_PLACEMENT_SCOPE =
+            "minecraft.production.place-workstation";
     private static final int MAX_BINDING_LENGTH = 256;
     /** 方块已由原版打碎但掉落物尚未被身体拾取时的最大重观察次数。 */
     private static final int MAX_RESOURCE_PICKUP_POLLS = 20;
@@ -83,7 +86,7 @@ public final class MinecraftProductionSkillNodeHandler
      * @param observations 同一服务器线程的账本、world/menu binding 观察端口
      * @param taskSensors 受通用 runtime authority/额度保护的 TaskSensor 服务
      * @param acquisitionActions TaskSensor 驱动的采集世界动作端口
-     * @param menuActions 已存在的原版菜单动作端口；不可表达配方时返回空
+     * @param menuActions 已存在的原版菜单/工作站放置动作端口；不可表达时返回空
      * @param actions P2 action mailbox 的受控提交端口
      * @param signals 通用 runtime 的异步回执 inbox
      */
@@ -259,7 +262,8 @@ public final class MinecraftProductionSkillNodeHandler
                 return acquisitionActions.plan(ticket, taskSensors);
             }
             if (operation instanceof RecipeExecution
-                    || operation instanceof SingleChestTransfer) {
+                    || operation instanceof SingleChestTransfer
+                    || operation instanceof PlaceWorkstation) {
                 return menuActions.plan(ticket);
             }
             return Optional.empty();
@@ -270,8 +274,9 @@ public final class MinecraftProductionSkillNodeHandler
 
     /**
      * 不让动作端口拿一个“等待掉落”“使用物品”之类的泛动作冒充生产步骤。采集必须真实走
-     * {@code BREAK_BLOCK}；配方和单箱转移分别必须走已有的严格菜单动作类别。这样即使未来
-     * 端口实现有缺口，也只会在提交前拒绝，而不会留下可由外部账本伪造掩盖的成功路径。
+     * {@code BREAK_BLOCK}；配方和单箱转移分别必须走已有的严格菜单动作类别；工作站必须走
+     * 完整 {@code PLACE_BLOCK}。这样即使未来端口实现有缺口，也只会在提交前拒绝，而不会留下
+     * 可由外部账本伪造掩盖的成功路径。
      */
     private static boolean actionMatchesOperation(
             ExecutionTicket ticket, ProductionAction action) {
@@ -299,6 +304,20 @@ public final class MinecraftProductionSkillNodeHandler
         if (operation instanceof SingleChestTransfer) {
             return actionKind
                     == WorldInteractionActionSpec.Kind.WORLD_MENU_TRANSFER;
+        }
+        if (operation instanceof PlaceWorkstation placement) {
+            if (actionKind != WorldInteractionActionSpec.Kind.PLACE_BLOCK
+                    || !(action.action().spec()
+                            instanceof WorldInteractionActionSpec.PlaceBlock
+                                    placeBlock)) {
+                return false;
+            }
+            return !placeBlock.expectedHeldItem().isEmpty()
+                    && placeBlock.expectedHeldItem().itemId().filter(
+                            placement.workstation().material().id()::equals)
+                    .isPresent()
+                    && placement.workstation().matchesExpectedPlacedState(
+                            placeBlock.expectedPlaced().state());
         }
         return false;
     }
@@ -561,6 +580,12 @@ public final class MinecraftProductionSkillNodeHandler
                     ACQUISITION_SCOPE,
                     approved.operationId());
         }
+        if (operation instanceof PlaceWorkstation) {
+            return new ReservationKey(
+                    ReservationKey.Kind.WORK_AREA,
+                    WORKSTATION_PLACEMENT_SCOPE,
+                    approved.operationId());
+        }
         MenuFamily family = approved.resolved().menuContract()
                 .orElseThrow()
                 .family();
@@ -579,6 +604,9 @@ public final class MinecraftProductionSkillNodeHandler
         }
         if (operation instanceof SingleChestTransfer) {
             return "production-transfer";
+        }
+        if (operation instanceof PlaceWorkstation) {
+            return "production-place-workstation";
         }
         throw new IllegalArgumentException("unsupported production operation");
     }
@@ -738,8 +766,9 @@ public final class MinecraftProductionSkillNodeHandler
     }
 
     /**
-     * 具体菜单 recipe/furnace/chest 动作端口。现有 action backend 不能精确表达某个配方时应
-     * 返回空；handler 将以 ACTION_REJECTED 结束该节点，而不是用账本模拟 crafting 成功。
+     * 具体菜单 recipe/furnace/chest 或工作站放置动作端口。现有 action backend 不能精确表达
+     * 某个受审核合同（包括完整的 {@code PlaceBlock}）时应返回空；handler 将以
+     * ACTION_REJECTED 结束该节点，而不是用账本模拟成功。
      */
     @FunctionalInterface
     public interface MenuActionPort {
@@ -749,8 +778,9 @@ public final class MinecraftProductionSkillNodeHandler
     /**
      * 工厂返回的唯一可执行载体。限制为 {@link WorldInteractionAction}，并在提交前由
      * {@link #actionMatchesOperation(ExecutionTicket, ProductionAction)} 进一步限制为本节点
-     * 对应的 {@code BREAK_BLOCK}/{@code WORLD_MENU_RECIPE}/{@code WORLD_MENU_TRANSFER}
-     * 种类，从类型上排除 command 或直接库存写入这类不能证明真实世界结果的替代路径。
+     * 对应的 {@code BREAK_BLOCK}/{@code WORLD_MENU_RECIPE}/{@code WORLD_MENU_TRANSFER}/
+     * {@code PLACE_BLOCK} 种类，从类型上排除 command 或直接库存写入这类不能证明真实世界
+     * 结果的替代路径。
      */
     public record ProductionAction(
             WorldInteractionAction action,
