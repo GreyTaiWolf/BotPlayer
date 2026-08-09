@@ -95,6 +95,17 @@ public final class P5ARestartPhaseOneGameTests {
                     "P5A phase-one normal shutdown failed: " + value);
         });
         /*
+         * The LOWEST-priority support callback records the safe checkpoint
+         * before it invokes manager.shutdown(). The expected cancellation of
+         * that already-safe run is therefore evidence of a normal phase-one
+         * stop, not a production failure.
+         */
+        if (P5ARestartGameTestSupport.phaseOneShutdownIssued(server)
+                && P5ARestartGameTestSupport.phaseOneCheckpoint(server)
+                        .isPresent()) {
+            return true;
+        }
+        /*
          * A terminal run cannot become a later restartable checkpoint. Report
          * its structured view immediately instead of hiding a concrete
          * production failure behind the outer timeout.
@@ -106,9 +117,7 @@ public final class P5ARestartPhaseOneGameTests {
                             "P5A phase-one run became terminal before a restartable safe checkpoint: "
                                     + view);
                 });
-        return P5ARestartGameTestSupport.phaseOneShutdownIssued(server)
-                && P5ARestartGameTestSupport.phaseOneCheckpoint(server)
-                        .isPresent();
+        return false;
     }
 
     private static void assertRetainedCheckpoint(

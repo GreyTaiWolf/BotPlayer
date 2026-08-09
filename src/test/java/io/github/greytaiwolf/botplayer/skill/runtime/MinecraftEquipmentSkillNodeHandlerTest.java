@@ -42,4 +42,36 @@ class MinecraftEquipmentSkillNodeHandlerTest {
         Assertions.assertEquals("item.id",
                 P5ABuiltinSkillIds.EXACT_MAIN_HAND_ITEM_ID_PARAMETER);
     }
+
+    @Test
+    void exactMainHandOperationKeysRemainValidActionBridgeIdentifiers() {
+        Assertions.assertAll(
+                () -> Assertions.assertEquals("equip-exact-crafting-table",
+                        MinecraftEquipmentSkillNodeHandler
+                                .exactMainHandOperationKey(
+                                        ExactMainHandItem.CRAFTING_TABLE)),
+                () -> Assertions.assertEquals("equip-exact-furnace",
+                        MinecraftEquipmentSkillNodeHandler
+                                .exactMainHandOperationKey(
+                                        ExactMainHandItem.FURNACE)),
+                () -> Assertions.assertEquals("equip-exact-wooden-pickaxe",
+                        MinecraftEquipmentSkillNodeHandler
+                                .exactMainHandOperationKey(
+                                        ExactMainHandItem.WOODEN_PICKAXE)),
+                () -> Assertions.assertEquals("equip-exact-stone-pickaxe",
+                        MinecraftEquipmentSkillNodeHandler
+                                .exactMainHandOperationKey(
+                                        ExactMainHandItem.STONE_PICKAXE)),
+                () -> Assertions.assertEquals("equip-exact-iron-pickaxe",
+                        MinecraftEquipmentSkillNodeHandler
+                                .exactMainHandOperationKey(
+                                        ExactMainHandItem.IRON_PICKAXE)));
+        for (ExactMainHandItem item : ExactMainHandItem.values()) {
+            String key = MinecraftEquipmentSkillNodeHandler
+                    .exactMainHandOperationKey(item);
+            Assertions.assertTrue(key.matches("[a-z][a-z0-9_-]{0,31}"),
+                    () -> "action bridge rejected exact-main-hand key: "
+                            + key);
+        }
+    }
 }

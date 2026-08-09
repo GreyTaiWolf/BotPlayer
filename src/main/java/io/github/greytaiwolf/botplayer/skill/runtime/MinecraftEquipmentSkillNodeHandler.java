@@ -256,7 +256,22 @@ public final class MinecraftEquipmentSkillNodeHandler
         }
         return template(player,
                 choice.sourceInventorySlot(), choice.targetHotbarSlot(),
-                "equip-exact-main-hand:" + requested.itemId().value());
+                exactMainHandOperationKey(requested));
+    }
+
+    /**
+     * {@link ActionBackedSkillNodeHandler.Operation} 的 operation key 不是 ResourceId：它是
+     * 有长度及字符集限制的 idempotency-key 片段。nodeId 已经把每个精确装备节点区分开，
+     * 这里仍使用封闭的稳定名称，避免把 {@code minecraft:...} 直接带入受限标识符。
+     */
+    static String exactMainHandOperationKey(ExactMainHandItem requested) {
+        return switch (Objects.requireNonNull(requested, "requested")) {
+            case CRAFTING_TABLE -> "equip-exact-crafting-table";
+            case WOODEN_PICKAXE -> "equip-exact-wooden-pickaxe";
+            case FURNACE -> "equip-exact-furnace";
+            case STONE_PICKAXE -> "equip-exact-stone-pickaxe";
+            case IRON_PICKAXE -> "equip-exact-iron-pickaxe";
+        };
     }
 
     /**
