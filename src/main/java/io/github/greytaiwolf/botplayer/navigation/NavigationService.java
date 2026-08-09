@@ -294,9 +294,36 @@ public final class NavigationService implements AutoCloseable {
                         "导航超过请求 Tick 上限");
                 continue;
             }
-            if (session.request.goal().reached(
-                    GridPoint.from(player.blockPosition()))) {
+            GridPoint playerPosition = GridPoint.from(player.blockPosition());
+            if (arrivalSatisfied(session.request, playerPosition,
+                    player.onGround())) {
                 succeed(session, player, currentTick);
+                continue;
+            }
+            boolean geometricGoalReached = session.request.goal().reached(
+                    playerPosition);
+            if (geometricGoalReached
+                    && session.request.arrivalRequirement()
+                            == NavigationArrivalRequirement.GROUNDED_GRID_CELL) {
+                /*
+                 * A jump may enter the target cell before it has reached its
+                 * supporting block. Do not terminate and cancel the active
+                 * input here: the same bounded navigation session must retain
+                 * control until it either lands or leaves the cell and routes
+                 * again from the real body position.
+                 */
+                session.safeSummary = "已进入导航目标格，等待真实身体落地";
+                session.lastStateTick = currentTick;
+                session.awaitingGroundedArrival = true;
+                continue;
+            }
+            if (requiresGroundedArrivalReplan(
+                    session.request,
+                    session.awaitingGroundedArrival,
+                    geometricGoalReached)) {
+                session.awaitingGroundedArrival = false;
+                recoverOrFail(session, currentTick,
+                        "接地到达前已离开目标格，将从真实身体位置重算");
                 continue;
             }
             if (session.state == NavigationState.SUSPENDED_BY_SAFETY) {
@@ -1019,6 +1046,26 @@ public final class NavigationService implements AutoCloseable {
                 "已从真实玩家位置验证导航目标");
     }
 
+    static boolean arrivalSatisfied(
+            NavigationRequest request,
+            GridPoint playerPosition,
+            boolean onGround) {
+        Objects.requireNonNull(request, "request");
+        return request.arrivalRequirement().isSatisfied(
+                request.goal().reached(playerPosition), onGround);
+    }
+
+    static boolean requiresGroundedArrivalReplan(
+            NavigationRequest request,
+            boolean awaitingGroundedArrival,
+            boolean geometricGoalReached) {
+        Objects.requireNonNull(request, "request");
+        return awaitingGroundedArrival
+                && request.arrivalRequirement()
+                        == NavigationArrivalRequirement.GROUNDED_GRID_CELL
+                && !geometricGoalReached;
+    }
+
     private void terminate(
             Session session,
             NavigationState terminalState,
@@ -1031,6 +1078,7 @@ public final class NavigationService implements AutoCloseable {
         session.snapshotCursor = cancelCursor(session.snapshotCursor);
         cancelPlanning(session);
         cancelActiveAction(session);
+        session.awaitingGroundedArrival = false;
         session.state = terminalState;
         session.failure = failure;
         session.safeSummary = summary;
@@ -1260,6 +1308,7 @@ public final class NavigationService implements AutoCloseable {
                 pendingTerrainMutation;
         private ActionPhase actionPhase = ActionPhase.LOOK;
         private long lastStateTick;
+        private boolean awaitingGroundedArrival;
         private String safeSummary = "导航会话已创建";
 
         private Session(

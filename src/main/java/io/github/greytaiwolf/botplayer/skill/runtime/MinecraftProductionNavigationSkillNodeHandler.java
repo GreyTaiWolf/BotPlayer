@@ -3,6 +3,7 @@ package io.github.greytaiwolf.botplayer.skill.runtime;
 import io.github.greytaiwolf.botplayer.action.ActionEvidence;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.navigation.GridPoint;
+import io.github.greytaiwolf.botplayer.navigation.NavigationArrivalRequirement;
 import io.github.greytaiwolf.botplayer.navigation.NavigationFailure;
 import io.github.greytaiwolf.botplayer.navigation.NavigationGoal;
 import io.github.greytaiwolf.botplayer.navigation.NavigationOutcome;
@@ -64,12 +65,13 @@ public final class MinecraftProductionNavigationSkillNodeHandler
      * BREAK_BLOCK 会让 Bot 落入刚产生的掉落物，而不是停在相邻格后只被动轮询。
      */
     static final int RESOURCE_GOAL_RADIUS = 0;
-    static final int MAXIMUM_NAVIGATION_TICKS = 1_200;
     /**
-     * 离散脚位已到达不代表跳跃已经落地。P5A 必须在开始破坏脚下资源前，先验证真实
-     * body 已稳定站在资源顶部；否则掉落实体与 body 的相对位置不是可证明的拾取边界。
+     * Resource acquisition must keep the navigation action alive until the
+     * body has actually landed on the resource's top cell.
      */
-    static final int MAXIMUM_LANDING_SETTLE_TICKS = 40;
+    static final NavigationArrivalRequirement RESOURCE_ARRIVAL_REQUIREMENT =
+            NavigationArrivalRequirement.GROUNDED_GRID_CELL;
+    static final int MAXIMUM_NAVIGATION_TICKS = 1_200;
 
     private static final String NAVIGATION_EVIDENCE_KEY =
             "navigation.resource";
@@ -82,8 +84,6 @@ public final class MinecraftProductionNavigationSkillNodeHandler
     private final TaskSensorSampler taskSensorSampler;
     private final SignalSink signals;
     private final Map<UUID, PendingNavigation> pendingByRun =
-            new LinkedHashMap<>();
-    private final Map<UUID, LandingWait> landingByRun =
             new LinkedHashMap<>();
     private final Thread ownerThread;
 
@@ -120,8 +120,7 @@ public final class MinecraftProductionNavigationSkillNodeHandler
     public SkillNodeDirective begin(SkillNodeContext context) {
         requireOwnerThread();
         Objects.requireNonNull(context, "context");
-        if (pendingByRun.containsKey(context.runId())
-                || landingByRun.containsKey(context.runId())) {
+        if (pendingByRun.containsKey(context.runId())) {
             return SkillNodeDirective.fail(
                     SkillFailureCode.INTERNAL_ERROR,
                     "资源导航节点重复提交了未完成导航");
@@ -254,90 +253,22 @@ public final class MinecraftProductionNavigationSkillNodeHandler
                     SkillFailureCode.TARGET_GONE,
                     "资源导航完成后原始资源候选已经变化");
         }
-        if (groundedAtPickupStand(
+        if (!groundedAtPickupStand(
                 GridPoint.from(player.blockPosition()),
                 player.onGround(),
                 pending.pickupStand())) {
-            return SkillNodeDirective.complete(
-                    "已在资源顶部稳定落地；后续采集节点将重新观察并冻结目标");
-        }
-        long landingDeadline = Math.min(
-                context.deadlineTick(),
-                Math.addExact(context.currentTick(),
-                        MAXIMUM_LANDING_SETTLE_TICKS));
-        if (landingDeadline <= context.currentTick()) {
-            return SkillNodeDirective.fail(
-                    SkillFailureCode.TIMEOUT,
-                    "资源导航完成后没有剩余 tick 验证稳定落地");
-        }
-        /* CONTINUE 会把 runtime 从 WAITING_NAVIGATION 转入 RUNNING 并递增 revision。 */
-        LandingWait landing = new LandingWait(
-                pending, context.nextStateRevision(), landingDeadline);
-        if (landingByRun.putIfAbsent(context.runId(), landing) != null) {
-            return SkillNodeDirective.fail(
-                    SkillFailureCode.INTERNAL_ERROR,
-                    "资源导航完成后重复建立稳定落地门");
-        }
-        return SkillNodeDirective.continueRunning(
-                "资源导航已到达离散目标，等待真实身体稳定落在资源顶部");
-    }
-
-    /**
-     * 通用 NavigationService 的成功语义只校验离散 {@link GridPoint}。对于资源上跳，
-     * {@code y >= goal} 可在跳跃中途成立；这个窄门避免改变水路、梯子等通用导航语义。
-     */
-    @Override
-    public SkillNodeDirective tick(SkillNodeContext context) {
-        requireOwnerThread();
-        Objects.requireNonNull(context, "context");
-        LandingWait landing = landingByRun.get(context.runId());
-        if (landing == null) {
-            return SkillNodeDirective.fail(
-                    SkillFailureCode.INTERNAL_ERROR,
-                    "资源导航节点进入运行态时缺少稳定落地门");
-        }
-        if (!landing.matches(context)) {
-            landingByRun.remove(context.runId(), landing);
-            return SkillNodeDirective.fail(
-                    SkillFailureCode.WORLD_CHANGED,
-                    "资源导航稳定落地期间节点身份或资源合同已变化");
-        }
-        BotServerPlayer player = resolveCurrent(context).orElse(null);
-        if (player == null || !currentTick(player, context.currentTick())) {
-            landingByRun.remove(context.runId(), landing);
-            return SkillNodeDirective.fail(
-                    SkillFailureCode.WORLD_CHANGED,
-                    "资源导航稳定落地期间 BotPlayer 代际或当前 tick 不可用");
-        }
-        if (!expectedResourceStillAt(player, landing.pending())) {
-            landingByRun.remove(context.runId(), landing);
-            return SkillNodeDirective.fail(
-                    SkillFailureCode.TARGET_GONE,
-                    "资源导航稳定落地期间原始资源候选已经变化");
-        }
-        if (groundedAtPickupStand(
-                GridPoint.from(player.blockPosition()),
-                player.onGround(),
-                landing.pending().pickupStand())) {
-            landingByRun.remove(context.runId(), landing);
-            return SkillNodeDirective.complete(
-                    "已在资源顶部稳定落地；后续采集节点将重新观察并冻结目标");
-        }
-        if (context.currentTick() >= landing.deadlineTick()) {
-            landingByRun.remove(context.runId(), landing);
             return SkillNodeDirective.fail(
                     SkillFailureCode.NAVIGATION_FAILED,
-                    "资源导航完成后未能在资源顶部稳定落地");
+                    "资源导航违反了稳定落地到达合同");
         }
-        return SkillNodeDirective.continueRunning(
-                "等待资源顶部跳跃/落地物理状态稳定");
+        return SkillNodeDirective.complete(
+                "已在资源顶部稳定落地；后续采集节点将重新观察并冻结目标");
     }
 
     @Override
     public void cancelled(SkillNodeContext context, String reason) {
         requireOwnerThread();
         Objects.requireNonNull(context, "context");
-        landingByRun.remove(context.runId());
         PendingNavigation pending = pendingByRun.remove(context.runId());
         if (pending == null) {
             return;
@@ -491,6 +422,7 @@ public final class MinecraftProductionNavigationSkillNodeHandler
                         player.serverLevel().dimension().location().toString(),
                         pickupStand,
                         RESOURCE_GOAL_RADIUS),
+                RESOURCE_ARRIVAL_REQUIREMENT,
                 NavigationPolicy.safeDefault(),
                 deadline,
                 Math.toIntExact(maximumDuration),
@@ -517,13 +449,6 @@ public final class MinecraftProductionNavigationSkillNodeHandler
         return onGround
                 && Objects.requireNonNull(pickupStand, "pickupStand")
                         .equals(currentPosition);
-    }
-
-    static boolean landingContinuationMatches(
-            long expectedRunRevision,
-            long actualRunRevision) {
-        return expectedRunRevision >= 1L
-                && expectedRunRevision == actualRunRevision;
     }
 
     private static boolean expectedResourceStillAt(
@@ -764,33 +689,6 @@ public final class MinecraftProductionNavigationSkillNodeHandler
                     && nodeId.equals(context.node().nodeId())
                     && approvedResourceBlock(context).filter(
                             expectedBlockId::equals).isPresent();
-        }
-    }
-
-    /**
-     * 只在同一 navigation node 的当前运行中保存临时资源顶部脚位。它绝不进入 SkillPlan、
-     * checkpoint 或后续 production binding；实际采集仍会重新观察并冻结目标。
-     */
-    private record LandingWait(
-            PendingNavigation pending,
-            long runRevision,
-            long deadlineTick) {
-        private LandingWait {
-            pending = Objects.requireNonNull(pending, "pending");
-            if (runRevision < 1L || deadlineTick < 0L) {
-                throw new IllegalArgumentException(
-                        "landing wait identity is invalid");
-            }
-        }
-
-        private boolean matches(SkillNodeContext context) {
-            return pending.botId().equals(context.botId())
-                    && pending.generation() == context.botGeneration()
-                    && landingContinuationMatches(
-                            runRevision, context.stateRevision())
-                    && pending.nodeId().equals(context.node().nodeId())
-                    && approvedResourceBlock(context).filter(
-                            pending.expectedBlockId()::equals).isPresent();
         }
     }
 

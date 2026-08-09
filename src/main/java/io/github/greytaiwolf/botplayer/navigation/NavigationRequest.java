@@ -9,6 +9,7 @@ public record NavigationRequest(
         UUID botId,
         long botGeneration,
         NavigationGoal goal,
+        NavigationArrivalRequirement arrivalRequirement,
         NavigationPolicy policy,
         long deadlineTick,
         int maximumDurationTicks,
@@ -24,6 +25,7 @@ public record NavigationRequest(
             throw new IllegalArgumentException("botGeneration must be positive");
         }
         Objects.requireNonNull(goal, "goal");
+        Objects.requireNonNull(arrivalRequirement, "arrivalRequirement");
         Objects.requireNonNull(policy, "policy");
         if (deadlineTick < 0L) {
             throw new IllegalArgumentException("deadlineTick must not be negative");
@@ -37,6 +39,31 @@ public record NavigationRequest(
             throw new IllegalArgumentException(
                     "idempotencyKey must be 1-128 safe ASCII characters");
         }
+    }
+
+    /**
+     * Preserves the established request constructor and its geometric-only
+     * arrival behavior for ordinary navigation callers.
+     */
+    public NavigationRequest(
+            UUID navigationId,
+            UUID botId,
+            long botGeneration,
+            NavigationGoal goal,
+            NavigationPolicy policy,
+            long deadlineTick,
+            int maximumDurationTicks,
+            String idempotencyKey) {
+        this(
+                navigationId,
+                botId,
+                botGeneration,
+                goal,
+                NavigationArrivalRequirement.GRID_CELL,
+                policy,
+                deadlineTick,
+                maximumDurationTicks,
+                idempotencyKey);
     }
 
     private static void requireUuid(UUID value, String name) {

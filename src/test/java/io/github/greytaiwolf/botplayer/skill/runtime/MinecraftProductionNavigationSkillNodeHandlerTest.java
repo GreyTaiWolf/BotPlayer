@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.greytaiwolf.botplayer.navigation.GridPoint;
+import io.github.greytaiwolf.botplayer.navigation.NavigationArrivalRequirement;
 import io.github.greytaiwolf.botplayer.navigation.NavigationGoal;
 import io.github.greytaiwolf.botplayer.skill.builtin.P5ABuiltinSkillIds;
 import io.github.greytaiwolf.botplayer.skill.core.SkillParameters;
@@ -121,17 +122,10 @@ class MinecraftProductionNavigationSkillNodeHandlerTest {
     }
 
     @Test
-    void landingGateUsesThePostContinueRuntimeRevision() {
-        long waitingNavigationRevision = 7L;
-        long runningRevision = waitingNavigationRevision + 1L;
-
-        assertFalse(MinecraftProductionNavigationSkillNodeHandler
-                .landingContinuationMatches(waitingNavigationRevision,
-                        runningRevision));
-        assertTrue(MinecraftProductionNavigationSkillNodeHandler
-                .landingContinuationMatches(runningRevision, runningRevision),
-                "an airborne signal that returns CONTINUE must survive "
-                        + "into the next runtime tick");
+    void resourceNavigationUsesGroundedArrivalContract() {
+        assertEquals(NavigationArrivalRequirement.GROUNDED_GRID_CELL,
+                MinecraftProductionNavigationSkillNodeHandler
+                        .RESOURCE_ARRIVAL_REQUIREMENT);
     }
 
     private static SkillNodeContext context(Map<String, Object> parameters) {

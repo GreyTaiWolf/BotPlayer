@@ -73,4 +73,50 @@ class NavigationContractTest {
                 () -> Assertions.assertFalse(
                         near.reached(new GridPoint(13, 64, 10))));
     }
+
+    @Test
+    void groundedArrivalIsOptInAndPreventsMidJumpCompletion() {
+        NavigationGoal goal = new NavigationGoal.ExactPosition(
+                "minecraft:overworld", new GridPoint(3, 65, 3), 0, 0);
+        NavigationRequest legacy = new NavigationRequest(
+                new UUID(4L, 1L),
+                new UUID(5L, 1L),
+                1L,
+                goal,
+                NavigationPolicy.safeDefault(),
+                100L,
+                100,
+                "navigation-arrival-legacy");
+        NavigationRequest grounded = new NavigationRequest(
+                new UUID(4L, 2L),
+                new UUID(5L, 1L),
+                1L,
+                goal,
+                NavigationArrivalRequirement.GROUNDED_GRID_CELL,
+                NavigationPolicy.safeDefault(),
+                100L,
+                100,
+                "navigation-arrival-grounded");
+        GridPoint target = new GridPoint(3, 65, 3);
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(
+                        NavigationArrivalRequirement.GRID_CELL,
+                        legacy.arrivalRequirement()),
+                () -> Assertions.assertTrue(NavigationService.arrivalSatisfied(
+                        legacy, target, false)),
+                () -> Assertions.assertFalse(NavigationService.arrivalSatisfied(
+                        grounded, target, false)),
+                () -> Assertions.assertTrue(NavigationService.arrivalSatisfied(
+                        grounded, target, true)),
+                () -> Assertions.assertTrue(
+                        NavigationService.requiresGroundedArrivalReplan(
+                                grounded, true, false)),
+                () -> Assertions.assertFalse(
+                        NavigationService.requiresGroundedArrivalReplan(
+                                grounded, true, true)),
+                () -> Assertions.assertFalse(
+                        NavigationService.requiresGroundedArrivalReplan(
+                                legacy, true, false)));
+    }
 }
