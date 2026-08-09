@@ -83,6 +83,14 @@ public final class P5ARestartGameTestSupport {
         return arm == null ? Optional.empty() : arm.checkpoint();
     }
 
+    /** Returns the armed phase-one view solely for timeout diagnostics. */
+    static Optional<SkillRunView> phaseOneRun(MinecraftServer server) {
+        PhaseOneArm arm = phaseOneArm(server);
+        return arm == null
+                ? Optional.empty()
+                : arm.manager().skillRun(arm.botId());
+    }
+
     static Optional<String> phaseOneFailure(MinecraftServer server) {
         PhaseOneArm arm = phaseOneArm(server);
         return arm == null ? Optional.empty() : arm.failure();

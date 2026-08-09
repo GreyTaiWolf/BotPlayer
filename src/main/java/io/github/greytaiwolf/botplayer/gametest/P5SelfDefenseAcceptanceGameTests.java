@@ -205,6 +205,13 @@ public final class P5SelfDefenseAcceptanceGameTests {
                                     runId[0].equals(view.runId()),
                                     "Self-defense replaced its active run during one hostile incident");
                         }
+                        if (view.status() != SelfDefenseSkillService.RunStatus.ACTIVE
+                                && view.status()
+                                        != SelfDefenseSkillService.RunStatus.COMPLETED) {
+                            throw new IllegalStateException(
+                                    "Self-defense run terminated before a verified melee completion: "
+                                            + view);
+                        }
                         observedMeleeDispatch[0] |= view.status()
                                         == SelfDefenseSkillService.RunStatus.ACTIVE
                                 && view.decision().state()

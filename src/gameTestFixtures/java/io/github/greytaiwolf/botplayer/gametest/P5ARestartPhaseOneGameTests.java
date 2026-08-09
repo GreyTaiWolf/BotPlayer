@@ -94,6 +94,18 @@ public final class P5ARestartPhaseOneGameTests {
             throw new IllegalStateException(
                     "P5A phase-one normal shutdown failed: " + value);
         });
+        /*
+         * A terminal run cannot become a later restartable checkpoint. Report
+         * its structured view immediately instead of hiding a concrete
+         * production failure behind the outer timeout.
+         */
+        P5ARestartGameTestSupport.phaseOneRun(server)
+                .filter(view -> view.state().isTerminal())
+                .ifPresent(view -> {
+                    throw new IllegalStateException(
+                            "P5A phase-one run became terminal before a restartable safe checkpoint: "
+                                    + view);
+                });
         return P5ARestartGameTestSupport.phaseOneShutdownIssued(server)
                 && P5ARestartGameTestSupport.phaseOneCheckpoint(server)
                         .isPresent();
