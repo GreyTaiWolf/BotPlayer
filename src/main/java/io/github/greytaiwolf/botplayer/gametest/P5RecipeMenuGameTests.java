@@ -52,7 +52,7 @@ public final class P5RecipeMenuGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "recipe_inventory_four_batch");
-        TestBot bot = fixture.spawn("crafter");
+        TestBot bot = fixture.spawn("craft");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             bot.player().getInventory().clearContent();
@@ -140,7 +140,7 @@ public final class P5RecipeMenuGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "recipe_furnace_native");
-        TestBot bot = fixture.spawn("smelter");
+        TestBot bot = fixture.spawn("smelt");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             bot.player().getInventory().clearContent();

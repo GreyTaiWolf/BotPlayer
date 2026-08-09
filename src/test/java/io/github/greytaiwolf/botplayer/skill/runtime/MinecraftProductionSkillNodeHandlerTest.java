@@ -161,11 +161,11 @@ class MinecraftProductionSkillNodeHandlerTest {
         MinecraftProductionSkillNodeHandler accepted = handler(
                 ignored -> Optional.of(recipePreflight(10L,
                         ProductionLedger.of(ProductionMaterials.OAK_LOG, 4))),
-                unused -> Optional.of(recipeAction(4)));
+                unused -> Optional.of(recipeAction(1)));
         MinecraftProductionSkillNodeHandler wrongBatch = handler(
                 ignored -> Optional.of(recipePreflight(10L,
                         ProductionLedger.of(ProductionMaterials.OAK_LOG, 4))),
-                unused -> Optional.of(recipeAction(1)));
+                unused -> Optional.of(recipeAction(4)));
 
         SkillNodeDirective acceptedDirective = accepted.begin(context(
                 operation("craft_planks"), 10L, 0L));

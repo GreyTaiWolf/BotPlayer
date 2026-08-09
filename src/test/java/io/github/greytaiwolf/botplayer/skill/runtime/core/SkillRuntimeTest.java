@@ -63,7 +63,7 @@ class SkillRuntimeTest {
         Assertions.assertEquals(
                 io.github.greytaiwolf.botplayer.skill.core.SkillSignalInbox
                         .OfferStatus.ENQUEUED,
-                runtime.offerSignal(signal(runId, 1L, 2L)));
+                runtime.offerSignal(signal(runId, waiting.stateRevision(), 2L)));
         runtime.tick(2L);
         Assertions.assertEquals(SkillRunState.VERIFYING,
                 runtime.inspectRun(runId).orElseThrow().state());

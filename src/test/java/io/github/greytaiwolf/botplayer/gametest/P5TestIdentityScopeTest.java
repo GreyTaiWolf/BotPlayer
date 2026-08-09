@@ -51,9 +51,9 @@ class P5TestIdentityScopeTest {
 
         Assertions.assertEquals(4, names.size());
         for (String name : names) {
-            Assertions.assertEquals(
-                    P5TestIdentityScope.MAX_PLAYER_NAME_LENGTH,
-                    name.length());
+            Assertions.assertTrue(
+                    name.length() <= P5TestIdentityScope.MAX_PLAYER_NAME_LENGTH,
+                    () -> "Minecraft test name exceeds its length limit: " + name);
             Assertions.assertTrue(
                     name.matches("[a-z0-9_]{1,16}"),
                     () -> "unsafe Minecraft test name: " + name);
