@@ -54,6 +54,97 @@ class VanillaDeathTombstoneStoreTest {
                 IOException.class, () -> store.read(BOT));
     }
 
+    @Test
+    void existenceLookupFailureIsNotTreatedAsAnAbsentMarker() {
+        VanillaDeathTombstoneStore store =
+                new VanillaDeathTombstoneStore(
+                        temporaryDirectory.resolve("death-wal"),
+                        new FaultInjectingDurableFileOps(
+                                FaultInjectingDurableFileOps.Point.EXISTS));
+
+        Assertions.assertThrows(
+                IOException.class, () -> store.read(BOT));
+    }
+
+    @Test
+    void atomicMoveFailureDoesNotPublishAnArmedMarker()
+            throws IOException {
+        Path directory = temporaryDirectory.resolve("death-wal");
+        VanillaDeathTombstoneStore store =
+                new VanillaDeathTombstoneStore(
+                        directory,
+                        new FaultInjectingDurableFileOps(
+                                FaultInjectingDurableFileOps.Point.ATOMIC_MOVE));
+
+        Assertions.assertThrows(
+                IOException.class, () -> store.arm(ticket()));
+        Assertions.assertFalse(Files.exists(store.markerPath(BOT)));
+        Assertions.assertFalse(Files.exists(
+                directory.resolve(BOT + ".death-v2.tmp")));
+    }
+
+    @Test
+    void finalMarkerForceFailureNeverReportsArmSuccess()
+            throws IOException {
+        Path directory = temporaryDirectory.resolve("death-wal");
+        VanillaDeathTombstoneStore store =
+                new VanillaDeathTombstoneStore(
+                        directory,
+                        new FaultInjectingDurableFileOps(
+                                FaultInjectingDurableFileOps.Point.FORCE_FILE));
+
+        Assertions.assertThrows(
+                IOException.class, () -> store.arm(ticket()));
+        Assertions.assertEquals(
+                ticket(), new VanillaDeathTombstoneStore(directory)
+                        .read(BOT).orElseThrow());
+    }
+
+    @Test
+    void postPublishDirectoryForceFailureNeverReportsArmSuccess()
+            throws IOException {
+        Path directory = temporaryDirectory.resolve("death-wal");
+        Files.createDirectories(directory);
+        VanillaDeathTombstoneStore store =
+                new VanillaDeathTombstoneStore(
+                        directory,
+                        new FaultInjectingDurableFileOps(
+                                FaultInjectingDurableFileOps.Point.FORCE_DIRECTORY,
+                                2));
+
+        Assertions.assertThrows(
+                IOException.class, () -> store.arm(ticket()));
+        Assertions.assertEquals(
+                ticket(), new VanillaDeathTombstoneStore(directory)
+                        .read(BOT).orElseThrow());
+    }
+
+    @Test
+    void readbackFailurePreventsClearFromDeletingTheMarker()
+            throws IOException {
+        Path directory = temporaryDirectory.resolve("death-wal");
+        VanillaDeathTombstoneStore baseline =
+                new VanillaDeathTombstoneStore(directory);
+        baseline.arm(ticket());
+        VanillaDeathTombstoneStore store =
+                new VanillaDeathTombstoneStore(
+                        directory,
+                        new FaultInjectingDurableFileOps(
+                                FaultInjectingDurableFileOps.Point.READ_BOUNDED));
+
+        Assertions.assertThrows(
+                IOException.class, () -> store.read(BOT));
+        VanillaDeathTombstoneStore clearAttempt =
+                new VanillaDeathTombstoneStore(
+                        directory,
+                        new FaultInjectingDurableFileOps(
+                                FaultInjectingDurableFileOps.Point.READ_BOUNDED));
+        Assertions.assertThrows(
+                IOException.class,
+                () -> clearAttempt.clear(BOT, TRANSACTION));
+        Assertions.assertEquals(ticket(), baseline.read(BOT).orElseThrow());
+    }
+
     private static VanillaDeathTicket ticket() {
         return VanillaDeathTicket.create(
                 TRANSACTION,

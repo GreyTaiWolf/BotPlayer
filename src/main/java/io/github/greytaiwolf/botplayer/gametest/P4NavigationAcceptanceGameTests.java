@@ -425,15 +425,7 @@ public final class P4NavigationAcceptanceGameTests {
                 BotPlayerConfig.AUTO_RESPAWN.get();
         int previousRespawnDelay =
                 BotPlayerConfig.RESPAWN_DELAY_TICKS.get();
-        BotPlayerConfig.AUTO_RESPAWN.set(true);
-        BotPlayerConfig.RESPAWN_DELAY_TICKS.set(0);
-        TestBot bot = P2GameTestSupport.spawnBot(
-                helper,
-                null,
-                "P4NavLife",
-                new Vec3(4.5D, 1.0D, 2.5D),
-                0.0F);
-        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        P2GameTestSupport.Cleanup cleanup = cleanup();
         cleanup.add(() -> {
             BotPlayerConfig.AUTO_RESPAWN
                     .set(previousAutoRespawn);
@@ -441,6 +433,19 @@ public final class P4NavigationAcceptanceGameTests {
                     .set(previousRespawnDelay);
         });
         try {
+            /*
+             * 全局 config 的回滚必须先入 cleanup；spawn 失败时也不能把同 batch 的其余场景
+             * 留在自动重生/零延迟状态。
+             */
+            BotPlayerConfig.AUTO_RESPAWN.set(true);
+            BotPlayerConfig.RESPAWN_DELAY_TICKS.set(0);
+            TestBot bot = P2GameTestSupport.spawnBot(
+                    helper,
+                    null,
+                    "P4NavLife",
+                    new Vec3(4.5D, 1.0D, 2.5D),
+                    0.0F);
+            trackBot(cleanup, bot);
             long oldGeneration = bot.player()
                     .runtimeHandle()
                     .generation();
@@ -1148,10 +1153,19 @@ public final class P4NavigationAcceptanceGameTests {
 
     private static P2GameTestSupport.Cleanup cleanup(
             TestBot bot) {
-        P2GameTestSupport.Cleanup cleanup =
-                new P2GameTestSupport.Cleanup();
+        P2GameTestSupport.Cleanup cleanup = cleanup();
+        trackBot(cleanup, bot);
+        return cleanup;
+    }
+
+    private static P2GameTestSupport.Cleanup cleanup() {
+        return new P2GameTestSupport.Cleanup();
+    }
+
+    private static void trackBot(
+            P2GameTestSupport.Cleanup cleanup,
+            TestBot bot) {
         cleanup.add(() -> P2GameTestSupport.removeBot(
                 bot, "P4 navigation GameTest completed"));
-        return cleanup;
     }
 }

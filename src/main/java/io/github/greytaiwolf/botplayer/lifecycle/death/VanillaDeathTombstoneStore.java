@@ -6,17 +6,9 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
-import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
-import java.util.Arrays;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import java.util.zip.CRC32;
 
@@ -32,12 +24,24 @@ public final class VanillaDeathTombstoneStore {
     private static final int MAX_MARKER_BYTES = 512;
     private static final String SUFFIX = ".death-v2";
     private final Path directory;
+    private final DurableFileOps fileOps;
 
     public VanillaDeathTombstoneStore(Path directory) {
+        this(directory, DurableFileOps.system());
+    }
+
+    /**
+     * 创建 tombstone 存储。
+     *
+     * <p>第二个构造器用于受控的耐久故障注入；生产调用仍应使用单参数构造器。
+     */
+    public VanillaDeathTombstoneStore(
+            Path directory, DurableFileOps fileOps) {
         this.directory = Objects.requireNonNull(
                         directory, "directory")
                 .toAbsolutePath()
                 .normalize();
+        this.fileOps = Objects.requireNonNull(fileOps, "fileOps");
     }
 
     public Path markerPath(UUID botId) {
@@ -63,50 +67,35 @@ public final class VanillaDeathTombstoneStore {
             throw new IOException(
                     "vanilla-death tombstone directory has no parent");
         }
-        boolean directoryExisted = Files.isDirectory(
-                directory, LinkOption.NOFOLLOW_LINKS);
-        Files.createDirectories(directory);
+        boolean directoryExisted = fileOps.isDirectoryNoFollow(
+                directory);
+        fileOps.createDirectories(directory);
         if (!directoryExisted) {
             /* Persist the newly created directory entry before publishing a marker. */
-            forceDirectory(parent);
+            fileOps.forceDirectory(parent);
         }
-        forceDirectory(directory);
+        fileOps.forceDirectory(directory);
         Path marker = markerPath(ticket.botId());
         Path temporary = marker.resolveSibling(
                 marker.getFileName() + ".tmp");
         byte[] encoded = encode(ticket);
         try {
-            try (FileChannel channel = FileChannel.open(
-                    temporary,
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE)) {
-                ByteBuffer buffer = ByteBuffer.wrap(encoded);
-                while (buffer.hasRemaining()) {
-                    channel.write(buffer);
-                }
-                channel.force(true);
-            }
-            Files.move(
-                    temporary,
-                    marker,
-                    StandardCopyOption.ATOMIC_MOVE,
-                    StandardCopyOption.REPLACE_EXISTING);
-            forceFile(marker);
-            forceDirectory(directory);
+            fileOps.writeFullyAndForce(temporary, encoded);
+            fileOps.moveAtomicallyReplace(temporary, marker);
+            fileOps.forceFile(marker);
+            fileOps.forceDirectory(directory);
         } finally {
-            Files.deleteIfExists(temporary);
+            fileOps.deleteIfExists(temporary);
         }
     }
 
     public Optional<VanillaDeathTicket> read(UUID botId)
             throws IOException {
         Path marker = markerPath(botId);
-        if (!Files.exists(marker, LinkOption.NOFOLLOW_LINKS)) {
+        if (!fileOps.existsNoFollow(marker)) {
             return Optional.empty();
         }
-        if (!Files.isRegularFile(
-                marker, LinkOption.NOFOLLOW_LINKS)) {
+        if (!fileOps.isRegularFileNoFollow(marker)) {
             throw new IOException(
                     "vanilla-death tombstone is not a regular file");
         }
@@ -123,28 +112,16 @@ public final class VanillaDeathTombstoneStore {
         return Optional.of(ticket);
     }
 
-    private static byte[] readBounded(Path marker)
+    private byte[] readBounded(Path marker)
             throws IOException {
-        ByteBuffer buffer = ByteBuffer.allocate(
-                MAX_MARKER_BYTES + 1);
-        try (FileChannel channel = FileChannel.open(
-                marker,
-                Set.of(
-                        StandardOpenOption.READ,
-                        LinkOption.NOFOLLOW_LINKS))) {
-            while (buffer.hasRemaining()) {
-                int read = channel.read(buffer);
-                if (read < 0) {
-                    break;
-                }
-            }
-        }
-        if (buffer.position() > MAX_MARKER_BYTES) {
+        try {
+            return fileOps.readBoundedNoFollow(
+                    marker, MAX_MARKER_BYTES);
+        } catch (IOException exception) {
             throw new IOException(
-                    "vanilla-death tombstone is oversized");
+                    "could not read vanilla-death tombstone",
+                    exception);
         }
-        return Arrays.copyOf(
-                buffer.array(), buffer.position());
     }
 
     public void clear(
@@ -153,12 +130,11 @@ public final class VanillaDeathTombstoneStore {
         Objects.requireNonNull(transactionId, "transactionId");
         Optional<VanillaDeathTicket> current = read(botId);
         if (current.isEmpty()) {
-            if (!Files.isDirectory(
-                    directory, LinkOption.NOFOLLOW_LINKS)) {
+            if (!fileOps.isDirectoryNoFollow(directory)) {
                 throw new IOException(
                         "vanilla-death tombstone directory is missing");
             }
-            forceDirectory(directory);
+            fileOps.forceDirectory(directory);
             return;
         }
         if (!current.orElseThrow()
@@ -167,8 +143,8 @@ public final class VanillaDeathTombstoneStore {
             throw new IOException(
                     "refusing to clear a different vanilla-death tombstone");
         }
-        Files.delete(markerPath(botId));
-        forceDirectory(directory);
+        fileOps.delete(markerPath(botId));
+        fileOps.forceDirectory(directory);
     }
 
     private static byte[] encode(
@@ -281,25 +257,4 @@ public final class VanillaDeathTombstoneStore {
         return new UUID(input.readLong(), input.readLong());
     }
 
-    private static void forceFile(Path file)
-            throws IOException {
-        try (FileChannel channel = FileChannel.open(
-                file, StandardOpenOption.WRITE)) {
-            channel.force(true);
-        }
-    }
-
-    private static void forceDirectory(Path targetDirectory)
-            throws IOException {
-        if (!Files.isDirectory(
-                targetDirectory,
-                LinkOption.NOFOLLOW_LINKS)) {
-            throw new IOException(
-                    "durability directory is missing or unsafe");
-        }
-        try (FileChannel channel = FileChannel.open(
-                targetDirectory, StandardOpenOption.READ)) {
-            channel.force(true);
-        }
-    }
 }

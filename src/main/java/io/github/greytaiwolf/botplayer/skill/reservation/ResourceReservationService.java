@@ -1,11 +1,14 @@
 package io.github.greytaiwolf.botplayer.skill.reservation;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
 
@@ -17,6 +20,11 @@ public final class ResourceReservationService {
     public static final int MAXIMUM_LEASE_TICKS = 72_000;
     private static final int MAXIMUM_ID_ATTEMPTS = 8;
     private static final UUID ZERO_UUID = new UUID(0L, 0L);
+    private static final Comparator<ReservationKey> CANONICAL_KEY_ORDER =
+            Comparator.comparing((ReservationKey key) ->
+                    key.kind().name())
+                    .thenComparing(ReservationKey::scope)
+                    .thenComparing(ReservationKey::subject);
 
     private final Thread ownerThread;
     private final int capacity;
@@ -120,6 +128,127 @@ public final class ResourceReservationService {
                 .add(token);
         return new AcquireResult(
                 AcquireStatus.ACQUIRED, Optional.of(token));
+    }
+
+    /**
+     * 以固定键顺序申请多项资源。所有冲突、容量和标识符都会先完整预检，
+     * 任一失败均不会写入本次申请的任何新租约。
+     */
+    public AcquireAllResult acquireAll(
+            UUID botId,
+            long botGeneration,
+            UUID skillRunId,
+            List<ReservationRequest> requests,
+            long currentTick,
+            int leaseTicks) {
+        requireOwnerThread();
+        requireIdentity(botId, botGeneration, skillRunId);
+        Objects.requireNonNull(requests, "requests");
+        validateLeaseTicks(leaseTicks);
+        long observedTick = observeTick(currentTick);
+        expireAt(observedTick);
+
+        List<ReservationRequest> ordered = new ArrayList<>(requests);
+        ordered.forEach(request ->
+                Objects.requireNonNull(request, "request"));
+        ordered.sort(Comparator.comparing(
+                ReservationRequest::key, CANONICAL_KEY_ORDER));
+        if (ordered.isEmpty()) {
+            return AcquireAllResult.rejected(
+                    AcquireAllStatus.EMPTY_REQUEST);
+        }
+        if (containsDuplicateKey(ordered)) {
+            return AcquireAllResult.rejected(
+                    AcquireAllStatus.DUPLICATE_KEY);
+        }
+
+        long expiresTick = Math.addExact(observedTick, leaseTicks);
+        List<AcquireAllEntry> entries = new ArrayList<>(
+                ordered.size());
+        List<ReservationRequest> pending = new ArrayList<>();
+        for (ReservationRequest request : ordered) {
+            ReservationToken held = null;
+            List<ReservationToken> existing = leasesByKey.getOrDefault(
+                    request.key(), List.of());
+            for (ReservationToken token : existing) {
+                if (sameOwner(token, botId, botGeneration, skillRunId)) {
+                    if (token.mode() != request.mode()) {
+                        return AcquireAllResult.rejected(
+                                AcquireAllStatus.CONFLICT);
+                    }
+                    held = token;
+                }
+                if (!sameOwner(token, botId, botGeneration, skillRunId)
+                        && (request.mode()
+                        == ReservationMode.EXCLUSIVE
+                        || token.mode()
+                        == ReservationMode.EXCLUSIVE)) {
+                    return AcquireAllResult.rejected(
+                            AcquireAllStatus.CONFLICT);
+                }
+            }
+            if (held == null) {
+                pending.add(request);
+            } else {
+                entries.add(new AcquireAllEntry(
+                        request.key(),
+                        AcquireStatus.ALREADY_HELD,
+                        held));
+            }
+        }
+
+        if (pending.size() > capacity - leasesById.size()) {
+            return AcquireAllResult.rejected(
+                    AcquireAllStatus.CAPACITY_EXHAUSTED);
+        }
+        List<UUID> reservationIds = nextIds(pending.size());
+        if (reservationIds == null) {
+            return AcquireAllResult.rejected(
+                    AcquireAllStatus.ID_UNAVAILABLE);
+        }
+
+        Map<ReservationKey, ReservationToken> acquired =
+                new LinkedHashMap<>();
+        for (int index = 0; index < pending.size(); index++) {
+            ReservationRequest request = pending.get(index);
+            ReservationToken token = new ReservationToken(
+                    reservationIds.get(index),
+                    botId,
+                    botGeneration,
+                    skillRunId,
+                    request.key(),
+                    request.mode(),
+                    observedTick,
+                    expiresTick);
+            acquired.put(request.key(), token);
+        }
+        for (ReservationToken token : acquired.values()) {
+            leasesById.put(token.reservationId(), token);
+            leasesByKey.computeIfAbsent(
+                    token.key(), ignored -> new ArrayList<>()).add(token);
+        }
+
+        for (ReservationRequest request : ordered) {
+            ReservationToken token = acquired.get(request.key());
+            if (token != null) {
+                entries.add(new AcquireAllEntry(
+                        request.key(), AcquireStatus.ACQUIRED, token));
+            }
+        }
+        entries.sort(Comparator.comparing(
+                AcquireAllEntry::key, CANONICAL_KEY_ORDER));
+        return new AcquireAllResult(
+                pending.isEmpty()
+                        ? AcquireAllStatus.ALREADY_HELD
+                        : AcquireAllStatus.ACQUIRED,
+                entries);
+    }
+
+    /**
+     * 返回多资源申请和诊断使用的稳定资源键顺序。
+     */
+    public static Comparator<ReservationKey> canonicalKeyOrder() {
+        return CANONICAL_KEY_ORDER;
     }
 
     public RenewResult renew(
@@ -302,6 +431,46 @@ public final class ResourceReservationService {
         return null;
     }
 
+    private List<UUID> nextIds(int count) {
+        List<UUID> ids = new ArrayList<>(count);
+        Set<UUID> reservedIds = new HashSet<>();
+        for (int index = 0; index < count; index++) {
+            UUID id = nextId(reservedIds);
+            if (id == null) {
+                return null;
+            }
+            ids.add(id);
+            reservedIds.add(id);
+        }
+        return ids;
+    }
+
+    private UUID nextId(Set<UUID> reservedIds) {
+        for (int attempt = 0;
+                attempt < MAXIMUM_ID_ATTEMPTS;
+                attempt++) {
+            UUID candidate = idSupplier.get();
+            if (candidate != null
+                    && !ZERO_UUID.equals(candidate)
+                    && !leasesById.containsKey(candidate)
+                    && !reservedIds.contains(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static boolean containsDuplicateKey(
+            List<ReservationRequest> ordered) {
+        for (int index = 1; index < ordered.size(); index++) {
+            if (ordered.get(index - 1).key().equals(
+                    ordered.get(index).key())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void requireOwnerThread() {
         if (Thread.currentThread() != ownerThread) {
             throw new IllegalStateException(
@@ -346,6 +515,85 @@ public final class ResourceReservationService {
         CONFLICT,
         CAPACITY_EXHAUSTED,
         ID_UNAVAILABLE
+    }
+
+    public enum AcquireAllStatus {
+        ACQUIRED,
+        ALREADY_HELD,
+        EMPTY_REQUEST,
+        DUPLICATE_KEY,
+        CONFLICT,
+        CAPACITY_EXHAUSTED,
+        ID_UNAVAILABLE
+    }
+
+    /**
+     * 单个键的原子申请结果；成功时 token 必定存在。
+     */
+    public record AcquireAllEntry(
+            ReservationKey key,
+            AcquireStatus status,
+            ReservationToken token) {
+        public AcquireAllEntry {
+            Objects.requireNonNull(key, "key");
+            Objects.requireNonNull(status, "status");
+            Objects.requireNonNull(token, "token");
+            if (!key.equals(token.key())) {
+                throw new IllegalArgumentException(
+                        "Acquire all entry key does not match token");
+            }
+            if (status != AcquireStatus.ACQUIRED
+                    && status != AcquireStatus.ALREADY_HELD) {
+                throw new IllegalArgumentException(
+                        "Acquire all entry status must be successful");
+            }
+        }
+    }
+
+    /**
+     * 多键申请的不可变结果。成功时 entries 按 canonical 键顺序排列，
+     * 失败时为空，以免调用方误用部分结果。
+     */
+    public record AcquireAllResult(
+            AcquireAllStatus status,
+            List<AcquireAllEntry> entries) {
+        public AcquireAllResult {
+            Objects.requireNonNull(status, "status");
+            Objects.requireNonNull(entries, "entries");
+            entries = List.copyOf(entries);
+            boolean successful = status == AcquireAllStatus.ACQUIRED
+                    || status == AcquireAllStatus.ALREADY_HELD;
+            if (successful != !entries.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "Acquire all entries do not match status");
+            }
+            if (!isCanonical(entries)) {
+                throw new IllegalArgumentException(
+                        "Acquire all entries must be canonical");
+            }
+        }
+
+        public boolean acquired() {
+            return status == AcquireAllStatus.ACQUIRED
+                    || status == AcquireAllStatus.ALREADY_HELD;
+        }
+
+        private static AcquireAllResult rejected(
+                AcquireAllStatus status) {
+            return new AcquireAllResult(status, List.of());
+        }
+
+        private static boolean isCanonical(
+                List<AcquireAllEntry> entries) {
+            for (int index = 1; index < entries.size(); index++) {
+                if (CANONICAL_KEY_ORDER.compare(
+                        entries.get(index - 1).key(),
+                        entries.get(index).key()) >= 0) {
+                    return false;
+                }
+            }
+            return true;
+        }
     }
 
     public record AcquireResult(

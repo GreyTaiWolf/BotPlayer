@@ -49,9 +49,11 @@ public enum SkillRunState {
             case CREATED ->
                     next == PREPARING
                             || next == CANCELLED
-                            || next == FAILED;
+                            || next == FAILED
+                            || next == PREEMPTED;
             case PREPARING ->
                     next == RUNNING
+                            || isWaiting(next)
                             || next == PAUSING
                             || next == RECOVERING
                             || isTerminalFailure(next);
@@ -77,8 +79,7 @@ public enum SkillRunState {
                             || isTerminalFailure(next);
             case PAUSED ->
                     next == RESUMING
-                            || next == CANCELLED
-                            || next == FAILED;
+                            || isTerminalFailure(next);
             case RESUMING ->
                     next == PREPARING
                             || next == RUNNING
@@ -90,7 +91,9 @@ public enum SkillRunState {
                             || next == PAUSING
                             || isTerminalFailure(next);
             case VERIFYING ->
-                    next == SUCCEEDED
+                    next == PREPARING
+                            || isWaiting(next)
+                            || next == SUCCEEDED
                             || next == RECOVERING
                             || next == FAILED
                             || next == CANCELLED

@@ -48,6 +48,8 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @PrefixGameTestTemplate(false)
 public final class P4SafetyAcceptanceGameTests {
     private static final String BATCH = "p4_safety";
+    private static final String AGGRO_NAVIGATION_BATCH =
+            "p4_aggro_navigation";
     private static final String AGGRO_DAMAGE_BATCH =
             "p4_aggro_damage";
     private static final String STARVATION_BATCH =
@@ -466,7 +468,7 @@ public final class P4SafetyAcceptanceGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = AGGRO_NAVIGATION_BATCH,
             timeoutTicks = TIMEOUT_TICKS)
     public static void zombieTargetingPreemptsOrdinaryNavigation(
             GameTestHelper helper) {
@@ -476,24 +478,25 @@ public final class P4SafetyAcceptanceGameTests {
                         .getServer()
                         .getWorldData()
                         .getDifficulty();
-        helper.getLevel()
-                .getServer()
-                .setDifficulty(Difficulty.NORMAL, true);
-        TestBot bot = P2GameTestSupport.spawnBot(
-                helper,
-                null,
-                "P4Aggro",
-                new Vec3(4.5D, 1.0D, 4.5D),
-                0.0F);
-        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
-        Zombie zombie = Objects.requireNonNull(
-                EntityType.ZOMBIE.create(helper.getLevel()),
-                "GameTest zombie");
-        cleanup.add(() -> zombie.discard());
+        P2GameTestSupport.Cleanup cleanup = cleanup();
         cleanup.add(() -> helper.getLevel()
                 .getServer()
                 .setDifficulty(previousDifficulty, true));
         try {
+            helper.getLevel()
+                    .getServer()
+                    .setDifficulty(Difficulty.NORMAL, true);
+            TestBot bot = P2GameTestSupport.spawnBot(
+                    helper,
+                    null,
+                    "P4Aggro",
+                    new Vec3(4.5D, 1.0D, 4.5D),
+                    0.0F);
+            trackBot(cleanup, bot);
+            Zombie zombie = Objects.requireNonNull(
+                    EntityType.ZOMBIE.create(helper.getLevel()),
+                    "GameTest zombie");
+            cleanup.add(zombie::discard);
             Vec3 zombiePosition = helper.absoluteVec(
                     new Vec3(4.5D, 1.0D, 3.0D));
             zombie.moveTo(
@@ -673,24 +676,25 @@ public final class P4SafetyAcceptanceGameTests {
                         .getServer()
                         .getWorldData()
                         .getDifficulty();
-        helper.getLevel()
-                .getServer()
-                .setDifficulty(Difficulty.NORMAL, true);
-        TestBot bot = P2GameTestSupport.spawnBot(
-                helper,
-                null,
-                "P4MobHit",
-                new Vec3(4.5D, 1.0D, 4.2D),
-                0.0F);
-        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
-        Zombie zombie = Objects.requireNonNull(
-                EntityType.ZOMBIE.create(helper.getLevel()),
-                "GameTest attacking zombie");
-        cleanup.add(zombie::discard);
+        P2GameTestSupport.Cleanup cleanup = cleanup();
         cleanup.add(() -> helper.getLevel()
                 .getServer()
                 .setDifficulty(previousDifficulty, true));
         try {
+            helper.getLevel()
+                    .getServer()
+                    .setDifficulty(Difficulty.NORMAL, true);
+            TestBot bot = P2GameTestSupport.spawnBot(
+                    helper,
+                    null,
+                    "P4MobHit",
+                    new Vec3(4.5D, 1.0D, 4.2D),
+                    0.0F);
+            trackBot(cleanup, bot);
+            Zombie zombie = Objects.requireNonNull(
+                    EntityType.ZOMBIE.create(helper.getLevel()),
+                    "GameTest attacking zombie");
+            cleanup.add(zombie::discard);
             zombie.setItemSlot(
                     EquipmentSlot.HEAD,
                     new ItemStack(Items.DIAMOND_HELMET));
@@ -757,20 +761,21 @@ public final class P4SafetyAcceptanceGameTests {
                         .getServer()
                         .getWorldData()
                         .getDifficulty();
-        helper.getLevel()
-                .getServer()
-                .setDifficulty(Difficulty.HARD, true);
-        TestBot bot = P2GameTestSupport.spawnBot(
-                helper,
-                null,
-                "P4Starve",
-                new Vec3(4.5D, 1.0D, 4.5D),
-                0.0F);
-        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        P2GameTestSupport.Cleanup cleanup = cleanup();
         cleanup.add(() -> helper.getLevel()
                 .getServer()
                 .setDifficulty(previousDifficulty, true));
         try {
+            helper.getLevel()
+                    .getServer()
+                    .setDifficulty(Difficulty.HARD, true);
+            TestBot bot = P2GameTestSupport.spawnBot(
+                    helper,
+                    null,
+                    "P4Starve",
+                    new Vec3(4.5D, 1.0D, 4.5D),
+                    0.0F);
+            trackBot(cleanup, bot);
             bot.player().getFoodData().setFoodLevel(0);
             bot.player().getFoodData().setSaturation(0.0F);
             bot.player().getFoodData().setExhaustion(6.0F);
@@ -1290,10 +1295,19 @@ public final class P4SafetyAcceptanceGameTests {
 
     private static P2GameTestSupport.Cleanup cleanup(
             TestBot bot) {
-        P2GameTestSupport.Cleanup cleanup =
-                new P2GameTestSupport.Cleanup();
+        P2GameTestSupport.Cleanup cleanup = cleanup();
+        trackBot(cleanup, bot);
+        return cleanup;
+    }
+
+    private static P2GameTestSupport.Cleanup cleanup() {
+        return new P2GameTestSupport.Cleanup();
+    }
+
+    private static void trackBot(
+            P2GameTestSupport.Cleanup cleanup,
+            TestBot bot) {
         cleanup.add(() -> P2GameTestSupport.removeBot(
                 bot, "P4 safety GameTest completed"));
-        return cleanup;
     }
 }
