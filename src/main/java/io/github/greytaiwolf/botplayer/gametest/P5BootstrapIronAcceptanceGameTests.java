@@ -44,7 +44,13 @@ public final class P5BootstrapIronAcceptanceGameTests {
     private static final String BATCH = "p5a_bootstrap_iron";
     private static final String ACTIVE_DROP_COLLECTION_BATCH =
             "p5a_bootstrap_active_drop_collection";
-    private static final int TIMEOUT_TICKS = 1_900;
+    /*
+     * The final native furnace action has to deposit, burn three raw-iron items for at least
+     * 600 vanilla ticks, poll, collect, and then let the final craft/equip nodes finish. 2,700
+     * ticks also lets the action's own bounded 1,200-tick deadline surface a precise failure
+     * instead of masking it as a GameTest timeout.
+     */
+    private static final int TIMEOUT_TICKS = 2_700;
     private static final int CHECKPOINT_SCOPE_RADIUS = 8;
     private static final int ACTIVE_DROP_COLLECTION_TIMEOUT_TICKS = 900;
     private static final BlockPos RELOCATED_LOG_SOURCE =
