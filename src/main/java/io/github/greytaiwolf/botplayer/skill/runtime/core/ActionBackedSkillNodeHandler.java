@@ -70,7 +70,10 @@ public final class ActionBackedSkillNodeHandler
         if (operation == null) {
             return SkillNodeDirective.fail(
                     SkillFailureCode.ACTION_REJECTED,
-                    "技能节点当前没有可安全执行的原版动作");
+                    "技能节点当前没有可安全执行的原版动作："
+                            + context.node().skillId()
+                            + "#"
+                            + context.nodeIndex());
         }
         UUID actionId = UUID.randomUUID();
         long deadlineTick;
