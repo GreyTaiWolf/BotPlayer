@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 21011)
-Total output lines: 1769
-
 package io.github.greytaiwolf.botplayer.skill.runtime;
 
 import io.github.greytaiwolf.botplayer.BotPlayer;
@@ -790,7 +787,88 @@ public final class MinecraftProductionSkillNodeHandler
                         outcome, throwable, context.currentTick()));
         return SkillNodeDirective.waitFor(
                 SkillNodeDirective.Kind.WAIT_NAVIGATION,
-                "正在导航到一枚…1011 tokens truncated…e()));
+                "正在导航到一枚已冻结 UUID 的原版资源掉落实体");
+    }
+
+    private SkillNodeDirective handleResourceDropNavigationSignal(
+            SkillNodeContext context,
+            SkillSignal signal,
+            PendingResourceDropNavigation pending) {
+        if (signal.type() != SkillSignalType.NAVIGATION
+                || !pending.navigationId().equals(signal.operationId())
+                || pending.runRevision() != signal.runRevision()
+                || !pending.matches(context)
+                || (signal.status() == SkillSignalStatus.SUCCEEDED
+                        && !hasExactResourceDropNavigationEvidence(signal,
+                                pending.candidate()))) {
+            resourceDropCollections.remove(context.runId(), pending);
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.INTERNAL_ERROR,
+                    "资源掉落实体收集收到不属于当前导航的回执");
+        }
+        if (signal.status() != SkillSignalStatus.SUCCEEDED
+                || signal.failureCode() != SkillFailureCode.NONE) {
+            resourceDropCollections.remove(context.runId(), pending);
+            return SkillNodeDirective.fail(
+                    signal.failureCode() == SkillFailureCode.NONE
+                            ? SkillFailureCode.NAVIGATION_FAILED
+                            : signal.failureCode(),
+                    "资源掉落实体导航没有成功到达冻结格点");
+        }
+        SkillNodeDirective verified = verify(pending.ticket(), context,
+                pending.signal());
+        if (verified.kind() == SkillNodeDirective.Kind.COMPLETE) {
+            resourceDropCollections.remove(context.runId(), pending);
+            return verified;
+        }
+        if (!mayAwaitResourcePickup(pending.ticket(), context,
+                pending.signal(), verified)) {
+            resourceDropCollections.remove(context.runId(), pending);
+            return verified;
+        }
+        resourceDropCollections.put(context.runId(),
+                new ReadyResourceDropPickup(
+                        pending.ticket(), pending.signal(), pending.nodeId(),
+                        pending.provenance(), pending.candidate()));
+        return SkillNodeDirective.continueRunning(
+                "已到达资源掉落实体附近，准备以 UUID 绑定回读拾取");
+    }
+
+    private SkillNodeDirective verifyResourceDropPickup(
+            ExecutionTicket ticket,
+            ResourceDropCandidate candidate,
+            SkillNodeContext context,
+            SkillSignal signal) {
+        ResourceDropCollection collection = resourceDropCollections.get(
+                context.runId());
+        if (!(collection instanceof PendingResourceDropPickup pending)
+                || !pending.ticket().equals(ticket)
+                || !pending.candidate().equals(candidate)
+                || !pending.provenance().matches(candidate)
+                || !pending.matches(context)
+                || !hasExactResourceDropPickupEvidence(signal, candidate)) {
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.INTERNAL_ERROR,
+                    "资源掉落实体拾取回执未能匹配冻结 UUID");
+        }
+        return verify(ticket, context, signal);
+    }
+
+    private static boolean hasExactResourceDropNavigationEvidence(
+            SkillSignal signal, ResourceDropCandidate candidate) {
+        return signal.evidence().size() == 1
+                && DROP_NAVIGATION_EVIDENCE_KEY.equals(
+                        signal.evidence().get(0).key())
+                && candidate.entityId().toString().equals(
+                        signal.evidence().get(0).value());
+    }
+
+    private static boolean hasExactResourceDropPickupEvidence(
+            SkillSignal signal, ResourceDropCandidate candidate) {
+        return signal.evidence().stream().anyMatch(evidence ->
+                "entity.id".equals(evidence.key())
+                        && candidate.entityId().toString().equals(
+                                evidence.value()));
     }
 
     private static NavigationRequest resourceDropNavigationRequest(
