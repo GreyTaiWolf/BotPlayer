@@ -194,8 +194,8 @@ public final class P5BootstrapIronAcceptanceGameTests {
             SkillRunView view = terminalView(bot, runId).orElseThrow();
             P2GameTestSupport.require(
                     view.state() == SkillRunState.SUCCEEDED,
-                    "P5A bootstrap iron ended as " + view.state() + "/"
-                            + view.failureCode() + "/" + view.safeSummary());
+                    "P5A bootstrap iron ended as "
+                            + bootstrapViewDetails(view));
             P2GameTestSupport.require(
                     view.completedNodes() == view.totalNodes(),
                     "Successful bootstrap run left nodes incomplete: "
@@ -286,22 +286,26 @@ public final class P5BootstrapIronAcceptanceGameTests {
     private static String bootstrapTimeoutMessage(TestBot bot, UUID runId) {
         return runView(bot, runId)
                 .map(view -> "P5A bootstrap iron never reached a terminal "
-                        + "runtime state: state=" + view.state()
-                        + ", completedNodes=" + view.completedNodes()
-                        + "/" + view.totalNodes()
-                        + ", stateRevision=" + view.stateRevision()
-                        + ", activeNodeId=" + view.activeNodeId()
-                                .map(UUID::toString).orElse("none")
-                        + ", activeSkillId=" + view.activeSkillId()
-                                .map(Object::toString).orElse("none")
-                        + ", failureCode=" + view.failureCode()
-                                .map(Object::toString).orElse("none")
-                        + ", startedTick=" + view.startedTick()
-                        + ", updatedTick=" + view.updatedTick()
-                        + ", deadlineTick=" + view.deadlineTick()
-                        + ", safeSummary=" + view.safeSummary())
+                        + "runtime state: " + bootstrapViewDetails(view))
                 .orElse("P5A bootstrap iron never reached a terminal runtime "
                         + "state: no current SkillRunView for submitted run");
+    }
+
+    private static String bootstrapViewDetails(SkillRunView view) {
+        return "state=" + view.state()
+                + ", completedNodes=" + view.completedNodes()
+                + "/" + view.totalNodes()
+                + ", stateRevision=" + view.stateRevision()
+                + ", activeNodeId=" + view.activeNodeId()
+                        .map(UUID::toString).orElse("none")
+                + ", activeSkillId=" + view.activeSkillId()
+                        .map(Object::toString).orElse("none")
+                + ", failureCode=" + view.failureCode()
+                        .map(Object::toString).orElse("none")
+                + ", startedTick=" + view.startedTick()
+                + ", updatedTick=" + view.updatedTick()
+                + ", deadlineTick=" + view.deadlineTick()
+                + ", safeSummary=" + view.safeSummary();
     }
 
     /**
