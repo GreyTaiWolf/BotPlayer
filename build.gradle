@@ -121,6 +121,13 @@ neoForge {
             sourceSet(sourceSets.gameTestFixtures)
         }
     }
+
+    // P5A 的纯 JUnit 契约测试会读取原版 NBT、物品类型和 tier；让普通 test 源集通过
+    // ModDevGradle 的受控 NeoForge 引导加载它们，而不是把 test 伪装成另一个 GameTest run。
+    unitTest {
+        enable()
+        testedMod = mods."${mod_id}"
+    }
 }
 
 // Sets up a dependency configuration called 'localRuntime'.

@@ -1,6 +1,5 @@
 package io.github.greytaiwolf.botplayer.skill.checkpoint;
 
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.UUID;
 import org.junit.jupiter.api.Assertions;
@@ -100,7 +99,8 @@ class SkillCheckpointDurableCommitterTest {
     }
 
     @Test
-    void minecraftAdapterInvokesOnlySynchronousSaveBoundary() throws Exception {
+    void minecraftAdapterInvokesTheOnePointTwentyOneOneSynchronousSaveBoundary()
+            throws Exception {
         FakeDataStorage storage = new FakeDataStorage();
         MinecraftSavedDataCheckpointDurability durability =
                 new MinecraftSavedDataCheckpointDurability(storage);
@@ -111,32 +111,21 @@ class SkillCheckpointDurableCommitterTest {
     }
 
     @Test
-    void minecraftAdapterAcceptsVoidSynchronousSaveBoundary() throws Exception {
-        VoidFakeDataStorage storage = new VoidFakeDataStorage();
-        MinecraftSavedDataCheckpointDurability durability =
-                new MinecraftSavedDataCheckpointDurability(storage);
-
-        durability.commit();
-
-        Assertions.assertEquals(1, storage.saveCalls.get());
+    void minecraftAdapterRejectsStorageWithoutTheOnePointTwentyOneOneSaveApi() {
+        Assertions.assertThrows(IllegalStateException.class,
+                () -> new MinecraftSavedDataCheckpointDurability(
+                        new MissingSaveDataStorage()));
     }
 
     /** 只模拟映射适配器所需的公开同步 API，不伪造 Minecraft 持久化实现。 */
     public static final class FakeDataStorage {
         private final AtomicInteger saveCalls = new AtomicInteger();
 
-        public CompletableFuture<Void> saveAndJoin() {
-            saveCalls.incrementAndGet();
-            return CompletableFuture.completedFuture(null);
-        }
-    }
-
-    /** 某些映射版本将 saveAndJoin 暴露为 void；同步语义仍由该方法名承担。 */
-    public static final class VoidFakeDataStorage {
-        private final AtomicInteger saveCalls = new AtomicInteger();
-
-        public void saveAndJoin() {
+        public void save() {
             saveCalls.incrementAndGet();
         }
     }
+
+    /** 没有明确同步边界的存储绝不能被适配器悄悄接受。 */
+    public static final class MissingSaveDataStorage {}
 }
