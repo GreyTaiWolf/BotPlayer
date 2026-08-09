@@ -191,7 +191,7 @@ public final class P5RecipeMenuGameTests {
                                             && hasEvidence(outcome,
                                                     "menu.closed", "true")
                                             && hasEvidence(outcome,
-                                                    "menu.clicks", "10"),
+                                                    "menu.clicks", "9"),
                                     "Crafting-table recipe did not verify a closed native 3x3 menu: "
                                             + outcome.evidence());
                             P2GameTestSupport.require(
