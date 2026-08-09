@@ -86,6 +86,34 @@ neoForge {
             systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
         }
 
+        /*
+         * P5A recovery cannot be proven by a second GameTest in the same JVM:
+         * the roster, SavedData and playerdata must all be read by a new server
+         * process.  Keep the two narrowly-scoped holders in the same game
+         * directory, while the phase-one task removes only that directory before
+         * it starts.
+         */
+        p5aRestartPhaseOne {
+            type = "gameTestServer"
+            sourceSet = sourceSets.gameTestFixtures
+            // Phase two is a dependent Gradle task, so this run must return.
+            setForceExit false
+            gameDirectory = project.layout.buildDirectory
+                    .dir("p5a-restart-gametest").get().asFile
+            systemProperty 'neoforge.enabledGameTestNamespaces',
+                    'botplayer_p5a_restart_one'
+        }
+
+        p5aRestartPhaseTwo {
+            type = "gameTestServer"
+            sourceSet = sourceSets.gameTestFixtures
+            setForceExit false
+            gameDirectory = project.layout.buildDirectory
+                    .dir("p5a-restart-gametest").get().asFile
+            systemProperty 'neoforge.enabledGameTestNamespaces',
+                    'botplayer_p5a_restart_two'
+        }
+
         data {
             data()
 
@@ -128,6 +156,29 @@ neoForge {
         enable()
         testedMod = mods."${mod_id}"
     }
+}
+
+/*
+ * This is deliberately a separate verification task from the fast in-process
+ * GameTest run.  Phase two only starts after phase one has normally shut down
+ * and persisted its world, roster, checkpoint and playerdata.
+ */
+def cleanP5aRestartGame = tasks.register("cleanP5aRestartGame", Delete) {
+    delete layout.buildDirectory.dir("p5a-restart-gametest").get().asFile
+}
+def p5aRestartPhaseOne = tasks.named("runP5aRestartPhaseOne") {
+    dependsOn cleanP5aRestartGame
+}
+def p5aRestartPhaseTwo = tasks.named("runP5aRestartPhaseTwo") {
+    dependsOn p5aRestartPhaseOne
+}
+def p5aTwoStartRecovery = tasks.register("p5aTwoStartRecovery") {
+    group = "verification"
+    description = "Runs P5A checkpoint recovery through two server starts in one persistent test world."
+    dependsOn p5aRestartPhaseTwo
+}
+tasks.named("check") {
+    dependsOn p5aTwoStartRecovery
 }
 
 // Sets up a dependency configuration called 'localRuntime'.
