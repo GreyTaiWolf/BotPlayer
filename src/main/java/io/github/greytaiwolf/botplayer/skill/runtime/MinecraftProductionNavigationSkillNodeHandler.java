@@ -58,8 +58,11 @@ public final class MinecraftProductionNavigationSkillNodeHandler
     static final int RESOURCE_MAX_CANDIDATES = 24;
     static final int RESOURCE_MAX_BLOCKS = 256;
     static final int RESOURCE_MAX_EVIDENCE = 24;
-    /* r=1 不接受对角两格已到达，避免站定时遗漏相邻连续资源掉落。 */
-    static final int RESOURCE_GOAL_RADIUS = 1;
+    /*
+     * 资源方块本身不是可站立的 goal。导航必须到达它正上方的精确脚位：这样原版
+     * BREAK_BLOCK 会让 Bot 落入刚产生的掉落物，而不是停在相邻格后只被动轮询。
+     */
+    static final int RESOURCE_GOAL_RADIUS = 0;
     static final int MAXIMUM_NAVIGATION_TICKS = 1_200;
 
     private static final String NAVIGATION_EVIDENCE_KEY =
@@ -382,13 +385,14 @@ public final class MinecraftProductionNavigationSkillNodeHandler
         long deadline = Math.addExact(context.currentTick(),
                 maximumDuration);
         UUID navigationId = UUID.randomUUID();
+        GridPoint pickupStand = pickupStandGoal(target);
         return new NavigationRequest(
                 navigationId,
                 context.botId(),
                 context.botGeneration(),
                 new NavigationGoal.NearPosition(
                         player.serverLevel().dimension().location().toString(),
-                        target,
+                        pickupStand,
                         RESOURCE_GOAL_RADIUS),
                 NavigationPolicy.safeDefault(),
                 deadline,
@@ -397,6 +401,16 @@ public final class MinecraftProductionNavigationSkillNodeHandler
                         + context.runId()
                         + ":"
                         + context.node().nodeId());
+    }
+
+    /**
+     * 资源候选只是一格实心方块；其正上方才是导航快照可验证的站立格。该坐标只存在于
+     * 当前 navigation request，后续采集节点仍会重新查询并冻结实际要破坏的资源方块。
+     */
+    static GridPoint pickupStandGoal(GridPoint resource) {
+        Objects.requireNonNull(resource, "resource");
+        return new GridPoint(resource.x(), Math.addExact(resource.y(), 1),
+                resource.z());
     }
 
     private Optional<BotServerPlayer> resolveCurrent(

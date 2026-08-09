@@ -57,6 +57,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.inventory.InventoryMenu;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * P5A 生产 DAG 的 Minecraft 观察、采集和配方动作端口。
@@ -514,6 +515,8 @@ public final class MinecraftProductionSkillPorts
                             != TaskSensorAvailability.AVAILABLE) {
                 return Optional.empty();
             }
+            Candidate nearest = null;
+            BlockCoordinates nearestPosition = null;
             for (TaskSensorEvidence evidence : candidates.evidence()) {
                 CandidateEvidence candidate = resourceCandidate(evidence)
                         .orElse(null);
@@ -538,12 +541,54 @@ public final class MinecraftProductionSkillPorts
                                 expectedBlockId)) {
                     continue;
                 }
-                return Optional.of(new Candidate(target));
+                if (nearest == null
+                        || compareReachableResourceCandidates(
+                                player.position(), candidate.position(),
+                                nearestPosition) < 0) {
+                    nearest = new Candidate(target);
+                    nearestPosition = candidate.position();
+                }
             }
-            return Optional.empty();
+            return Optional.ofNullable(nearest);
         } catch (RuntimeException exception) {
             return Optional.empty();
         }
+    }
+
+    /**
+     * 导航门不会把动态资源坐标写进计划；采集节点因而必须重新查询。优先选择距离当前
+     * 身体最近且仍可交互的候选，确保刚刚站到某资源顶部后会破坏脚下的同一方块，而不是
+     * 重新按扫描顺序选到相邻方块并把掉落留在拾取碰撞范围外。
+     */
+    static int compareReachableResourceCandidates(
+            Vec3 playerPosition,
+            BlockCoordinates left,
+            BlockCoordinates right) {
+        Objects.requireNonNull(playerPosition, "playerPosition");
+        Objects.requireNonNull(left, "left");
+        Objects.requireNonNull(right, "right");
+        int distance = Double.compare(
+                resourceDistanceSquared(playerPosition, left),
+                resourceDistanceSquared(playerPosition, right));
+        return distance != 0 ? distance : comparePosition(left, right);
+    }
+
+    private static double resourceDistanceSquared(
+            Vec3 playerPosition, BlockCoordinates position) {
+        double dx = playerPosition.x - (position.x() + 0.5D);
+        double dy = playerPosition.y - (position.y() + 0.5D);
+        double dz = playerPosition.z - (position.z() + 0.5D);
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    private static int comparePosition(
+            BlockCoordinates left, BlockCoordinates right) {
+        int y = Integer.compare(left.y(), right.y());
+        if (y != 0) {
+            return y;
+        }
+        int x = Integer.compare(left.x(), right.x());
+        return x != 0 ? x : Integer.compare(left.z(), right.z());
     }
 
     /**

@@ -85,17 +85,22 @@ class MinecraftProductionNavigationSkillNodeHandlerTest {
     }
 
     @Test
-    void resourceNavigationGoalDoesNotTreatDiagonalTwoBlockStartAsReached() {
+    void resourceNavigationGoalRequiresStandingAboveTheSensedBlock() {
+        GridPoint resource = new GridPoint(3, 64, 3);
+        GridPoint pickupStand = MinecraftProductionNavigationSkillNodeHandler
+                .pickupStandGoal(resource);
         NavigationGoal.NearPosition goal = new NavigationGoal.NearPosition(
                 "minecraft:overworld",
-                new GridPoint(3, 64, 3),
+                pickupStand,
                 MinecraftProductionNavigationSkillNodeHandler
                         .RESOURCE_GOAL_RADIUS);
 
-        assertTrue(goal.reached(new GridPoint(3, 64, 3)));
-        assertTrue(goal.reached(new GridPoint(4, 64, 3)));
-        assertFalse(goal.reached(new GridPoint(4, 64, 4)),
-                "radius one must not accept diagonal horizontal distance sqrt(2)");
+        assertEquals(new GridPoint(3, 65, 3), pickupStand);
+        assertTrue(goal.reached(pickupStand));
+        assertFalse(goal.reached(resource),
+                "the solid resource itself is not a safe pickup stand");
+        assertFalse(goal.reached(new GridPoint(4, 65, 3)),
+                "radius zero must not complete from an adjacent cell");
     }
 
     private static SkillNodeContext context(Map<String, Object> parameters) {

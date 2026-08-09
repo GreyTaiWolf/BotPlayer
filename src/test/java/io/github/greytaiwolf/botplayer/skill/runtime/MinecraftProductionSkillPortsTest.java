@@ -1,5 +1,6 @@
 package io.github.greytaiwolf.botplayer.skill.runtime;
 
+import io.github.greytaiwolf.botplayer.action.interaction.BlockCoordinates;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.AcquisitionMethod;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionLedger;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionMaterials;
@@ -18,6 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import net.minecraft.world.phys.Vec3;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -153,6 +155,23 @@ class MinecraftProductionSkillPortsTest {
                         () -> MinecraftProductionSkillPorts
                                 .resourceFilterForExpectedBlock(
                                         "minecraft:stone")));
+    }
+
+    @Test
+    void reachableResourceCandidatesPreferTheBlockUnderTheCurrentBody() {
+        Vec3 standingOnTarget = new Vec3(3.5D, 2.0D, 4.5D);
+        BlockCoordinates underneath = new BlockCoordinates(3, 1, 4);
+        BlockCoordinates neighboring = new BlockCoordinates(4, 1, 3);
+
+        Assertions.assertAll(
+                () -> Assertions.assertTrue(MinecraftProductionSkillPorts
+                        .compareReachableResourceCandidates(
+                                standingOnTarget, underneath, neighboring)
+                        < 0),
+                () -> Assertions.assertTrue(MinecraftProductionSkillPorts
+                        .compareReachableResourceCandidates(
+                                standingOnTarget, neighboring, underneath)
+                        > 0));
     }
 
     private static ResourceAcquisition acquisition(
