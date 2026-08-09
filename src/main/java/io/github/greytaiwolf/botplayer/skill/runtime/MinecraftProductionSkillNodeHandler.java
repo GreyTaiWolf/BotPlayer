@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 21011)
+Total output lines: 1769
+
 package io.github.greytaiwolf.botplayer.skill.runtime;
 
 import io.github.greytaiwolf.botplayer.BotPlayer;
@@ -353,19 +356,25 @@ public final class MinecraftProductionSkillNodeHandler
             logActionPlanningRejection(context, "re-preflight",
                     failure.failureCode().orElseThrow().name()
                             + ":" + failure.safeSummary());
-            return Optional.empty();
+            throw new ActionBackedSkillNodeHandler.PlanningFailure(
+                    failure.failureCode().orElseThrow(),
+                    failure.safeSummary());
         }
         ExecutionTicket ticket = preparation.ticket().orElseThrow();
         ProductionAction action = planConcreteAction(ticket).orElse(null);
         if (action == null) {
             logActionPlanningRejection(context, "concrete-action",
                     "port-returned-empty");
-            return Optional.empty();
+            throw new ActionBackedSkillNodeHandler.PlanningFailure(
+                    SkillFailureCode.ACTION_REJECTED,
+                    concreteActionUnavailableSummary(ticket));
         }
         if (!actionMatchesOperation(ticket, action)) {
             logActionPlanningRejection(context, "action-kind",
                     action.action().spec().kind().name());
-            return Optional.empty();
+            throw new ActionBackedSkillNodeHandler.PlanningFailure(
+                    SkillFailureCode.ACTION_REJECTED,
+                    "生产节点端口返回的原版动作不符合已审核 operation 合同");
         }
         boolean menuOperation = ticket.resolved().menuContract().isPresent();
         return Optional.of(new ActionBackedSkillNodeHandler.Operation(
@@ -382,6 +391,24 @@ public final class MinecraftProductionSkillNodeHandler
                                 ? verifyResourceAction(ticket,
                                         signalContext, signal)
                                         : verify(ticket, signalContext, signal)));
+    }
+
+    private static String concreteActionUnavailableSummary(
+            ExecutionTicket ticket) {
+        ProductionOperation operation = ticket.resolved().node().operation();
+        if (operation instanceof ResourceAcquisition) {
+            return "资源采集端口未能冻结当前 tick 的原版 BREAK_BLOCK 动作";
+        }
+        if (operation instanceof RecipeExecution) {
+            return "配方端口未能冻结当前 tick 的原版菜单动作";
+        }
+        if (operation instanceof SingleChestTransfer) {
+            return "箱子转移端口未能冻结当前 tick 的原版菜单动作";
+        }
+        if (operation instanceof PlaceWorkstation) {
+            return "工作站端口未能冻结当前 tick 的原版 PLACE_BLOCK 动作";
+        }
+        return "生产节点端口未能冻结当前 tick 的已审核原版动作";
     }
 
     /**
@@ -763,88 +790,7 @@ public final class MinecraftProductionSkillNodeHandler
                         outcome, throwable, context.currentTick()));
         return SkillNodeDirective.waitFor(
                 SkillNodeDirective.Kind.WAIT_NAVIGATION,
-                "正在导航到一枚已冻结 UUID 的原版资源掉落实体");
-    }
-
-    private SkillNodeDirective handleResourceDropNavigationSignal(
-            SkillNodeContext context,
-            SkillSignal signal,
-            PendingResourceDropNavigation pending) {
-        if (signal.type() != SkillSignalType.NAVIGATION
-                || !pending.navigationId().equals(signal.operationId())
-                || pending.runRevision() != signal.runRevision()
-                || !pending.matches(context)
-                || (signal.status() == SkillSignalStatus.SUCCEEDED
-                        && !hasExactResourceDropNavigationEvidence(signal,
-                                pending.candidate()))) {
-            resourceDropCollections.remove(context.runId(), pending);
-            return SkillNodeDirective.fail(
-                    SkillFailureCode.INTERNAL_ERROR,
-                    "资源掉落实体收集收到不属于当前导航的回执");
-        }
-        if (signal.status() != SkillSignalStatus.SUCCEEDED
-                || signal.failureCode() != SkillFailureCode.NONE) {
-            resourceDropCollections.remove(context.runId(), pending);
-            return SkillNodeDirective.fail(
-                    signal.failureCode() == SkillFailureCode.NONE
-                            ? SkillFailureCode.NAVIGATION_FAILED
-                            : signal.failureCode(),
-                    "资源掉落实体导航没有成功到达冻结格点");
-        }
-        SkillNodeDirective verified = verify(pending.ticket(), context,
-                pending.signal());
-        if (verified.kind() == SkillNodeDirective.Kind.COMPLETE) {
-            resourceDropCollections.remove(context.runId(), pending);
-            return verified;
-        }
-        if (!mayAwaitResourcePickup(pending.ticket(), context,
-                pending.signal(), verified)) {
-            resourceDropCollections.remove(context.runId(), pending);
-            return verified;
-        }
-        resourceDropCollections.put(context.runId(),
-                new ReadyResourceDropPickup(
-                        pending.ticket(), pending.signal(), pending.nodeId(),
-                        pending.provenance(), pending.candidate()));
-        return SkillNodeDirective.continueRunning(
-                "已到达资源掉落实体附近，准备以 UUID 绑定回读拾取");
-    }
-
-    private SkillNodeDirective verifyResourceDropPickup(
-            ExecutionTicket ticket,
-            ResourceDropCandidate candidate,
-            SkillNodeContext context,
-            SkillSignal signal) {
-        ResourceDropCollection collection = resourceDropCollections.get(
-                context.runId());
-        if (!(collection instanceof PendingResourceDropPickup pending)
-                || !pending.ticket().equals(ticket)
-                || !pending.candidate().equals(candidate)
-                || !pending.provenance().matches(candidate)
-                || !pending.matches(context)
-                || !hasExactResourceDropPickupEvidence(signal, candidate)) {
-            return SkillNodeDirective.fail(
-                    SkillFailureCode.INTERNAL_ERROR,
-                    "资源掉落实体拾取回执未能匹配冻结 UUID");
-        }
-        return verify(ticket, context, signal);
-    }
-
-    private static boolean hasExactResourceDropNavigationEvidence(
-            SkillSignal signal, ResourceDropCandidate candidate) {
-        return signal.evidence().size() == 1
-                && DROP_NAVIGATION_EVIDENCE_KEY.equals(
-                        signal.evidence().get(0).key())
-                && candidate.entityId().toString().equals(
-                        signal.evidence().get(0).value());
-    }
-
-    private static boolean hasExactResourceDropPickupEvidence(
-            SkillSignal signal, ResourceDropCandidate candidate) {
-        return signal.evidence().stream().anyMatch(evidence ->
-                "entity.id".equals(evidence.key())
-                        && candidate.entityId().toString().equals(
-                                evidence.value()));
+                "正在导航到一枚…1011 tokens truncated…e()));
     }
 
     private static NavigationRequest resourceDropNavigationRequest(

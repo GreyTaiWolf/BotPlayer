@@ -62,6 +62,16 @@ public final class ActionBackedSkillNodeHandler
         Operation operation;
         try {
             operation = planner.plan(context).orElse(null);
+        } catch (PlanningFailure failure) {
+            /*
+             * A planner may deliberately fail closed after its second, dispatch-time
+             * observation.  Preserve that reviewed failure instead of flattening it
+             * into WORLD_CHANGED: callers need the exact safe reason to decide
+             * whether retrying would be meaningful, and no action has been submitted
+             * on this path.
+             */
+            return SkillNodeDirective.fail(
+                    failure.failureCode(), failure.safeSummary());
         } catch (RuntimeException exception) {
             return SkillNodeDirective.fail(
                     SkillFailureCode.WORLD_CHANGED,
@@ -304,6 +314,41 @@ public final class ActionBackedSkillNodeHandler
     @FunctionalInterface
     public interface OperationPlanner {
         Optional<Operation> plan(SkillNodeContext context);
+    }
+
+    /**
+     * A deliberately fail-closed outcome from an {@link OperationPlanner}.
+     *
+     * <p>This is distinct from an unexpected planner exception: it transports only
+     * a validated {@link SkillFailureCode} and a bounded safe summary, and it never
+     * carries a cause or stack trace.  The action bridge catches it before submitting
+     * anything to the mailbox.
+     */
+    public static final class PlanningFailure extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        private final SkillFailureCode failureCode;
+        private final String safeSummary;
+
+        public PlanningFailure(
+                SkillFailureCode failureCode, String safeSummary) {
+            super(null, null, false, false);
+            this.failureCode = Objects.requireNonNull(
+                    failureCode, "failureCode");
+            if (failureCode == SkillFailureCode.NONE) {
+                throw new IllegalArgumentException(
+                        "planning failure requires a concrete failure code");
+            }
+            this.safeSummary = requireSummary(safeSummary);
+        }
+
+        public SkillFailureCode failureCode() {
+            return failureCode;
+        }
+
+        public String safeSummary() {
+            return safeSummary;
+        }
     }
 
     public interface ActionGateway {

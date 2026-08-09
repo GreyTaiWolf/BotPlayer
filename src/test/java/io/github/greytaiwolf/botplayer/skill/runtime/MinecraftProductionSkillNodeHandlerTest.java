@@ -169,7 +169,41 @@ class MinecraftProductionSkillNodeHandlerTest {
                         result.kind()),
                 () -> Assertions.assertEquals(
                         SkillFailureCode.ACTION_REJECTED,
-                result.failureCode().orElseThrow()));
+                result.failureCode().orElseThrow()),
+                () -> Assertions.assertEquals(
+                        "资源采集端口未能冻结当前 tick 的原版 BREAK_BLOCK 动作",
+                        result.safeSummary()));
+    }
+
+    @Test
+    void preservesSecondPreflightFailureInsteadOfCollapsingItToActionRejected() {
+        int[] observations = {0};
+        int[] factoryCalls = {0};
+        RecordingGateway actions = new RecordingGateway();
+        MinecraftProductionSkillNodeHandler handler = handler(
+                ignored -> observations[0]++ == 0
+                        ? Optional.of(acquisitionPreflight(10L))
+                        : Optional.empty(),
+                unused -> {
+                    factoryCalls[0]++;
+                    return Optional.of(testAction());
+                },
+                actions);
+
+        SkillNodeDirective result = handler.begin(context(
+                operation("harvest_logs"), 10L, 0L));
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillNodeDirective.Kind.FAIL,
+                        result.kind()),
+                () -> Assertions.assertEquals(SkillFailureCode.WORLD_CHANGED,
+                        result.failureCode().orElseThrow()),
+                () -> Assertions.assertEquals(
+                        "生产节点没有当前 tick 的完整世界与菜单观察",
+                        result.safeSummary()),
+                () -> Assertions.assertEquals(2, observations[0]),
+                () -> Assertions.assertEquals(0, factoryCalls[0]),
+                () -> Assertions.assertNull(actions.envelope));
     }
 
     @Test
@@ -524,6 +558,17 @@ class MinecraftProductionSkillNodeHandlerTest {
             java.util.function.Function<MinecraftProductionSkillNodeHandler
                     .ExecutionTicket, Optional<MinecraftProductionSkillNodeHandler
                     .ProductionAction>> menuActions) {
+        return handler(preflight, menuActions, new RecordingGateway());
+    }
+
+    private static MinecraftProductionSkillNodeHandler handler(
+            java.util.function.Function<SkillNodeContext, Optional<
+                    MinecraftProductionSkillNodeHandler.PreflightObservation>>
+                    preflight,
+            java.util.function.Function<MinecraftProductionSkillNodeHandler
+                    .ExecutionTicket, Optional<MinecraftProductionSkillNodeHandler
+                    .ProductionAction>> menuActions,
+            ActionBackedSkillNodeHandler.ActionGateway actions) {
         return new MinecraftProductionSkillNodeHandler(
                 (botId, generation) -> Optional.of(
                         new MinecraftProductionSkillNodeHandler.ActiveBot(
@@ -554,7 +599,7 @@ class MinecraftProductionSkillNodeHandlerTest {
                 taskSensors(),
                 (ticket, sensors) -> menuActions.apply(ticket),
                 menuActions::apply,
-                new RecordingGateway(),
+                actions,
                 signal -> SkillSignalInbox.OfferStatus.ENQUEUED);
     }
 
