@@ -6,6 +6,8 @@ import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.lifecycle.BotLifecycleManager;
 import io.github.greytaiwolf.botplayer.lifecycle.BotPlayerManagers;
 import io.github.greytaiwolf.botplayer.persistence.BotRosterSavedData;
+import io.github.greytaiwolf.botplayer.skill.builtin.P5ABuiltinSkillIds;
+import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionSkillPlanCompiler;
 import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpoint;
 import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointNodeState;
 import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointSavedData;
@@ -13,6 +15,7 @@ import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointScope;
 import io.github.greytaiwolf.botplayer.skill.core.SkillRunState;
 import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRunView;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -201,7 +204,6 @@ public final class P5ARestartGameTestSupport {
             UUID botId,
             long generation) {
         return view.state() == SkillRunState.PREPARING
-                && view.completedNodes() >= COMPLETED_LOG_FRAGMENTS
                 && !checkpoint.continuationState().isTerminal()
                 && checkpoint.scope().isPresent()
                 && checkpoint.botId().equals(botId)
@@ -211,9 +213,40 @@ public final class P5ARestartGameTestSupport {
                 && checkpoint.plan().planId().equals(view.planId())
                 && checkpoint.plan().revision() == view.planRevision()
                 && checkpoint.stateRevision() == view.stateRevision()
+                && completedHarvestLogFragments(checkpoint, view);
+    }
+
+    /**
+     * The restart lane intentionally stops after all four physical oak-log
+     * break fragments. It must not use the generic completed-node count:
+     * navigation gates are valid extra nodes and would otherwise let the
+     * fixture stop before it has retained all four harvested logs.
+     */
+    private static boolean completedHarvestLogFragments(
+            SkillCheckpoint checkpoint, SkillRunView view) {
+        Set<String> operationIds = Set.copyOf(
+                ProductionSkillPlanCompiler.operationIdsForProductionNode(
+                        "harvest_logs"));
+        if (operationIds.size() != COMPLETED_LOG_FRAGMENTS) {
+            return false;
+        }
+        Set<UUID> fragmentNodeIds = Set.copyOf(
+                ProductionSkillPlanCompiler.p5aDefault()
+                        .compileWoodToIronPick(
+                                checkpoint.botId(), view.planRevision())
+                        .nodes().stream()
+                        .filter(node -> node.skillId().equals(
+                                P5ABuiltinSkillIds.BOOTSTRAP_IRON))
+                        .filter(node -> operationIds.contains(node.parameters()
+                                .values().get(P5ABuiltinSkillIds
+                                        .BOOTSTRAP_IRON_OPERATION_ID_PARAMETER)))
+                        .map(node -> node.nodeId())
+                        .toList());
+        return fragmentNodeIds.size() == COMPLETED_LOG_FRAGMENTS
                 && checkpoint.nodes().stream().filter(node -> node.state()
-                        == SkillCheckpointNodeState.SUCCEEDED).count()
-                        >= COMPLETED_LOG_FRAGMENTS;
+                        == SkillCheckpointNodeState.SUCCEEDED
+                        && fragmentNodeIds.contains(node.nodeId())).count()
+                        == COMPLETED_LOG_FRAGMENTS;
     }
 
     @SubscribeEvent(priority = EventPriority.LOWEST)

@@ -45,6 +45,8 @@ import java.util.function.Supplier;
 public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseable {
     private static final int MAXIMUM_RUN_ID_ATTEMPTS = 8;
     private static final int RETAINED_VIEW_MULTIPLIER = 4;
+    /* One hostile incident owns one bounded self-defense session. */
+    private static final int MAXIMUM_INCIDENT_ATTEMPTS = 1;
 
     private final TargetResolver targetResolver;
     private final ActionFactory actionFactory;
@@ -57,6 +59,7 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
     private final ArrayBlockingQueue<CompletionEvent> completions;
     private final Map<UUID, ActiveRun> activeByBot = new LinkedHashMap<>();
     private final Map<UUID, RunView> latestByBot = new LinkedHashMap<>();
+    private final SkillIncidentAttemptLedger incidentAttempts;
     private volatile boolean closed;
     private long lastObservedTick = -1L;
 
@@ -115,6 +118,11 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
         this.ownerThread = Thread.currentThread();
         this.completions = new ArrayBlockingQueue<>(
                 limits.completionQueueCapacity());
+        this.incidentAttempts = new SkillIncidentAttemptLedger(
+                Math.multiplyExact(
+                        limits.maximumActiveRuns(), RETAINED_VIEW_MULTIPLIER),
+                MAXIMUM_INCIDENT_ATTEMPTS,
+                limits.runDeadlineTicks());
     }
 
     /**
@@ -138,6 +146,7 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
         ActiveRun existing = activeByBot.get(request.botId());
         if (existing != null) {
             return existing.generation == request.botGeneration()
+                    && existing.incidentId.equals(request.incidentId())
                     && existing.target.entityId().equals(sourceEntityId)
                     ? SafetyHandoffDecision.ALREADY_DELEGATED
                     : SafetyHandoffDecision.FALLBACK;
@@ -158,7 +167,6 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
                 || !target.targetClass().isExplicitHostile()) {
             return SafetyHandoffDecision.FALLBACK;
         }
-
         UUID runId = nextRunId();
         if (runId == null) {
             return SafetyHandoffDecision.FALLBACK;
@@ -170,10 +178,23 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
         } catch (ArithmeticException exception) {
             return SafetyHandoffDecision.FALLBACK;
         }
+        try {
+            if (incidentAttempts.allow(
+                            request.botId(),
+                            request.botGeneration(),
+                            request.incidentId(),
+                            request.currentTick())
+                    != SkillIncidentAttemptLedger.AllowStatus.ALLOWED) {
+                return SafetyHandoffDecision.FALLBACK;
+            }
+        } catch (ArithmeticException exception) {
+            return SafetyHandoffDecision.FALLBACK;
+        }
         ActiveRun run = new ActiveRun(
                 runId,
                 request.botId(),
                 request.botGeneration(),
+                request.incidentId(),
                 target,
                 request.currentTick(),
                 deadlineTick,
@@ -234,6 +255,7 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
         observeTick(currentTick);
         ActiveRun run = activeByBot.get(botId);
         if (run == null || run.generation != generation) {
+            incidentAttempts.closeGeneration(botId, generation);
             return false;
         }
         run.session.preemptBySafety();
@@ -258,6 +280,7 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
         finish(run, RunStatus.CLOSED,
                 Optional.of(Failure.GENERATION_CLOSED),
                 "Bot 代际已关闭", currentTick);
+        incidentAttempts.closeGeneration(botId, generation);
         return true;
     }
 
@@ -287,6 +310,7 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
                     "有限自卫服务已关闭", closingTick);
         }
         completions.clear();
+        incidentAttempts.clear();
     }
 
     private void drainCompletions(long currentTick) {
@@ -812,6 +836,7 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
         private final UUID runId;
         private final UUID botId;
         private final long generation;
+        private final UUID incidentId;
         private final DefenseTarget target;
         private final long startedTick;
         private final long deadlineTick;
@@ -825,6 +850,7 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
                 UUID runId,
                 UUID botId,
                 long generation,
+                UUID incidentId,
                 DefenseTarget target,
                 long startedTick,
                 long deadlineTick,
@@ -833,6 +859,7 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
             this.botId = Objects.requireNonNull(botId, "botId");
             requireGeneration(generation);
             this.generation = generation;
+            this.incidentId = Objects.requireNonNull(incidentId, "incidentId");
             this.target = Objects.requireNonNull(target, "target");
             if (startedTick < 0L || deadlineTick <= startedTick) {
                 throw new IllegalArgumentException(

@@ -69,7 +69,7 @@ public final class P5SelfDefenseAcceptanceGameTests {
         try {
             helper.getLevel().getServer().setDifficulty(Difficulty.NORMAL, true);
             prepareDefender(bot);
-            prepareTarget(helper, bot, zombie);
+            configureTarget(helper, zombie);
             float targetHealthBefore = zombie.getHealth();
 
             P2GameTestSupport.awaitCondition(
@@ -103,29 +103,13 @@ public final class P5SelfDefenseAcceptanceGameTests {
         bot.player().invulnerableTime = 0;
     }
 
-    private static void prepareTarget(
-            GameTestHelper helper, TestBot bot, Zombie zombie) {
+    private static void configureTarget(GameTestHelper helper, Zombie zombie) {
         /* Match the already-proven hostile handoff geometry exactly. */
         Vec3 position = helper.absoluteVec(new Vec3(4.5D, 1.0D, 3.0D));
         zombie.moveTo(position.x, position.y, position.z, 0.0F, 0.0F);
         zombie.setNoAi(true);
         zombie.setPersistenceRequired();
         zombie.setHealth(1.0F);
-        /*
-         * Set the native target before adding the mob to the level. This is the
-         * same ordering used by the existing hostile-handoff acceptance test;
-         * it keeps the first safety frame from observing an unowned hostile.
-         */
-        zombie.setTarget(bot.player());
-        P2GameTestSupport.require(
-                helper.getLevel().addFreshEntity(zombie),
-                "Self-defense zombie could not enter the GameTest level");
-        P2GameTestSupport.require(
-                zombie.getTarget() == bot.player(),
-                "Self-defense zombie did not retain the native bot target");
-        P2GameTestSupport.require(
-                bot.player().distanceToSqr(zombie) <= 9.0D,
-                "Self-defense zombie is outside the bounded melee range");
     }
 
     private static void beginDefenseAndAwaitCompletion(
@@ -141,6 +125,7 @@ public final class P5SelfDefenseAcceptanceGameTests {
                 navigation.status() == NavigationSubmission.Status.ENQUEUED,
                 "Navigation setup was rejected before self-defense handoff: "
                         + navigation.status());
+        activateTarget(helper, bot, zombie);
 
         boolean[] observedTargetingThreat = {false};
         boolean[] observedSuspendedNavigation = {false};
@@ -250,6 +235,25 @@ public final class P5SelfDefenseAcceptanceGameTests {
                     }
                     helper.succeed();
                 });
+    }
+
+    /**
+     * Activate the hostile only after navigation and all observation probes are
+     * ready. Otherwise the safety loop can legitimately complete its bounded
+     * response during the initial cooldown wait, before this test records it.
+     */
+    private static void activateTarget(
+            GameTestHelper helper, TestBot bot, Zombie zombie) {
+        zombie.setTarget(bot.player());
+        P2GameTestSupport.require(
+                helper.getLevel().addFreshEntity(zombie),
+                "Self-defense zombie could not enter the GameTest level");
+        P2GameTestSupport.require(
+                zombie.getTarget() == bot.player(),
+                "Self-defense zombie did not retain the native bot target");
+        P2GameTestSupport.require(
+                bot.player().distanceToSqr(zombie) <= 9.0D,
+                "Self-defense zombie is outside the bounded melee range");
     }
 
     private static boolean terminallyCompleted(

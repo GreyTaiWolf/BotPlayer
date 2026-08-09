@@ -141,9 +141,16 @@ public final class P5ARestartPhaseOneGameTests {
     }
 
     private static void placeLogTargets(GameTestHelper helper) {
-        helper.setBlock(new BlockPos(3, 1, 3), Blocks.OAK_LOG);
+        /*
+         * The production acquisition handler may only wait for an existing
+         * drop; it does not move a Bot toward one. Keep each test log one
+         * cardinal block from the stationary phase-one body so the vanilla
+         * drop is in deterministic pickup range. The prior diagonal third
+         * target could be broken successfully but remain uncollected.
+         */
         helper.setBlock(new BlockPos(3, 1, 4), Blocks.OAK_LOG);
-        helper.setBlock(new BlockPos(3, 1, 5), Blocks.OAK_LOG);
         helper.setBlock(new BlockPos(4, 1, 3), Blocks.OAK_LOG);
+        helper.setBlock(new BlockPos(4, 1, 5), Blocks.OAK_LOG);
+        helper.setBlock(new BlockPos(5, 1, 4), Blocks.OAK_LOG);
     }
 }

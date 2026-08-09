@@ -110,6 +110,37 @@ class SelfDefenseSkillServiceTest {
     }
 
     @Test
+    void aTerminalRunCannotBeReplacedDuringTheSameIncident() {
+        Fixture fixture = fixture(new SelfDefenseSkillService.Limits(
+                2, 8, 8, 20, 2));
+        fixture.hostile(BOT_A, TARGET_A);
+        Assertions.assertEquals(SafetyHandoffDecision.DELEGATED,
+                fixture.service.request(request(BOT_A, TARGET_A, INCIDENT_A, 0L)));
+        fixture.service.tick(0L);
+        SelfDefenseSkillService.ActionDispatch first =
+                fixture.submitter.dispatches.get(0);
+        fixture.submitter.complete(first, ActionState.SUCCEEDED, 0L,
+                List.of(
+                        new ActionEvidence("entity.id", TARGET_A.toString()),
+                        new ActionEvidence("entity.removed", "true")));
+        fixture.service.tick(1L);
+
+        UUID firstRunId = fixture.service.latestView(BOT_A)
+                .orElseThrow().runId();
+        Assertions.assertEquals(SafetyHandoffDecision.FALLBACK,
+                fixture.service.request(request(BOT_A, TARGET_A, INCIDENT_A, 2L)));
+        Assertions.assertEquals(0, fixture.service.activeRunCount());
+        Assertions.assertEquals(firstRunId, fixture.service.latestView(BOT_A)
+                .orElseThrow().runId());
+
+        Assertions.assertEquals(SafetyHandoffDecision.DELEGATED,
+                fixture.service.request(request(BOT_A, TARGET_A, INCIDENT_B, 2L)));
+        Assertions.assertEquals(1, fixture.service.activeRunCount());
+        Assertions.assertNotEquals(firstRunId, fixture.service.latestView(BOT_A)
+                .orElseThrow().runId());
+    }
+
+    @Test
     void pvpFriendlyAndSourceMismatchAllFallBackBeforeAnyActionIsCreated() {
         Fixture fixture = fixture(new SelfDefenseSkillService.Limits(
                 2, 8, 8, 20, 2));

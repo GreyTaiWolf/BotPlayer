@@ -43,6 +43,8 @@ public final class ProductionSkillPlanCompiler {
     private static final String OPERATION_ID_PREFIX = "p5a.";
     private static final int MAX_OPERATION_ID_LENGTH = 128;
     private static final int MAXIMUM_STEP_TICKS = 2_400;
+    /** 每个可单独执行的资源 BREAK_BLOCK fragment 都必须有一张前置导航门。 */
+    private static final int EXPECTED_RESOURCE_NAVIGATION_STEPS = 19;
 
     private static final ProductionPlanTemplate CANONICAL_TEMPLATE =
             WoodToIronPickTemplate.create();
@@ -68,6 +70,23 @@ public final class ProductionSkillPlanCompiler {
                     exactMainHandStepsByReplacedEdge();
     private static final Map<String, UUID> EXACT_MAIN_HAND_NODE_IDS =
             exactMainHandNodeIds();
+    /*
+     * 资源导航不是 ProductionOperation：它在每个资源 physical fragment 前把当前 run 带到
+     * 一个由受限 TaskSensor 当 tick 观察出的候选附近。坐标因此不进入 SkillPlan；紧随其后的
+     * production fragment 会重新观察、冻结并执行实际的 BREAK_BLOCK。
+     */
+    private static final List<ResourceNavigationStep>
+            RESOURCE_NAVIGATION_STEPS = canonicalResourceNavigationSteps();
+    private static final Map<String, ResourceNavigationStep>
+            RESOURCE_NAVIGATION_STEPS_BY_OPERATION =
+                    resourceNavigationStepsByOperation();
+    private static final Map<String, String>
+            RESOURCE_NAVIGATION_BLOCKS_BY_PRODUCTION_NODE =
+                    resourceNavigationBlocksByProductionNode();
+    private static final Set<String> APPROVED_RESOURCE_NAVIGATION_BLOCK_IDS =
+            resourceNavigationBlockIds();
+    private static final Map<String, UUID> RESOURCE_NAVIGATION_NODE_IDS =
+            resourceNavigationNodeIds();
     private static final Map<String, ProductionResolvedNode>
             APPROVED_OPERATIONS = approvedOperations();
     private static final Set<String> APPROVED_OPERATION_IDS =
@@ -91,6 +110,24 @@ public final class ProductionSkillPlanCompiler {
                     MAXIMUM_STEP_TICKS,
                     ProductionStepLifecycle.MAX_ATTEMPTS,
                     true);
+    private static final SkillDescriptor RESOURCE_NAVIGATION_HANDLER_DESCRIPTOR =
+            new SkillDescriptor(
+                    P5ABuiltinSkillIds.NAVIGATE_TO_RESOURCE,
+                    P5ABuiltinSkillIds.VERSION,
+                    SkillCategory.RESOURCE,
+                    new SkillParameterSchema(Map.of(
+                            P5ABuiltinSkillIds
+                                    .RESOURCE_NAVIGATION_BLOCK_ID_PARAMETER,
+                            new SkillParameterRule.StringRule(
+                                    true,
+                                    17,
+                                    21,
+                                    APPROVED_RESOURCE_NAVIGATION_BLOCK_IDS))),
+                    SkillRiskLevel.MODERATE,
+                    Set.of(),
+                    MAXIMUM_STEP_TICKS,
+                    0,
+                    true);
 
     private final ProductionPlanValidator validator;
 
@@ -108,6 +145,43 @@ public final class ProductionSkillPlanCompiler {
      */
     public static SkillDescriptor handlerDescriptor() {
         return HANDLER_DESCRIPTOR;
+    }
+
+    /**
+     * P5A 资源导航节点的精确 descriptor。它只允许 canonical 模板的四种资源方块 id，
+     * 而非位置、tag、半径或开放导航策略。
+     */
+    public static SkillDescriptor resourceNavigationHandlerDescriptor() {
+        return RESOURCE_NAVIGATION_HANDLER_DESCRIPTOR;
+    }
+
+    /**
+     * 返回导航 handler 可以接收的封闭资源方块白名单。
+     */
+    public static Set<String> approvedResourceNavigationBlockIds() {
+        return APPROVED_RESOURCE_NAVIGATION_BLOCK_IDS;
+    }
+
+    /**
+     * 对未经信任的标量执行一次与 compiler 相同的封闭白名单映射。
+     */
+    public static Optional<String> approvedResourceNavigationBlockId(
+            String blockId) {
+        Objects.requireNonNull(blockId, "blockId");
+        return APPROVED_RESOURCE_NAVIGATION_BLOCK_IDS.contains(blockId)
+                ? Optional.of(blockId)
+                : Optional.empty();
+    }
+
+    /**
+     * 返回某个 logical acquisition 节点每个 physical fragment 前置导航所使用的精确 block id。
+     * 未知或不需要导航的逻辑生产节点返回空；该值从不携带坐标。
+     */
+    public static Optional<String> resourceNavigationBlockForProductionNode(
+            String productionNodeId) {
+        return Optional.ofNullable(RESOURCE_NAVIGATION_BLOCKS_BY_PRODUCTION_NODE
+                .get(Objects.requireNonNull(productionNodeId,
+                        "productionNodeId")));
     }
 
     /**
@@ -186,7 +260,8 @@ public final class ProductionSkillPlanCompiler {
         verifyResolvedNodes(validation);
         Map<String, UUID> skillNodeIds = SKILL_NODE_IDS_BY_OPERATION;
         List<SkillPlanNode> nodes = new ArrayList<>(LOWERED_OPERATIONS.size()
-                + EXACT_MAIN_HAND_STEPS.size());
+                + EXACT_MAIN_HAND_STEPS.size()
+                + RESOURCE_NAVIGATION_STEPS.size());
         for (LoweredOperation lowered : LOWERED_OPERATIONS) {
             String operationId = lowered.operationId();
             UUID nodeId = skillNodeIds.get(operationId);
@@ -218,19 +293,44 @@ public final class ProductionSkillPlanCompiler {
                                     .EXACT_MAIN_HAND_ITEM_ID_PARAMETER,
                             step.item().itemId().value()))));
         }
+        for (ResourceNavigationStep step : RESOURCE_NAVIGATION_STEPS) {
+            UUID nodeId = RESOURCE_NAVIGATION_NODE_IDS.get(
+                    step.operationId());
+            if (nodeId == null) {
+                throw new IllegalStateException(
+                        "canonical resource navigation step has no stable SkillPlan node id");
+            }
+            nodes.add(new SkillPlanNode(
+                    nodeId,
+                    P5ABuiltinSkillIds.NAVIGATE_TO_RESOURCE,
+                    P5ABuiltinSkillIds.VERSION,
+                    new SkillParameters(Map.of(
+                            P5ABuiltinSkillIds
+                                    .RESOURCE_NAVIGATION_BLOCK_ID_PARAMETER,
+                            step.expectedBlockId()))));
+        }
 
         List<SkillPlanEdge> edges = new ArrayList<>(
                 template.edges().size() + LOWERED_OPERATIONS.size()
                         - template.nodes().size()
-                        + EXACT_MAIN_HAND_STEPS.size());
+                        + EXACT_MAIN_HAND_STEPS.size()
+                        + RESOURCE_NAVIGATION_STEPS.size());
         Set<SkillPlanEdge> uniqueEdges = new LinkedHashSet<>();
+        for (ResourceNavigationStep step : RESOURCE_NAVIGATION_STEPS) {
+            appendNodeEdge(edges, uniqueEdges,
+                    RESOURCE_NAVIGATION_NODE_IDS.get(step.operationId()),
+                    skillNodeIds.get(step.operationId()));
+        }
         for (ProductionPlanNode productionNode : template.nodes()) {
             List<LoweredOperation> fragments = fragmentsFor(
                     productionNode.nodeId());
             for (int index = 1; index < fragments.size(); index++) {
-                appendEdge(edges, uniqueEdges, skillNodeIds,
-                        fragments.get(index - 1).operationId(),
-                        fragments.get(index).operationId());
+                appendNodeEdge(edges, uniqueEdges,
+                        skillNodeIds.get(
+                                fragments.get(index - 1).operationId()),
+                        entryNodeIdForOperation(
+                                fragments.get(index).operationId(),
+                                skillNodeIds));
             }
         }
         for (ProductionPlanEdge productionEdge : template.edges()) {
@@ -240,11 +340,11 @@ public final class ProductionSkillPlanCompiler {
             }
             List<LoweredOperation> before = fragmentsFor(
                     productionEdge.beforeNodeId());
-            List<LoweredOperation> after = fragmentsFor(
-                    productionEdge.afterNodeId());
-            appendEdge(edges, uniqueEdges, skillNodeIds,
-                    before.get(before.size() - 1).operationId(),
-                    after.get(0).operationId());
+            appendNodeEdge(edges, uniqueEdges,
+                    skillNodeIds.get(
+                            before.get(before.size() - 1).operationId()),
+                    entryNodeIdForProductionNode(
+                            productionEdge.afterNodeId(), skillNodeIds));
         }
         for (ExactMainHandStep step : EXACT_MAIN_HAND_STEPS) {
             UUID equipNodeId = EXACT_MAIN_HAND_NODE_IDS.get(step.nodeId());
@@ -259,10 +359,9 @@ public final class ProductionSkillPlanCompiler {
                     equipNodeId);
             for (String dependentProductionNodeId :
                     step.dependentProductionNodeIds()) {
-                List<LoweredOperation> dependent = fragmentsFor(
-                        dependentProductionNodeId);
                 appendNodeEdge(edges, uniqueEdges, equipNodeId,
-                        skillNodeIds.get(dependent.get(0).operationId()));
+                        entryNodeIdForProductionNode(
+                                dependentProductionNodeId, skillNodeIds));
             }
         }
         return new SkillPlan(
@@ -381,6 +480,142 @@ public final class ProductionSkillPlanCompiler {
             }
         }
         return Map.copyOf(nodeIds);
+    }
+
+    /**
+     * 每个物理资源 fragment 都有一张独立导航门，并且门只通向自己的单次
+     * {@code BREAK_BLOCK}。后续 fragment 不复用上一次目标：它们会再次运行受限
+     * TaskSensor 查询，绝不把动态坐标写回计划。
+     */
+    private static List<ResourceNavigationStep>
+            canonicalResourceNavigationSteps() {
+        List<ResourceNavigationStep> steps = new ArrayList<>();
+        Set<String> seenOperationIds = new LinkedHashSet<>();
+        Set<String> seenProductionNodes = new LinkedHashSet<>();
+        Set<String> seenBlockIds = new LinkedHashSet<>();
+        Map<String, String> expectedBlocksByProductionNode = Map.of(
+                "harvest_logs", "minecraft:oak_log",
+                "mine_cobblestone", "minecraft:cobblestone",
+                "mine_raw_iron", "minecraft:iron_ore",
+                "mine_coal", "minecraft:coal_ore");
+        for (LoweredOperation lowered : LOWERED_OPERATIONS) {
+            if (!(lowered.resolved().node().operation()
+                    instanceof ResourceAcquisition acquisition)) {
+                continue;
+            }
+            String blockId = resourceNavigationBlock(acquisition);
+            if (!blockId.equals(expectedBlocksByProductionNode.get(
+                    lowered.sourceNodeId()))) {
+                throw new IllegalStateException(
+                        "canonical resource acquisition has an unexpected navigation block id");
+            }
+            if (!seenOperationIds.add(lowered.operationId())) {
+                throw new IllegalStateException(
+                        "canonical resource navigation operation ids are not unique");
+            }
+            seenProductionNodes.add(lowered.sourceNodeId());
+            seenBlockIds.add(blockId);
+            steps.add(new ResourceNavigationStep(
+                    lowered.sourceNodeId(), lowered.operationId(), blockId));
+        }
+        if (steps.size() != EXPECTED_RESOURCE_NAVIGATION_STEPS
+                || !seenProductionNodes.equals(
+                        expectedBlocksByProductionNode.keySet())
+                || !seenBlockIds.equals(new LinkedHashSet<>(
+                        expectedBlocksByProductionNode.values()))) {
+            throw new IllegalStateException(
+                    "canonical resource navigation steps must cover every reviewed acquisition fragment");
+        }
+        return List.copyOf(steps);
+    }
+
+    private static Map<String, ResourceNavigationStep>
+            resourceNavigationStepsByOperation() {
+        Map<String, ResourceNavigationStep> steps = new LinkedHashMap<>();
+        for (ResourceNavigationStep step : RESOURCE_NAVIGATION_STEPS) {
+            if (steps.putIfAbsent(step.operationId(), step)
+                    != null
+                    || !SKILL_NODE_IDS_BY_OPERATION.containsKey(
+                            step.operationId())) {
+                throw new IllegalStateException(
+                        "resource navigation step does not bind one canonical production fragment");
+            }
+        }
+        return Map.copyOf(steps);
+    }
+
+    private static Map<String, String>
+            resourceNavigationBlocksByProductionNode() {
+        Map<String, String> blocks = new LinkedHashMap<>();
+        for (ResourceNavigationStep step : RESOURCE_NAVIGATION_STEPS) {
+            String previous = blocks.putIfAbsent(step.sourceProductionNodeId(),
+                    step.expectedBlockId());
+            if (previous != null && !previous.equals(step.expectedBlockId())) {
+                throw new IllegalStateException(
+                        "one logical acquisition must use one exact navigation block id");
+            }
+        }
+        if (blocks.size() != 4) {
+            throw new IllegalStateException(
+                    "canonical resource navigation must bind four logical acquisitions");
+        }
+        return Map.copyOf(blocks);
+    }
+
+    private static Set<String> resourceNavigationBlockIds() {
+        Set<String> blockIds = new LinkedHashSet<>();
+        for (ResourceNavigationStep step : RESOURCE_NAVIGATION_STEPS) {
+            blockIds.add(step.expectedBlockId());
+        }
+        if (!blockIds.equals(new LinkedHashSet<>(
+                RESOURCE_NAVIGATION_BLOCKS_BY_PRODUCTION_NODE.values()))) {
+            throw new IllegalStateException(
+                    "canonical resource navigation block whitelist drifted from its logical acquisitions");
+        }
+        return Set.copyOf(blockIds);
+    }
+
+    private static Map<String, UUID> resourceNavigationNodeIds() {
+        Map<String, UUID> nodeIds = new LinkedHashMap<>();
+        Set<UUID> unique = new LinkedHashSet<>(
+                SKILL_NODE_IDS_BY_OPERATION.values());
+        unique.addAll(EXACT_MAIN_HAND_NODE_IDS.values());
+        for (ResourceNavigationStep step : RESOURCE_NAVIGATION_STEPS) {
+            UUID nodeId = deterministicUuid(NODE_ID_DOMAIN, List.of(
+                    "resource-navigation",
+                    step.sourceProductionNodeId(),
+                    step.operationId(),
+                    step.expectedBlockId()));
+            if (!unique.add(nodeId)
+                    || nodeIds.putIfAbsent(step.operationId(),
+                            nodeId) != null) {
+                throw new IllegalStateException(
+                        "canonical resource navigation node ids collided");
+            }
+        }
+        return Map.copyOf(nodeIds);
+    }
+
+    private static String resourceNavigationBlock(
+            ResourceAcquisition acquisition) {
+        Objects.requireNonNull(acquisition, "acquisition");
+        return switch (acquisition.method()) {
+            case HARVEST_LOG -> "minecraft:oak_log";
+            case MINE_COBBLESTONE -> "minecraft:cobblestone";
+            case MINE_RAW_IRON -> "minecraft:iron_ore";
+            case MINE_COAL -> "minecraft:coal_ore";
+        };
+    }
+
+    private static boolean isReviewedResourceNavigationBlock(
+            String blockId) {
+        return switch (Objects.requireNonNull(blockId, "blockId")) {
+            case "minecraft:oak_log",
+                    "minecraft:cobblestone",
+                    "minecraft:iron_ore",
+                    "minecraft:coal_ore" -> true;
+            default -> false;
+        };
     }
 
     /**
@@ -731,6 +966,48 @@ public final class ProductionSkillPlanCompiler {
         return fragments;
     }
 
+    /**
+     * 返回进入一个 logical production node 的稳定 SkillPlan 节点。资源采集的首个
+     * physical fragment 会先经过自己的不带坐标导航门，其余逻辑节点直接进入首个 fragment。
+     */
+    private static UUID entryNodeIdForProductionNode(
+            String productionNodeId,
+            Map<String, UUID> skillNodeIds) {
+        Objects.requireNonNull(productionNodeId, "productionNodeId");
+        Objects.requireNonNull(skillNodeIds, "skillNodeIds");
+        List<LoweredOperation> fragments = fragmentsFor(productionNodeId);
+        return entryNodeIdForOperation(fragments.get(0).operationId(),
+                skillNodeIds);
+    }
+
+    /**
+     * 返回进入一个 physical production fragment 的稳定 SkillPlan 节点。每个资源
+     * {@code BREAK_BLOCK} fragment 前都由自己的导航门接管；非资源 fragment 直接进入。
+     */
+    private static UUID entryNodeIdForOperation(
+            String operationId,
+            Map<String, UUID> skillNodeIds) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(skillNodeIds, "skillNodeIds");
+        ResourceNavigationStep navigation =
+                RESOURCE_NAVIGATION_STEPS_BY_OPERATION.get(operationId);
+        if (navigation != null) {
+            UUID nodeId = RESOURCE_NAVIGATION_NODE_IDS.get(
+                    navigation.operationId());
+            if (nodeId == null) {
+                throw new IllegalStateException(
+                        "resource navigation fragment has no stable entry node id");
+            }
+            return nodeId;
+        }
+        UUID nodeId = skillNodeIds.get(operationId);
+        if (nodeId == null) {
+            throw new IllegalStateException(
+                    "canonical production fragment has no stable SkillPlan node id");
+        }
+        return nodeId;
+    }
+
     private static void appendEdge(
             List<SkillPlanEdge> edges,
             Set<SkillPlanEdge> uniqueEdges,
@@ -767,6 +1044,7 @@ public final class ProductionSkillPlanCompiler {
         List<String> signature = new ArrayList<>();
         signature.add(P5ABuiltinSkillIds.BOOTSTRAP_IRON.toString());
         signature.add(P5ABuiltinSkillIds.EQUIP_EXACT_MAIN_HAND.toString());
+        signature.add(P5ABuiltinSkillIds.NAVIGATE_TO_RESOURCE.toString());
         signature.add(P5ABuiltinSkillIds.VERSION.toString());
         signature.add(CANONICAL_TEMPLATE.schema().schemaId());
         signature.add(Integer.toString(CANONICAL_TEMPLATE.schema().version()));
@@ -805,9 +1083,23 @@ public final class ProductionSkillPlanCompiler {
             }
             signature.add(nodeId.toString());
         }
+        for (ResourceNavigationStep step : RESOURCE_NAVIGATION_STEPS) {
+            UUID nodeId = RESOURCE_NAVIGATION_NODE_IDS.get(
+                    step.operationId());
+            if (nodeId == null) {
+                throw new IllegalStateException(
+                        "canonical resource navigation fragment has no stable SkillPlan node id");
+            }
+            signature.add("resource-navigation");
+            signature.add(step.sourceProductionNodeId());
+            signature.add(step.operationId());
+            signature.add(step.expectedBlockId());
+            signature.add(nodeId.toString());
+        }
         UUID planId = deterministicUuid(PLAN_ID_DOMAIN, signature);
         if (SKILL_NODE_IDS_BY_OPERATION.containsValue(planId)
-                || EXACT_MAIN_HAND_NODE_IDS.containsValue(planId)) {
+                || EXACT_MAIN_HAND_NODE_IDS.containsValue(planId)
+                || RESOURCE_NAVIGATION_NODE_IDS.containsValue(planId)) {
             throw new IllegalStateException(
                     "stable production SkillPlan id collided with a node id");
         }
@@ -889,6 +1181,28 @@ public final class ProductionSkillPlanCompiler {
                     && fragmentIndex != fragmentCount) {
                 throw new IllegalArgumentException(
                         "only a logical node's final fragment may be a checkpoint");
+            }
+        }
+    }
+
+    /**
+     * 不含坐标的编译期资源导航门。它只标识哪个 logical acquisition 的哪一个 physical
+     * fragment 要先导航，以及该节点能从 TaskSensor 接收的精确方块白名单；运行时候选位置
+     * 不属于此记录也不属于 SkillPlan。
+     */
+    private record ResourceNavigationStep(
+            String sourceProductionNodeId,
+            String operationId,
+            String expectedBlockId) {
+        private ResourceNavigationStep {
+            Objects.requireNonNull(sourceProductionNodeId,
+                    "sourceProductionNodeId");
+            Objects.requireNonNull(operationId, "operationId");
+            Objects.requireNonNull(expectedBlockId, "expectedBlockId");
+            if (sourceProductionNodeId.isBlank() || operationId.isBlank()
+                    || !isReviewedResourceNavigationBlock(expectedBlockId)) {
+                throw new IllegalArgumentException(
+                        "resource navigation step must use a reviewed physical fragment and exact block id");
             }
         }
     }

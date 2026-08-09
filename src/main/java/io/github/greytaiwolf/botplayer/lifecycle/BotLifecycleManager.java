@@ -143,6 +143,7 @@ import io.github.greytaiwolf.botplayer.skill.runtime.SurvivalSkillService;
 import io.github.greytaiwolf.botplayer.skill.runtime.SurvivalSkillSubmission;
 import io.github.greytaiwolf.botplayer.skill.runtime.SelfDefenseSkillService;
 import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftEquipmentSkillNodeHandler;
+import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftProductionNavigationSkillNodeHandler;
 import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftProductionSkillNodeHandler;
 import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftProductionSkillPorts;
 import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftSingleChestTransferSkillNodeHandler;
@@ -607,6 +608,8 @@ public final class BotLifecycleManager {
          */
         registerBuiltinDescriptor(ProductionSkillPlanCompiler
                 .handlerDescriptor());
+        registerBuiltinDescriptor(ProductionSkillPlanCompiler
+                .resourceNavigationHandlerDescriptor());
     }
 
     private void registerBuiltinDescriptor(SkillDescriptor descriptor) {
@@ -682,6 +685,15 @@ public final class BotLifecycleManager {
                 new MinecraftSingleChestTransferSkillNodeHandler(
                         this::resolveActive,
                         actions,
+                        skillRuntime::offerSignal));
+        registerP5ANodeHandler(
+                P5ABuiltinSkillIds.NAVIGATE_TO_RESOURCE,
+                P5ABuiltinSkillIds.VERSION,
+                new MinecraftProductionNavigationSkillNodeHandler(
+                        this::resolveActive,
+                        navigationService,
+                        taskSensorService,
+                        taskSensorAdapter,
                         skillRuntime::offerSignal));
         registerP5ANodeHandler(
                 P5ABuiltinSkillIds.BOOTSTRAP_IRON,
