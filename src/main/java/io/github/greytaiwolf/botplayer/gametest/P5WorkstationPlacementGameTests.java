@@ -79,7 +79,7 @@ public final class P5WorkstationPlacementGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "workstation_port_success");
-        TestBot bot = fixture.spawn("placer");
+        TestBot bot = fixture.spawn("place");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             prepareCraftingTableHand(bot);
@@ -168,7 +168,7 @@ public final class P5WorkstationPlacementGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "workstation_furnace_success");
-        TestBot bot = fixture.spawn("furnace_placer");
+        TestBot bot = fixture.spawn("furn");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             prepareWorkstationHand(bot, Items.FURNACE);
@@ -270,7 +270,7 @@ public final class P5WorkstationPlacementGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "workstation_furnace_direction_drift");
-        TestBot bot = fixture.spawn("furnace_turner");
+        TestBot bot = fixture.spawn("turn");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             prepareWorkstationHand(bot, Items.FURNACE);
@@ -313,7 +313,7 @@ public final class P5WorkstationPlacementGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "workstation_port_occupied_target");
-        TestBot bot = fixture.spawn("placer");
+        TestBot bot = fixture.spawn("place");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             prepareCraftingTableHand(bot);
