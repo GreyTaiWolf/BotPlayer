@@ -37,6 +37,7 @@ import io.github.greytaiwolf.botplayer.skill.task.TaskSensorBudget;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorEvidence;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorQuery;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorQueryType;
+import io.github.greytaiwolf.botplayer.skill.task.TaskSensorResourceFilter;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorResponse;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorRunIdentity;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorScope;
@@ -428,7 +429,9 @@ public final class MinecraftProductionSkillPorts
                             RESOURCE_MAX_BLOCKS,
                             0,
                             RESOURCE_MAX_EVIDENCE,
-                            0L)), context.currentTick()).orElse(null);
+                            0L),
+                    resourceFilterForExpectedBlock(expectedBlockId)),
+                    context.currentTick()).orElse(null);
             if (candidates == null
                     || candidates.availability()
                             != TaskSensorAvailability.AVAILABLE) {
@@ -710,6 +713,28 @@ public final class MinecraftProductionSkillPorts
             case MINE_COBBLESTONE -> "minecraft:cobblestone";
             case MINE_RAW_IRON -> "minecraft:iron_ore";
             case MINE_COAL -> "minecraft:coal_ore";
+        };
+    }
+
+    /**
+     * 资源候选的 24 项上限必须在扫描时就排除无关方块；不能先让石头地板耗尽证据额度，再在
+     * 调用方过滤。这里仅把 production 的封闭方块 id 映射到同样封闭的 TaskSensor enum。
+     */
+    static TaskSensorResourceFilter resourceFilterForExpectedBlock(
+            String expectedBlockId) {
+        Objects.requireNonNull(expectedBlockId, "expectedBlockId");
+        return switch (expectedBlockId) {
+            case "minecraft:oak_log" -> TaskSensorResourceFilter.OAK_LOG;
+            case "minecraft:cobblestone" ->
+                    TaskSensorResourceFilter.COBBLESTONE;
+            case "minecraft:iron_ore" -> TaskSensorResourceFilter.IRON_ORE;
+            case "minecraft:coal_ore" -> TaskSensorResourceFilter.COAL_ORE;
+            case "minecraft:crafting_table" ->
+                    TaskSensorResourceFilter.CRAFTING_TABLE;
+            case "minecraft:furnace" -> TaskSensorResourceFilter.FURNACE;
+            default -> throw new IllegalArgumentException(
+                    "production has no reviewed resource filter for "
+                            + expectedBlockId);
         };
     }
 

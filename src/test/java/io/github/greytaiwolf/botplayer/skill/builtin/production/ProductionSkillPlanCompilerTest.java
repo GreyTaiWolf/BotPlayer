@@ -7,9 +7,13 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.greytaiwolf.botplayer.skill.builtin.P5ABuiltinSkillIds;
+import io.github.greytaiwolf.botplayer.skill.core.SkillCategory;
 import io.github.greytaiwolf.botplayer.skill.core.SkillDescriptor;
+import io.github.greytaiwolf.botplayer.skill.core.SkillParameterRule;
+import io.github.greytaiwolf.botplayer.skill.core.SkillParameterSchema;
 import io.github.greytaiwolf.botplayer.skill.core.SkillParameters;
 import io.github.greytaiwolf.botplayer.skill.core.SkillRegistry;
+import io.github.greytaiwolf.botplayer.skill.core.SkillRiskLevel;
 import io.github.greytaiwolf.botplayer.skill.plan.SkillPlan;
 import io.github.greytaiwolf.botplayer.skill.plan.SkillPlanEdge;
 import io.github.greytaiwolf.botplayer.skill.plan.SkillPlanLimits;
@@ -19,15 +23,24 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class ProductionSkillPlanCompilerTest {
     private static final UUID FIRST_BOT = new UUID(4L, 1L);
     private static final UUID SECOND_BOT = new UUID(4L, 2L);
+    private static final Set<ProductionPlanEdge>
+            EXACT_MAIN_HAND_REROUTED_EDGES = Set.of(
+                    new ProductionPlanEdge(
+                            "wooden_pickaxe", "mine_cobblestone"),
+                    new ProductionPlanEdge(
+                            "stone_pickaxe", "mine_raw_iron"),
+                    new ProductionPlanEdge(
+                            "stone_pickaxe", "mine_coal"));
 
     @Test
-    void lowersValidatedWoodToIronDagIntoOneReviewedContractPerPhysicalAction() {
+    void lowersValidatedWoodToIronDagIntoPhysicalActionsAndExactToolGates() {
         ProductionSkillPlanCompiler compiler =
                 ProductionSkillPlanCompiler.p5aDefault();
         SkillPlan first = compiler.compileWoodToIronPick(FIRST_BOT, 1L);
@@ -37,37 +50,67 @@ class ProductionSkillPlanCompilerTest {
 
         assertEquals(12, template.nodes().size(),
                 "模板仍是 12 个逻辑生产节点");
-        assertEquals(31, first.nodes().size(),
-                "每次采集和每个 crafting batch 必须成为独立物理原版动作");
-        assertEquals(36, first.edges().size(),
-                "17 条逻辑边加 19 条 fragment 串行边");
+        assertEquals(34, first.nodes().size(),
+                "31 个物理生产动作外，还必须有三道独立精确主手门");
+        assertEquals(39, first.edges().size(),
+                "17 条逻辑边和 19 条 fragment 串行边经三道装备门重接线");
         assertEquals(first.planId(), sameTemplateDifferentRunContext.planId());
         assertNotEquals(first.botId(), sameTemplateDifferentRunContext.botId());
         assertNotEquals(first.revision(), sameTemplateDifferentRunContext.revision());
 
         Map<String, SkillPlanNode> byOperationId = new LinkedHashMap<>();
+        Map<String, SkillPlanNode> byExactMainHandItemId =
+                new LinkedHashMap<>();
         for (SkillPlanNode node : first.nodes()) {
-            assertEquals(P5ABuiltinSkillIds.BOOTSTRAP_IRON, node.skillId());
             assertEquals(P5ABuiltinSkillIds.VERSION, node.skillVersion());
             assertEquals(
                     1,
                     node.parameters().values().size(),
                     "compiler must not smuggle coordinates, commands, sessions, or run ids into parameters");
-            Object operationId = node.parameters().values().get(
-                    P5ABuiltinSkillIds
-                            .BOOTSTRAP_IRON_OPERATION_ID_PARAMETER);
-            assertTrue(operationId instanceof String);
-            byOperationId.put((String) operationId, node);
+            if (node.skillId().equals(P5ABuiltinSkillIds.BOOTSTRAP_IRON)) {
+                Object operationId = node.parameters().values().get(
+                        P5ABuiltinSkillIds
+                                .BOOTSTRAP_IRON_OPERATION_ID_PARAMETER);
+                assertTrue(operationId instanceof String);
+                assertTrue(byOperationId.put((String) operationId, node)
+                        == null, "production operation id must be unique");
+            } else if (node.skillId().equals(
+                    P5ABuiltinSkillIds.EQUIP_EXACT_MAIN_HAND)) {
+                Object itemId = node.parameters().values().get(
+                        P5ABuiltinSkillIds
+                                .EXACT_MAIN_HAND_ITEM_ID_PARAMETER);
+                assertTrue(itemId instanceof String);
+                assertTrue(byExactMainHandItemId.put((String) itemId, node)
+                        == null, "exact main-hand item id must be unique");
+            } else {
+                throw new AssertionError(
+                        "canonical compiler emitted an unexpected skill "
+                                + node.skillId());
+            }
         }
 
         assertEquals(31, byOperationId.size());
+        assertEquals(3, byExactMainHandItemId.size());
         assertEquals(31, ProductionSkillPlanCompiler.approvedOperationIds()
                 .size());
         Map<String, SkillPlanNode> secondByOperationId = new LinkedHashMap<>();
+        Map<String, SkillPlanNode> secondByExactMainHandItemId =
+                new LinkedHashMap<>();
         for (SkillPlanNode node : sameTemplateDifferentRunContext.nodes()) {
-            secondByOperationId.put((String) node.parameters().values().get(
-                    P5ABuiltinSkillIds
-                            .BOOTSTRAP_IRON_OPERATION_ID_PARAMETER), node);
+            if (node.skillId().equals(P5ABuiltinSkillIds.BOOTSTRAP_IRON)) {
+                secondByOperationId.put((String) node.parameters().values()
+                        .get(P5ABuiltinSkillIds
+                                .BOOTSTRAP_IRON_OPERATION_ID_PARAMETER), node);
+            } else if (node.skillId().equals(
+                    P5ABuiltinSkillIds.EQUIP_EXACT_MAIN_HAND)) {
+                secondByExactMainHandItemId.put((String) node.parameters()
+                        .values().get(P5ABuiltinSkillIds
+                                .EXACT_MAIN_HAND_ITEM_ID_PARAMETER), node);
+            } else {
+                throw new AssertionError(
+                        "canonical compiler emitted an unexpected skill "
+                                + node.skillId());
+            }
         }
         for (ProductionPlanNode source : template.nodes()) {
             List<String> fragmentIds = ProductionSkillPlanCompiler
@@ -118,6 +161,9 @@ class ProductionSkillPlanCompilerTest {
             }
         }
         for (ProductionPlanEdge source : template.edges()) {
+            if (isExactMainHandReroutedEdge(source)) {
+                continue;
+            }
             List<String> beforeFragments = ProductionSkillPlanCompiler
                     .operationIdsForProductionNode(source.beforeNodeId());
             List<String> afterFragments = ProductionSkillPlanCompiler
@@ -127,13 +173,37 @@ class ProductionSkillPlanCompilerTest {
                             beforeFragments.size() - 1)).nodeId(),
                     byOperationId.get(afterFragments.get(0)).nodeId()));
         }
+        appendExactMainHandEdges(expectedEdges, byOperationId,
+                byExactMainHandItemId,
+                "minecraft:wooden_pickaxe",
+                "wooden_pickaxe",
+                List.of("mine_cobblestone"));
+        appendExactMainHandEdges(expectedEdges, byOperationId,
+                byExactMainHandItemId,
+                "minecraft:stone_pickaxe",
+                "stone_pickaxe",
+                List.of("mine_raw_iron", "mine_coal"));
+        appendExactMainHandEdges(expectedEdges, byOperationId,
+                byExactMainHandItemId,
+                "minecraft:iron_pickaxe",
+                "iron_pickaxe",
+                List.of());
         assertEquals(expectedEdges, first.edges());
         assertEquals(first.edges(), sameTemplateDifferentRunContext.edges());
+        assertExactMainHandNode(byExactMainHandItemId,
+                secondByExactMainHandItemId, "minecraft:wooden_pickaxe");
+        assertExactMainHandNode(byExactMainHandItemId,
+                secondByExactMainHandItemId, "minecraft:stone_pickaxe");
+        assertExactMainHandNode(byExactMainHandItemId,
+                secondByExactMainHandItemId, "minecraft:iron_pickaxe");
 
         SkillRegistry registry = new SkillRegistry();
         assertEquals(
                 SkillRegistry.RegisterStatus.REGISTERED,
                 registry.register(ProductionSkillPlanCompiler.handlerDescriptor()));
+        assertEquals(
+                SkillRegistry.RegisterStatus.REGISTERED,
+                registry.register(exactMainHandDescriptor()));
         assertTrue(new SkillPlanValidator(
                 registry,
                 new SkillPlanLimits(64, 64, 64))
@@ -173,6 +243,82 @@ class ProductionSkillPlanCompilerTest {
         }
     }
 
+    private static boolean isExactMainHandReroutedEdge(
+            ProductionPlanEdge edge) {
+        return EXACT_MAIN_HAND_REROUTED_EDGES.contains(edge);
+    }
+
+    private static void appendExactMainHandEdges(
+            List<SkillPlanEdge> edges,
+            Map<String, SkillPlanNode> byOperationId,
+            Map<String, SkillPlanNode> byExactMainHandItemId,
+            String itemId,
+            String sourceProductionNodeId,
+            List<String> dependentProductionNodeIds) {
+        SkillPlanNode equip = byExactMainHandItemId.get(itemId);
+        assertTrue(equip != null,
+                () -> "missing exact main-hand gate for " + itemId);
+        List<String> sourceFragments = ProductionSkillPlanCompiler
+                .operationIdsForProductionNode(sourceProductionNodeId);
+        edges.add(new SkillPlanEdge(
+                byOperationId.get(sourceFragments.get(
+                        sourceFragments.size() - 1)).nodeId(),
+                equip.nodeId()));
+        for (String dependentProductionNodeId :
+                dependentProductionNodeIds) {
+            List<String> dependentFragments = ProductionSkillPlanCompiler
+                    .operationIdsForProductionNode(dependentProductionNodeId);
+            edges.add(new SkillPlanEdge(
+                    equip.nodeId(),
+                    byOperationId.get(dependentFragments.get(0)).nodeId()));
+        }
+    }
+
+    private static void assertExactMainHandNode(
+            Map<String, SkillPlanNode> first,
+            Map<String, SkillPlanNode> second,
+            String itemId) {
+        SkillPlanNode firstNode = first.get(itemId);
+        SkillPlanNode secondNode = second.get(itemId);
+        assertTrue(firstNode != null,
+                () -> "missing exact main-hand node for " + itemId);
+        assertTrue(secondNode != null,
+                () -> "second plan is missing exact main-hand node for "
+                        + itemId);
+        assertEquals(Map.of(
+                        P5ABuiltinSkillIds
+                                .EXACT_MAIN_HAND_ITEM_ID_PARAMETER,
+                        itemId),
+                firstNode.parameters().values());
+        assertEquals(firstNode.nodeId(), secondNode.nodeId(),
+                "exact main-hand UUID must be derived from fixed plan semantics");
+    }
+
+    private static SkillDescriptor exactMainHandDescriptor() {
+        return new SkillDescriptor(
+                P5ABuiltinSkillIds.EQUIP_EXACT_MAIN_HAND,
+                P5ABuiltinSkillIds.VERSION,
+                SkillCategory.SURVIVAL,
+                new SkillParameterSchema(Map.of(
+                        P5ABuiltinSkillIds
+                                .EXACT_MAIN_HAND_ITEM_ID_PARAMETER,
+                        new SkillParameterRule.StringRule(
+                                true,
+                                17,
+                                24,
+                                Set.of(
+                                        "minecraft:wooden_pickaxe",
+                                        "minecraft:stone_pickaxe",
+                                        "minecraft:iron_pickaxe",
+                                        "minecraft:crafting_table",
+                                        "minecraft:furnace")))),
+                SkillRiskLevel.LOW,
+                Set.of(),
+                240,
+                0,
+                true);
+    }
+
     @Test
     void descriptorAllowsOnlyTheReviewedOperationIdParameter() {
         SkillDescriptor descriptor =
@@ -197,6 +343,36 @@ class ProductionSkillPlanCompilerTest {
                         P5ABuiltinSkillIds
                                 .BOOTSTRAP_IRON_OPERATION_ID_PARAMETER,
                         approved,
+                        "target.x",
+                        4))).valid());
+    }
+
+    @Test
+    void exactMainHandDescriptorAcceptsOnlyTheClosedP5aWhitelist() {
+        SkillDescriptor descriptor = exactMainHandDescriptor();
+
+        for (String itemId : List.of(
+                "minecraft:wooden_pickaxe",
+                "minecraft:stone_pickaxe",
+                "minecraft:iron_pickaxe",
+                "minecraft:crafting_table",
+                "minecraft:furnace")) {
+            assertTrue(descriptor.parameterSchema().validate(
+                    new SkillParameters(Map.of(
+                            P5ABuiltinSkillIds
+                                    .EXACT_MAIN_HAND_ITEM_ID_PARAMETER,
+                            itemId))).valid());
+        }
+        assertFalse(descriptor.parameterSchema().validate(
+                new SkillParameters(Map.of(
+                        P5ABuiltinSkillIds
+                                .EXACT_MAIN_HAND_ITEM_ID_PARAMETER,
+                        "minecraft:diamond_pickaxe"))).valid());
+        assertFalse(descriptor.parameterSchema().validate(
+                new SkillParameters(Map.of(
+                        P5ABuiltinSkillIds
+                                .EXACT_MAIN_HAND_ITEM_ID_PARAMETER,
+                        "minecraft:iron_pickaxe",
                         "target.x",
                         4))).valid());
     }

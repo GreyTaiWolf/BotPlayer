@@ -67,6 +67,7 @@ import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionSkillP
 import io.github.greytaiwolf.botplayer.skill.builtin.survival.ArmorUpgradeSelection;
 import io.github.greytaiwolf.botplayer.skill.builtin.survival.MinecraftBasicArmorPlanner;
 import io.github.greytaiwolf.botplayer.skill.builtin.survival.MinecraftBasicEquipmentPlanner;
+import io.github.greytaiwolf.botplayer.skill.builtin.survival.MinecraftBasicEquipmentPlanner.ExactMainHandItem;
 import io.github.greytaiwolf.botplayer.skill.builtin.survival.ToolKind;
 import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpoint;
 import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointBridge;
@@ -513,6 +514,39 @@ public final class BotLifecycleManager {
                 240,
                 0,
                 false));
+        /*
+         * 这个节点只接受 P5A 生产编译器已知的五项精确原版物品；handler 还会把标量
+         * 重新映射到相同的封闭 enum，并冻结完整 ItemStackFingerprint。它不是任意
+         * item-id 的主手选择器。checkpoint 只在原版菜单关闭且动作排空时保存，所以它可
+         * 从未开始的精确交换节点安全重放。
+         */
+        registerBuiltinDescriptor(new SkillDescriptor(
+                P5ABuiltinSkillIds.EQUIP_EXACT_MAIN_HAND,
+                P5ABuiltinSkillIds.VERSION,
+                SkillCategory.SURVIVAL,
+                new SkillParameterSchema(Map.of(
+                        P5ABuiltinSkillIds
+                                .EXACT_MAIN_HAND_ITEM_ID_PARAMETER,
+                        new SkillParameterRule.StringRule(
+                                true,
+                                17,
+                                24,
+                                Set.of(
+                                        ExactMainHandItem.WOODEN_PICKAXE
+                                                .itemId().value(),
+                                        ExactMainHandItem.STONE_PICKAXE
+                                                .itemId().value(),
+                                        ExactMainHandItem.IRON_PICKAXE
+                                                .itemId().value(),
+                                        ExactMainHandItem.CRAFTING_TABLE
+                                                .itemId().value(),
+                                        ExactMainHandItem.FURNACE
+                                                .itemId().value())))),
+                SkillRiskLevel.LOW,
+                Set.of(),
+                240,
+                0,
+                true));
         registerBuiltinDescriptor(new SkillDescriptor(
                 P5ABuiltinSkillIds.EQUIP_REQUESTED_OFFHAND,
                 P5ABuiltinSkillIds.VERSION,
@@ -569,7 +603,7 @@ public final class BotLifecycleManager {
         /*
          * 生产 descriptor 的 operation.id 白名单、最大点击/重试与 resumable 合同都由
          * compiler 固定导出。这里只注册同一实例，不能手写一个更宽 schema 让外部参数
-         * 绕过 canonical 31-step lowering。
+         * 绕过 canonical 生产 fragment lowering。
          */
         registerBuiltinDescriptor(ProductionSkillPlanCompiler
                 .handlerDescriptor());
@@ -621,6 +655,15 @@ public final class BotLifecycleManager {
                 P5ABuiltinSkillIds.VERSION,
                 new MinecraftEquipmentSkillNodeHandler(
                         MinecraftEquipmentSkillNodeHandler.Kind.REQUESTED_TOOL,
+                        this::resolveActive,
+                        actions,
+                        skillRuntime::offerSignal));
+        registerP5ANodeHandler(
+                P5ABuiltinSkillIds.EQUIP_EXACT_MAIN_HAND,
+                P5ABuiltinSkillIds.VERSION,
+                new MinecraftEquipmentSkillNodeHandler(
+                        MinecraftEquipmentSkillNodeHandler.Kind
+                                .REQUESTED_EXACT_MAIN_HAND,
                         this::resolveActive,
                         actions,
                         skillRuntime::offerSignal));
@@ -690,6 +733,9 @@ public final class BotLifecycleManager {
                                 P5ABuiltinSkillIds.VERSION),
                         new SkillPackDescriptorReference(
                                 P5ABuiltinSkillIds.EQUIP_BASIC_TOOL,
+                                P5ABuiltinSkillIds.VERSION),
+                        new SkillPackDescriptorReference(
+                                P5ABuiltinSkillIds.EQUIP_EXACT_MAIN_HAND,
                                 P5ABuiltinSkillIds.VERSION),
                         new SkillPackDescriptorReference(
                                 P5ABuiltinSkillIds

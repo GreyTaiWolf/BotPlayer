@@ -10,6 +10,7 @@ import io.github.greytaiwolf.botplayer.skill.task.TaskSensorBudget;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorEvidence;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorQuery;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorQueryType;
+import io.github.greytaiwolf.botplayer.skill.task.TaskSensorResourceFilter;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorRunIdentity;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorScope;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorSnapshot;
@@ -112,6 +113,46 @@ class MinecraftProductionSkillPortsTest {
                         MinecraftProductionSkillPorts.expectedResourceBlock(
                                 acquisition(AcquisitionMethod.MINE_COAL,
                                         ProductionMaterials.COAL))));
+    }
+
+    @Test
+    void productionCandidatesUseExactSensorFiltersBeforeTheEvidenceCap() {
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(
+                        TaskSensorResourceFilter.OAK_LOG,
+                        MinecraftProductionSkillPorts
+                                .resourceFilterForExpectedBlock(
+                                        "minecraft:oak_log")),
+                () -> Assertions.assertEquals(
+                        TaskSensorResourceFilter.COBBLESTONE,
+                        MinecraftProductionSkillPorts
+                                .resourceFilterForExpectedBlock(
+                                        "minecraft:cobblestone")),
+                () -> Assertions.assertEquals(
+                        TaskSensorResourceFilter.IRON_ORE,
+                        MinecraftProductionSkillPorts
+                                .resourceFilterForExpectedBlock(
+                                        "minecraft:iron_ore")),
+                () -> Assertions.assertEquals(
+                        TaskSensorResourceFilter.COAL_ORE,
+                        MinecraftProductionSkillPorts
+                                .resourceFilterForExpectedBlock(
+                                        "minecraft:coal_ore")),
+                () -> Assertions.assertEquals(
+                        TaskSensorResourceFilter.CRAFTING_TABLE,
+                        MinecraftProductionSkillPorts
+                                .resourceFilterForExpectedBlock(
+                                        "minecraft:crafting_table")),
+                () -> Assertions.assertEquals(
+                        TaskSensorResourceFilter.FURNACE,
+                        MinecraftProductionSkillPorts
+                                .resourceFilterForExpectedBlock(
+                                        "minecraft:furnace")),
+                () -> Assertions.assertThrows(
+                        IllegalArgumentException.class,
+                        () -> MinecraftProductionSkillPorts
+                                .resourceFilterForExpectedBlock(
+                                        "minecraft:stone")));
     }
 
     private static ResourceAcquisition acquisition(

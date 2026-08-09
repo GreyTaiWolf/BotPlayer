@@ -1,6 +1,7 @@
 package io.github.greytaiwolf.botplayer.skill.builtin.production;
 
 import io.github.greytaiwolf.botplayer.skill.builtin.P5ABuiltinSkillIds;
+import io.github.greytaiwolf.botplayer.skill.builtin.survival.MinecraftBasicEquipmentPlanner.ExactMainHandItem;
 import io.github.greytaiwolf.botplayer.skill.core.SkillCategory;
 import io.github.greytaiwolf.botplayer.skill.core.SkillDescriptor;
 import io.github.greytaiwolf.botplayer.skill.core.SkillParameterRule;
@@ -28,11 +29,11 @@ import java.util.UUID;
  * 把已审核的 P5A 木头到铁镐生产模板编译为通用 {@link SkillPlan}。
  *
  * <p>这个编译器不是动态脚本入口：它只接受 {@link WoodToIronPickTemplate} 的精确结构，并且
- * 每次都先通过 {@link ProductionPlanValidator}。通用节点只携带一个编译进来的 operation id；
- * 一个逻辑生产节点会下沉为一个或多个可由原版实际完成的物理 fragment（例如四根原木必须是
- * 四次 {@code BREAK_BLOCK}）。坐标、命令、容器 session、玩家对象和 run token 都不属于参数模型。
- * 真实 handler 只能用 {@link #approvedOperation(String)} 回查同一份物理生产合同，再绑定当时观察
- * 到的世界/menu 状态。
+ * 每次都先通过 {@link ProductionPlanValidator}。生产 fragment 只携带一个编译进来的 operation
+ * id；一个逻辑生产节点会下沉为一个或多个可由原版实际完成的物理 fragment（例如四根原木必须是
+ * 四次 {@code BREAK_BLOCK}）。固定的精确主手门只携带封闭白名单中的 item id。坐标、命令、容器
+ * session、玩家对象和 run token 都不属于参数模型。真实生产 handler 只能用
+ * {@link #approvedOperation(String)} 回查同一份物理生产合同，再绑定当时观察到的世界/menu 状态。
  */
 public final class ProductionSkillPlanCompiler {
     private static final String PLAN_ID_DOMAIN =
@@ -55,6 +56,18 @@ public final class ProductionSkillPlanCompiler {
             operationIdsByNode();
     private static final Map<String, UUID> SKILL_NODE_IDS_BY_OPERATION =
             skillNodeIdsByOperation();
+    /*
+     * 这些不是 ProductionOperation：它们是把已经产出的精确物品切入原版主手热栏的
+     * 独立 P5A 节点。必须保留在模板之外，避免把“背包装备”错误写成直接的生产/世界
+     * 副作用，也让 checkpoint/restart 继续只以最终的 SkillPlan 为权威。
+     */
+    private static final List<ExactMainHandStep> EXACT_MAIN_HAND_STEPS =
+            canonicalExactMainHandSteps();
+    private static final Map<ProductionPlanEdge, ExactMainHandStep>
+            EXACT_MAIN_HAND_STEPS_BY_REPLACED_EDGE =
+                    exactMainHandStepsByReplacedEdge();
+    private static final Map<String, UUID> EXACT_MAIN_HAND_NODE_IDS =
+            exactMainHandNodeIds();
     private static final Map<String, ProductionResolvedNode>
             APPROVED_OPERATIONS = approvedOperations();
     private static final Set<String> APPROVED_OPERATION_IDS =
@@ -172,7 +185,8 @@ public final class ProductionSkillPlanCompiler {
 
         verifyResolvedNodes(validation);
         Map<String, UUID> skillNodeIds = SKILL_NODE_IDS_BY_OPERATION;
-        List<SkillPlanNode> nodes = new ArrayList<>(LOWERED_OPERATIONS.size());
+        List<SkillPlanNode> nodes = new ArrayList<>(LOWERED_OPERATIONS.size()
+                + EXACT_MAIN_HAND_STEPS.size());
         for (LoweredOperation lowered : LOWERED_OPERATIONS) {
             String operationId = lowered.operationId();
             UUID nodeId = skillNodeIds.get(operationId);
@@ -187,12 +201,28 @@ public final class ProductionSkillPlanCompiler {
                     new SkillParameters(Map.of(
                             P5ABuiltinSkillIds
                                     .BOOTSTRAP_IRON_OPERATION_ID_PARAMETER,
-                            operationId))));
+                                    operationId))));
+        }
+        for (ExactMainHandStep step : EXACT_MAIN_HAND_STEPS) {
+            UUID nodeId = EXACT_MAIN_HAND_NODE_IDS.get(step.nodeId());
+            if (nodeId == null) {
+                throw new IllegalStateException(
+                        "canonical exact main-hand step has no stable SkillPlan node id");
+            }
+            nodes.add(new SkillPlanNode(
+                    nodeId,
+                    P5ABuiltinSkillIds.EQUIP_EXACT_MAIN_HAND,
+                    P5ABuiltinSkillIds.VERSION,
+                    new SkillParameters(Map.of(
+                            P5ABuiltinSkillIds
+                                    .EXACT_MAIN_HAND_ITEM_ID_PARAMETER,
+                            step.item().itemId().value()))));
         }
 
         List<SkillPlanEdge> edges = new ArrayList<>(
                 template.edges().size() + LOWERED_OPERATIONS.size()
-                        - template.nodes().size());
+                        - template.nodes().size()
+                        + EXACT_MAIN_HAND_STEPS.size());
         Set<SkillPlanEdge> uniqueEdges = new LinkedHashSet<>();
         for (ProductionPlanNode productionNode : template.nodes()) {
             List<LoweredOperation> fragments = fragmentsFor(
@@ -204,6 +234,10 @@ public final class ProductionSkillPlanCompiler {
             }
         }
         for (ProductionPlanEdge productionEdge : template.edges()) {
+            if (EXACT_MAIN_HAND_STEPS_BY_REPLACED_EDGE.containsKey(
+                    productionEdge)) {
+                continue;
+            }
             List<LoweredOperation> before = fragmentsFor(
                     productionEdge.beforeNodeId());
             List<LoweredOperation> after = fragmentsFor(
@@ -211,6 +245,25 @@ public final class ProductionSkillPlanCompiler {
             appendEdge(edges, uniqueEdges, skillNodeIds,
                     before.get(before.size() - 1).operationId(),
                     after.get(0).operationId());
+        }
+        for (ExactMainHandStep step : EXACT_MAIN_HAND_STEPS) {
+            UUID equipNodeId = EXACT_MAIN_HAND_NODE_IDS.get(step.nodeId());
+            if (equipNodeId == null) {
+                throw new IllegalStateException(
+                        "canonical exact main-hand step has no stable SkillPlan node id");
+            }
+            List<LoweredOperation> produced = fragmentsFor(
+                    step.sourceProductionNodeId());
+            appendNodeEdge(edges, uniqueEdges, skillNodeIds.get(
+                    produced.get(produced.size() - 1).operationId()),
+                    equipNodeId);
+            for (String dependentProductionNodeId :
+                    step.dependentProductionNodeIds()) {
+                List<LoweredOperation> dependent = fragmentsFor(
+                        dependentProductionNodeId);
+                appendNodeEdge(edges, uniqueEdges, equipNodeId,
+                        skillNodeIds.get(dependent.get(0).operationId()));
+            }
         }
         return new SkillPlan(
                 STABLE_PLAN_ID,
@@ -325,6 +378,108 @@ public final class ProductionSkillPlanCompiler {
                     || nodeIds.putIfAbsent(operationId, nodeId) != null) {
                 throw new IllegalStateException(
                         "canonical production operation ids collided in SkillPlan node ids");
+            }
+        }
+        return Map.copyOf(nodeIds);
+    }
+
+    /**
+     * 生产模板本身只描述物料和工作站合同；工具装入主手必须是独立的、可由原版
+     * InventoryMenu 事务审计的节点。下列三道门重新接管 template 中相应源节点的全部
+     * 下游边：木镐在圆石前、石镐在煤和原铁前，铁镐作为最后一个确认节点。
+     */
+    private static List<ExactMainHandStep> canonicalExactMainHandSteps() {
+        List<ExactMainHandStep> steps = List.of(
+                new ExactMainHandStep(
+                        "equip_wooden_pickaxe",
+                        ExactMainHandItem.WOODEN_PICKAXE,
+                        "wooden_pickaxe",
+                        List.of("mine_cobblestone")),
+                new ExactMainHandStep(
+                        "equip_stone_pickaxe",
+                        ExactMainHandItem.STONE_PICKAXE,
+                        "stone_pickaxe",
+                        List.of("mine_raw_iron", "mine_coal")),
+                new ExactMainHandStep(
+                        "equip_iron_pickaxe",
+                        ExactMainHandItem.IRON_PICKAXE,
+                        "iron_pickaxe",
+                        List.of()));
+        Set<String> canonicalNodeIds = new LinkedHashSet<>();
+        for (ProductionPlanNode node : CANONICAL_TEMPLATE.nodes()) {
+            canonicalNodeIds.add(node.nodeId());
+        }
+        Set<ProductionPlanEdge> canonicalEdges = new LinkedHashSet<>(
+                CANONICAL_TEMPLATE.edges());
+        Set<String> uniqueStepIds = new LinkedHashSet<>();
+        Set<ExactMainHandItem> uniqueItems = new LinkedHashSet<>();
+        Set<ProductionPlanEdge> reroutedEdges = new LinkedHashSet<>();
+        for (ExactMainHandStep step : steps) {
+            if (!uniqueStepIds.add(step.nodeId())
+                    || !uniqueItems.add(step.item())
+                    || !canonicalNodeIds.contains(
+                            step.sourceProductionNodeId())) {
+                throw new IllegalStateException(
+                        "canonical exact main-hand steps are not unique or reference an unknown source");
+            }
+            Set<String> expectedDependents = new LinkedHashSet<>();
+            for (ProductionPlanEdge edge : CANONICAL_TEMPLATE.edges()) {
+                if (edge.beforeNodeId().equals(
+                        step.sourceProductionNodeId())) {
+                    expectedDependents.add(edge.afterNodeId());
+                }
+            }
+            if (!expectedDependents.equals(new LinkedHashSet<>(
+                    step.dependentProductionNodeIds()))) {
+                throw new IllegalStateException(
+                        "canonical exact main-hand step must reroute every direct downstream production edge");
+            }
+            for (String dependent : step.dependentProductionNodeIds()) {
+                ProductionPlanEdge edge = new ProductionPlanEdge(
+                        step.sourceProductionNodeId(), dependent);
+                if (!canonicalEdges.contains(edge)
+                        || !reroutedEdges.add(edge)) {
+                    throw new IllegalStateException(
+                            "canonical exact main-hand step reroutes an invalid production edge");
+                }
+            }
+        }
+        return steps;
+    }
+
+    private static Map<ProductionPlanEdge, ExactMainHandStep>
+            exactMainHandStepsByReplacedEdge() {
+        Map<ProductionPlanEdge, ExactMainHandStep> steps =
+                new LinkedHashMap<>();
+        for (ExactMainHandStep step : EXACT_MAIN_HAND_STEPS) {
+            for (String dependent : step.dependentProductionNodeIds()) {
+                ProductionPlanEdge edge = new ProductionPlanEdge(
+                        step.sourceProductionNodeId(), dependent);
+                if (steps.putIfAbsent(edge, step) != null) {
+                    throw new IllegalStateException(
+                            "canonical exact main-hand steps duplicate a rerouted production edge");
+                }
+            }
+        }
+        return Map.copyOf(steps);
+    }
+
+    private static Map<String, UUID> exactMainHandNodeIds() {
+        Map<String, UUID> nodeIds = new LinkedHashMap<>();
+        Set<UUID> unique = new LinkedHashSet<>(
+                SKILL_NODE_IDS_BY_OPERATION.values());
+        for (ExactMainHandStep step : EXACT_MAIN_HAND_STEPS) {
+            List<String> semantics = new ArrayList<>();
+            semantics.add("exact-main-hand");
+            semantics.add(step.nodeId());
+            semantics.add(step.item().itemId().value());
+            semantics.add(step.sourceProductionNodeId());
+            semantics.addAll(step.dependentProductionNodeIds());
+            UUID nodeId = deterministicUuid(NODE_ID_DOMAIN, semantics);
+            if (!unique.add(nodeId)
+                    || nodeIds.putIfAbsent(step.nodeId(), nodeId) != null) {
+                throw new IllegalStateException(
+                        "canonical exact main-hand steps collided in SkillPlan node ids");
             }
         }
         return Map.copyOf(nodeIds);
@@ -552,6 +707,18 @@ public final class ProductionSkillPlanCompiler {
             throw new IllegalStateException(
                     "canonical production edge has no stable SkillPlan endpoint");
         }
+        appendNodeEdge(edges, uniqueEdges, before, after);
+    }
+
+    private static void appendNodeEdge(
+            List<SkillPlanEdge> edges,
+            Set<SkillPlanEdge> uniqueEdges,
+            UUID before,
+            UUID after) {
+        if (before == null || after == null) {
+            throw new IllegalStateException(
+                    "canonical production edge has no stable SkillPlan endpoint");
+        }
         SkillPlanEdge edge = new SkillPlanEdge(before, after);
         if (!uniqueEdges.add(edge)) {
             throw new IllegalStateException(
@@ -563,6 +730,7 @@ public final class ProductionSkillPlanCompiler {
     private static UUID stablePlanId() {
         List<String> signature = new ArrayList<>();
         signature.add(P5ABuiltinSkillIds.BOOTSTRAP_IRON.toString());
+        signature.add(P5ABuiltinSkillIds.EQUIP_EXACT_MAIN_HAND.toString());
         signature.add(P5ABuiltinSkillIds.VERSION.toString());
         signature.add(CANONICAL_TEMPLATE.schema().schemaId());
         signature.add(Integer.toString(CANONICAL_TEMPLATE.schema().version()));
@@ -588,8 +756,22 @@ public final class ProductionSkillPlanCompiler {
             signature.add(edge.beforeNodeId());
             signature.add(edge.afterNodeId());
         }
+        for (ExactMainHandStep step : EXACT_MAIN_HAND_STEPS) {
+            signature.add("exact-main-hand");
+            signature.add(step.nodeId());
+            signature.add(step.item().itemId().value());
+            signature.add(step.sourceProductionNodeId());
+            signature.addAll(step.dependentProductionNodeIds());
+            UUID nodeId = EXACT_MAIN_HAND_NODE_IDS.get(step.nodeId());
+            if (nodeId == null) {
+                throw new IllegalStateException(
+                        "canonical exact main-hand step has no stable SkillPlan node id");
+            }
+            signature.add(nodeId.toString());
+        }
         UUID planId = deterministicUuid(PLAN_ID_DOMAIN, signature);
-        if (SKILL_NODE_IDS_BY_OPERATION.containsValue(planId)) {
+        if (SKILL_NODE_IDS_BY_OPERATION.containsValue(planId)
+                || EXACT_MAIN_HAND_NODE_IDS.containsValue(planId)) {
             throw new IllegalStateException(
                     "stable production SkillPlan id collided with a node id");
         }
@@ -663,6 +845,34 @@ public final class ProductionSkillPlanCompiler {
                     && fragmentIndex != fragmentCount) {
                 throw new IllegalArgumentException(
                         "only a logical node's final fragment may be a checkpoint");
+            }
+        }
+    }
+
+    /**
+     * 一个不属于 {@link ProductionOperation} 的固定装备门。它只引用已完成的生产逻辑节点和
+     * 其全部直接后继，因此无法通过遗漏一条原 template 边绕开所需工具。
+     */
+    private record ExactMainHandStep(
+            String nodeId,
+            ExactMainHandItem item,
+            String sourceProductionNodeId,
+            List<String> dependentProductionNodeIds) {
+        private ExactMainHandStep {
+            Objects.requireNonNull(nodeId, "nodeId");
+            Objects.requireNonNull(item, "item");
+            Objects.requireNonNull(sourceProductionNodeId,
+                    "sourceProductionNodeId");
+            dependentProductionNodeIds = List.copyOf(Objects.requireNonNull(
+                    dependentProductionNodeIds,
+                    "dependentProductionNodeIds"));
+            if (nodeId.isBlank() || sourceProductionNodeId.isBlank()
+                    || dependentProductionNodeIds.stream().anyMatch(
+                            value -> value == null || value.isBlank())
+                    || new LinkedHashSet<>(dependentProductionNodeIds).size()
+                            != dependentProductionNodeIds.size()) {
+                throw new IllegalArgumentException(
+                        "exact main-hand step identifiers must be unique, nonblank production ids");
             }
         }
     }
