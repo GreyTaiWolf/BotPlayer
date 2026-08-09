@@ -278,7 +278,7 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
                 item -> readableDroppedItem(player, scope, item),
                 candidates,
                 Math.incrementExact(maximumCandidates));
-        candidates.sort(Comparator.comparingDouble(
+        candidates.sort(Comparator.<ItemEntity>comparingDouble(
                         item -> squaredDistanceToScopeCenter(item, scope))
                 .thenComparing(item -> item.getUUID().toString()));
 

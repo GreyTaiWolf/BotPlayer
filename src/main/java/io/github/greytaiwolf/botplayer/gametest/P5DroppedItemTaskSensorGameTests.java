@@ -79,7 +79,7 @@ public final class P5DroppedItemTaskSensorGameTests {
             List<ItemEntity> visible = List.of(nearest, tiedFirst,
                     tiedSecond);
             List<String> expectedIds = visible.stream()
-                    .sorted(Comparator.comparingDouble(
+                    .sorted(Comparator.<ItemEntity>comparingDouble(
                                     item -> squaredDistance(item, scope))
                             .thenComparing(item -> item.getUUID().toString()))
                     .map(item -> item.getUUID().toString())
