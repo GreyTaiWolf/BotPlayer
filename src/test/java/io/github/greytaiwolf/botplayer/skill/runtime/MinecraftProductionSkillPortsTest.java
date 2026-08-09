@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.phys.Vec3;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -172,6 +173,23 @@ class MinecraftProductionSkillPortsTest {
                         .compareReachableResourceCandidates(
                                 standingOnTarget, neighboring, underneath)
                         > 0));
+    }
+
+    @Test
+    void resourceAcquisitionRequiresGroundedBodyAboveTheSelectedBlock() {
+        BlockCoordinates resource = new BlockCoordinates(3, 1, 4);
+
+        Assertions.assertTrue(MinecraftProductionSkillPorts
+                .groundedAboveResource(new BlockPos(3, 2, 4), true,
+                        resource));
+        Assertions.assertFalse(MinecraftProductionSkillPorts
+                        .groundedAboveResource(new BlockPos(3, 2, 4), false,
+                                resource),
+                "an airborne body must not break its apparent footing");
+        Assertions.assertFalse(MinecraftProductionSkillPorts
+                        .groundedAboveResource(new BlockPos(4, 2, 4), true,
+                                resource),
+                "an adjacent resource must not replace the navigated footing");
     }
 
     private static ResourceAcquisition acquisition(

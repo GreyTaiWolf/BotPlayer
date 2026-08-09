@@ -161,7 +161,10 @@ public final class MinecraftProductionSkillPorts
                 new ProductionPreconditionSnapshotBuilder(baseline);
         if (operation instanceof ResourceAcquisition acquisition) {
             Candidate candidate = selectCandidate(
-                    player, context, expectedResourceBlock(acquisition))
+                    player,
+                    context,
+                    expectedResourceBlock(acquisition),
+                    true)
                     .orElse(null);
             if (candidate == null) {
                 return Optional.empty();
@@ -312,6 +315,10 @@ public final class MinecraftProductionSkillPorts
         BlockTargetFingerprint target = binding.target();
         if (!target.state().blockId().value().equals(
                 expectedResourceBlock(acquisition))
+                || !groundedAboveResource(
+                        player.blockPosition(),
+                        player.onGround(),
+                        target.position())
                 || !isCurrentReachableBlock(player, target)) {
             return Optional.empty();
         }
@@ -496,6 +503,19 @@ public final class MinecraftProductionSkillPorts
             BotServerPlayer player,
             SkillNodeContext context,
             String expectedBlockId) {
+        return selectCandidate(player, context, expectedBlockId, false);
+    }
+
+    /**
+     * 对 P5A 资源采集，前置导航门已经把 body 带到待采资源顶部。这里只接受其脚下精确资源，
+     * 因而不会在导航回执与 BREAK_BLOCK 之间换成一块相邻资源并把掉落留在碰撞范围外。
+     * 工作台/熔炉候选仍可使用普通可达性选择，故该要求是显式而窄的。
+     */
+    private Optional<Candidate> selectCandidate(
+            BotServerPlayer player,
+            SkillNodeContext context,
+            String expectedBlockId,
+            boolean requireGroundedFooting) {
         try {
             TaskSensorSnapshot candidates = query(new TaskSensorQuery(
                     identity(context),
@@ -524,6 +544,13 @@ public final class MinecraftProductionSkillPorts
                     return Optional.empty();
                 }
                 if (!expectedBlockId.equals(candidate.blockId())) {
+                    continue;
+                }
+                if (requireGroundedFooting
+                        && !groundedAboveResource(
+                                player.blockPosition(),
+                                player.onGround(),
+                                candidate.position())) {
                     continue;
                 }
                 BlockPos position = new BlockPos(
@@ -571,6 +598,20 @@ public final class MinecraftProductionSkillPorts
                 resourceDistanceSquared(playerPosition, left),
                 resourceDistanceSquared(playerPosition, right));
         return distance != 0 ? distance : comparePosition(left, right);
+    }
+
+    static boolean groundedAboveResource(
+            BlockPos bodyPosition,
+            boolean onGround,
+            BlockCoordinates resourcePosition) {
+        return onGround
+                && Objects.requireNonNull(bodyPosition, "bodyPosition")
+                        .below()
+                        .equals(new BlockPos(
+                                Objects.requireNonNull(resourcePosition,
+                                        "resourcePosition").x(),
+                                resourcePosition.y(),
+                                resourcePosition.z()));
     }
 
     private static double resourceDistanceSquared(

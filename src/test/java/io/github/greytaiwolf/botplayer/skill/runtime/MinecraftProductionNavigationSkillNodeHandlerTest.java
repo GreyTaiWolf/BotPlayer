@@ -103,6 +103,37 @@ class MinecraftProductionNavigationSkillNodeHandlerTest {
                 "radius zero must not complete from an adjacent cell");
     }
 
+    @Test
+    void resourceNavigationCompletionRequiresGroundedTopCell() {
+        GridPoint resource = new GridPoint(3, 64, 3);
+        GridPoint pickupStand = MinecraftProductionNavigationSkillNodeHandler
+                .pickupStandGoal(resource);
+
+        assertTrue(MinecraftProductionNavigationSkillNodeHandler
+                .groundedAtPickupStand(pickupStand, true, pickupStand));
+        assertFalse(MinecraftProductionNavigationSkillNodeHandler
+                        .groundedAtPickupStand(pickupStand, false, pickupStand),
+                "a jump apex must not hand off to BREAK_BLOCK");
+        assertFalse(MinecraftProductionNavigationSkillNodeHandler
+                        .groundedAtPickupStand(
+                                new GridPoint(4, 65, 3), true, pickupStand),
+                "an adjacent ground cell must not impersonate the resource top");
+    }
+
+    @Test
+    void landingGateUsesThePostContinueRuntimeRevision() {
+        long waitingNavigationRevision = 7L;
+        long runningRevision = waitingNavigationRevision + 1L;
+
+        assertFalse(MinecraftProductionNavigationSkillNodeHandler
+                .landingContinuationMatches(waitingNavigationRevision,
+                        runningRevision));
+        assertTrue(MinecraftProductionNavigationSkillNodeHandler
+                .landingContinuationMatches(runningRevision, runningRevision),
+                "an airborne signal that returns CONTINUE must survive "
+                        + "into the next runtime tick");
+    }
+
     private static SkillNodeContext context(Map<String, Object> parameters) {
         return new SkillNodeContext(
                 RUN,

@@ -41,6 +41,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletionStage;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.MinecraftServer;
 
 /**
@@ -64,6 +65,11 @@ public final class MinecraftProductionNavigationSkillNodeHandler
      */
     static final int RESOURCE_GOAL_RADIUS = 0;
     static final int MAXIMUM_NAVIGATION_TICKS = 1_200;
+    /**
+     * 离散脚位已到达不代表跳跃已经落地。P5A 必须在开始破坏脚下资源前，先验证真实
+     * body 已稳定站在资源顶部；否则掉落实体与 body 的相对位置不是可证明的拾取边界。
+     */
+    static final int MAXIMUM_LANDING_SETTLE_TICKS = 40;
 
     private static final String NAVIGATION_EVIDENCE_KEY =
             "navigation.resource";
@@ -76,6 +82,8 @@ public final class MinecraftProductionNavigationSkillNodeHandler
     private final TaskSensorSampler taskSensorSampler;
     private final SignalSink signals;
     private final Map<UUID, PendingNavigation> pendingByRun =
+            new LinkedHashMap<>();
+    private final Map<UUID, LandingWait> landingByRun =
             new LinkedHashMap<>();
     private final Thread ownerThread;
 
@@ -112,7 +120,8 @@ public final class MinecraftProductionNavigationSkillNodeHandler
     public SkillNodeDirective begin(SkillNodeContext context) {
         requireOwnerThread();
         Objects.requireNonNull(context, "context");
-        if (pendingByRun.containsKey(context.runId())) {
+        if (pendingByRun.containsKey(context.runId())
+                || landingByRun.containsKey(context.runId())) {
             return SkillNodeDirective.fail(
                     SkillFailureCode.INTERNAL_ERROR,
                     "资源导航节点重复提交了未完成导航");
@@ -158,9 +167,10 @@ public final class MinecraftProductionNavigationSkillNodeHandler
                     "局部精确资源候选不存在或不再可信");
         }
 
+        GridPoint pickupStand = pickupStandGoal(target);
         NavigationRequest request;
         try {
-            request = navigationRequest(context, player, target);
+            request = navigationRequest(context, player, pickupStand);
         } catch (RuntimeException exception) {
             return SkillNodeDirective.fail(
                     SkillFailureCode.TIMEOUT,
@@ -194,7 +204,8 @@ public final class MinecraftProductionNavigationSkillNodeHandler
                 /* WAIT_NAVIGATION 会消费这个 revision；completion 不能复用 begin 的旧值。 */
                 context.nextStateRevision(),
                 context.node().nodeId(),
-                expectedBlockId);
+                expectedBlockId,
+                pickupStand);
         pendingByRun.put(context.runId(), pending);
         completion.whenComplete(
                 (outcome, throwable) -> offerCompletion(
@@ -232,14 +243,101 @@ public final class MinecraftProductionNavigationSkillNodeHandler
                             : signal.failureCode(),
                     "资源导航没有成功到达候选附近");
         }
-        return SkillNodeDirective.complete(
-                "已到达资源候选附近；后续采集节点将重新观察并冻结目标");
+        BotServerPlayer player = resolveCurrent(context).orElse(null);
+        if (player == null || !currentTick(player, context.currentTick())) {
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.WORLD_CHANGED,
+                    "资源导航完成后 BotPlayer 代际或当前 tick 不可用");
+        }
+        if (!expectedResourceStillAt(player, pending)) {
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.TARGET_GONE,
+                    "资源导航完成后原始资源候选已经变化");
+        }
+        if (groundedAtPickupStand(
+                GridPoint.from(player.blockPosition()),
+                player.onGround(),
+                pending.pickupStand())) {
+            return SkillNodeDirective.complete(
+                    "已在资源顶部稳定落地；后续采集节点将重新观察并冻结目标");
+        }
+        long landingDeadline = Math.min(
+                context.deadlineTick(),
+                Math.addExact(context.currentTick(),
+                        MAXIMUM_LANDING_SETTLE_TICKS));
+        if (landingDeadline <= context.currentTick()) {
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.TIMEOUT,
+                    "资源导航完成后没有剩余 tick 验证稳定落地");
+        }
+        /* CONTINUE 会把 runtime 从 WAITING_NAVIGATION 转入 RUNNING 并递增 revision。 */
+        LandingWait landing = new LandingWait(
+                pending, context.nextStateRevision(), landingDeadline);
+        if (landingByRun.putIfAbsent(context.runId(), landing) != null) {
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.INTERNAL_ERROR,
+                    "资源导航完成后重复建立稳定落地门");
+        }
+        return SkillNodeDirective.continueRunning(
+                "资源导航已到达离散目标，等待真实身体稳定落在资源顶部");
+    }
+
+    /**
+     * 通用 NavigationService 的成功语义只校验离散 {@link GridPoint}。对于资源上跳，
+     * {@code y >= goal} 可在跳跃中途成立；这个窄门避免改变水路、梯子等通用导航语义。
+     */
+    @Override
+    public SkillNodeDirective tick(SkillNodeContext context) {
+        requireOwnerThread();
+        Objects.requireNonNull(context, "context");
+        LandingWait landing = landingByRun.get(context.runId());
+        if (landing == null) {
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.INTERNAL_ERROR,
+                    "资源导航节点进入运行态时缺少稳定落地门");
+        }
+        if (!landing.matches(context)) {
+            landingByRun.remove(context.runId(), landing);
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.WORLD_CHANGED,
+                    "资源导航稳定落地期间节点身份或资源合同已变化");
+        }
+        BotServerPlayer player = resolveCurrent(context).orElse(null);
+        if (player == null || !currentTick(player, context.currentTick())) {
+            landingByRun.remove(context.runId(), landing);
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.WORLD_CHANGED,
+                    "资源导航稳定落地期间 BotPlayer 代际或当前 tick 不可用");
+        }
+        if (!expectedResourceStillAt(player, landing.pending())) {
+            landingByRun.remove(context.runId(), landing);
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.TARGET_GONE,
+                    "资源导航稳定落地期间原始资源候选已经变化");
+        }
+        if (groundedAtPickupStand(
+                GridPoint.from(player.blockPosition()),
+                player.onGround(),
+                landing.pending().pickupStand())) {
+            landingByRun.remove(context.runId(), landing);
+            return SkillNodeDirective.complete(
+                    "已在资源顶部稳定落地；后续采集节点将重新观察并冻结目标");
+        }
+        if (context.currentTick() >= landing.deadlineTick()) {
+            landingByRun.remove(context.runId(), landing);
+            return SkillNodeDirective.fail(
+                    SkillFailureCode.NAVIGATION_FAILED,
+                    "资源导航完成后未能在资源顶部稳定落地");
+        }
+        return SkillNodeDirective.continueRunning(
+                "等待资源顶部跳跃/落地物理状态稳定");
     }
 
     @Override
     public void cancelled(SkillNodeContext context, String reason) {
         requireOwnerThread();
         Objects.requireNonNull(context, "context");
+        landingByRun.remove(context.runId());
         PendingNavigation pending = pendingByRun.remove(context.runId());
         if (pending == null) {
             return;
@@ -373,7 +471,7 @@ public final class MinecraftProductionNavigationSkillNodeHandler
     private static NavigationRequest navigationRequest(
             SkillNodeContext context,
             BotServerPlayer player,
-            GridPoint target) {
+            GridPoint pickupStand) {
         long remaining = Math.subtractExact(
                 context.deadlineTick(), context.currentTick());
         long maximumDuration = Math.min(
@@ -385,7 +483,6 @@ public final class MinecraftProductionNavigationSkillNodeHandler
         long deadline = Math.addExact(context.currentTick(),
                 maximumDuration);
         UUID navigationId = UUID.randomUUID();
-        GridPoint pickupStand = pickupStandGoal(target);
         return new NavigationRequest(
                 navigationId,
                 context.botId(),
@@ -411,6 +508,33 @@ public final class MinecraftProductionNavigationSkillNodeHandler
         Objects.requireNonNull(resource, "resource");
         return new GridPoint(resource.x(), Math.addExact(resource.y(), 1),
                 resource.z());
+    }
+
+    static boolean groundedAtPickupStand(
+            GridPoint currentPosition,
+            boolean onGround,
+            GridPoint pickupStand) {
+        return onGround
+                && Objects.requireNonNull(pickupStand, "pickupStand")
+                        .equals(currentPosition);
+    }
+
+    static boolean landingContinuationMatches(
+            long expectedRunRevision,
+            long actualRunRevision) {
+        return expectedRunRevision >= 1L
+                && expectedRunRevision == actualRunRevision;
+    }
+
+    private static boolean expectedResourceStillAt(
+            BotServerPlayer player,
+            PendingNavigation pending) {
+        BlockPos resource = pending.pickupStand().toBlockPos().below();
+        return player.serverLevel().isLoaded(resource)
+                && pending.expectedBlockId().equals(BuiltInRegistries.BLOCK
+                        .getKey(player.serverLevel().getBlockState(resource)
+                                .getBlock())
+                        .toString());
     }
 
     private Optional<BotServerPlayer> resolveCurrent(
@@ -619,12 +743,14 @@ public final class MinecraftProductionNavigationSkillNodeHandler
             long generation,
             long runRevision,
             UUID nodeId,
-            String expectedBlockId) {
+            String expectedBlockId,
+            GridPoint pickupStand) {
         private PendingNavigation {
             Objects.requireNonNull(navigationId, "navigationId");
             Objects.requireNonNull(botId, "botId");
             Objects.requireNonNull(nodeId, "nodeId");
             Objects.requireNonNull(expectedBlockId, "expectedBlockId");
+            Objects.requireNonNull(pickupStand, "pickupStand");
             if (generation <= 0L || runRevision < 1L) {
                 throw new IllegalArgumentException(
                         "pending resource navigation identity is invalid");
@@ -638,6 +764,33 @@ public final class MinecraftProductionNavigationSkillNodeHandler
                     && nodeId.equals(context.node().nodeId())
                     && approvedResourceBlock(context).filter(
                             expectedBlockId::equals).isPresent();
+        }
+    }
+
+    /**
+     * 只在同一 navigation node 的当前运行中保存临时资源顶部脚位。它绝不进入 SkillPlan、
+     * checkpoint 或后续 production binding；实际采集仍会重新观察并冻结目标。
+     */
+    private record LandingWait(
+            PendingNavigation pending,
+            long runRevision,
+            long deadlineTick) {
+        private LandingWait {
+            pending = Objects.requireNonNull(pending, "pending");
+            if (runRevision < 1L || deadlineTick < 0L) {
+                throw new IllegalArgumentException(
+                        "landing wait identity is invalid");
+            }
+        }
+
+        private boolean matches(SkillNodeContext context) {
+            return pending.botId().equals(context.botId())
+                    && pending.generation() == context.botGeneration()
+                    && landingContinuationMatches(
+                            runRevision, context.stateRevision())
+                    && pending.nodeId().equals(context.node().nodeId())
+                    && approvedResourceBlock(context).filter(
+                            pending.expectedBlockId()::equals).isPresent();
         }
     }
 
