@@ -29,10 +29,12 @@ public final class SkillCheckpointBridge {
     public static SkillCheckpoint checkpoint(
             UUID serverInstanceId,
             UUID playerId,
-            SkillRuntimeCheckpoint runtime) {
+            SkillRuntimeCheckpoint runtime,
+            SkillCheckpointScope scope) {
         Objects.requireNonNull(serverInstanceId, "serverInstanceId");
         Objects.requireNonNull(playerId, "playerId");
         Objects.requireNonNull(runtime, "runtime");
+        Objects.requireNonNull(scope, "scope");
         SkillRunView view = runtime.view();
         return new SkillCheckpoint(
                 view.runId(),
@@ -51,7 +53,7 @@ public final class SkillCheckpointBridge {
                 0,
                 0,
                 view.updatedTick(),
-                Optional.empty(),
+                Optional.of(scope),
                 nodes(runtime.nodes()),
                 List.of(new CheckpointEvidence(
                         "runtime.state",
@@ -73,12 +75,14 @@ public final class SkillCheckpointBridge {
             UUID playerId,
             SkillRuntimeCheckpoint runtime,
             SkillCheckpoint prior,
-            SkillCheckpointRestartPlan restartPlan) {
+            SkillCheckpointRestartPlan restartPlan,
+            SkillCheckpointScope scope) {
         Objects.requireNonNull(serverInstanceId, "serverInstanceId");
         Objects.requireNonNull(playerId, "playerId");
         Objects.requireNonNull(runtime, "runtime");
         Objects.requireNonNull(prior, "prior");
         Objects.requireNonNull(restartPlan, "restartPlan");
+        Objects.requireNonNull(scope, "scope");
         SkillRunView view = runtime.view();
         requireRecoveredLineage(
                 serverInstanceId, playerId, runtime, prior, restartPlan);
@@ -104,7 +108,7 @@ public final class SkillCheckpointBridge {
                 attemptCount,
                 recoveryCount,
                 view.updatedTick(),
-                prior.scope(),
+                Optional.of(scope),
                 mergedNodes(prior, runtime, restartPlan),
                 List.of(
                         new CheckpointEvidence(

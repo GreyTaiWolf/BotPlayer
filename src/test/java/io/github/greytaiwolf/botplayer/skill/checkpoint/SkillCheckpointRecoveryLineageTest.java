@@ -1,6 +1,5 @@
 package io.github.greytaiwolf.botplayer.skill.checkpoint;
 
-import io.github.greytaiwolf.botplayer.skill.core.SkillId;
 import io.github.greytaiwolf.botplayer.skill.core.SkillRunState;
 import io.github.greytaiwolf.botplayer.skill.plan.SkillPlan;
 import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRunView;
@@ -34,12 +33,19 @@ class SkillCheckpointRecoveryLineageTest {
                         .orElseThrow();
         SkillCheckpoint prior = prior(full);
         SkillRuntimeCheckpoint runtime = runtime(restart.suffixPlan());
+        SkillCheckpointScope firstScope = scope(1);
+        SkillCheckpointScope refreshedScope = scope(2);
 
         SkillCheckpoint merged = SkillCheckpointBridge.recoveredCheckpoint(
-                SERVER_ID, PLAYER_ID, runtime, prior, restart);
+                SERVER_ID, PLAYER_ID, runtime, prior, restart, firstScope);
         SkillCheckpoint sameGeneration =
                 SkillCheckpointBridge.recoveredCheckpoint(
-                        SERVER_ID, PLAYER_ID, runtime, merged, restart);
+                        SERVER_ID,
+                        PLAYER_ID,
+                        runtime,
+                        merged,
+                        restart,
+                        refreshedScope);
 
         Assertions.assertAll(
                 () -> Assertions.assertEquals(prior.plan(), merged.plan()),
@@ -54,6 +60,8 @@ class SkillCheckpointRecoveryLineageTest {
                 () -> Assertions.assertEquals(3, merged.attemptCount()),
                 () -> Assertions.assertEquals(2, merged.recoveryCount()),
                 () -> Assertions.assertEquals(
+                        Optional.of(firstScope), merged.scope()),
+                () -> Assertions.assertEquals(
                         List.of(
                                 SkillCheckpointNodeState.SUCCEEDED,
                                 SkillCheckpointNodeState.IN_PROGRESS,
@@ -63,7 +71,20 @@ class SkillCheckpointRecoveryLineageTest {
                 () -> Assertions.assertEquals(
                         merged.attemptCount(), sameGeneration.attemptCount()),
                 () -> Assertions.assertEquals(
-                        merged.recoveryCount(), sameGeneration.recoveryCount()));
+                        merged.recoveryCount(), sameGeneration.recoveryCount()),
+                () -> Assertions.assertEquals(
+                        Optional.of(refreshedScope), sameGeneration.scope()));
+    }
+
+    @Test
+    void initialBridgePersistsTheFreshlyCapturedScope() {
+        SkillPlan full = SkillCheckpointRestartPlanBuilderTest.fullPlan();
+        SkillCheckpointScope scope = scope(3);
+
+        SkillCheckpoint checkpoint = SkillCheckpointBridge.checkpoint(
+                SERVER_ID, PLAYER_ID, runtime(full), scope);
+
+        Assertions.assertEquals(Optional.of(scope), checkpoint.scope());
     }
 
     @Test
@@ -193,10 +214,10 @@ class SkillCheckpointRecoveryLineageTest {
                 suffix.revision(),
                 SkillRunState.PREPARING,
                 7L,
-                Optional.of(new UUID(42L, 5L)),
-                Optional.of(new SkillId("botplayer", "restart_suffix_test")),
+                Optional.of(suffix.nodes().get(0).nodeId()),
+                Optional.of(suffix.nodes().get(0).skillId()),
                 0,
-                2,
+                suffix.nodes().size(),
                 200L,
                 210L,
                 500L,
@@ -205,12 +226,26 @@ class SkillCheckpointRecoveryLineageTest {
         return new SkillRuntimeCheckpoint(
                 view,
                 suffix,
-                List.of(
-                        new SkillRuntimeCheckpoint.Node(
-                                new UUID(42L, 5L),
-                                SkillRuntimeCheckpoint.State.IN_PROGRESS),
-                        new SkillRuntimeCheckpoint.Node(
-                                new UUID(42L, 6L),
-                                SkillRuntimeCheckpoint.State.PENDING)));
+                suffix.nodes().stream()
+                        .map(node -> new SkillRuntimeCheckpoint.Node(
+                                node.nodeId(),
+                                node.nodeId().equals(
+                                        suffix.nodes().get(0).nodeId())
+                                                ? SkillRuntimeCheckpoint.State
+                                                        .IN_PROGRESS
+                                                : SkillRuntimeCheckpoint.State
+                                                        .PENDING))
+                        .toList());
+    }
+
+    private static SkillCheckpointScope scope(int marker) {
+        return new SkillCheckpointScope(
+                "minecraft:overworld",
+                0,
+                64,
+                0,
+                Optional.empty(),
+                "0".repeat(63) + marker,
+                "p5a-scope-v1");
     }
 }

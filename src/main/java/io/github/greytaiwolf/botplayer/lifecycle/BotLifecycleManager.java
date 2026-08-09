@@ -68,12 +68,14 @@ import io.github.greytaiwolf.botplayer.skill.builtin.survival.ArmorUpgradeSelect
 import io.github.greytaiwolf.botplayer.skill.builtin.survival.MinecraftBasicArmorPlanner;
 import io.github.greytaiwolf.botplayer.skill.builtin.survival.MinecraftBasicEquipmentPlanner;
 import io.github.greytaiwolf.botplayer.skill.builtin.survival.ToolKind;
-import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointBridge;
 import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpoint;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointBridge;
 import io.github.greytaiwolf.botplayer.skill.checkpoint.MinecraftSavedDataCheckpointDurability;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.MinecraftSkillCheckpointScopeObserver;
 import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointDurability;
 import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointDurableCommitter;
 import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointLoadStatus;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointPlan;
 import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointRecoveryCoordination;
 import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointRecoveryCoordinator;
 import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointRecoveryCoordinationRequest;
@@ -83,6 +85,7 @@ import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointRecoveryS
 import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointReobservation;
 import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointRestartPlan;
 import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointSavedData;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointScope;
 import io.github.greytaiwolf.botplayer.perception.AuthorityEventCollector;
 import io.github.greytaiwolf.botplayer.perception.ObservationSnapshot;
 import io.github.greytaiwolf.botplayer.perception.PerceptionService;
@@ -228,6 +231,8 @@ public final class BotLifecycleManager {
      * commit 边界；一旦该边界失败，本进程宁可放弃恢复，也不会把旧内存记录当作已落盘。
      */
     private final SkillCheckpointDurableCommitter skillCheckpointCommitter;
+    private final MinecraftSkillCheckpointScopeObserver
+            skillCheckpointScopeObserver;
     private final SkillPackApprovalLedgerSavedData skillPackApprovalLedger;
     private final BotInventorySessionManager inventorySessions;
     private final PlayerInputController inputController;
@@ -278,6 +283,8 @@ public final class BotLifecycleManager {
         this.skillCheckpoints = SkillCheckpointSavedData.get(
                 server, roster.serverInstanceId());
         this.skillCheckpointCommitter = createSkillCheckpointCommitter();
+        this.skillCheckpointScopeObserver =
+                new MinecraftSkillCheckpointScopeObserver();
         this.skillPackApprovalLedger = SkillPackApprovalLedgerSavedData.get(
                 server, roster.serverInstanceId());
         this.inventorySessions = new BotInventorySessionManager(
@@ -1715,6 +1722,12 @@ public final class BotLifecycleManager {
             return SkillRunSubmission.rejected(
                     SkillRunSubmission.Status.PLAN_BOT_MISMATCH,
                     "技能计划 Bot 身份与活动实例不一致");
+        }
+        if (requiresProductionCheckpointScope(plan)
+                && !isCanonicalBootstrapPlan(plan)) {
+            return SkillRunSubmission.rejected(
+                    SkillRunSubmission.Status.INVALID_BUILTIN_PLAN,
+                    "bootstrap iron 只能使用服务器编译的完整固定计划");
         }
         if (runtime.pendingSkillCheckpointRecovery != null) {
             return SkillRunSubmission.rejected(
@@ -3383,10 +3396,17 @@ public final class BotLifecycleManager {
                 }
             }
 
-            SkillCheckpointReobservation reobservation = new SkillCheckpointReobservation(
-                    false,
-                    Optional.empty(),
-                    List.of());
+            SkillCheckpointReobservation reobservation = checkpoint == null
+                    || approvedPlan.isEmpty()
+                            ? new SkillCheckpointReobservation(
+                                    false,
+                                    Optional.empty(),
+                                    List.of())
+                            : skillCheckpointScopeObserver.reobserve(
+                                    player,
+                                    checkpoint,
+                                    approvedPlan.orElseThrow(),
+                                    currentTick);
             SkillCheckpointRecoveryCoordination coordination;
             try {
                 coordination = SkillCheckpointRecoveryCoordinator.coordinate(
@@ -3647,21 +3667,52 @@ public final class BotLifecycleManager {
                             player, botId, generation)) {
                 continue;
             }
+            if (!requiresProductionCheckpointScope(value.plan())) {
+                /*
+                 * 外部 Pack 和非生产内建技能没有可审核的世界范围，不能把一份空 scope
+                 * 写成 restartable 记录。它们仍可正常执行；重启时只会丢失进度而不会
+                 * 重放任何原版副作用。
+                 */
+                terminalizeSkillCheckpointGeneration(
+                        botId, generation, currentTick);
+                skillCheckpointRevisions.remove(botId);
+                continue;
+            }
             try {
                 RecoveredSkillCheckpointLineage lineage =
                         recoveredSkillCheckpointLineagesByRun.get(
                                 value.view().runId());
+                SkillCheckpointPlan sourcePlan = lineage == null
+                        ? new SkillCheckpointPlan(
+                                value.plan().planId(),
+                                value.plan().revision(),
+                                SkillCheckpointBridge.planDigest(
+                                        value.plan()))
+                        : lineage.prior().plan();
+                SkillCheckpointScope scope = skillCheckpointScopeObserver
+                        .capture(
+                                player,
+                                value,
+                                sourcePlan,
+                                Optional.ofNullable(lineage).map(
+                                        RecoveredSkillCheckpointLineage
+                                                ::restartPlan),
+                                currentTick)
+                        .orElseThrow(() -> new IllegalStateException(
+                                "P5A checkpoint scope capture is unavailable"));
                 SkillCheckpoint persisted = lineage == null
                         ? SkillCheckpointBridge.checkpoint(
                                 roster.serverInstanceId(),
                                 player.getUUID(),
-                                value)
+                                value,
+                                scope)
                         : SkillCheckpointBridge.recoveredCheckpoint(
                                 roster.serverInstanceId(),
                                 player.getUUID(),
                                 value,
                                 lineage.prior(),
-                                lineage.restartPlan());
+                                lineage.restartPlan(),
+                                scope);
                 skillCheckpointCommitter.upsert(persisted);
                 if (lineage != null) {
                     recoveredSkillCheckpointLineagesByRun.put(
@@ -3672,6 +3723,17 @@ public final class BotLifecycleManager {
                 skillCheckpointRevisions.put(
                         botId, value.view().stateRevision());
             } catch (RuntimeException exception) {
+                RecoveredSkillCheckpointLineage lineage =
+                        recoveredSkillCheckpointLineagesByRun.get(
+                                value.view().runId());
+                if (lineage != null) {
+                    terminalizeSkillCheckpointGeneration(
+                            botId,
+                            lineage.prior().generation(),
+                            currentTick);
+                }
+                terminalizeSkillCheckpointGeneration(
+                        botId, generation, currentTick);
                 skillRuntime.cancel(
                         value.view().runId(),
                         currentTick,
@@ -3687,6 +3749,21 @@ public final class BotLifecycleManager {
     private static boolean safeCheckpointState(SkillRunState state) {
         return state == SkillRunState.PREPARING
                 || state == SkillRunState.PAUSED;
+    }
+
+    private static boolean requiresProductionCheckpointScope(SkillPlan plan) {
+        return plan.nodes().stream().anyMatch(node -> node.skillId().equals(
+                P5ABuiltinSkillIds.BOOTSTRAP_IRON));
+    }
+
+    private static boolean isCanonicalBootstrapPlan(SkillPlan plan) {
+        try {
+            return plan.equals(ProductionSkillPlanCompiler.p5aDefault()
+                    .compileWoodToIronPick(
+                            plan.botId(), plan.revision()));
+        } catch (RuntimeException exception) {
+            return false;
+        }
     }
 
     /**
@@ -3798,7 +3875,8 @@ public final class BotLifecycleManager {
                         runtimeCheckpoint.view().runId())
                 || persisted.stateRevision()
                         != runtimeCheckpoint.view().stateRevision()
-                || persisted.continuationState().isTerminal()) {
+                || persisted.continuationState().isTerminal()
+                || persisted.scope().isEmpty()) {
             return Optional.empty();
         }
         RecoveredSkillCheckpointLineage lineage =
