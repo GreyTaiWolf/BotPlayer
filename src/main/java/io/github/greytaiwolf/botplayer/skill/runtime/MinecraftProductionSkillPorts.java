@@ -1183,6 +1183,37 @@ public final class MinecraftProductionSkillPorts
         }
     }
 
+    /**
+     * 世界工作站配方完成后仍绑定同一方块。熔炉的 {@code lit} 是配方动作自身会合法改变的
+     * 原版运行态，因此只对熔炉忽略这一项；坐标、维度、方块类型、朝向和其余属性仍须精确
+     * 相等。其他工作站继续要求完整 state 指纹相等。
+     */
+    static boolean workstationStateValidAfter(
+            BlockTargetFingerprint frozen,
+            BlockTargetFingerprint current,
+            MenuFamily family) {
+        Objects.requireNonNull(frozen, "frozen");
+        Objects.requireNonNull(current, "current");
+        Objects.requireNonNull(family, "family");
+        if (!frozen.dimension().equals(current.dimension())
+                || !frozen.position().equals(current.position())
+                || !frozen.state().blockId().equals(current.state().blockId())) {
+            return false;
+        }
+        if (family != MenuFamily.FURNACE) {
+            return frozen.state().equals(current.state());
+        }
+        Map<String, String> frozenProperties = new LinkedHashMap<>(
+                frozen.state().properties());
+        Map<String, String> currentProperties = new LinkedHashMap<>(
+                current.state().properties());
+        String frozenLit = frozenProperties.remove("lit");
+        String currentLit = currentProperties.remove("lit");
+        return frozenLit != null
+                && currentLit != null
+                && frozenProperties.equals(currentProperties);
+    }
+
     private static BlockHitTarget hit(BlockTargetFingerprint target) {
         return new BlockHitTarget(
                 target,
@@ -1739,7 +1770,21 @@ public final class MinecraftProductionSkillPorts
 
         @Override
         public boolean worldStillValidAfter(BotServerPlayer player) {
-            return isCurrentReachableBlock(player, target);
+            try {
+                BlockPos position = new BlockPos(
+                        target.position().x(), target.position().y(),
+                        target.position().z());
+                if (!player.serverLevel().isLoaded(position)
+                        || !player.canInteractWithBlock(position, 0.0D)) {
+                    return false;
+                }
+                return workstationStateValidAfter(
+                        target,
+                        MinecraftActionSnapshot.block(player, position),
+                        recipe.family());
+            } catch (RuntimeException exception) {
+                return false;
+            }
         }
     }
 
