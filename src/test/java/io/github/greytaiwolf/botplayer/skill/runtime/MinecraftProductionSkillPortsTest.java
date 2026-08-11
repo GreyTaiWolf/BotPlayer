@@ -1,11 +1,15 @@
 package io.github.greytaiwolf.botplayer.skill.runtime;
 
 import io.github.greytaiwolf.botplayer.action.interaction.BlockCoordinates;
+import io.github.greytaiwolf.botplayer.action.interaction.BlockStateFingerprint;
+import io.github.greytaiwolf.botplayer.action.interaction.BlockTargetFingerprint;
+import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.AcquisitionMethod;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionLedger;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionMaterials;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ResourceAcquisition;
 import io.github.greytaiwolf.botplayer.skill.core.SkillParameters;
+import io.github.greytaiwolf.botplayer.skill.menu.MenuFamily;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorAvailability;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorBudget;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorEvidence;
@@ -193,6 +197,49 @@ class MinecraftProductionSkillPortsTest {
                         .groundedAtResourceApproach(new BlockPos(4, 1, 5), true,
                                 resource),
                 "a diagonal cell must not satisfy the radius-one approach");
+    }
+
+    @Test
+    void furnaceCompletionAllowsOnlyTheNativeLitTransition() {
+        BlockTargetFingerprint unlit = workstation(
+                "minecraft:overworld", 3, 1, 4, "minecraft:furnace",
+                Map.of("facing", "north", "lit", "false"));
+        BlockTargetFingerprint lit = workstation(
+                "minecraft:overworld", 3, 1, 4, "minecraft:furnace",
+                Map.of("facing", "north", "lit", "true"));
+        BlockTargetFingerprint rotated = workstation(
+                "minecraft:overworld", 3, 1, 4, "minecraft:furnace",
+                Map.of("facing", "south", "lit", "true"));
+        BlockTargetFingerprint replacement = workstation(
+                "minecraft:overworld", 3, 1, 4, "minecraft:blast_furnace",
+                Map.of("facing", "north", "lit", "true"));
+
+        Assertions.assertAll(
+                () -> Assertions.assertTrue(MinecraftProductionSkillPorts
+                        .workstationStateValidAfter(
+                                unlit, lit, MenuFamily.FURNACE)),
+                () -> Assertions.assertFalse(MinecraftProductionSkillPorts
+                        .workstationStateValidAfter(
+                                unlit, rotated, MenuFamily.FURNACE)),
+                () -> Assertions.assertFalse(MinecraftProductionSkillPorts
+                        .workstationStateValidAfter(
+                                unlit, replacement, MenuFamily.FURNACE)),
+                () -> Assertions.assertFalse(MinecraftProductionSkillPorts
+                        .workstationStateValidAfter(
+                                unlit, lit, MenuFamily.CRAFTING_3X3)));
+    }
+
+    private static BlockTargetFingerprint workstation(
+            String dimension,
+            int x,
+            int y,
+            int z,
+            String block,
+            Map<String, String> properties) {
+        return new BlockTargetFingerprint(
+                new ResourceId(dimension),
+                new BlockCoordinates(x, y, z),
+                new BlockStateFingerprint(new ResourceId(block), properties));
     }
 
     private static ResourceAcquisition acquisition(
