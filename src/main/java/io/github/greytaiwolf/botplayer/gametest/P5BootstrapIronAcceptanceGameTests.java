@@ -212,11 +212,11 @@ public final class P5BootstrapIronAcceptanceGameTests {
             P2GameTestSupport.require(
                     count(bot, Items.WOODEN_PICKAXE) == 1
                             && count(bot, Items.STONE_PICKAXE) == 1
-                            && count(bot, Items.STICK) == 2,
-                    "Bootstrap did not retain the exact canonical tool and stick remainder");
+                            && count(bot, Items.STICK) == 2
+                            && count(bot, Items.OAK_PLANKS) == 5,
+                    "Bootstrap did not retain the exact canonical tool, stick and plank remainder");
             for (Item consumed : List.of(
                     Items.OAK_LOG,
-                    Items.OAK_PLANKS,
                     Items.CRAFTING_TABLE,
                     Items.COBBLESTONE,
                     Items.FURNACE,
