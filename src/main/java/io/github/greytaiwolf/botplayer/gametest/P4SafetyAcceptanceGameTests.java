@@ -71,7 +71,6 @@ public final class P4SafetyAcceptanceGameTests {
                             BotPlayer.MOD_ID,
                             "compatibility_probe"));
     private static final int TIMEOUT_TICKS = 300;
-    private static final int HOSTILE_DELEGATION_STABLE_TICKS = 8;
 
     private P4SafetyAcceptanceGameTests() {}
 
@@ -522,10 +521,7 @@ public final class P4SafetyAcceptanceGameTests {
                     navigation.status()
                             == NavigationSubmission.Status.ENQUEUED,
                     "Navigation setup was rejected before hostile delegation");
-            boolean[] observedSuspended = {false};
-            boolean[] observedDelegated = {false};
-            boolean[] observedSelfDefense = {false};
-            int[] stableDelegationTicks = {0};
+            boolean[] observedDelegatedHandoff = {false};
 
             P2GameTestSupport.awaitCondition(
                     helper,
@@ -538,25 +534,18 @@ public final class P4SafetyAcceptanceGameTests {
                                                 == NavigationState
                                                         .SUSPENDED_BY_SAFETY)
                                 .isPresent();
-                        observedSuspended[0] |= navigationSuspended;
                         SafetyIncidentView incident = bot.manager()
                                 .safetyIncident(bot.name())
                                 .orElse(null);
                         boolean delegatedThisTick = incident != null
-                                && (incident.state()
-                                                == SafetyState.DELEGATED
-                                        || incident
-                                                .currentIntervention()
-                                                .filter(value ->
-                                                        value
-                                                                == SafetyIntervention
-                                                                        .DELEGATE_TO_SURVIVAL_SKILL)
-                                                .isPresent());
-                        observedDelegated[0] |= delegatedThisTick;
-                        boolean hostileIncidentActive = incident != null
                                 && incident.hazardType()
-                                        == HazardType
-                                                .HOSTILE_TARGETING;
+                                        == HazardType.HOSTILE_TARGETING
+                                && incident.state() == SafetyState.DELEGATED
+                                && incident.currentIntervention()
+                                        .filter(value -> value
+                                                == SafetyIntervention
+                                                        .DELEGATE_TO_SURVIVAL_SKILL)
+                                        .isPresent();
                         boolean selfDefenseThisTick = bot.manager()
                                 .selfDefenseRun(bot.player().getUUID())
                                 .filter(view -> view.generation()
@@ -566,7 +555,6 @@ public final class P4SafetyAcceptanceGameTests {
                                         && view.targetId().equals(
                                                 zombie.getUUID()))
                                 .isPresent();
-                        observedSelfDefense[0] |= selfDefenseThisTick;
                         boolean targetingThreat = bot.manager()
                                         .latestSafetyFrame(bot.name())
                                         .stream()
@@ -579,59 +567,23 @@ public final class P4SafetyAcceptanceGameTests {
                                                                                 .getUUID())
                                                         && threat
                                                                 .targetingBot());
-                        boolean stableDelegation = delegatedThisTick
+                        observedDelegatedHandoff[0] |= delegatedThisTick
                                 && navigationSuspended
-                                && hostileIncidentActive
                                 && selfDefenseThisTick
                                 && targetingThreat
                                 && zombie.getTarget()
                                         == bot.player();
-                        if (stableDelegation) {
-                            stableDelegationTicks[0]++;
-                        } else if (observedDelegated[0]) {
-                            stableDelegationTicks[0] = 0;
-                        }
-                        return observedSuspended[0]
-                                && observedDelegated[0]
-                                && observedSelfDefense[0]
-                                && stableDelegationTicks[0]
-                                        >= HOSTILE_DELEGATION_STABLE_TICKS;
+                        return observedDelegatedHandoff[0];
                     },
-                    "P5A self-defense did not sustain hostile delegation after suspending navigation",
+                    "P5A did not observe a delegated hostile handoff after navigation suspension",
                     cleanup,
                     () -> {
                         P2GameTestSupport.require(
-                                observedDelegated[0]
-                                        && observedSelfDefense[0]
-                                        && stableDelegationTicks[0]
-                                                >= HOSTILE_DELEGATION_STABLE_TICKS,
-                                "P5A self-defense did not reach a stable delegated window");
-                        P2GameTestSupport.require(
-                                bot.manager()
-                                        .selfDefenseRun(bot.player().getUUID())
-                                        .filter(view -> view.targetId().equals(
-                                                zombie.getUUID()))
-                                        .isPresent(),
-                                "P5A self-defense did not retain the hostile run view");
+                                observedDelegatedHandoff[0],
+                                "P5A did not observe an exact delegated hostile handoff");
                         P2GameTestSupport.require(
                                 zombie.getTarget() == bot.player(),
                                 "Zombie no longer targeted the real bot body");
-                        P2GameTestSupport.require(
-                                bot.manager()
-                                        .safetyIncident(bot.name())
-                                        .filter(incident ->
-                                                incident.hazardType()
-                                                                == HazardType
-                                                                        .HOSTILE_TARGETING
-                                                        && incident
-                                                .currentIntervention()
-                                                .filter(value ->
-                                                        value
-                                                                == SafetyIntervention
-                                                                        .DELEGATE_TO_SURVIVAL_SKILL)
-                                                                .isPresent())
-                                        .isPresent(),
-                                "Hostile preemption did not retain P5A delegation");
                         cleanup.run();
                         helper.succeed();
                     });

@@ -140,9 +140,18 @@ public final class P5SafetyPauseResumeGameTests {
                     boolean safePause = incident != null
                             && incident.hazardType()
                                     == HazardType.HOSTILE_TARGETING
-                            && (incident.state() == SafetyState.DELEGATED
-                                    || incident.state()
-                                            == SafetyState.BLOCKED);
+                            && ((incident.state() == SafetyState.DELEGATED
+                                    && incident.currentIntervention()
+                                            .filter(value -> value
+                                                    == SafetyIntervention
+                                                            .DELEGATE_TO_SURVIVAL_SKILL)
+                                            .isPresent())
+                                    || (incident.state() == SafetyState.BLOCKED
+                                            && incident.currentIntervention()
+                                                    .filter(value -> value
+                                                            == SafetyIntervention
+                                                                    .HOLD_POSITION)
+                                                    .isPresent()));
                     if (view == null || view.state() != SkillRunState.PAUSED
                             || !safePause) {
                         return false;

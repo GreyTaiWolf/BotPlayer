@@ -20,6 +20,7 @@ import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.monster.Zombie;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -127,12 +128,15 @@ public final class P5SelfDefenseAcceptanceGameTests {
                     helper, first, new Vec3(3.0D, 1.0D, 4.5D));
             configureTarget(
                     helper, second, new Vec3(6.0D, 1.0D, 4.5D));
+            first.setInvulnerable(true);
+            second.setInvulnerable(true);
             float firstHealth = first.getHealth();
             float secondHealth = second.getHealth();
             activateTarget(helper, bot, first);
             activateTarget(helper, bot, second);
 
             boolean[] observedBothThreats = {false};
+            boolean[] observedSelfDefenseRun = {false};
             boolean[] observedMelee = {false};
             int[] completeThreatFrames = {0};
             P2GameTestSupport.awaitCondition(
@@ -152,9 +156,22 @@ public final class P5SelfDefenseAcceptanceGameTests {
                         if (bothTargeting) {
                             completeThreatFrames[0]++;
                         }
+                        long generation = bot.player().runtimeHandle()
+                                .generation();
+                        observedSelfDefenseRun[0] |= bot.manager()
+                                .selfDefenseRun(bot.player().getUUID())
+                                .filter(view -> view.generation() == generation
+                                        && (view.targetId().equals(first.getUUID())
+                                                || view.targetId().equals(
+                                                        second.getUUID())))
+                                .isPresent();
                         observedMelee[0] |= bot.manager()
                                 .selfDefenseRun(bot.player().getUUID())
-                                .filter(view -> view.status()
+                                .filter(view -> view.generation() == generation
+                                        && (view.targetId().equals(first.getUUID())
+                                                || view.targetId().equals(
+                                                        second.getUUID()))
+                                        && view.status()
                                                 == SelfDefenseSkillService
                                                         .RunStatus.ACTIVE
                                         && view.decision().state()
@@ -173,8 +190,9 @@ public final class P5SelfDefenseAcceptanceGameTests {
                         try {
                             P2GameTestSupport.require(
                                     observedBothThreats[0]
+                                            && !observedSelfDefenseRun[0]
                                             && !observedMelee[0],
-                                    "Low health plus multiple hostiles issued a melee action");
+                                    "Low health plus multiple hostiles started self-defense");
                             P2GameTestSupport.require(
                                     first.getHealth() == firstHealth
                                             && second.getHealth() == secondHealth,
@@ -212,6 +230,8 @@ public final class P5SelfDefenseAcceptanceGameTests {
         zombie.moveTo(position.x, position.y, position.z, 0.0F, 0.0F);
         zombie.setNoAi(true);
         zombie.setPersistenceRequired();
+        zombie.setItemSlot(EquipmentSlot.HEAD,
+                new ItemStack(Items.DIAMOND_HELMET));
         zombie.setHealth(1.0F);
     }
 

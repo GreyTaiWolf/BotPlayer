@@ -150,6 +150,8 @@ class SelfDefenseTechniqueBridgeTest {
         harness.start();
 
         assertTrue(harness.gateway.submitted.isEmpty());
+        assertTrue(harness.gateway.cancellations.isEmpty());
+        assertTrue(harness.bridge.isGenerationSafe(BOT, 1L));
         assertEquals(SelfDefenseSkillService.RunStatus.FAILED,
                 harness.service.latestView(BOT).orElseThrow().status());
         assertEquals(SelfDefenseSkillService.Failure.ACTION_SUBMISSION_REJECTED,
