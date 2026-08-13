@@ -196,7 +196,7 @@ class MinecraftSingleChestTransferSkillNodeHandlerTest {
                                 request.target(),
                                 new BlockStateFingerprint(
                                         new ResourceId("example:container"),
-                                        Map.of())));
+                                        Map.of()))));
     }
 
     @Test
