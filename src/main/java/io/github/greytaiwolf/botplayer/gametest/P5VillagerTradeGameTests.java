@@ -377,13 +377,15 @@ public final class P5VillagerTradeGameTests {
         P2GameTestSupport.require(
                 installed != null
                         && villager.getOffers().size() == 1
-                        && installed.getBaseCostA().is(Items.WHEAT)
-                        && installed.getBaseCostA().getCount() == COST_COUNT
+                        && installed.getCostA().is(Items.WHEAT)
+                        && installed.getCostA().getCount() == COST_COUNT
                         && installed.getResult().is(Items.EMERALD)
                         && installed.getResult().getCount() == 1
                         && installed.getMaxUses() == 4
                         && installed.getUses() == 0
                         && installed.getXp() == 1
+                        && installed.getDemand() == 0
+                        && installed.getSpecialPriceDiff() == 0
                         && Float.compare(installed.getPriceMultiplier(), 0.05F)
                                 == 0,
                 "Villager trade fixture did not install its exact offer");
