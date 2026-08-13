@@ -181,15 +181,15 @@ public final class MinecraftProductionSkillPorts
         ProductionPreconditionSnapshotBuilder snapshotBuilder =
                 new ProductionPreconditionSnapshotBuilder(baseline);
         if (operation instanceof ResourceAcquisition acquisition) {
-            Candidate candidate = selectCandidate(
+            CandidateSelection selection = selectCandidateWithReason(
                     player,
                     context,
                     expectedResourceBlock(acquisition),
-                    true)
-                    .orElse(null);
+                    true);
+            Candidate candidate = selection.candidate().orElse(null);
             if (candidate == null) {
                 return rejectDispatch(context,
-                        DispatchPreflightRejection.RESOURCE_CANDIDATE);
+                        selection.rejection().orElseThrow());
             }
             Set<UUID> preexistingDropIds = observedDropIds(
                     player, context, candidate.target()).orElse(null);
@@ -764,6 +764,21 @@ public final class MinecraftProductionSkillPorts
             SkillNodeContext context,
             String expectedBlockId,
             boolean requireGroundedApproach) {
+        return selectCandidateWithReason(
+                player, context, expectedBlockId, requireGroundedApproach)
+                .candidate();
+    }
+
+    /**
+     * Rejection categories are deliberately finite diagnostics. They preserve the
+     * existing empty-candidate behavior while allowing a restart failure to be
+     * distinguished without logging live positions, blocks or sensor payloads.
+     */
+    private CandidateSelection selectCandidateWithReason(
+            BotServerPlayer player,
+            SkillNodeContext context,
+            String expectedBlockId,
+            boolean requireGroundedApproach) {
         try {
             TaskSensorSnapshot candidates = query(new TaskSensorQuery(
                     identity(context),
@@ -781,19 +796,29 @@ public final class MinecraftProductionSkillPorts
             if (candidates == null
                     || candidates.availability()
                             != TaskSensorAvailability.AVAILABLE) {
-                return Optional.empty();
+                return CandidateSelection.rejected(
+                        DispatchPreflightRejection
+                                .RESOURCE_CANDIDATE_SENSOR_UNAVAILABLE);
             }
             Candidate nearest = null;
             BlockCoordinates nearestPosition = null;
+            boolean sawMatching = false;
+            boolean sawGrounded = false;
+            boolean sawReachable = false;
+            boolean sawCurrent = false;
+            boolean sawVisible = false;
             for (TaskSensorEvidence evidence : candidates.evidence()) {
                 CandidateEvidence candidate = resourceCandidate(evidence)
                         .orElse(null);
                 if (candidate == null) {
-                    return Optional.empty();
+                    return CandidateSelection.rejected(
+                            DispatchPreflightRejection
+                                    .RESOURCE_CANDIDATE_INVALID_EVIDENCE);
                 }
                 if (!expectedBlockId.equals(candidate.blockId())) {
                     continue;
                 }
+                sawMatching = true;
                 if (requireGroundedApproach
                         && !groundedAtResourceApproach(
                                 player.blockPosition(),
@@ -801,6 +826,7 @@ public final class MinecraftProductionSkillPorts
                                 candidate.position())) {
                     continue;
                 }
+                sawGrounded = true;
                 BlockPos position = new BlockPos(
                         candidate.position().x(),
                         candidate.position().y(),
@@ -809,6 +835,7 @@ public final class MinecraftProductionSkillPorts
                         || !player.canInteractWithBlock(position, 0.0D)) {
                     continue;
                 }
+                sawReachable = true;
                 BlockTargetFingerprint target = MinecraftActionSnapshot.block(
                         player, position);
                 if (!target.position().equals(candidate.position())
@@ -816,10 +843,12 @@ public final class MinecraftProductionSkillPorts
                                 expectedBlockId)) {
                     continue;
                 }
+                sawCurrent = true;
                 if (requireGroundedApproach
                         && !isCurrentVisibleResource(player, target)) {
                     continue;
                 }
+                sawVisible = true;
                 if (nearest == null
                         || compareReachableResourceCandidates(
                                 player.position(), candidate.position(),
@@ -828,9 +857,40 @@ public final class MinecraftProductionSkillPorts
                     nearestPosition = candidate.position();
                 }
             }
-            return Optional.ofNullable(nearest);
+            if (nearest != null) {
+                return CandidateSelection.selected(nearest);
+            }
+            if (!sawMatching) {
+                return CandidateSelection.rejected(
+                        DispatchPreflightRejection
+                                .RESOURCE_CANDIDATE_NO_MATCHING_RESOURCE);
+            }
+            if (requireGroundedApproach && !sawGrounded) {
+                return CandidateSelection.rejected(
+                        DispatchPreflightRejection
+                                .RESOURCE_CANDIDATE_NO_GROUNDED_APPROACH);
+            }
+            if (!sawReachable) {
+                return CandidateSelection.rejected(
+                        DispatchPreflightRejection
+                                .RESOURCE_CANDIDATE_NO_REACHABLE_APPROACH);
+            }
+            if (!sawCurrent) {
+                return CandidateSelection.rejected(
+                        DispatchPreflightRejection
+                                .RESOURCE_CANDIDATE_STATE_DRIFT);
+            }
+            if (requireGroundedApproach && !sawVisible) {
+                return CandidateSelection.rejected(
+                        DispatchPreflightRejection
+                                .RESOURCE_CANDIDATE_NO_VISIBLE_APPROACH);
+            }
+            return CandidateSelection.rejected(
+                    DispatchPreflightRejection
+                            .RESOURCE_CANDIDATE_NO_MATCHING_RESOURCE);
         } catch (RuntimeException exception) {
-            return Optional.empty();
+            return CandidateSelection.rejected(
+                    DispatchPreflightRejection.RESOURCE_CANDIDATE_EXCEPTION);
         }
     }
 
@@ -1624,7 +1684,14 @@ public final class MinecraftProductionSkillPorts
         BOT_IDENTITY,
         BODY_OR_TICK,
         NATIVE_BASELINE,
-        RESOURCE_CANDIDATE,
+        RESOURCE_CANDIDATE_SENSOR_UNAVAILABLE,
+        RESOURCE_CANDIDATE_INVALID_EVIDENCE,
+        RESOURCE_CANDIDATE_NO_MATCHING_RESOURCE,
+        RESOURCE_CANDIDATE_NO_GROUNDED_APPROACH,
+        RESOURCE_CANDIDATE_NO_REACHABLE_APPROACH,
+        RESOURCE_CANDIDATE_STATE_DRIFT,
+        RESOURCE_CANDIDATE_NO_VISIBLE_APPROACH,
+        RESOURCE_CANDIDATE_EXCEPTION,
         RESOURCE_PREEXISTING_DROPS,
         APPROVED_RECIPE,
         WORKSTATION_CANDIDATE,
@@ -1644,6 +1711,31 @@ public final class MinecraftProductionSkillPorts
     private record Candidate(BlockTargetFingerprint target) {
         private Candidate {
             Objects.requireNonNull(target, "target");
+        }
+    }
+
+    /** One of candidate or rejection is present; no result path falls back open. */
+    private record CandidateSelection(
+            Optional<Candidate> candidate,
+            Optional<DispatchPreflightRejection> rejection) {
+        private CandidateSelection {
+            candidate = Objects.requireNonNull(candidate, "candidate");
+            rejection = Objects.requireNonNull(rejection, "rejection");
+            if (candidate.isPresent() == rejection.isPresent()) {
+                throw new IllegalArgumentException(
+                        "candidate selection must contain exactly one result");
+            }
+        }
+
+        private static CandidateSelection selected(Candidate candidate) {
+            return new CandidateSelection(Optional.of(Objects.requireNonNull(
+                    candidate, "candidate")), Optional.empty());
+        }
+
+        private static CandidateSelection rejected(
+                DispatchPreflightRejection rejection) {
+            return new CandidateSelection(Optional.empty(), Optional.of(
+                    Objects.requireNonNull(rejection, "rejection")));
         }
     }
 
