@@ -82,11 +82,7 @@ class AiProposalPayloadTest {
     void streamCodecRejectsAnOversizedToolCallCountBeforeAllocatingTheList() {
         RegistryFriendlyByteBuf buffer = buffer();
         try {
-            buffer.writeUUID(BOT_ID);
-            buffer.writeUUID(AGENT_ID);
-            buffer.writeUUID(REQUEST_ID);
-            buffer.writeUUID(NONCE);
-            buffer.writeLong(1L);
+            writeHeader(buffer);
             byte[] output = "safe".getBytes(StandardCharsets.UTF_8);
             buffer.writeVarInt(output.length);
             buffer.writeBytes(output);

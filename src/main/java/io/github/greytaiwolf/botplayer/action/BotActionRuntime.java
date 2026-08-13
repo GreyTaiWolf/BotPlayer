@@ -2471,10 +2471,10 @@ public final class BotActionRuntime {
 
    private ActionOutcome finishDetached(BotActionRuntime.Ticket var1, ActionState var2, ActionFailureCode var3, String var4, long var5, boolean var7) {
       if (var2 == ActionState.FAILED) {
-         this.transition(var1, ActionState.VALIDATING);
+         this.transition(var1, ActionState.VALIDATING, var5);
       }
 
-      this.transition(var1, var2);
+      this.transition(var1, var2, var5);
       ActionOutcome var8 = new ActionOutcome(var1.envelope.actionId(), var2, var3, var5, var5, List.of(), var4);
       if (var7) {
          this.ledger.complete(var1.envelope, var8);
@@ -2496,8 +2496,12 @@ public final class BotActionRuntime {
    }
 
    private void transition(BotActionRuntime.Ticket var1, ActionState var2) {
-      ActionState var3 = var1.state;
-      var3.requireTransitionTo(var2);
+      this.transition(var1, var2, this.lastMutationTick);
+   }
+
+   private void transition(BotActionRuntime.Ticket var1, ActionState var2, long var3) {
+      ActionState var4 = var1.state;
+      var4.requireTransitionTo(var2);
       if (this.transitionHistory.size() == 512) {
          this.transitionHistory.removeFirst();
       }
@@ -2505,7 +2509,7 @@ public final class BotActionRuntime {
       this.transitionHistory
          .addLast(
             new ActionTransition(
-               var1.envelope.botId(), var1.envelope.botGeneration(), var1.envelope.actionId(), var1.envelope.action().kind(), var3, var2, this.lastMutationTick
+               var1.envelope.botId(), var1.envelope.botGeneration(), var1.envelope.actionId(), var1.envelope.action().kind(), var4, var2, var3
             )
          );
       var1.state = var2;

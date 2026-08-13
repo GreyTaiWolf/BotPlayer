@@ -172,17 +172,9 @@ class DeepSeekProviderTest {
                 AiFailureKind.MALFORMED_RESPONSE,
                 AiReasonCode.INVALID_PROVIDER_RESPONSE);
 
-        AiRequest malformedRequest = new AiRequest(
-                UUID.fromString("37373737-3737-3737-3737-373737373737"),
-                "deepseek-chat",
-                List.of(new AiMessage(AiMessageRole.USER,
-                        Character.toString(Character.MIN_HIGH_SURROGATE))),
-                AiRequestOptions.defaults(),
-                Optional.empty());
-        assertFailure(failureOf(provider.complete(
-                        malformedRequest, CancellationToken.none())),
-                AiFailureKind.INVALID_REQUEST,
-                AiReasonCode.INVALID_REQUEST);
+        Assertions.assertThrows(IllegalArgumentException.class, () -> new AiMessage(
+                AiMessageRole.USER,
+                Character.toString(Character.MIN_HIGH_SURROGATE)));
 
         AtomicInteger credentialCalls = new AtomicInteger();
         DeepSeekProvider unavailableCredential = new DeepSeekProvider(
@@ -297,8 +289,7 @@ class DeepSeekProviderTest {
 
         DeepSeekProvider streamedInterruption = provider(true, ignored -> CompletableFuture
                 .completedFuture(sseResponse("""
-                        data: {"model":"deepseek-chat","choices":[{"index":0,
-                        "delta":{},"finish_reason":"insufficient_system_resource"}]}
+                        data: {"model":"deepseek-chat","choices":[{"index":0,"delta":{},"finish_reason":"insufficient_system_resource"}]}
 
                         data: [DONE]
 
@@ -309,11 +300,9 @@ class DeepSeekProviderTest {
 
         DeepSeekProvider streamAfterFinish = provider(true, ignored -> CompletableFuture
                 .completedFuture(sseResponse("""
-                        data: {"model":"deepseek-chat","choices":[{"index":0,
-                        "delta":{"content":"first"},"finish_reason":"stop"}]}
+                        data: {"model":"deepseek-chat","choices":[{"index":0,"delta":{"content":"first"},"finish_reason":"stop"}]}
 
-                        data: {"model":"deepseek-chat","choices":[{"index":0,
-                        "delta":{"content":"late"},"finish_reason":null}]}
+                        data: {"model":"deepseek-chat","choices":[{"index":0,"delta":{"content":"late"},"finish_reason":null}]}
 
                         data: [DONE]
 
