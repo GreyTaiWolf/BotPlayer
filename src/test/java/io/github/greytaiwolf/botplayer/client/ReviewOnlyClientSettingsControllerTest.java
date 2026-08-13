@@ -166,7 +166,7 @@ class ReviewOnlyClientSettingsControllerTest {
         deadlineScheduler = Executors.newSingleThreadScheduledExecutor();
         List<AiProposalPayload> c2sProposals = new ArrayList<>();
         AtomicLong clock = new AtomicLong(1_000L);
-        AiClientRequestSessionController sessions;
+        ClientAiRequestSessionController sessions;
         try (ClientCredentialStore credentialStore = new ClientCredentialStore(
                 temporaryDirectory.resolve("config"))) {
             credentialStore.bind(

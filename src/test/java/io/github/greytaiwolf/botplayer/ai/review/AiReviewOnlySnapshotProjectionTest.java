@@ -141,6 +141,7 @@ class AiReviewOnlySnapshotProjectionTest {
                 List.of(),
                 List.of(),
                 List.of(),
+                List.of(),
                 limits());
     }
 

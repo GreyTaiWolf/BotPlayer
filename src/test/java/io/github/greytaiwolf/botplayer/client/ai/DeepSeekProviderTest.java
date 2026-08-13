@@ -325,7 +325,7 @@ class DeepSeekProviderTest {
 
         String oversizedArguments = "{\"itemId\":\"minecraft:oak_log\",\"padding\":\""
                 + "x".repeat(AiRawToolCall.MAX_ARGUMENTS_LENGTH) + "\"}";
-        String toolResponse = "{\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,"
+        String oversizedToolResponse = "{\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,"
                 + "\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{"
                 + "\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":"
                 + "\"collect_resource\",\"arguments\":" + jsonString(oversizedArguments)
@@ -333,7 +333,7 @@ class DeepSeekProviderTest {
         AiRequestOptions toolsAllowed = new AiRequestOptions(
                 512, 10_000L, AiResponseFormat.TEXT, false, true, Optional.empty());
         DeepSeekProvider oversizedTools = provider(false, ignored -> CompletableFuture
-                .completedFuture(jsonResponse(toolResponse)));
+                .completedFuture(jsonResponse(oversizedToolResponse)));
         assertFailure(failureOf(oversizedTools.complete(request(toolsAllowed),
                         CancellationToken.none())),
                 AiFailureKind.MALFORMED_RESPONSE,
