@@ -2957,10 +2957,10 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             throw merchantTradeStartRejected(
                     MerchantTradeStartRejection.OPEN_DID_NOT_BIND_MERCHANT);
         }
+        /* MerchantMenu level is populated only by the client offers packet.
+         * The authoritative VillagerData level remains checked below. */
         if (!merchantMenu.stillValid(player)
                 || villager.getTradingPlayer() != player
-                || merchantMenu.getTraderLevel()
-                        != trade.expectedVillagerLevel()
                 || merchantMenu.getTraderXp() != trade.expectedVillagerXp()
                 || merchantMenu.getOffers().size() <= trade.offerIndex()
                 || merchantMenu.getOffers().get(trade.offerIndex()) != offer
@@ -3179,6 +3179,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             Entity current = MinecraftInteractionView.entity(
                             player, trade.villager())
                     .orElse(null);
+            // MerchantMenu level is a client presentation field; the
+            // authoritative VillagerData level is checked by merchantOfferMatches.
             if (current != session.villager
                     || current == null
                     || current.getClass() != Villager.class
@@ -3188,8 +3190,6 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     || session.villager.getTradingPlayer() != player
                     || session.villager.getVillagerData()
                             != session.villagerDataBefore
-                    || session.menu.getTraderLevel()
-                            != trade.expectedVillagerLevel()
                     || session.menu.getTraderXp() != expectedVillagerXp
                     || session.menu.getOffers().size() <= session.offerIndex
                     || session.menu.getOffers().get(session.offerIndex)
