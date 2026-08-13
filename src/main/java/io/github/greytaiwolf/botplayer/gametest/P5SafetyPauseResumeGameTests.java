@@ -5,6 +5,7 @@ import io.github.greytaiwolf.botplayer.gametest.P2GameTestSupport.TestBot;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.safety.HazardType;
 import io.github.greytaiwolf.botplayer.safety.SafetyIncidentView;
+import io.github.greytaiwolf.botplayer.safety.SafetyIntervention;
 import io.github.greytaiwolf.botplayer.safety.SafetyState;
 import io.github.greytaiwolf.botplayer.skill.core.SkillRunState;
 import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRunSubmission;
