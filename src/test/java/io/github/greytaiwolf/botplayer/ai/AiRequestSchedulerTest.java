@@ -592,7 +592,8 @@ class AiRequestSchedulerTest {
                     new InlineExecutor());
             ControllableProvider provider = new ControllableProvider();
             AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
+                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes,
+                    Duration.ofSeconds(2L), STALL_TIMEOUT);
             AiRequest first = request("00000000-0000-0000-0000-000000000271", 15_000L);
             AiRequest second = request("00000000-0000-0000-0000-000000000272", 15_000L);
             AiScheduledRequestHandle firstHandle = scheduler.submit(
@@ -601,6 +602,8 @@ class AiRequestSchedulerTest {
                     scheduled(BOT_B, AGENT_B, second), CancellationToken.none())
                     .response().toCompletableFuture();
             assertTrue(await(() -> provider.calls().size() == 1, 2_000L));
+            assertTrue(await(() -> scheduler.diagnostics()
+                    .activeProviderInvocationCount() == 0, 2_000L));
 
             CountDownLatch deliveryEntered = new CountDownLatch(1);
             firstHandle.response().whenComplete((ignored, failure) -> {
@@ -711,6 +714,8 @@ class AiRequestSchedulerTest {
             scheduler.resumeDispatch();
             assertEquals(request.requestId(), handle.response().toCompletableFuture()
                     .get(2L, TimeUnit.SECONDS).requestId());
+            assertTrue(await(() -> scheduler.diagnostics()
+                    .pendingRecoveryDispatchCount() == 0, 2_000L));
             assertFalse(scheduler.diagnostics().dispatchDegraded());
             scheduler.close();
         } finally {
