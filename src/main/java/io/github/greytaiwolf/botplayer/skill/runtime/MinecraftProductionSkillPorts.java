@@ -158,16 +158,19 @@ public final class MinecraftProductionSkillPorts
         Objects.requireNonNull(approved, "approved");
         if (!bot.botId().equals(context.botId())
                 || bot.generation() != context.botGeneration()) {
-            return Optional.empty();
+            return rejectDispatch(context,
+                    DispatchPreflightRejection.BOT_IDENTITY);
         }
         BotServerPlayer player = resolveCurrent(bot).orElse(null);
         if (player == null || !currentTick(player, context.currentTick())) {
-            return Optional.empty();
+            return rejectDispatch(context,
+                    DispatchPreflightRejection.BODY_OR_TICK);
         }
         NativeBaseline baseline = observeNativeBaseline(player, context)
                 .orElse(null);
         if (baseline == null) {
-            return Optional.empty();
+            return rejectDispatch(context,
+                    DispatchPreflightRejection.NATIVE_BASELINE);
         }
         ProductionOperation operation = approved.resolved().node().operation();
         String bindingId = bindingId(context, approved.operationId());
@@ -182,12 +185,14 @@ public final class MinecraftProductionSkillPorts
                     true)
                     .orElse(null);
             if (candidate == null) {
-                return Optional.empty();
+                return rejectDispatch(context,
+                        DispatchPreflightRejection.RESOURCE_CANDIDATE);
             }
             Set<UUID> preexistingDropIds = observedDropIds(
                     player, context, candidate.target()).orElse(null);
             if (preexistingDropIds == null) {
-                return Optional.empty();
+                return rejectDispatch(context,
+                        DispatchPreflightRejection.RESOURCE_PREEXISTING_DROPS);
             }
             binding = new ResourceBinding(
                     bot,
@@ -201,7 +206,8 @@ public final class MinecraftProductionSkillPorts
             P5ARecipe recipe = approvedRecipe(recipeExecution,
                     approved).orElse(null);
             if (recipe == null) {
-                return Optional.empty();
+                return rejectDispatch(context,
+                        DispatchPreflightRejection.APPROVED_RECIPE);
             }
             if (recipe.family() == MenuFamily.INVENTORY_2X2) {
                 binding = new NativeRecipeBinding(
@@ -216,7 +222,8 @@ public final class MinecraftProductionSkillPorts
                         context,
                         expectedWorkstationBlock(recipe)).orElse(null);
                 if (candidate == null) {
-                    return Optional.empty();
+                    return rejectDispatch(context,
+                            DispatchPreflightRejection.WORKSTATION_CANDIDATE);
                 }
                 binding = new WorldRecipeBinding(
                         bot,
@@ -239,7 +246,8 @@ public final class MinecraftProductionSkillPorts
                     player, player.getMainHandItem());
             if (placementTarget == null
                     || !matchesWorkstationHeldItem(placement, held)) {
-                return Optional.empty();
+                return rejectDispatch(context,
+                        DispatchPreflightRejection.WORKSTATION_PLACEMENT);
             }
             binding = new WorkstationPlacementBinding(
                     bot,
@@ -254,9 +262,11 @@ public final class MinecraftProductionSkillPorts
             snapshotBuilder.noOpenMenu();
         } else if (operation instanceof SingleChestTransfer) {
             // canonical wood-to-iron DAG 当前没有 chest operation；不得猜坐标或容器。
-            return Optional.empty();
+            return rejectDispatch(context,
+                    DispatchPreflightRejection.UNSUPPORTED_SINGLE_CHEST_TRANSFER);
         } else {
-            return Optional.empty();
+            return rejectDispatch(context,
+                    DispatchPreflightRejection.UNSUPPORTED_OPERATION);
         }
         freeze(bindingId, binding);
         return Optional.of(new PreflightObservation(
@@ -264,6 +274,24 @@ public final class MinecraftProductionSkillPorts
                 context.currentTick(),
                 bindingId,
                 menuBinding(bindingId)));
+    }
+
+    /**
+     * 首轮 dispatch 预检必须继续 fail-closed；这里仅留下有限诊断，不能把 live
+     * 原版对象、坐标、物品或异常文本写入日志。
+     */
+    private static Optional<PreflightObservation> rejectDispatch(
+            SkillNodeContext context, DispatchPreflightRejection reason) {
+        Objects.requireNonNull(context, "context");
+        Objects.requireNonNull(reason, "reason");
+        BotPlayer.LOGGER.warn(
+                "P5A production dispatch preflight rejected: reason={}, node={}, run={}, revision={}, tick={}",
+                reason.name(),
+                context.node().nodeId(),
+                context.runId(),
+                context.stateRevision(),
+                context.currentTick());
+        return Optional.empty();
     }
 
     @Override
@@ -1587,6 +1615,19 @@ public final class MinecraftProductionSkillPorts
             throw new IllegalStateException(
                     "production Minecraft ports require server thread");
         }
+    }
+
+    private enum DispatchPreflightRejection {
+        BOT_IDENTITY,
+        BODY_OR_TICK,
+        NATIVE_BASELINE,
+        RESOURCE_CANDIDATE,
+        RESOURCE_PREEXISTING_DROPS,
+        APPROVED_RECIPE,
+        WORKSTATION_CANDIDATE,
+        WORKSTATION_PLACEMENT,
+        UNSUPPORTED_SINGLE_CHEST_TRANSFER,
+        UNSUPPORTED_OPERATION
     }
 
     /** TaskSensor 资源候选的纯解析结果；未带 live BlockPos 或 BlockState。 */
