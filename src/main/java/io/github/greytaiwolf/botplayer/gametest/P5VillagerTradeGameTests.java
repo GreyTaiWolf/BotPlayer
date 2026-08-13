@@ -24,6 +24,8 @@ import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerData;
+import net.minecraft.world.entity.npc.VillagerProfession;
+import net.minecraft.world.entity.npc.VillagerType;
 import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.inventory.MerchantMenu;
 import net.minecraft.world.item.Item;
@@ -213,11 +215,12 @@ public final class P5VillagerTradeGameTests {
         try {
             prepareStrictInventory(bot);
             int level = villager.getVillagerData().getLevel();
-            int threshold = VillagerData.getMinXpPerLevel(level);
+            int threshold = VillagerData.getMinXpPerLevel(level + 1);
             P2GameTestSupport.require(
-                    VillagerData.canLevelUp(level) && threshold > 0,
+                    VillagerData.canLevelUp(level)
+                            && threshold > offer.getXp(),
                     "Villager trade level-boundary fixture is not levelable");
-            villager.setVillagerXp(threshold - 1);
+            villager.setVillagerXp(threshold - offer.getXp());
             WorldInteractionActionSpec.WorldVillagerTrade frozen = action(
                     bot, villager, offer);
             CompletionStage<ActionOutcome> completion = P2GameTestSupport.submit(
@@ -241,7 +244,8 @@ public final class P5VillagerTradeGameTests {
                                                     Items.EMERALD) == 0
                                             && offer.getUses() == 0
                                             && villager.getVillagerXp()
-                                                    == threshold - 1,
+                                                    == threshold
+                                                            - offer.getXp(),
                                     "Level-crossing rejection changed inventory, offer, or XP");
                         } finally {
                             cleanup.run();
@@ -350,6 +354,8 @@ public final class P5VillagerTradeGameTests {
         villager.moveTo(position.x, position.y, position.z, 180.0F, 0.0F);
         villager.setNoAi(true);
         villager.setInvulnerable(true);
+        villager.setVillagerData(new VillagerData(
+                VillagerType.PLAINS, VillagerProfession.FARMER, 1));
         helper.getLevel().addFreshEntity(villager);
         cleanup.add(villager::discard);
         return villager;
@@ -366,6 +372,10 @@ public final class P5VillagerTradeGameTests {
         MerchantOffers offers = new MerchantOffers();
         offers.add(offer);
         villager.overrideOffers(offers);
+        P2GameTestSupport.require(
+                villager.getOffers().size() == 1
+                        && villager.getOffers().get(0) == offer,
+                "Villager trade fixture did not install its exact offer");
         return offer;
     }
 

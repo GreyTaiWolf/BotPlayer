@@ -375,7 +375,7 @@ public final class MinecraftVillagerTradeSkillNodeHandler
             if (!VillagerData.canLevelUp(villagerLevel)) {
                 return false;
             }
-            int threshold = VillagerData.getMinXpPerLevel(villagerLevel);
+            int threshold = VillagerData.getMinXpPerLevel(villagerLevel + 1);
             return villagerXpBefore >= threshold
                     || villagerXpAfter >= threshold;
         } catch (RuntimeException exception) {
