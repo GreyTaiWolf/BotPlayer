@@ -48,7 +48,12 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 public final class P5SugarCaneFarmingGameTests {
     private static final String BATCH = "p5b_sugar_cane";
     private static final int TIMEOUT_TICKS = 480;
-    private static final BlockPos RELATIVE_BASE = new BlockPos(4, 1, 5);
+    /*
+     * Keep the upper-cane drop inside the spawned bot's vanilla collision box.
+     * PickupWait deliberately never moves the body; it only proves a normal
+     * collision pickup of the frozen receipt UUID.
+     */
+    private static final BlockPos RELATIVE_BASE = new BlockPos(4, 1, 4);
     private static final BlockPos RELATIVE_TARGET = RELATIVE_BASE.above();
 
     private P5SugarCaneFarmingGameTests() {
