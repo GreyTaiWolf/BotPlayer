@@ -79,8 +79,8 @@ public final class P5VillagerTradeGameTests {
         TestBot bot = fixture.spawn("trade");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         Villager villager = spawnVillager(helper, cleanup);
-        MerchantOffer offer = offer(villager);
         try {
+            MerchantOffer offer = offer(villager);
             prepareStrictInventory(bot);
             CompletionStage<ActionOutcome> completion = P2GameTestSupport.submit(
                     bot, new WorldInteractionAction(action(bot, villager,
@@ -155,8 +155,8 @@ public final class P5VillagerTradeGameTests {
         TestBot bot = fixture.spawn("trade");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         Villager villager = spawnVillager(helper, cleanup);
-        MerchantOffer offer = offer(villager);
         try {
+            MerchantOffer offer = offer(villager);
             prepareStrictInventory(bot);
             WorldInteractionActionSpec.WorldVillagerTrade frozen = action(
                     bot, villager, offer);
@@ -211,8 +211,8 @@ public final class P5VillagerTradeGameTests {
         TestBot bot = fixture.spawn("trade");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         Villager villager = spawnVillager(helper, cleanup);
-        MerchantOffer offer = offer(villager);
         try {
+            MerchantOffer offer = offer(villager);
             prepareStrictInventory(bot);
             int level = villager.getVillagerData().getLevel();
             int threshold = VillagerData.getMinXpPerLevel(level + 1);
@@ -271,8 +271,8 @@ public final class P5VillagerTradeGameTests {
         TestBot bot = fixture.spawn("trade");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         Villager villager = spawnVillager(helper, cleanup);
-        MerchantOffer offer = offer(villager);
         try {
+            MerchantOffer offer = offer(villager);
             prepareStrictInventory(bot);
             TrackedTradeAction tracked = submitTracked(bot,
                     new WorldInteractionAction(action(bot, villager, offer)),
@@ -362,7 +362,7 @@ public final class P5VillagerTradeGameTests {
     }
 
     private static MerchantOffer offer(Villager villager) {
-        MerchantOffer offer = new MerchantOffer(
+        MerchantOffer requested = new MerchantOffer(
                 new ItemCost(Items.WHEAT, COST_COUNT),
                 Optional.empty(),
                 new ItemStack(Items.EMERALD),
@@ -370,13 +370,24 @@ public final class P5VillagerTradeGameTests {
                 1,
                 0.05F);
         MerchantOffers offers = new MerchantOffers();
-        offers.add(offer);
+        offers.add(requested);
         villager.overrideOffers(offers);
+        MerchantOffer installed = villager.getOffers().isEmpty()
+                ? null : villager.getOffers().get(0);
         P2GameTestSupport.require(
-                villager.getOffers().size() == 1
-                        && villager.getOffers().get(0) == offer,
+                installed != null
+                        && villager.getOffers().size() == 1
+                        && installed.getBaseCostA().is(Items.WHEAT)
+                        && installed.getBaseCostA().getCount() == COST_COUNT
+                        && installed.getResult().is(Items.EMERALD)
+                        && installed.getResult().getCount() == 1
+                        && installed.getMaxUses() == 4
+                        && installed.getUses() == 0
+                        && installed.getXp() == 1
+                        && Float.compare(installed.getPriceMultiplier(), 0.05F)
+                                == 0,
                 "Villager trade fixture did not install its exact offer");
-        return offer;
+        return installed;
     }
 
     private static void prepareStrictInventory(TestBot bot) {
