@@ -170,9 +170,17 @@ public final class P5ARestartPhaseOneGameTests {
      * 偷换为第二阶段直接赠送；所有位置仍处于 checkpoint 与生产 TaskSensor 的半径八内。
      */
     private static void placeDeferredSourceVein(GameTestHelper helper) {
-        for (int x = 9; x <= 11; x++) {
-            for (int z = 0; z <= 9; z++) {
+        for (int x = 8; x <= 12; x++) {
+            for (int z = -1; z <= 10; z++) {
                 helper.setBlock(new BlockPos(x, 0, z), Blocks.STONE);
+                /* This collar sits outside the phase-two 9x5x9 template. Clear
+                 * persisted structure residue around and above every source
+                 * before the first server stops, so the production UP-face ray
+                 * remains a real line-of-sight check rather than a fixture
+                 * artifact. */
+                for (int y = 1; y <= 4; y++) {
+                    helper.setBlock(new BlockPos(x, y, z), Blocks.AIR);
+                }
             }
         }
         java.util.List<SourceBlock> sources = java.util.List.of(
