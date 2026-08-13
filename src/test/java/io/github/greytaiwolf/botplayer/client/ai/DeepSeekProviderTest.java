@@ -456,6 +456,7 @@ class DeepSeekProviderTest {
 
         assertTrue(cancelled.get() != null);
         assertArrayEquals(new char[TEST_SECRET.length], cancelled.get().copySecret());
+        assertEquals(ProviderHealthState.UNKNOWN, provider.health().state());
     }
 
     @Test
@@ -486,6 +487,7 @@ class DeepSeekProviderTest {
                 AiReasonCode.CANCELLED);
         assertTrue(cancelled.get() != null);
         assertArrayEquals(new char[TEST_SECRET.length], cancelled.get().copySecret());
+        assertEquals(ProviderHealthState.UNKNOWN, provider.health().state());
     }
 
     @Test
@@ -541,6 +543,40 @@ class DeepSeekProviderTest {
                 AiFailureKind.TIMEOUT, AiReasonCode.REQUEST_TIMEOUT);
         assertTrue(cancelled.get() != null);
         assertArrayEquals(new char[TEST_SECRET.length], cancelled.get().copySecret());
+        assertEquals(ProviderHealthState.UNAVAILABLE, provider.health().state());
+        assertEquals(Optional.of(AiReasonCode.REQUEST_TIMEOUT.wireCode()),
+                provider.health().reasonCode());
+    }
+
+    @Test
+    void lateTransportSuccessCannotOverwriteTheDeadlineHealth() {
+        AtomicReference<DeepSeekHttpRequest> cancelled = new AtomicReference<>();
+        CompletableFuture<DeepSeekHttpResponse> pending = new CompletableFuture<>();
+        DeepSeekHttpExecutor executor = new DeepSeekHttpExecutor() {
+            @Override
+            public CompletableFuture<DeepSeekHttpResponse> execute(
+                    DeepSeekHttpRequest request) {
+                return pending;
+            }
+
+            @Override
+            public void cancel(DeepSeekHttpRequest request) {
+                cancelled.set(request);
+            }
+        };
+        DeepSeekProvider provider = provider(false, executor);
+        AiRequestOptions shortTimeout = new AiRequestOptions(
+                512, 50L, AiResponseFormat.TEXT, false, false, Optional.empty());
+
+        assertFailure(failureOf(provider.complete(request(shortTimeout),
+                        CancellationToken.none())),
+                AiFailureKind.TIMEOUT, AiReasonCode.REQUEST_TIMEOUT);
+        assertTrue(cancelled.get() != null);
+        assertEquals(ProviderHealthState.UNAVAILABLE, provider.health().state());
+
+        assertTrue(pending.complete(jsonResponse("""
+                {"model":"deepseek-chat","choices":[{"index":0,
+                "message":{"role":"assistant","content":"late"},"finish_reason":"stop"}]}""")));
         assertEquals(ProviderHealthState.UNAVAILABLE, provider.health().state());
     }
 
@@ -628,6 +664,7 @@ class DeepSeekProviderTest {
                 captured.get().endpoint());
         assertEquals(List.of("deepseek-chat"), capabilities.models().stream()
                 .map(AiModelCapabilities::model).toList());
+        assertEquals(ProviderHealthState.HEALTHY, provider.health().state());
     }
 
     @Test
@@ -645,12 +682,14 @@ class DeepSeekProviderTest {
         assertFailure(failureOf(oversized.probeCapabilities()),
                 AiFailureKind.MALFORMED_RESPONSE,
                 AiReasonCode.INVALID_PROVIDER_RESPONSE);
+        assertEquals(ProviderHealthState.DEGRADED, oversized.health().state());
 
         DeepSeekProvider malformed = provider(false, ignored -> CompletableFuture
                 .completedFuture(jsonResponse("{\"data\":[{\"id\":\"bad/model\"}]}")));
         assertFailure(failureOf(malformed.probeCapabilities()),
                 AiFailureKind.MALFORMED_RESPONSE,
                 AiReasonCode.INVALID_PROVIDER_RESPONSE);
+        assertEquals(ProviderHealthState.DEGRADED, malformed.health().state());
     }
 
     private static DeepSeekProvider provider(

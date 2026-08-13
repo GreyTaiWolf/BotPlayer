@@ -39,6 +39,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
@@ -105,7 +106,7 @@ public final class DeepSeekProvider implements AiProvider {
             return attachCompletion(httpRequest, checkedToken, () -> executor.execute(
                     httpRequest), response -> decodeCompletion(checkedRequest, response));
         } catch (RuntimeException exception) {
-            return CompletableFuture.failedFuture(sanitizeFailure(exception));
+            return failedCompletion(exception);
         }
     }
 
@@ -114,7 +115,7 @@ public final class DeepSeekProvider implements AiProvider {
         try {
             DeepSeekHttpRequest request = authenticatedRequest(
                     MODELS_ENDPOINT, DeepSeekHttpMethod.GET, "", 30_000L, false);
-            CompletableFuture<AiCapabilities> completion = new CompletableFuture<>();
+            TerminalFuture<AiCapabilities> completion = new TerminalFuture<>();
             AtomicReference<CancellationToken.ListenerRegistration> registration =
                     new AtomicReference<>(CancellationToken.ListenerRegistration.none());
             installTransportLifecycle(completion, request, registration);
@@ -125,36 +126,35 @@ public final class DeepSeekProvider implements AiProvider {
                 stage = Objects.requireNonNull(executor.execute(request),
                         "DeepSeek executor result");
             } catch (RuntimeException exception) {
-                completion.completeExceptionally(sanitizeFailure(exception));
+                completeFailure(completion, exception);
                 return completion;
             }
-            if (completion.isDone()) {
+            if (completion.isTerminal()) {
                 cancelTransportQuietly(request);
                 return completion;
             }
             try {
                 stage.whenComplete((response, failure) -> {
-                    if (completion.isDone()) {
+                    if (completion.isTerminal()) {
                         return;
                     }
                     try {
                         if (failure != null) {
-                            throw sanitizeFailure(unwrap(failure));
+                            completeFailure(completion, unwrap(failure));
+                            return;
                         }
                         AiCapabilities capabilities = decodeCapabilities(response);
-                        if (completion.complete(capabilities)) {
-                            markHealthy();
-                        }
+                        completeSuccess(completion, capabilities);
                     } catch (RuntimeException exception) {
-                        completion.completeExceptionally(sanitizeFailure(exception));
+                        completeFailure(completion, exception);
                     }
                 });
             } catch (RuntimeException exception) {
-                completion.completeExceptionally(sanitizeFailure(exception));
+                completeFailure(completion, exception);
             }
             return completion;
         } catch (RuntimeException exception) {
-            return CompletableFuture.failedFuture(sanitizeFailure(exception));
+            return failedCompletion(exception);
         }
     }
 
@@ -168,7 +168,7 @@ public final class DeepSeekProvider implements AiProvider {
             CancellationToken token,
             StageSupplier supplier,
             ResponseDecoder decoder) {
-        CompletableFuture<AiResponse> completion = new CompletableFuture<>();
+        TerminalFuture<AiResponse> completion = new TerminalFuture<>();
         CancellationToken.ListenerRegistration none =
                 CancellationToken.ListenerRegistration.none();
         AtomicReference<CancellationToken.ListenerRegistration> registration =
@@ -181,14 +181,14 @@ public final class DeepSeekProvider implements AiProvider {
                     "Cancellation listener registration");
             if (!registration.compareAndSet(none, registered)) {
                 closeRegistrationQuietly(registered);
-            } else if (completion.isDone()) {
+            } else if (completion.isTerminal()) {
                 closeRegistrationQuietly(registration.getAndSet(none));
             }
         } catch (RuntimeException exception) {
-            completion.completeExceptionally(sanitizeFailure(exception));
+            completeFailure(completion, exception);
             return completion;
         }
-        if (completion.isDone() || token.isCancellationRequested()) {
+        if (completion.isTerminal() || token.isCancellationRequested()) {
             completeAsCancelled(completion);
             return completion;
         }
@@ -197,22 +197,23 @@ public final class DeepSeekProvider implements AiProvider {
         try {
             stage = Objects.requireNonNull(supplier.get(), "DeepSeek executor result");
         } catch (RuntimeException exception) {
-            completion.completeExceptionally(sanitizeFailure(exception));
+            completeFailure(completion, exception);
             return completion;
         }
-        if (completion.isDone()) {
+        if (completion.isTerminal()) {
             cancelTransportQuietly(request);
             return completion;
         }
         try {
             stage.whenComplete((response, failure) -> {
-                if (completion.isDone()) {
+                if (completion.isTerminal()) {
                     return;
                 }
                 try {
                     requireNotCancelled(token);
                     if (failure != null) {
-                        throw sanitizeFailure(unwrap(failure));
+                        completeFailure(completion, unwrap(failure));
+                        return;
                     }
                     if (response == null) {
                         throw new DeepSeekProviderException(
@@ -220,15 +221,13 @@ public final class DeepSeekProvider implements AiProvider {
                     }
                     AiResponse decoded = decoder.decode(response);
                     requireNotCancelled(token);
-                    if (completion.complete(decoded)) {
-                        markHealthy();
-                    }
+                    completeSuccess(completion, decoded);
                 } catch (RuntimeException exception) {
-                    completion.completeExceptionally(sanitizeFailure(exception));
+                    completeFailure(completion, exception);
                 }
             });
         } catch (RuntimeException exception) {
-            completion.completeExceptionally(sanitizeFailure(exception));
+            completeFailure(completion, exception);
         }
         return completion;
     }
@@ -239,15 +238,10 @@ public final class DeepSeekProvider implements AiProvider {
         if (checked.statusCode() < 200 || checked.statusCode() >= 300) {
             throw failureForHttp(checked);
         }
-        try {
-            requireExpectedContentType(checked, config.streamResponses());
-            AiResponse decoded = config.streamResponses()
-                    ? responseCodec.decodeSse(request, config, checked.body())
-                    : responseCodec.decodeJson(request, config, checked.body());
-            return decoded;
-        } catch (RuntimeException exception) {
-            throw sanitizeFailure(exception);
-        }
+        requireExpectedContentType(checked, config.streamResponses());
+        return config.streamResponses()
+                ? responseCodec.decodeSse(request, config, checked.body())
+                : responseCodec.decodeJson(request, config, checked.body());
     }
 
     private AiCapabilities decodeCapabilities(DeepSeekHttpResponse response) {
@@ -386,18 +380,12 @@ public final class DeepSeekProvider implements AiProvider {
         Optional<Instant> retryAfter = code == DeepSeekFailureCode.RATE_LIMITED
                 ? parseRetryAfter(response.retryAfterHeader())
                 : Optional.empty();
-        DeepSeekProviderException failure = new DeepSeekProviderException(
-                code, retryAfter);
-        if (affectsHealth(code)) {
-            markFailure(failure);
-        }
-        return failure;
+        return new DeepSeekProviderException(code, retryAfter);
     }
 
-    private AiProviderException sanitizeFailure(Throwable failure) {
+    private SanitizedFailure sanitizeFailure(Throwable failure) {
         if (failure instanceof AiProviderException providerFailure) {
-            markCommonFailure(providerFailure);
-            return providerFailure;
+            return new SanitizedFailure(providerFailure, Optional.empty());
         }
         DeepSeekProviderException safeFailure;
         if (failure instanceof DeepSeekProviderException providerFailure) {
@@ -419,15 +407,8 @@ public final class DeepSeekProvider implements AiProvider {
             safeFailure = new DeepSeekProviderException(
                     DeepSeekFailureCode.NETWORK_FAILURE);
         }
-        return completeSafeFailure(safeFailure);
-    }
-
-    private AiProviderException completeSafeFailure(
-            DeepSeekProviderException failure) {
-        if (affectsHealth(failure.code())) {
-            markFailure(failure);
-        }
-        return toAiProviderException(failure);
+        return new SanitizedFailure(toAiProviderException(safeFailure),
+                Optional.of(safeFailure));
     }
 
     private static AiProviderException toAiProviderException(
@@ -573,32 +554,28 @@ public final class DeepSeekProvider implements AiProvider {
     }
 
     private void scheduleDeadline(
-            CompletableFuture<?> completion, Duration timeout) {
+            TerminalFuture<?> completion, Duration timeout) {
         try {
             long timeoutMillis = timeout.toMillis();
             CompletableFuture.delayedExecutor(timeoutMillis, TimeUnit.MILLISECONDS)
                     .execute(() -> {
                         DeepSeekProviderException failure = new DeepSeekProviderException(
                                 DeepSeekFailureCode.REQUEST_TIMEOUT);
-                        AiProviderException safeFailure = toAiProviderException(failure);
-                        if (completion.completeExceptionally(safeFailure)
-                                && affectsHealth(failure.code())) {
-                            markFailure(failure);
-                        }
+                        completeFailure(completion, failure);
                     });
         } catch (RuntimeException exception) {
-            completion.completeExceptionally(sanitizeFailure(exception));
+            completeFailure(completion, exception);
         }
     }
 
-    private void completeAsCancelled(CompletableFuture<?> completion) {
+    private void completeAsCancelled(TerminalFuture<?> completion) {
         DeepSeekProviderException failure = new DeepSeekProviderException(
                 DeepSeekFailureCode.REQUEST_CANCELLED);
-        completion.completeExceptionally(toAiProviderException(failure));
+        completeFailure(completion, failure);
     }
 
     private void installTransportLifecycle(
-            CompletableFuture<?> completion,
+            TerminalFuture<?> completion,
             DeepSeekHttpRequest request,
             AtomicReference<CancellationToken.ListenerRegistration> registration) {
         completion.whenComplete((ignored, failure) -> {
@@ -612,6 +589,36 @@ public final class DeepSeekProvider implements AiProvider {
                 request.clearSecret();
             }
         });
+    }
+
+    private <T> CompletionStage<T> failedCompletion(Throwable failure) {
+        TerminalFuture<T> completion = new TerminalFuture<>();
+        completeFailure(completion, failure);
+        return completion;
+    }
+
+    private <T> boolean completeSuccess(
+            TerminalFuture<T> completion, T value) {
+        return completion.completeWithPublication(value, this::markHealthy);
+    }
+
+    private boolean completeFailure(
+            TerminalFuture<?> completion, Throwable failure) {
+        SanitizedFailure sanitized = sanitizeFailure(failure);
+        return completion.failWithPublication(sanitized.failure(),
+                () -> publishFailureHealth(sanitized));
+    }
+
+    private void publishFailureHealth(SanitizedFailure failure) {
+        if (failure.deepSeekFailure().isPresent()) {
+            DeepSeekProviderException providerFailure = failure.deepSeekFailure()
+                    .orElseThrow();
+            if (affectsHealth(providerFailure.code())) {
+                markFailure(providerFailure);
+            }
+            return;
+        }
+        markCommonFailure(failure.failure());
     }
 
     private static void closeRegistrationQuietly(
@@ -639,6 +646,76 @@ public final class DeepSeekProvider implements AiProvider {
             current = current.getCause();
         }
         return current;
+    }
+
+    /**
+     * 所有可见终态先取得唯一赢家，再发布其健康状态，最后才唤醒调用方。外部调用者仍可取消
+     * 返回的 future；该取消同样参与赢家仲裁，不能让过期 deadline 事后污染 provider health。
+     */
+    private static final class TerminalFuture<T> extends CompletableFuture<T> {
+        private final AtomicBoolean terminal = new AtomicBoolean();
+
+        boolean isTerminal() {
+            return terminal.get();
+        }
+
+        boolean completeWithPublication(T value, Runnable beforePublication) {
+            Objects.requireNonNull(beforePublication, "beforePublication");
+            if (!claim()) {
+                return false;
+            }
+            runBeforePublication(beforePublication);
+            return super.complete(value);
+        }
+
+        boolean failWithPublication(
+                Throwable failure, Runnable beforePublication) {
+            Objects.requireNonNull(failure, "failure");
+            Objects.requireNonNull(beforePublication, "beforePublication");
+            if (!claim()) {
+                return false;
+            }
+            runBeforePublication(beforePublication);
+            return super.completeExceptionally(failure);
+        }
+
+        @Override
+        public boolean complete(T value) {
+            return claim() && super.complete(value);
+        }
+
+        @Override
+        public boolean completeExceptionally(Throwable failure) {
+            Objects.requireNonNull(failure, "failure");
+            return claim() && super.completeExceptionally(failure);
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            return claim() && super.cancel(mayInterruptIfRunning);
+        }
+
+        private boolean claim() {
+            return terminal.compareAndSet(false, true);
+        }
+
+        private static void runBeforePublication(Runnable beforePublication) {
+            try {
+                beforePublication.run();
+            } catch (RuntimeException ignored) {
+                // 健康遥测不可信时，已选定的调用方终态仍必须发布。
+            }
+        }
+    }
+
+    private record SanitizedFailure(
+            AiProviderException failure,
+            Optional<DeepSeekProviderException> deepSeekFailure) {
+        private SanitizedFailure {
+            Objects.requireNonNull(failure, "failure");
+            deepSeekFailure = Objects.requireNonNull(
+                    deepSeekFailure, "deepSeekFailure");
+        }
     }
 
     @FunctionalInterface
