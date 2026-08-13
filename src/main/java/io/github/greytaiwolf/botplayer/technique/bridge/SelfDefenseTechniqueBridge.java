@@ -133,6 +133,12 @@ public final class SelfDefenseTechniqueBridge
                     "Self-defense melee authorization was not current");
         }
         if (!isEligibleDispatch(claimed)) {
+            ActionEnvelope rejectedEnvelope = envelopeFor(claimed);
+            rememberCancellationReceipt(rejectedEnvelope,
+                    ActionCancellationReceipt.fencedBeforeStart(
+                            rejectedEnvelope.botId(),
+                            rejectedEnvelope.botGeneration(),
+                            rejectedEnvelope.actionId()));
             throw new SubmissionRejectedException(
                     "Self-defense melee binding was rejected");
         }
@@ -363,16 +369,18 @@ public final class SelfDefenseTechniqueBridge
         requireOwnerThread();
         AuthorizedActionDispatch required = Objects.requireNonNull(
                 authorization, "authorization");
+        ActionCancellationReason reason = required.revocation()
+                .map(SelfDefenseTechniqueBridge::cancellationFor)
+                .orElse(ActionCancellationReason.REQUESTED);
         ActionBinding binding = actionBindingsByActionId.get(
                 required.actionId());
         if (binding != null && binding.authorization() == required) {
-            return cancelBinding(binding, ActionCancellationReason.REQUESTED);
+            return cancelBinding(binding, reason);
         }
         PendingStart pending = pendingStart;
         if (pending != null && pending.authorization == required
                 && pending.binding != null) {
-            return cancelBinding(pending.binding,
-                    ActionCancellationReason.REQUESTED);
+            return cancelBinding(pending.binding, reason);
         }
         return cachedCancellationReceipt(required.botId(),
                 required.botGeneration(), required.actionId()).orElseGet(

@@ -200,6 +200,7 @@ class BotActionRuntimeTest {
          FIRST_BOT, 1L, queued.actionId()
       ));
       Assertions.assertEquals(ActionState.CANCELLED, outcome(submission).state());
+      Assertions.assertEquals(1L, runtime.transitionHistory(1).getFirst().serverTick());
       Assertions.assertEquals(0, backend.startCount(queued.actionId()));
    }
 
