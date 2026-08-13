@@ -234,7 +234,7 @@ public final class P5WheatFarmingGameTests {
                                             && bot.player().serverLevel()
                                                             .getBlockState(crop)
                                                             .getValue(CropBlock.AGE)
-                                                    == Blocks.WHEAT.getMaxAge()
+                                                    == CropBlock.MAX_AGE
                                             && count(bot, Items.WHEAT_SEEDS)
                                                     == 2
                                             && count(bot, Items.WHEAT) == 0,
@@ -374,7 +374,7 @@ public final class P5WheatFarmingGameTests {
                                     && bot.player().serverLevel()
                                                     .getBlockState(crop)
                                                     .getValue(CropBlock.AGE)
-                                            == Blocks.WHEAT.getMaxAge()
+                                            == CropBlock.MAX_AGE
                                     && count(bot, Items.WHEAT_SEEDS) == 2,
                             "Cancelled queued harvest changed crop or seeds");
                     requireNativeEmptyInventory(bot);
@@ -469,7 +469,7 @@ public final class P5WheatFarmingGameTests {
         helper.setBlock(RELATIVE_CROP.below(), Blocks.FARMLAND
                 .defaultBlockState().setValue(FarmBlock.MOISTURE, 7));
         helper.setBlock(RELATIVE_CROP, Blocks.WHEAT.defaultBlockState()
-                .setValue(CropBlock.AGE, Blocks.WHEAT.getMaxAge()));
+                .setValue(CropBlock.AGE, CropBlock.MAX_AGE));
         /* 保持耕地 moisture 指纹，避免 harvest 与 plant 之间的随机干涸造成测试噪声。 */
         helper.setBlock(new BlockPos(1, 0, 5), Blocks.WATER);
         /* GameTest 模板不能依赖天空光；把可复核的原版亮度固定在作物旁而不挡住视线。 */

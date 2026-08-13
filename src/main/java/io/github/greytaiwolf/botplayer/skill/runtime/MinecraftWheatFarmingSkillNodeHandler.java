@@ -876,10 +876,10 @@ public final class MinecraftWheatFarmingSkillNodeHandler
             BlockState state, BlockTargetFingerprint fingerprint) {
         return state.is(Blocks.WHEAT)
                 && state.hasProperty(CropBlock.AGE)
-                && state.getValue(CropBlock.AGE) == Blocks.WHEAT.getMaxAge()
+                && state.getValue(CropBlock.AGE) == CropBlock.MAX_AGE
                 && fingerprint.state().blockId().equals(WHEAT_ID)
                 && fingerprint.state().properties().equals(Map.of(
-                        "age", Integer.toString(Blocks.WHEAT.getMaxAge())));
+                        "age", Integer.toString(CropBlock.MAX_AGE)));
     }
 
     private static boolean isNewlyPlantedWheat(

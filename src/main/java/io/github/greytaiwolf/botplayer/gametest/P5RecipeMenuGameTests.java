@@ -558,7 +558,7 @@ public final class P5RecipeMenuGameTests {
             bot.player().getInventory().clearContent();
             bot.player().getInventory().selected = 0;
             bot.player().getInventory().setItem(9,
-                    new ItemStack(Items.RAW_CHICKEN));
+                    new ItemStack(Items.CHICKEN));
             bot.player().getInventory().setItem(10,
                     new ItemStack(Items.COAL));
             bot.player().inventoryMenu.setCarried(ItemStack.EMPTY);
@@ -592,7 +592,7 @@ public final class P5RecipeMenuGameTests {
                                             && bot.player().inventoryMenu
                                                     .getCarried().isEmpty()
                                             && inventoryCount(bot,
-                                                    Items.RAW_CHICKEN) == 0
+                                                    Items.CHICKEN) == 0
                                             && inventoryCount(bot, Items.COAL)
                                                     == 0
                                             && inventoryCount(bot,
@@ -721,7 +721,7 @@ public final class P5RecipeMenuGameTests {
             bot.player().getInventory().clearContent();
             bot.player().getInventory().selected = 0;
             bot.player().getInventory().setItem(9,
-                    new ItemStack(Items.RAW_CHICKEN));
+                    new ItemStack(Items.CHICKEN));
             bot.player().getInventory().setItem(10,
                     new ItemStack(Items.COAL));
             bot.player().inventoryMenu.setCarried(ItemStack.EMPTY);
@@ -1200,7 +1200,7 @@ public final class P5RecipeMenuGameTests {
                                             && bot.player().inventoryMenu
                                                     .getCarried().isEmpty()
                                             && inventoryCount(bot,
-                                                    Items.RAW_CHICKEN) == 1
+                                                    Items.CHICKEN) == 1
                                             && inventoryCount(bot, Items.COAL)
                                                     == 1
                                             && inventoryCount(bot,

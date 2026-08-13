@@ -4068,7 +4068,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             case "minecraft:furnace" -> Items.FURNACE;
             case "minecraft:stone_pickaxe" -> Items.STONE_PICKAXE;
             case "minecraft:raw_iron" -> Items.RAW_IRON;
-            case "minecraft:raw_chicken" -> Items.RAW_CHICKEN;
+            case "minecraft:raw_chicken" -> Items.CHICKEN;
             case "minecraft:coal" -> Items.COAL;
             case "minecraft:iron_ingot" -> Items.IRON_INGOT;
             case "minecraft:cooked_chicken" -> Items.COOKED_CHICKEN;
