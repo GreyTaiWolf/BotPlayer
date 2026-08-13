@@ -486,12 +486,19 @@ class AiRequestSchedulerTest {
     void terminalCleanupCancelsTheDelegateBeforeAQueuedSuccessorCanInvokeProvider()
             throws Exception {
         LaneFixture lanes = new LaneFixture();
+        CapturingExecutor cleanup = new CapturingExecutor();
         OrderingProvider provider = new OrderingProvider();
         try {
+            configureInlineLanesExcept(lanes,
+                    AiRequestSchedulerSupervisor.Lane.TERMINAL_CLEANUP);
+            lanes.set(AiRequestSchedulerSupervisor.Lane.TERMINAL_CLEANUP, cleanup);
             AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest first = request("00000000-0000-0000-0000-000000000269");
-            AiRequest second = request("00000000-0000-0000-0000-000000000270");
+                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes,
+                    Duration.ofSeconds(5L), STALL_TIMEOUT);
+            AiRequest first = request(
+                    "00000000-0000-0000-0000-000000000269", 15_000L);
+            AiRequest second = request(
+                    "00000000-0000-0000-0000-000000000270", 15_000L);
             AiScheduledRequestHandle firstHandle = scheduler.submit(
                     scheduled(BOT_A, AGENT_A, first), CancellationToken.none());
             CompletableFuture<AiResponse> secondResult = scheduler.submit(
@@ -501,9 +508,12 @@ class AiRequestSchedulerTest {
             assertTrue(provider.firstEntered.await(2L, TimeUnit.SECONDS));
             assertTrue(await(() -> scheduler.diagnostics()
                     .activeProviderInvocationCount() == 0, 2_000L));
+            CompletableFuture<AiRequestCancellationReceipt> cancellation =
+                    firstHandle.requestCancellation().toCompletableFuture();
+            assertTrue(cleanup.captured.await(2L, TimeUnit.SECONDS));
+            cleanup.runCaptured();
             assertEquals(AiRequestCancellationDisposition.CANCELLED,
-                    firstHandle.requestCancellation().toCompletableFuture()
-                            .get(2L, TimeUnit.SECONDS).disposition());
+                    cancellation.get(2L, TimeUnit.SECONDS).disposition());
             assertTrue(provider.secondEntered.await(2L, TimeUnit.SECONDS));
             assertFalse(provider.secondStartedBeforeFirstCancellation.get());
             provider.secondStage.complete(response(second));
@@ -520,11 +530,10 @@ class AiRequestSchedulerTest {
         LaneFixture lanes = new LaneFixture();
         BlockingCleanupProvider provider = new BlockingCleanupProvider();
         try {
-            lanes.set(AiRequestSchedulerSupervisor.Lane.COMPLETION_DELIVERY,
-                    new InlineExecutor());
+            configureAllInlineLanes(lanes);
             AiRequestScheduler scheduler = scheduler(provider,
                     new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes,
-                    Duration.ofSeconds(2L), STALL_TIMEOUT);
+                    Duration.ofSeconds(5L), STALL_TIMEOUT);
             AiRequest first = request("00000000-0000-0000-0000-000000000264", 15_000L);
             AiRequest second = request("00000000-0000-0000-0000-000000000273", 15_000L);
             AiScheduledRequestHandle firstHandle = scheduler.submit(
