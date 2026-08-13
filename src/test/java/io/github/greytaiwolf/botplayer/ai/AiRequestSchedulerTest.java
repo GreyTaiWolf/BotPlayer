@@ -523,9 +523,10 @@ class AiRequestSchedulerTest {
             lanes.set(AiRequestSchedulerSupervisor.Lane.COMPLETION_DELIVERY,
                     new InlineExecutor());
             AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest first = request("00000000-0000-0000-0000-000000000264");
-            AiRequest second = request("00000000-0000-0000-0000-000000000273");
+                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes,
+                    Duration.ofSeconds(2L), STALL_TIMEOUT);
+            AiRequest first = request("00000000-0000-0000-0000-000000000264", 15_000L);
+            AiRequest second = request("00000000-0000-0000-0000-000000000273", 15_000L);
             AiScheduledRequestHandle firstHandle = scheduler.submit(
                     scheduled(BOT_A, AGENT_A, first), CancellationToken.none());
             CompletableFuture<AiResponse> secondResult = scheduler.submit(
