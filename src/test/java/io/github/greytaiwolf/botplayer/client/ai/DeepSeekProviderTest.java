@@ -172,7 +172,7 @@ class DeepSeekProviderTest {
                 AiFailureKind.MALFORMED_RESPONSE,
                 AiReasonCode.INVALID_PROVIDER_RESPONSE);
 
-        Assertions.assertThrows(IllegalArgumentException.class, () -> new AiMessage(
+        assertThrows(IllegalArgumentException.class, () -> new AiMessage(
                 AiMessageRole.USER,
                 Character.toString(Character.MIN_HIGH_SURROGATE)));
 
