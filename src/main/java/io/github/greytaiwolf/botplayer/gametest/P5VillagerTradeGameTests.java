@@ -371,7 +371,7 @@ public final class P5VillagerTradeGameTests {
                 0.05F);
         MerchantOffers offers = new MerchantOffers();
         offers.add(requested);
-        villager.overrideOffers(offers);
+        villager.setOffers(offers);
         MerchantOffer installed = villager.getOffers().isEmpty()
                 ? null : villager.getOffers().get(0);
         P2GameTestSupport.require(
