@@ -14,7 +14,7 @@ public final class DeepSeekProviderException extends RuntimeException {
     private static final long serialVersionUID = 1L;
 
     private final DeepSeekFailureCode code;
-    private final Optional<Instant> retryAfter;
+    private final Instant retryAfter;
 
     public DeepSeekProviderException(DeepSeekFailureCode code) {
         this(code, Optional.empty());
@@ -25,7 +25,8 @@ public final class DeepSeekProviderException extends RuntimeException {
         super("DeepSeek provider failure: "
                 + Objects.requireNonNull(code, "code").name());
         this.code = code;
-        this.retryAfter = Objects.requireNonNull(retryAfter, "retryAfter");
+        this.retryAfter = Objects.requireNonNull(retryAfter, "retryAfter")
+                .orElse(null);
     }
 
     public DeepSeekFailureCode code() {
@@ -33,6 +34,6 @@ public final class DeepSeekProviderException extends RuntimeException {
     }
 
     public Optional<Instant> retryAfter() {
-        return retryAfter;
+        return Optional.ofNullable(retryAfter);
     }
 }

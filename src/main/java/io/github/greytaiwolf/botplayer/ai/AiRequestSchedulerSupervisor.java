@@ -545,12 +545,14 @@ public final class AiRequestSchedulerSupervisor implements AutoCloseable {
             }
         }
 
+        @SuppressWarnings("removal")
         static boolean isFatal(Throwable failure) {
             return failure instanceof VirtualMachineError
                     || failure instanceof ThreadDeath
                     || failure instanceof LinkageError;
         }
 
+        @SuppressWarnings("removal")
         static void rethrowIfFatal(Throwable failure) {
             if (failure instanceof VirtualMachineError error) {
                 throw error;

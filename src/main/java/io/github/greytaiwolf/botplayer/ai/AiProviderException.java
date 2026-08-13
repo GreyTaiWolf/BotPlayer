@@ -18,7 +18,7 @@ public final class AiProviderException extends RuntimeException {
     private static final long serialVersionUID = 1L;
 
     private final AiFailureKind failureKind;
-    private final Optional<Instant> retryAfter;
+    private final Instant retryAfter;
     private final AiReasonCode reasonCode;
 
     public AiProviderException(
@@ -28,9 +28,9 @@ public final class AiProviderException extends RuntimeException {
         super(message(failureKind, reasonCode));
         this.failureKind = Objects.requireNonNull(
                 failureKind, "failureKind");
-        this.retryAfter = Objects.requireNonNull(
-                retryAfter, "retryAfter").map(value ->
-                        AiChecks.instant(value, "retryAfter value"));
+        this.retryAfter = Objects.requireNonNull(retryAfter, "retryAfter")
+                .map(value -> AiChecks.instant(value, "retryAfter value"))
+                .orElse(null);
         this.reasonCode = Objects.requireNonNull(reasonCode, "reasonCode");
     }
 
@@ -88,7 +88,7 @@ public final class AiProviderException extends RuntimeException {
     }
 
     public Optional<Instant> retryAfter() {
-        return retryAfter;
+        return Optional.ofNullable(retryAfter);
     }
 
     public AiReasonCode reasonCode() {
