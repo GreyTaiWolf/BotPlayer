@@ -61,6 +61,9 @@ public final class MinecraftSugarCaneFarmingSkillNodeHandler
     private static final int MAXIMUM_ACTION_TICKS =
             SugarCaneFarmingPlanCompiler.MAXIMUM_ACTION_TICKS;
     private static final int MAXIMUM_PICKUP_TICKS = 80;
+    /** One extra runtime tick lets the backend verify an exhausted PickupWait. */
+    private static final int MAXIMUM_PICKUP_ACTION_TICKS =
+            MAXIMUM_PICKUP_TICKS + 1;
     private static final int MINIMUM_HARVEST_EMPTY_STORAGE_SLOTS = 1;
     private static final String RESERVATION_SCOPE =
             "minecraft.sugar_cane";
@@ -246,7 +249,7 @@ public final class MinecraftSugarCaneFarmingSkillNodeHandler
                                 MAXIMUM_PICKUP_TICKS,
                                 Optional.of(pending.receipt().entityId()))),
                 ActionPriority.SURVIVAL,
-                MAXIMUM_PICKUP_TICKS,
+                MAXIMUM_PICKUP_ACTION_TICKS,
                 SkillNodeDirective.Kind.WAIT_ACTION,
                 "等待原版甘蔗掉落实体进入背包",
                 (signalContext, signal) -> verifyHarvestPickup(pending,

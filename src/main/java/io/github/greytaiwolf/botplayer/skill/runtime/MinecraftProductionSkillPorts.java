@@ -95,6 +95,9 @@ public final class MinecraftProductionSkillPorts
     static final int RESOURCE_DROP_MAX_CANDIDATES = 12;
     static final int RESOURCE_DROP_MAX_EVIDENCE = 12;
     static final int MAXIMUM_RESOURCE_DROP_PICKUP_TICKS = 80;
+    /** The action envelope retains one final tick for PickupWait verification. */
+    static final int MAXIMUM_RESOURCE_DROP_PICKUP_ACTION_TICKS =
+            MAXIMUM_RESOURCE_DROP_PICKUP_TICKS + 1;
     static final int INVENTORY_SLOTS = 41;
     static final int INVENTORY_EVIDENCE = INVENTORY_SLOTS + 1;
     static final int NATIVE_MENU_SLOTS = MenuFamily.INVENTORY_2X2.slotCount();
@@ -554,7 +557,7 @@ public final class MinecraftProductionSkillPorts
                         new WorldInteractionActionSpec.PickupWait(
                                 MAXIMUM_RESOURCE_DROP_PICKUP_TICKS,
                                 Optional.of(candidate.entityId()))),
-                MAXIMUM_RESOURCE_DROP_PICKUP_TICKS,
+                MAXIMUM_RESOURCE_DROP_PICKUP_ACTION_TICKS,
                 "等待 UUID 绑定的原版资源掉落实体进入背包"));
     }
 

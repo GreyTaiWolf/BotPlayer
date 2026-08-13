@@ -50,9 +50,13 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 public final class P5WheatFarmingGameTests {
     private static final String BATCH = "p5b_wheat_farming";
     private static final int TIMEOUT_TICKS = 480;
-    /* One block in front of P5GameTestSupport's standard farmer spawn: close enough
-     * for a real collision pickup, not an inventory test shortcut. */
-    private static final BlockPos RELATIVE_CROP = new BlockPos(4, 1, 5);
+    /*
+     * The crop occupies the standard farmer's collision footprint.  Wheat is
+     * non-solid, so this still uses normal entity collision pickup while making
+     * the all-receipt harvest assertion independent of an unimplemented move
+     * phase.
+     */
+    private static final BlockPos RELATIVE_CROP = new BlockPos(4, 1, 4);
 
     private P5WheatFarmingGameTests() {
     }

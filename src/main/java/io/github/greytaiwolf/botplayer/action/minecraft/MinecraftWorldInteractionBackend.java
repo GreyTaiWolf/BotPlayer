@@ -2582,26 +2582,24 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             ActionEnvelope envelope,
             BotServerPlayer player,
             WorldInteractionActionSpec.PickupWait pickupWait) {
-        if (pickupWait.expectedItemEntityId().isEmpty()) {
+        if (pickupWait.expectedItemEntityIds().isEmpty()) {
             return BackendResult.accepted(envelope);
         }
-        Entity entity =
-                player.serverLevel()
-                        .getEntity(
-                                pickupWait.expectedItemEntityId()
-                                        .orElseThrow());
-        if (!(entity instanceof ItemEntity itemEntity)
-                || itemEntity.isRemoved()) {
-            return failure(
-                    envelope,
-                    ActionFailureCode.TARGET_UNAVAILABLE,
-                    "Expected item entity is unavailable");
-        }
-        if (!player.canInteractWithEntity(itemEntity, 1.0D)) {
-            return failure(
-                    envelope,
-                    ActionFailureCode.PRECONDITION_FAILED,
-                    "Expected item entity is out of pickup reach");
+        for (UUID entityId : pickupWait.expectedItemEntityIds()) {
+            Entity entity = player.serverLevel().getEntity(entityId);
+            if (!(entity instanceof ItemEntity itemEntity)
+                    || itemEntity.isRemoved()) {
+                return failure(
+                        envelope,
+                        ActionFailureCode.TARGET_UNAVAILABLE,
+                        "Expected item entity is unavailable");
+            }
+            if (!player.canInteractWithEntity(itemEntity, 1.0D)) {
+                return failure(
+                        envelope,
+                        ActionFailureCode.PRECONDITION_FAILED,
+                        "Expected item entity is out of pickup reach");
+            }
         }
         return BackendResult.accepted(envelope);
     }
@@ -4653,9 +4651,11 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             InteractionState state,
             WorldInteractionActionSpec.PickupWait pickupWait,
             long currentTick) {
-        if (state.pickupEntityId != null
-                && player.serverLevel()
-                        .getEntity(state.pickupEntityId) == null) {
+        if (!state.pickupEntityIds.isEmpty()
+                && state.pickupEntityIds.stream().allMatch(entityId -> {
+                    Entity entity = player.serverLevel().getEntity(entityId);
+                    return entity == null || entity.isRemoved();
+                })) {
             return BackendResult.readyToVerify(envelope);
         }
         return currentTick - state.startedTick >= pickupWait.ticks()
@@ -5284,7 +5284,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             WorldInteractionActionSpec.PickupWait pickupWait) {
         String inventoryAfter =
                 MinecraftInteractionView.inventoryDigest(player);
-        if (state.pickupEntityId == null) {
+        if (state.pickupEntityIds.isEmpty()) {
             if (inventoryAfter.equals(state.inventoryBefore)) {
                 return failure(
                         envelope,
@@ -5297,41 +5297,90 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     "Verified inventory pickup");
         }
 
-        Entity remaining =
-                player.serverLevel().getEntity(state.pickupEntityId);
-        int matchingAfter =
-                MinecraftInteractionView.inventoryCount(
-                        player,
-                        Objects.requireNonNull(
-                                state.pickupItem,
-                                "pickupItem"));
-        int gained = matchingAfter - state.matchingCountBefore;
-        if (remaining != null && !remaining.isRemoved()) {
+        if (state.pickupReceipts.size() != state.pickupEntityIds.size()) {
             return failure(
                     envelope,
                     ActionFailureCode.TARGET_UNAVAILABLE,
-                    "Expected item entity was not collected");
+                    "Expected item entity changed before pickup wait began");
         }
-        if (gained < state.pickupItem.count()) {
-            return failure(
+        for (UUID entityId : state.pickupEntityIds) {
+            Entity remaining = player.serverLevel().getEntity(entityId);
+            if (remaining != null && !remaining.isRemoved()) {
+                return failure(
+                        envelope,
+                        ActionFailureCode.TARGET_UNAVAILABLE,
+                        "Expected item entity was not collected");
+            }
+        }
+        for (PickupItemExpectation expectation : pickupItemExpectations(
+                state.pickupReceipts)) {
+            int matchingAfter = MinecraftInteractionView.inventoryCount(
+                    player, expectation.item());
+            int gained = matchingAfter - expectation.matchingCountBefore();
+            if (gained < expectation.expectedCount()) {
+                return failure(
+                        envelope,
+                        ActionFailureCode.UNSAFE_CONTROL_STATE,
+                        "Pickup item conservation check failed");
+            }
+        }
+        if (state.pickupEntityIds.size() == 1) {
+            PickupReceipt receipt = state.pickupReceipts.get(0);
+            int matchingAfter = MinecraftInteractionView.inventoryCount(
+                    player, receipt.item());
+            int gained = matchingAfter - receipt.matchingCountBefore();
+            return success(
                     envelope,
-                    ActionFailureCode.UNSAFE_CONTROL_STATE,
-                    "Pickup item conservation check failed");
+                    List.of(
+                            evidence("entity.id", receipt.entityId()
+                                    .toString()),
+                            evidence("item.expected_count", Integer.toString(
+                                    receipt.item().count())),
+                            evidence("item.gained_count", Integer.toString(
+                                    gained))),
+                    "Verified item entity pickup");
         }
         return success(
                 envelope,
                 List.of(
-                        evidence(
-                                "entity.id",
-                                state.pickupEntityId.toString()),
-                        evidence(
-                                "item.expected_count",
-                                Integer.toString(
-                                        state.pickupItem.count())),
-                        evidence(
-                                "item.gained_count",
-                                Integer.toString(gained))),
-                "Verified item entity pickup");
+                        evidence("entity.ids", state.pickupEntityIds.stream()
+                                .map(UUID::toString)
+                                .collect(java.util.stream.Collectors.joining(","))),
+                        evidence("entity.count", Integer.toString(
+                                state.pickupEntityIds.size()))),
+                "Verified bounded item entity pickup");
+    }
+
+    private static List<PickupItemExpectation> pickupItemExpectations(
+            List<PickupReceipt> receipts) {
+        List<PickupItemExpectation> expectations = new ArrayList<>();
+        for (PickupReceipt receipt : receipts) {
+            int matching = -1;
+            for (int index = 0; index < expectations.size(); index++) {
+                if (expectations.get(index).item().sameItemAndComponents(
+                        receipt.item())) {
+                    matching = index;
+                    break;
+                }
+            }
+            if (matching < 0) {
+                expectations.add(new PickupItemExpectation(receipt.item(),
+                        receipt.matchingCountBefore(),
+                        receipt.item().count()));
+                continue;
+            }
+            PickupItemExpectation existing = expectations.get(matching);
+            if (existing.matchingCountBefore()
+                    != receipt.matchingCountBefore()) {
+                throw new IllegalStateException(
+                        "pickup receipt inventory baseline changed during capture");
+            }
+            expectations.set(matching, new PickupItemExpectation(
+                    existing.item(), existing.matchingCountBefore(),
+                    Math.addExact(existing.expectedCount(),
+                            receipt.item().count())));
+        }
+        return List.copyOf(expectations);
     }
 
     private void cleanupPlayerState(
@@ -6103,6 +6152,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         .WorldVillagerTrade
                 || spec instanceof WorldInteractionActionSpec.PlaceBlock
                 || spec instanceof WorldInteractionActionSpec.BreakBlock
+                || spec instanceof WorldInteractionActionSpec.PickupWait
                 || spec instanceof WorldInteractionActionSpec.AttackEntity
                 || spec instanceof WorldInteractionActionSpec
                         .InteractEntity
@@ -6391,6 +6441,42 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         }
     }
 
+    /** One exact entity/item observation frozen before a UUID-bound pickup wait. */
+    private record PickupReceipt(
+        UUID entityId,
+            ItemStackFingerprint item,
+            int matchingCountBefore) {
+        private PickupReceipt {
+            entityId = Objects.requireNonNull(entityId, "pickupEntityId");
+            if (entityId.getMostSignificantBits() == 0L
+                    && entityId.getLeastSignificantBits() == 0L) {
+                throw new IllegalArgumentException(
+                        "pickupEntityId must not be zero UUID");
+            }
+            item = Objects.requireNonNull(item, "item");
+            if (item.isEmpty() || matchingCountBefore < 0) {
+                throw new IllegalArgumentException(
+                        "pickup receipt requires a non-empty item and non-negative baseline");
+            }
+        }
+    }
+
+    /** Per item/component aggregate used to prove a multi-receipt inventory delta. */
+    private record PickupItemExpectation(
+            ItemStackFingerprint item,
+            int matchingCountBefore,
+            int expectedCount) {
+        private PickupItemExpectation {
+            item = Objects.requireNonNull(item, "item");
+            if (item.isEmpty()
+                    || matchingCountBefore < 0
+                    || expectedCount < 1) {
+                throw new IllegalArgumentException(
+                        "pickup expectation is outside the bounded item contract");
+            }
+        }
+    }
+
     private static final class InteractionState {
         private final UUID botId;
         private final long botGeneration;
@@ -6403,9 +6489,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         private final int containerIdBefore;
         private final Entity vehicleBefore;
         private final float targetHealthBefore;
-        private final UUID pickupEntityId;
-        private final ItemStackFingerprint pickupItem;
-        private final int matchingCountBefore;
+        private final List<UUID> pickupEntityIds;
+        private final List<PickupReceipt> pickupReceipts;
         private final int selectedBefore;
         private final int foodLevelBefore;
         private boolean sideEffectDispatched;
@@ -6450,9 +6535,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 int containerIdBefore,
                 Entity vehicleBefore,
                 float targetHealthBefore,
-                UUID pickupEntityId,
-                ItemStackFingerprint pickupItem,
-                int matchingCountBefore,
+                List<UUID> pickupEntityIds,
+                List<PickupReceipt> pickupReceipts,
                 int selectedBefore,
                 int foodLevelBefore) {
             this.botId = Objects.requireNonNull(
@@ -6471,9 +6555,10 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             this.containerIdBefore = containerIdBefore;
             this.vehicleBefore = vehicleBefore;
             this.targetHealthBefore = targetHealthBefore;
-            this.pickupEntityId = pickupEntityId;
-            this.pickupItem = pickupItem;
-            this.matchingCountBefore = matchingCountBefore;
+            this.pickupEntityIds = List.copyOf(Objects.requireNonNull(
+                    pickupEntityIds, "pickupEntityIds"));
+            this.pickupReceipts = List.copyOf(Objects.requireNonNull(
+                    pickupReceipts, "pickupReceipts"));
             this.selectedBefore = selectedBefore;
             this.foodLevelBefore = foodLevelBefore;
             if (spec
@@ -6579,25 +6664,27 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 }
             }
 
-            UUID pickupEntityId = null;
-            ItemStackFingerprint pickupItem = null;
-            int matchingCountBefore = 0;
+            List<UUID> pickupEntityIds = List.of();
+            List<PickupReceipt> pickupReceipts = List.of();
             if (spec
                             instanceof WorldInteractionActionSpec
-                                    .PickupWait pickupWait
-                    && pickupWait.expectedItemEntityId().isPresent()) {
-                pickupEntityId =
-                        pickupWait.expectedItemEntityId().orElseThrow();
-                Entity target =
-                        player.serverLevel().getEntity(pickupEntityId);
-                if (target instanceof ItemEntity itemEntity) {
-                    pickupItem =
-                            MinecraftInteractionView.itemFingerprint(
-                                    player, itemEntity.getItem());
-                    matchingCountBefore =
+                                    .PickupWait pickupWait) {
+                pickupEntityIds = pickupWait.expectedItemEntityIds();
+                List<PickupReceipt> captured = new ArrayList<>(
+                        pickupEntityIds.size());
+                for (UUID entityId : pickupEntityIds) {
+                    Entity target = player.serverLevel().getEntity(entityId);
+                    if (!(target instanceof ItemEntity itemEntity)
+                            || itemEntity.isRemoved()) {
+                        continue;
+                    }
+                    ItemStackFingerprint item = MinecraftInteractionView
+                            .itemFingerprint(player, itemEntity.getItem());
+                    captured.add(new PickupReceipt(entityId, item,
                             MinecraftInteractionView.inventoryCount(
-                                    player, pickupItem);
+                                    player, item)));
                 }
+                pickupReceipts = List.copyOf(captured);
             }
 
             InteractionState state = new InteractionState(
@@ -6635,9 +6722,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     player.containerMenu.containerId,
                     player.getVehicle(),
                     targetHealthBefore,
-                    pickupEntityId,
-                    pickupItem,
-                    matchingCountBefore,
+                    pickupEntityIds,
+                    pickupReceipts,
                     player.getInventory().selected,
                     player.getFoodData().getFoodLevel());
             if (spec instanceof WorldInteractionActionSpec.WorldVillagerTrade) {

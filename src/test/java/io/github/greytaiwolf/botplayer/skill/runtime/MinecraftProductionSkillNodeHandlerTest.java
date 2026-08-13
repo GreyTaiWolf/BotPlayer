@@ -832,7 +832,7 @@ class MinecraftProductionSkillNodeHandlerTest {
                 new WorldInteractionAction(
                         new WorldInteractionActionSpec.PickupWait(
                                 80, Optional.of(itemEntityId))),
-                80,
+                81,
                 "等待测试 UUID 绑定掉落实体进入背包");
     }
 

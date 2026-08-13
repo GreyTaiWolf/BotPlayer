@@ -66,6 +66,9 @@ public final class MinecraftWheatFarmingSkillNodeHandler
     private static final int MAXIMUM_ACTION_TICKS =
             WheatFarmingPlanCompiler.MAXIMUM_ACTION_TICKS;
     private static final int MAXIMUM_PICKUP_TICKS = 80;
+    /** One extra runtime tick lets the backend verify an exhausted PickupWait. */
+    private static final int MAXIMUM_PICKUP_ACTION_TICKS =
+            MAXIMUM_PICKUP_TICKS + 1;
     /**
      * Mature wheat broken with wheat seeds (no Fortune) may emit wheat plus up to
      * three seed entities.
@@ -287,9 +290,9 @@ public final class MinecraftWheatFarmingSkillNodeHandler
                 new WorldInteractionAction(
                         new WorldInteractionActionSpec.PickupWait(
                                 MAXIMUM_PICKUP_TICKS,
-                                Optional.of(pending.targetEntityId()))),
+                                pending.manifest().entityIds())),
                 ActionPriority.SURVIVAL,
-                MAXIMUM_PICKUP_TICKS,
+                MAXIMUM_PICKUP_ACTION_TICKS,
                 SkillNodeDirective.Kind.WAIT_ACTION,
                 "等待原版小麦掉落实体进入背包",
                 (signalContext, signal) -> verifyHarvestPickup(
@@ -462,7 +465,6 @@ public final class MinecraftWheatFarmingSkillNodeHandler
                 prepared,
                 manifest,
                 expected,
-                manifest.wheatReceipt().entityId(),
                 context.node().nodeId());
         if (pendingHarvestPickups.putIfAbsent(context.runId(), pending)
                 != null) {
@@ -483,7 +485,7 @@ public final class MinecraftWheatFarmingSkillNodeHandler
                     || !pending.equals(pendingHarvestPickups.get(
                             context.runId()))
                     || !signalHasPickupEvidence(signal,
-                            pending.targetEntityId())) {
+                            pending.manifest())) {
                 return SkillNodeDirective.fail(
                         SkillFailureCode.INTERNAL_ERROR,
                         "小麦掉落拾取回执不属于冻结的 UUID 收据");
@@ -755,27 +757,13 @@ public final class MinecraftWheatFarmingSkillNodeHandler
 
     private static boolean allDropsLiveAndPickupReachable(
             BotServerPlayer player, HarvestDropManifest manifest) {
-        HarvestDropReceipt wheatReceipt = manifest.wheatReceipt();
-        Entity target = player.serverLevel().getEntity(
-                wheatReceipt.entityId());
-        if (!(target instanceof ItemEntity targetItem)
-                || target.isRemoved()
-                || !wheatReceipt.expectedStack().equals(
-                        MinecraftActionSnapshot.item(player,
-                                targetItem.getItem()))
-                || !player.canInteractWithEntity(targetItem, 1.0D)) {
-            return false;
-        }
         int observedWheat = 0;
         int observedSeeds = 0;
         for (HarvestDropReceipt receipt : manifest.receipts()) {
             Entity entity = player.serverLevel().getEntity(
                     receipt.entityId());
-            if (entity == null || entity.isRemoved()) {
-                /* Same-item drops may have merged into another receipt entity. */
-                continue;
-            }
             if (!(entity instanceof ItemEntity itemEntity)
+                    || entity.isRemoved()
                     || !player.canInteractWithEntity(itemEntity, 1.0D)) {
                 return false;
             }
@@ -842,10 +830,24 @@ public final class MinecraftWheatFarmingSkillNodeHandler
     }
 
     private static boolean signalHasPickupEvidence(
-            SkillSignal signal, UUID targetEntityId) {
-        return hasEvidence(signal, "entity.id", targetEntityId.toString())
-                && hasEvidence(signal, "item.expected_count", "1")
-                && hasPositiveIntegerEvidence(signal, "item.gained_count");
+            SkillSignal signal, HarvestDropManifest manifest) {
+        Objects.requireNonNull(signal, "signal");
+        Objects.requireNonNull(manifest, "manifest");
+        List<UUID> entityIds = manifest.entityIds();
+        if (entityIds.size() == 1) {
+            HarvestDropReceipt receipt = manifest.receipts().get(0);
+            return hasEvidence(signal, "entity.id", receipt.entityId()
+                    .toString())
+                    && hasEvidence(signal, "item.expected_count",
+                            Integer.toString(receipt.expectedStack().count()))
+                    && hasPositiveIntegerEvidence(signal,
+                            "item.gained_count");
+        }
+        return hasEvidence(signal, "entity.ids", entityIds.stream()
+                .map(UUID::toString)
+                .collect(java.util.stream.Collectors.joining(",")))
+                && hasEvidence(signal, "entity.count", Integer.toString(
+                        entityIds.size()));
     }
 
     private static boolean hasEvidence(
@@ -1054,10 +1056,8 @@ public final class MinecraftWheatFarmingSkillNodeHandler
                     .toList();
         }
 
-        private HarvestDropReceipt wheatReceipt() {
-            return receipts.stream().filter(receipt -> receipt.expectedStack()
-                            .itemId().filter(WHEAT_ID::equals).isPresent())
-                    .findFirst().orElseThrow();
+        private List<UUID> entityIds() {
+            return receipts.stream().map(HarvestDropReceipt::entityId).toList();
         }
 
         private int wheatCount() {
@@ -1085,20 +1085,12 @@ public final class MinecraftWheatFarmingSkillNodeHandler
             HarvestPrepared prepared,
             HarvestDropManifest manifest,
             InventoryContentsSnapshot expectedInventoryAfter,
-            UUID targetEntityId,
             UUID nodeId) {
         private PendingHarvestPickup {
             prepared = Objects.requireNonNull(prepared, "prepared");
             manifest = Objects.requireNonNull(manifest, "manifest");
             expectedInventoryAfter = Objects.requireNonNull(
                     expectedInventoryAfter, "expectedInventoryAfter");
-            if (isZero(Objects.requireNonNull(targetEntityId,
-                    "targetEntityId"))
-                    || manifest.receipts().stream().noneMatch(receipt ->
-                    receipt.entityId().equals(targetEntityId))) {
-                throw new IllegalArgumentException(
-                        "pickup target must belong to the harvest receipt manifest");
-            }
             nodeId = Objects.requireNonNull(nodeId, "nodeId");
         }
 

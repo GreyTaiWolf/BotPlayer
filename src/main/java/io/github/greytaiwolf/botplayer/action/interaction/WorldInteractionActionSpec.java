@@ -7,6 +7,7 @@ import io.github.greytaiwolf.botplayer.skill.menu.MenuFamily;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuSlotRole;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionLimits;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionTemplate;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -33,6 +34,8 @@ public sealed interface WorldInteractionActionSpec
    int SCHEMA_VERSION = 1;
    int MAX_HOLD_TICKS = 6000;
    int MAX_PICKUP_WAIT_TICKS = 6000;
+   /** A bounded multi-receipt pickup fits the terminal ActionOutcome evidence budget. */
+   int MAX_PICKUP_EXPECTED_ITEM_ENTITIES = 4;
 
    WorldInteractionActionSpec.Kind kind();
 
@@ -731,18 +734,47 @@ public sealed interface WorldInteractionActionSpec
       }
    }
 
-   public static record PickupWait(int ticks, Optional<UUID> expectedItemEntityId) implements WorldInteractionActionSpec {
+   /**
+    * Waits only for a bounded, frozen set of normal collision-driven item pickups.
+    * An empty list retains the generic "some inventory change" contract; a non-empty
+    * list requires every exact receipt UUID to disappear and be conserved before success.
+    */
+   public static record PickupWait(int ticks, List<UUID> expectedItemEntityIds) implements WorldInteractionActionSpec {
       private static final Set<ActionChannel> CHANNELS = Set.of(ActionChannel.INVENTORY);
 
+      /** Preserves callers that bind exactly one receipt or no receipt. */
       public PickupWait(int ticks, Optional<UUID> expectedItemEntityId) {
-         if (ticks >= 1 && ticks <= 6000) {
-            Objects.requireNonNull(expectedItemEntityId, "expectedItemEntityId");
-            expectedItemEntityId.ifPresent(var0 -> InteractionChecks.requireNonZeroUuid(var0, "expectedItemEntityId"));
-            this.ticks = ticks;
-            this.expectedItemEntityId = expectedItemEntityId;
-         } else {
+         this(ticks, Objects.requireNonNull(expectedItemEntityId,
+               "expectedItemEntityId").map(List::of).orElseGet(List::of));
+      }
+
+      public PickupWait {
+         if (ticks < 1 || ticks > MAX_PICKUP_WAIT_TICKS) {
             throw new IllegalArgumentException("pickup wait ticks must be between 1 and 6000");
          }
+         expectedItemEntityIds = List.copyOf(Objects.requireNonNull(
+               expectedItemEntityIds, "expectedItemEntityIds"));
+         if (expectedItemEntityIds.size()
+               > MAX_PICKUP_EXPECTED_ITEM_ENTITIES) {
+            throw new IllegalArgumentException(
+                  "pickup wait expected item entities exceed bounded receipt capacity");
+         }
+         Set<UUID> unique = new LinkedHashSet<>();
+         for (UUID entityId : expectedItemEntityIds) {
+            InteractionChecks.requireNonZeroUuid(Objects.requireNonNull(
+                  entityId, "expectedItemEntityId"), "expectedItemEntityId");
+            if (!unique.add(entityId)) {
+               throw new IllegalArgumentException(
+                     "pickup wait expected item entity ids must be unique");
+            }
+         }
+      }
+
+      /** Legacy single-receipt view; multi-receipt callers must use the full list. */
+      public Optional<UUID> expectedItemEntityId() {
+         return expectedItemEntityIds.size() == 1
+               ? Optional.of(expectedItemEntityIds.get(0))
+               : Optional.empty();
       }
 
       @Override

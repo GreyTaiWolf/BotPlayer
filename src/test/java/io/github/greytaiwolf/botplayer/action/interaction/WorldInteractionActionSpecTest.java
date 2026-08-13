@@ -157,8 +157,31 @@ class WorldInteractionActionSpecTest {
       Assertions.assertThrows(IllegalArgumentException.class, () -> new WorldInteractionActionSpec.DropSelected(false, EMPTY));
       WorldInteractionActionSpec.PickupWait var1 = new WorldInteractionActionSpec.PickupWait(40, Optional.of(new UUID(0L, 9L)));
       Assertions.assertEquals(Set.of(ActionChannel.INVENTORY), var1.channels());
+      Assertions.assertEquals(Optional.of(new UUID(0L, 9L)), var1.expectedItemEntityId());
+      WorldInteractionActionSpec.PickupWait grouped = new WorldInteractionActionSpec.PickupWait(
+         40, List.of(new UUID(0L, 9L), new UUID(0L, 10L))
+      );
+      Assertions.assertEquals(
+         List.of(new UUID(0L, 9L), new UUID(0L, 10L)), grouped.expectedItemEntityIds()
+      );
+      Assertions.assertTrue(grouped.expectedItemEntityId().isEmpty());
+      Assertions.assertEquals(4, new WorldInteractionActionSpec.PickupWait(
+         40, List.of(
+            new UUID(0L, 9L), new UUID(0L, 10L), new UUID(0L, 11L),
+            new UUID(0L, 12L)
+         )
+      ).expectedItemEntityIds().size());
       Assertions.assertThrows(IllegalArgumentException.class, () -> new WorldInteractionActionSpec.PickupWait(0, Optional.empty()));
       Assertions.assertThrows(IllegalArgumentException.class, () -> new WorldInteractionActionSpec.PickupWait(1, Optional.of(new UUID(0L, 0L))));
+      Assertions.assertThrows(IllegalArgumentException.class, () -> new WorldInteractionActionSpec.PickupWait(
+         1, List.of(new UUID(0L, 1L), new UUID(0L, 1L))
+      ));
+      Assertions.assertThrows(IllegalArgumentException.class, () -> new WorldInteractionActionSpec.PickupWait(
+         1, List.of(
+            new UUID(0L, 1L), new UUID(0L, 2L), new UUID(0L, 3L),
+            new UUID(0L, 4L), new UUID(0L, 5L)
+         )
+      ));
    }
 
    private static InventoryMenuSnapshot nativeInventorySnapshot() {
