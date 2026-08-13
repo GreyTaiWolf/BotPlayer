@@ -343,8 +343,9 @@ public final class MinecraftProductionSkillPorts
                 target.position())) {
             return rejectResourceActionPlan(ticket, "grounded-resource-approach");
         }
-        if (!isCurrentReachableBlock(player, target)) {
-            return rejectResourceActionPlan(ticket, "current-resource-reach");
+        if (!isCurrentVisibleResource(player, target)) {
+            return rejectResourceActionPlan(
+                    ticket, "current-resource-visibility");
         }
         ItemStackFingerprint tool = MinecraftActionSnapshot.item(
                 player, player.getMainHandItem());
@@ -784,6 +785,10 @@ public final class MinecraftProductionSkillPorts
                                 expectedBlockId)) {
                     continue;
                 }
+                if (requireGroundedApproach
+                        && !isCurrentVisibleResource(player, target)) {
+                    continue;
+                }
                 if (nearest == null
                         || compareReachableResourceCandidates(
                                 player.position(), candidate.position(),
@@ -1178,6 +1183,17 @@ public final class MinecraftProductionSkillPorts
                     && player.canInteractWithBlock(position, 0.0D)
                     && MinecraftActionSnapshot.block(player, position)
                             .equals(target);
+        } catch (RuntimeException exception) {
+            return false;
+        }
+    }
+
+    private static boolean isCurrentVisibleResource(
+            BotServerPlayer player, BlockTargetFingerprint target) {
+        try {
+            return isCurrentReachableBlock(player, target)
+                    && MinecraftActionSnapshot.canReachAndSeeBlock(
+                            player, hit(target));
         } catch (RuntimeException exception) {
             return false;
         }

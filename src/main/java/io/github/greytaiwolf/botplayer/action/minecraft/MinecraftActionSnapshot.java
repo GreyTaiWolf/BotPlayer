@@ -103,6 +103,13 @@ public final class MinecraftActionSnapshot {
                 player, Objects.requireNonNull(position, "position"));
     }
 
+    public static boolean canReachAndSeeBlock(
+            BotServerPlayer player, BlockHitTarget target) {
+        requireServerThread(player);
+        return MinecraftInteractionView.canReachAndSeeBlock(
+                player, Objects.requireNonNull(target, "target"));
+    }
+
     public static BlockHitTarget blockHit(
             BotServerPlayer player, BlockHitResult hit) {
         requireServerThread(player);

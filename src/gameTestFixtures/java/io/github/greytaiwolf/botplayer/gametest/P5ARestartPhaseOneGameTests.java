@@ -170,24 +170,28 @@ public final class P5ARestartPhaseOneGameTests {
      * 偷换为第二阶段直接赠送；所有位置仍处于 checkpoint 与生产 TaskSensor 的半径八内。
      */
     private static void placeDeferredSourceVein(GameTestHelper helper) {
+        for (int x = 9; x <= 11; x++) {
+            for (int z = 0; z <= 9; z++) {
+                helper.setBlock(new BlockPos(x, 0, z), Blocks.STONE);
+            }
+        }
         java.util.List<SourceBlock> sources = java.util.List.of(
+                new SourceBlock(new BlockPos(9, 1, 0), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(11, 1, 0), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(10, 1, 1), Blocks.COBBLESTONE),
                 new SourceBlock(new BlockPos(9, 1, 2), Blocks.COBBLESTONE),
-                new SourceBlock(new BlockPos(10, 1, 2), Blocks.COBBLESTONE),
                 new SourceBlock(new BlockPos(11, 1, 2), Blocks.COBBLESTONE),
-                new SourceBlock(new BlockPos(9, 1, 3), Blocks.COBBLESTONE),
                 new SourceBlock(new BlockPos(10, 1, 3), Blocks.COBBLESTONE),
-                new SourceBlock(new BlockPos(11, 1, 3), Blocks.COBBLESTONE),
                 new SourceBlock(new BlockPos(9, 1, 4), Blocks.COBBLESTONE),
-                new SourceBlock(new BlockPos(10, 1, 4), Blocks.COBBLESTONE),
                 new SourceBlock(new BlockPos(11, 1, 4), Blocks.COBBLESTONE),
-                new SourceBlock(new BlockPos(9, 1, 5), Blocks.COBBLESTONE),
                 new SourceBlock(new BlockPos(10, 1, 5), Blocks.COBBLESTONE),
-                new SourceBlock(new BlockPos(12, 1, 2), Blocks.IRON_ORE),
-                new SourceBlock(new BlockPos(12, 1, 3), Blocks.IRON_ORE),
-                new SourceBlock(new BlockPos(12, 1, 4), Blocks.IRON_ORE),
-                new SourceBlock(new BlockPos(12, 1, 5), Blocks.COAL_ORE));
+                new SourceBlock(new BlockPos(9, 1, 6), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(11, 1, 6), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(10, 1, 7), Blocks.IRON_ORE),
+                new SourceBlock(new BlockPos(9, 1, 8), Blocks.IRON_ORE),
+                new SourceBlock(new BlockPos(11, 1, 8), Blocks.IRON_ORE),
+                new SourceBlock(new BlockPos(10, 1, 9), Blocks.COAL_ORE));
         for (SourceBlock source : sources) {
-            helper.setBlock(source.position().below(), Blocks.STONE);
             helper.setBlock(source.position(), source.block());
         }
     }
