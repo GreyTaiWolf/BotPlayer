@@ -50,6 +50,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
@@ -127,7 +128,8 @@ class SelfDefenseActionGatewayTest {
     }
 
     @Test
-    void reentrantGenerationCloseSafelyRetractsAnExactQueuedRetreat() {
+    void reentrantGenerationCloseSafelyRetractsAnExactQueuedRetreat()
+            throws InterruptedException {
         CountingBackend backend = new CountingBackend();
         BotActionRuntime runtime = runtime(backend);
         SelfDefenseActionGateway gateway = new SelfDefenseActionGateway(runtime);
@@ -193,6 +195,7 @@ class SelfDefenseActionGatewayTest {
         assertEquals(ActionState.CANCELLED, outcome.state());
         assertNotEquals(ActionState.SUCCEEDED, outcome.state());
         assertEquals(0, backend.startCount(queuedRetreat.actionId()));
+        awaitPendingCompletionCount(runtime, 7);
         assertEquals(ActionMailbox.SubmissionStatus.ENQUEUED,
                 runtime.submit(
                         afterContainment(queuedRetreat.actionId(),
@@ -317,6 +320,16 @@ class SelfDefenseActionGatewayTest {
 
     private static ActionOutcome outcome(ActionMailbox.Submission submission) {
         return submission.completion().orElseThrow().toCompletableFuture().join();
+    }
+
+    private static void awaitPendingCompletionCount(BotActionRuntime runtime,
+            int expected) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2L);
+        while (runtime.pendingCompletionCount() != expected
+                && System.nanoTime() < deadline) {
+            Thread.sleep(1L);
+        }
+        assertEquals(expected, runtime.pendingCompletionCount());
     }
 
     private static ActionEnvelope afterContainment(UUID priorActionId,
