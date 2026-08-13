@@ -6196,7 +6196,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                 Integer.toString(drop.count()))));
             }
             List<ActionEvidence> receipts = new ArrayList<>(drops.size());
-            for (BreakDropProvenanceCapture.Provenance drop : drops) {
+            for (int index = 0; index < drops.size(); index++) {
+                BreakDropProvenanceCapture.Provenance drop = drops.get(index);
                 String value = BreakDropProvenanceCapture
                         .compactReceiptValue(drop).orElse(null);
                 if (value == null) {
@@ -6204,7 +6205,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 }
                 receipts.add(evidence(
                         BreakDropProvenanceCapture
-                                .COMPACT_RECEIPT_EVIDENCE_KEY,
+                                .compactReceiptEvidenceKey(index),
                         value));
             }
             return Optional.of(List.copyOf(receipts));

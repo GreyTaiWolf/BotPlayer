@@ -11,6 +11,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.UUID;
 import net.minecraft.core.BlockPos;
@@ -31,9 +32,16 @@ import net.neoforged.neoforge.event.level.BlockDropsEvent;
  */
 public final class BreakDropProvenanceCapture {
     private static final UUID ZERO_UUID = new UUID(0L, 0L);
-    /** One compact receipt is emitted for each multi-drop entity. */
+    /**
+     * Obsolete bare multi-drop receipt key. It is retained only so consumers can
+     * explicitly reject the ambiguous pre-index protocol; the backend never
+     * emits it.
+     */
     public static final String COMPACT_RECEIPT_EVIDENCE_KEY =
             "block.drop.receipt";
+    /** One compact receipt is emitted for each multi-drop entity at a unique index. */
+    public static final String COMPACT_RECEIPT_EVIDENCE_KEY_PREFIX =
+            COMPACT_RECEIPT_EVIDENCE_KEY + ".";
     /* verifyBreak always emits position, post-state and inventory-change first. */
     private static final int VERIFY_BREAK_BASE_EVIDENCE_ITEMS = 3;
     /**
@@ -48,6 +56,40 @@ public final class BreakDropProvenanceCapture {
     private static final ThreadLocal<ActiveCapture> ACTIVE = new ThreadLocal<>();
 
     private BreakDropProvenanceCapture() {
+    }
+
+    /**
+     * Returns the canonical, bounded evidence key for one multi-drop receipt.
+     * The index preserves the original vanilla drop-event order without relying
+     * on duplicate evidence keys across the ActionOutcome-to-SkillSignal boundary.
+     */
+    public static String compactReceiptEvidenceKey(int index) {
+        if (index < 0 || index >= MAX_DROPPED_ITEM_ENTITIES) {
+            throw new IllegalArgumentException(
+                    "compact receipt index exceeds the action evidence bound");
+        }
+        return COMPACT_RECEIPT_EVIDENCE_KEY_PREFIX + index;
+    }
+
+    /**
+     * Decodes only a canonical, bounded compact receipt index. Bare, signed,
+     * zero-padded, malformed and out-of-budget keys are rejected.
+     */
+    public static OptionalInt compactReceiptEvidenceIndex(String key) {
+        Objects.requireNonNull(key, "key");
+        if (!key.startsWith(COMPACT_RECEIPT_EVIDENCE_KEY_PREFIX)) {
+            return OptionalInt.empty();
+        }
+        String encoded = key.substring(COMPACT_RECEIPT_EVIDENCE_KEY_PREFIX
+                .length());
+        try {
+            int index = Integer.parseInt(encoded);
+            return index >= 0 && index < MAX_DROPPED_ITEM_ENTITIES
+                    && Integer.toString(index).equals(encoded)
+                            ? OptionalInt.of(index) : OptionalInt.empty();
+        } catch (NumberFormatException exception) {
+            return OptionalInt.empty();
+        }
     }
 
     /**

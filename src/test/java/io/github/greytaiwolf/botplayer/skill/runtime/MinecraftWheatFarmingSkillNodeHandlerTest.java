@@ -75,6 +75,35 @@ class MinecraftWheatFarmingSkillNodeHandlerTest {
                 .harvestDropProvenances(mixed).isEmpty());
     }
 
+    @Test
+    void rejectsAmbiguousOrNonContiguousCompactReceiptKeys() {
+        List<BreakDropProvenanceCapture.Provenance> receipts =
+                wheatReceipts(2);
+        assertTrue(MinecraftWheatFarmingSkillNodeHandler
+                .harvestDropProvenances(List.of(
+                        compactEvidence(0, receipts.get(0)),
+                        compactEvidence(2, receipts.get(1))))
+                .isEmpty());
+        assertTrue(MinecraftWheatFarmingSkillNodeHandler
+                .harvestDropProvenances(List.of(
+                        compactEvidence(0, receipts.get(0)),
+                        compactEvidence(0, receipts.get(1))))
+                .isEmpty());
+        assertTrue(MinecraftWheatFarmingSkillNodeHandler
+                .harvestDropProvenances(List.of(
+                        new ActionEvidence("block.drop.receipt.00",
+                                receiptValue(receipts.get(0))),
+                        compactEvidence(1, receipts.get(1))))
+                .isEmpty());
+        assertTrue(MinecraftWheatFarmingSkillNodeHandler
+                .harvestDropProvenances(List.of(
+                        new ActionEvidence(BreakDropProvenanceCapture
+                                .COMPACT_RECEIPT_EVIDENCE_KEY,
+                                receiptValue(receipts.get(0))),
+                        compactEvidence(1, receipts.get(1))))
+                .isEmpty());
+    }
+
     private static List<BreakDropProvenanceCapture.Provenance> wheatReceipts(
             int count) {
         List<BreakDropProvenanceCapture.Provenance> receipts =
@@ -91,13 +120,26 @@ class MinecraftWheatFarmingSkillNodeHandlerTest {
 
     private static List<ActionEvidence> compactEvidence(
             List<BreakDropProvenanceCapture.Provenance> receipts) {
-        return receipts.stream().map(receipt -> new ActionEvidence(
-                BreakDropProvenanceCapture.COMPACT_RECEIPT_EVIDENCE_KEY,
-                receipt.entityId()
-                        + "|"
-                        + receipt.itemId()
-                        + "|"
-                        + receipt.count())).toList();
+        List<ActionEvidence> evidence = new ArrayList<>(receipts.size());
+        for (int index = 0; index < receipts.size(); index++) {
+            evidence.add(compactEvidence(index, receipts.get(index)));
+        }
+        return List.copyOf(evidence);
+    }
+
+    private static ActionEvidence compactEvidence(int index,
+            BreakDropProvenanceCapture.Provenance receipt) {
+        return new ActionEvidence(BreakDropProvenanceCapture
+                .compactReceiptEvidenceKey(index), receiptValue(receipt));
+    }
+
+    private static String receiptValue(
+            BreakDropProvenanceCapture.Provenance receipt) {
+        return receipt.entityId()
+                + "|"
+                + receipt.itemId()
+                + "|"
+                + receipt.count();
     }
 
     private static SkillParameters parameters(int x, int y, int z) {

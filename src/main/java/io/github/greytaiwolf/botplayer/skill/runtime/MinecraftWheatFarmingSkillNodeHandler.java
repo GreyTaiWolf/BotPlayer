@@ -35,6 +35,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
@@ -671,16 +672,19 @@ public final class MinecraftWheatFarmingSkillNodeHandler
     static Optional<List<BreakDropProvenanceCapture.Provenance>>
             harvestDropProvenances(List<ActionEvidence> evidence) {
         Objects.requireNonNull(evidence, "evidence");
-        List<ActionEvidence> compact = new ArrayList<>();
+        TreeMap<Integer, ActionEvidence> compact = new TreeMap<>();
         List<ActionEvidence> legacy = new ArrayList<>();
         for (ActionEvidence item : evidence) {
             if (item == null) {
                 return Optional.empty();
             }
-            if (item.key().equals(
-                    BreakDropProvenanceCapture
-                            .COMPACT_RECEIPT_EVIDENCE_KEY)) {
-                compact.add(item);
+            var compactIndex = BreakDropProvenanceCapture
+                    .compactReceiptEvidenceIndex(item.key());
+            if (compactIndex.isPresent()) {
+                if (compact.putIfAbsent(compactIndex.getAsInt(), item)
+                        != null) {
+                    return Optional.empty();
+                }
             } else if (item.key().equals("block.drop.entity.id")
                     || item.key().equals("block.drop.item")
                     || item.key().equals("block.drop.count")) {
@@ -692,12 +696,18 @@ public final class MinecraftWheatFarmingSkillNodeHandler
         if (!compact.isEmpty()) {
             if (!legacy.isEmpty()
                     || compact.size() < 2
-                    || compact.size() > MAXIMUM_WHEAT_DROP_ENTITIES) {
+                    || compact.size() > MAXIMUM_WHEAT_DROP_ENTITIES
+                    || compact.firstKey() != 0
+                    || compact.lastKey() != compact.size() - 1) {
                 return Optional.empty();
             }
             List<BreakDropProvenanceCapture.Provenance> receipts =
                     new ArrayList<>(compact.size());
-            for (ActionEvidence receiptEvidence : compact) {
+            for (int index = 0; index < compact.size(); index++) {
+                ActionEvidence receiptEvidence = compact.get(index);
+                if (receiptEvidence == null) {
+                    return Optional.empty();
+                }
                 BreakDropProvenanceCapture.Provenance receipt =
                         BreakDropProvenanceCapture.parseCompactReceipt(
                                 receiptEvidence.value()).orElse(null);

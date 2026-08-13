@@ -2,6 +2,7 @@ package io.github.greytaiwolf.botplayer.action.minecraft;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.greytaiwolf.botplayer.action.ActionBackend;
@@ -17,6 +18,10 @@ import io.github.greytaiwolf.botplayer.action.interaction.EntityTargetFingerprin
 import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
 import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
+import io.github.greytaiwolf.botplayer.skill.core.SkillFailureCode;
+import io.github.greytaiwolf.botplayer.skill.core.SkillSignal;
+import io.github.greytaiwolf.botplayer.skill.core.SkillSignalStatus;
+import io.github.greytaiwolf.botplayer.skill.core.SkillSignalType;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -129,6 +134,23 @@ class MinecraftWorldInteractionBackendDropEvidenceTest {
                 entityId + "|minecraft:wheat_seeds|2|extra").isPresent());
     }
 
+    @Test
+    void compactReceiptEvidenceKeysAreUniqueAndCanonical() {
+        assertEquals("block.drop.receipt.0",
+                BreakDropProvenanceCapture.compactReceiptEvidenceKey(0));
+        assertEquals(0, BreakDropProvenanceCapture
+                .compactReceiptEvidenceIndex("block.drop.receipt.0")
+                .orElseThrow());
+        assertTrue(BreakDropProvenanceCapture.compactReceiptEvidenceIndex(
+                "block.drop.receipt").isEmpty());
+        assertTrue(BreakDropProvenanceCapture.compactReceiptEvidenceIndex(
+                "block.drop.receipt.00").isEmpty());
+        assertTrue(BreakDropProvenanceCapture.compactReceiptEvidenceIndex(
+                "block.drop.receipt.-1").isEmpty());
+        assertThrows(IllegalArgumentException.class,
+                () -> BreakDropProvenanceCapture.compactReceiptEvidenceKey(-1));
+    }
+
     private static void assertCompactWheatReceiptCount(int count) {
         List<BreakDropProvenanceCapture.Provenance> drops =
                 matureWheatDrops(count);
@@ -136,10 +158,10 @@ class MinecraftWorldInteractionBackendDropEvidenceTest {
                 .breakDropEvidence(drops).orElseThrow();
 
         assertEquals(count, evidence.size());
-        assertTrue(evidence.stream().allMatch(receipt ->
-                receipt.key().equals(BreakDropProvenanceCapture
-                        .COMPACT_RECEIPT_EVIDENCE_KEY)));
         for (int index = 0; index < count; index++) {
+            assertEquals(BreakDropProvenanceCapture
+                    .compactReceiptEvidenceKey(index),
+                    evidence.get(index).key());
             assertEquals(drops.get(index),
                     BreakDropProvenanceCapture.parseCompactReceipt(
                             evidence.get(index).value()).orElseThrow());
@@ -189,5 +211,19 @@ class MinecraftWorldInteractionBackendDropEvidenceTest {
         assertEquals(all, backend.evidence());
         assertTrue(outcome.evidence().size()
                 <= ActionOutcome.MAX_EVIDENCE_ITEMS);
+        SkillSignal signal = new SkillSignal(
+                new UUID(12L, 13L),
+                new UUID(13L, 14L),
+                new UUID(14L, 15L),
+                1L,
+                0L,
+                new UUID(15L, 16L),
+                SkillSignalType.ACTION,
+                SkillSignalStatus.SUCCEEDED,
+                SkillFailureCode.NONE,
+                all,
+                "Verified block break",
+                1L);
+        assertEquals(all, signal.evidence());
     }
 }
