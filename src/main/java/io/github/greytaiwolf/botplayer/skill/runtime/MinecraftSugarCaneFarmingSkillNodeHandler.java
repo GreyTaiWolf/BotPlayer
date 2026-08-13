@@ -42,6 +42,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 
 /**
  * P5B 最小原版甘蔗收获节点：只允许破坏一个已有甘蔗基座之上的最上节。
@@ -564,8 +565,11 @@ public final class MinecraftSugarCaneFarmingSkillNodeHandler
     private static boolean isExactSugarCane(
             BlockState state, BlockTargetFingerprint fingerprint) {
         return state.is(Blocks.SUGAR_CANE)
+                && state.hasProperty(BlockStateProperties.AGE_15)
                 && fingerprint.state().blockId().equals(SUGAR_CANE_ID)
-                && fingerprint.state().properties().isEmpty();
+                && fingerprint.state().properties().equals(Map.of(
+                        "age", Integer.toString(state.getValue(
+                                BlockStateProperties.AGE_15))));
     }
 
     private static boolean isExactAir(
