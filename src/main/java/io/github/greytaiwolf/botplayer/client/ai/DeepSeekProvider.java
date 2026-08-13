@@ -37,6 +37,7 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -127,11 +128,11 @@ public final class DeepSeekProvider implements AiProvider {
                         "DeepSeek executor result");
             } catch (RuntimeException exception) {
                 completeFailure(completion, exception);
-                return completion;
+                return externallyVisible(completion);
             }
             if (completion.isTerminal()) {
                 cancelTransportQuietly(request);
-                return completion;
+                return externallyVisible(completion);
             }
             try {
                 stage.whenComplete((response, failure) -> {
@@ -152,7 +153,7 @@ public final class DeepSeekProvider implements AiProvider {
             } catch (RuntimeException exception) {
                 completeFailure(completion, exception);
             }
-            return completion;
+            return externallyVisible(completion);
         } catch (RuntimeException exception) {
             return failedCompletion(exception);
         }
@@ -186,11 +187,11 @@ public final class DeepSeekProvider implements AiProvider {
             }
         } catch (RuntimeException exception) {
             completeFailure(completion, exception);
-            return completion;
+            return externallyVisible(completion);
         }
         if (completion.isTerminal() || token.isCancellationRequested()) {
             completeAsCancelled(completion);
-            return completion;
+            return externallyVisible(completion);
         }
 
         CompletionStage<DeepSeekHttpResponse> stage;
@@ -198,11 +199,11 @@ public final class DeepSeekProvider implements AiProvider {
             stage = Objects.requireNonNull(supplier.get(), "DeepSeek executor result");
         } catch (RuntimeException exception) {
             completeFailure(completion, exception);
-            return completion;
+            return externallyVisible(completion);
         }
         if (completion.isTerminal()) {
             cancelTransportQuietly(request);
-            return completion;
+            return externallyVisible(completion);
         }
         try {
             stage.whenComplete((response, failure) -> {
@@ -229,7 +230,7 @@ public final class DeepSeekProvider implements AiProvider {
         } catch (RuntimeException exception) {
             completeFailure(completion, exception);
         }
-        return completion;
+        return externallyVisible(completion);
     }
 
     private AiResponse decodeCompletion(
@@ -594,7 +595,17 @@ public final class DeepSeekProvider implements AiProvider {
     private <T> CompletionStage<T> failedCompletion(Throwable failure) {
         TerminalFuture<T> completion = new TerminalFuture<>();
         completeFailure(completion, failure);
-        return completion;
+        return externallyVisible(completion);
+    }
+
+    /**
+     * The terminal arbiter is deliberately not returned to callers. {@link CompletionStage}
+     * exposes {@link CompletionStage#toCompletableFuture()}, whose mutable result must not be
+     * able to win or poison the provider's internal health publication race. The visible future
+     * mirrors that internal result and forwards only legitimate caller cancellation back to it.
+     */
+    private static <T> CompletionStage<T> externallyVisible(TerminalFuture<T> completion) {
+        return new CallerFuture<>(completion);
     }
 
     private <T> boolean completeSuccess(
@@ -649,8 +660,8 @@ public final class DeepSeekProvider implements AiProvider {
     }
 
     /**
-     * 所有可见终态先取得唯一赢家，再发布其健康状态，最后才唤醒调用方。外部调用者仍可取消
-     * 返回的 future；该取消同样参与赢家仲裁，不能让过期 deadline 事后污染 provider health。
+     * Provider-owned terminal arbiter. It is kept private so a caller cannot mutate its
+     * {@link CompletableFuture} state without first winning this gate.
      */
     private static final class TerminalFuture<T> extends CompletableFuture<T> {
         private final AtomicBoolean terminal = new AtomicBoolean();
@@ -705,6 +716,89 @@ public final class DeepSeekProvider implements AiProvider {
             } catch (RuntimeException ignored) {
                 // 健康遥测不可信时，已选定的调用方终态仍必须发布。
             }
+        }
+    }
+
+    /**
+     * Caller-facing read-only mirror. Cancellation remains a supported control operation and is
+     * forwarded to the arbiter before this view is cancelled; every other terminal mutator is
+     * rejected so a caller cannot forge a result that disagrees with the provider-owned state.
+     */
+    private static final class CallerFuture<T> extends CompletableFuture<T> {
+        private final TerminalFuture<T> terminal;
+
+        private CallerFuture(TerminalFuture<T> terminal) {
+            this.terminal = Objects.requireNonNull(terminal, "terminal");
+            terminal.whenComplete(this::mirrorTerminal);
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            if (isDone() || !terminal.cancel(mayInterruptIfRunning)) {
+                return false;
+            }
+            super.cancel(mayInterruptIfRunning);
+            return true;
+        }
+
+        @Override
+        public boolean complete(T value) {
+            return false;
+        }
+
+        @Override
+        public boolean completeExceptionally(Throwable failure) {
+            Objects.requireNonNull(failure, "failure");
+            return false;
+        }
+
+        @Override
+        public CompletableFuture<T> completeAsync(
+                java.util.function.Supplier<? extends T> supplier) {
+            throw readOnlyMutation();
+        }
+
+        @Override
+        public CompletableFuture<T> completeAsync(
+                java.util.function.Supplier<? extends T> supplier,
+                Executor executor) {
+            throw readOnlyMutation();
+        }
+
+        @Override
+        public CompletableFuture<T> orTimeout(long timeout, TimeUnit unit) {
+            throw readOnlyMutation();
+        }
+
+        @Override
+        public CompletableFuture<T> completeOnTimeout(
+                T value, long timeout, TimeUnit unit) {
+            throw readOnlyMutation();
+        }
+
+        @Override
+        public void obtrudeValue(T value) {
+            throw readOnlyMutation();
+        }
+
+        @Override
+        public void obtrudeException(Throwable failure) {
+            throw readOnlyMutation();
+        }
+
+        private void mirrorTerminal(T value, Throwable failure) {
+            if (terminal.isCancelled()) {
+                super.cancel(false);
+            } else if (failure != null) {
+                super.completeExceptionally(failure);
+            } else {
+                super.complete(value);
+            }
+        }
+
+        private static UnsupportedOperationException readOnlyMutation() {
+            return new UnsupportedOperationException(
+                    "Provider completion is read-only");
         }
     }
 

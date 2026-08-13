@@ -581,6 +581,43 @@ class DeepSeekProviderTest {
     }
 
     @Test
+    void callerSideMutationCannotWinTheProviderDeadlineOrPoisonHealth() {
+        CompletableFuture<DeepSeekHttpResponse> pending = new CompletableFuture<>();
+        DeepSeekHttpExecutor executor = new DeepSeekHttpExecutor() {
+            @Override
+            public CompletableFuture<DeepSeekHttpResponse> execute(
+                    DeepSeekHttpRequest request) {
+                return pending;
+            }
+
+            @Override
+            public void cancel(DeepSeekHttpRequest request) {
+                pending.cancel(true);
+            }
+        };
+        DeepSeekProvider provider = provider(false, executor);
+        AiRequestOptions shortTimeout = new AiRequestOptions(
+                512, 50L, AiResponseFormat.TEXT, false, false, Optional.empty());
+
+        CompletableFuture<AiResponse> visible = provider.complete(request(shortTimeout),
+                CancellationToken.none()).toCompletableFuture();
+        assertFalse(visible.complete(null));
+        assertFalse(visible.completeExceptionally(new IllegalStateException("caller")));
+        assertThrows(UnsupportedOperationException.class,
+                () -> visible.completeAsync(() -> null, Runnable::run));
+        assertThrows(UnsupportedOperationException.class,
+                () -> visible.obtrudeValue(null));
+        assertThrows(UnsupportedOperationException.class,
+                () -> visible.obtrudeException(new IllegalStateException("caller")));
+
+        assertFailure(failureOf(visible), AiFailureKind.TIMEOUT,
+                AiReasonCode.REQUEST_TIMEOUT);
+        assertEquals(ProviderHealthState.UNAVAILABLE, provider.health().state());
+        assertEquals(Optional.of(AiReasonCode.REQUEST_TIMEOUT.wireCode()),
+                provider.health().reasonCode());
+    }
+
+    @Test
     void commonFailureMappingsDriveRetryAndAuthenticationCircuitBehavior()
             throws Exception {
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
