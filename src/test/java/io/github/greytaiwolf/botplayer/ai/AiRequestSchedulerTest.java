@@ -596,31 +596,39 @@ class AiRequestSchedulerTest {
                     Duration.ofSeconds(2L), STALL_TIMEOUT);
             AiRequest first = request("00000000-0000-0000-0000-000000000271", 15_000L);
             AiRequest second = request("00000000-0000-0000-0000-000000000272", 15_000L);
+            CountingToken firstToken = new CountingToken();
+            CountingToken secondToken = new CountingToken();
             AiScheduledRequestHandle firstHandle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, first), CancellationToken.none());
-            CompletableFuture<AiResponse> secondResult = scheduler.submit(
-                    scheduled(BOT_B, AGENT_B, second), CancellationToken.none())
-                    .response().toCompletableFuture();
+                    scheduled(BOT_A, AGENT_A, first), firstToken);
             assertTrue(await(() -> provider.calls().size() == 1, 2_000L));
+            assertEquals(first.requestId(), callFor(provider, first)
+                    .request().requestId());
             assertTrue(await(() -> scheduler.diagnostics()
                     .activeProviderInvocationCount() == 0, 2_000L));
+            assertEquals(2, firstToken.reads.get());
+            CompletableFuture<AiResponse> secondResult = scheduler.submit(
+                    scheduled(BOT_B, AGENT_B, second), secondToken)
+                    .response().toCompletableFuture();
+            assertTrue(await(() -> secondToken.reads.get() == 2, 2_000L));
+            assertEquals(1, scheduler.queuedRequestCount());
 
             CountDownLatch deliveryEntered = new CountDownLatch(1);
             firstHandle.response().whenComplete((ignored, failure) -> {
                 deliveryEntered.countDown();
                 awaitLatch(releaseDelivery);
             });
-            provider.calls().get(0).stage().complete(response(first));
+            callFor(provider, first).stage().complete(response(first));
 
             assertTrue(deliveryEntered.await(5L, TimeUnit.SECONDS));
             assertTrue(await(() -> provider.calls().size() == 2, 5_000L));
-            assertEquals(second.requestId(), provider.calls().get(1).request().requestId());
+            assertEquals(second.requestId(), callFor(provider, second)
+                    .request().requestId());
             assertTrue(await(() -> scheduler.diagnostics()
                     .quarantinedCompletionDeliveryCount() > 0, 2_000L));
             assertTrue(scheduler.diagnostics().dispatchDegraded());
 
             releaseDelivery.countDown();
-            provider.calls().get(1).stage().complete(response(second));
+            callFor(provider, second).stage().complete(response(second));
             assertEquals(second.requestId(), secondResult.get(2L, TimeUnit.SECONDS).requestId());
             scheduler.close();
         } finally {
