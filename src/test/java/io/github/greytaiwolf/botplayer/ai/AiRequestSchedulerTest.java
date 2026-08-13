@@ -1,2225 +1,1 @@
-package io.github.greytaiwolf.botplayer.ai;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
-import java.time.Clock;
-import java.time.Duration;
-import java.time.Instant;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
-import java.util.EnumMap;
-import java.util.List;
-import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionStage;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executors;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BiConsumer;
-import org.junit.jupiter.api.Test;
-
-/**
- * These tests deliberately use hostile Executor implementations through the package-private
- * supervisor seam. Production construction has no raw Executor input; the hostile handoff runs
- * only on the supervisor's isolated broker, never on submit/pump/deadline paths.
- */
-class AiRequestSchedulerTest {
-    private static final String PROVIDER_ID = "scheduler-test";
-    private static final UUID OWNER = new UUID(1L, 1L);
-    private static final UUID BOT_A = new UUID(2L, 2L);
-    private static final UUID BOT_B = new UUID(3L, 3L);
-    private static final UUID AGENT_A = new UUID(4L, 4L);
-    private static final UUID AGENT_B = new UUID(5L, 5L);
-    private static final Duration START_TIMEOUT = Duration.ofMillis(200L);
-    private static final Duration STALL_TIMEOUT = Duration.ofMillis(250L);
-
-    @Test
-    void enforcesGlobalAndPerBotCapacityAndValidatesResponses() throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        try {
-            ControllableProvider provider = new ControllableProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(2, 1, 8, 8), lanes);
-            AiRequest first = request("00000000-0000-0000-0000-000000000101");
-            AiRequest second = request("00000000-0000-0000-0000-000000000102");
-            AiRequest other = request("00000000-0000-0000-0000-000000000103");
-
-            CompletableFuture<AiResponse> firstResult = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, first), CancellationToken.none())
-                    .response().toCompletableFuture();
-            scheduler.submit(scheduled(BOT_A, AGENT_A, second), CancellationToken.none());
-            CompletableFuture<AiResponse> otherResult = scheduler.submit(
-                    scheduled(BOT_B, AGENT_B, other), CancellationToken.none())
-                    .response().toCompletableFuture();
-
-            assertTrue(await(() -> provider.calls().size() == 2, 2_000L));
-            assertTrue(provider.calls().stream().anyMatch(
-                    call -> call.request().requestId().equals(first.requestId())));
-            assertTrue(provider.calls().stream().anyMatch(
-                    call -> call.request().requestId().equals(other.requestId())));
-            assertEquals(1, scheduler.queuedRequestCount());
-            callFor(provider, first).stage().complete(response(first));
-            assertTrue(await(() -> provider.calls().size() == 3, 2_000L));
-            callFor(provider, other).stage().complete(response(other));
-            callFor(provider, second).stage().complete(response(second));
-
-            assertEquals(first.requestId(), firstResult.get(2L, TimeUnit.SECONDS).requestId());
-            assertEquals(other.requestId(), otherResult.get(2L, TimeUnit.SECONDS).requestId());
-            assertEquals(0, scheduler.inFlightRequestCount());
-
-            AiRequest malformed = request("00000000-0000-0000-0000-000000000104");
-            CompletableFuture<AiResponse> malformedResult = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, malformed), CancellationToken.none())
-                    .response().toCompletableFuture();
-            assertTrue(await(() -> provider.calls().size() == 4, 2_000L));
-            callFor(provider, malformed).stage().complete(response(other));
-            assertEquals(AiFailureKind.MALFORMED_RESPONSE,
-                    failure(malformedResult).failureKind());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void absoluteDeadlineFailsAQueuedRequestBeforeItsProviderCanStart() throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        try {
-            /* Make the prerequisite first-start ordering deterministic for this deadline test. */
-            lanes.set(AiRequestSchedulerSupervisor.Lane.TOKEN_SETUP, new InlineExecutor());
-            MutableClock clock = new MutableClock(Instant.EPOCH);
-            ControllableProvider provider = new ControllableProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes, clock);
-            AiRequest first = request("00000000-0000-0000-0000-000000000151", 20_000L);
-            AiRequest expired = request("00000000-0000-0000-0000-000000000152", 5_000L);
-
-            CompletableFuture<AiResponse> firstResult = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, first), CancellationToken.none())
-                    .response().toCompletableFuture();
-            CompletableFuture<AiResponse> expiredResult = scheduler.submit(
-                    scheduled(BOT_B, AGENT_B, expired), CancellationToken.none())
-                    .response().toCompletableFuture();
-            assertTrue(await(() -> provider.calls().size() == 1, 2_000L));
-
-            clock.set(Instant.EPOCH.plusSeconds(10L));
-            callFor(provider, first).stage().complete(response(first));
-            assertEquals(first.requestId(), firstResult.get(2L, TimeUnit.SECONDS).requestId());
-            assertEquals(AiFailureKind.TIMEOUT, failure(expiredResult).failureKind());
-            assertEquals(1, provider.calls().size());
-            assertEquals(AiSchedulerRequestState.FAILED,
-                    scheduler.requestHealth(expired.requestId()).orElseThrow().state());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void boundedQueueRejectsWithoutLettingAResponseCopyMutateTheScheduler() throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        try {
-            ControllableProvider provider = new ControllableProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 1, 1), lanes);
-            AiRequest first = request("00000000-0000-0000-0000-000000000161");
-            AiRequest queued = request("00000000-0000-0000-0000-000000000162");
-            AiRequest rejected = request("00000000-0000-0000-0000-000000000163");
-
-            AiScheduledRequestHandle firstHandle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, first), CancellationToken.none());
-            assertTrue(await(() -> provider.calls().size() == 1, 2_000L));
-            scheduler.submit(scheduled(BOT_B, AGENT_B, queued), CancellationToken.none());
-            assertTrue(await(() -> scheduler.queuedRequestCount() == 1, 2_000L));
-            AiScheduledRequestHandle rejectedHandle = scheduler.submit(
-                    scheduled(new UUID(8L, 8L), new UUID(9L, 9L), rejected),
-                    CancellationToken.none());
-
-            assertEquals(AiFailureKind.OVERLOADED,
-                    failure(rejectedHandle.response().toCompletableFuture()).failureKind());
-            assertEquals(AiSchedulerRequestState.REJECTED,
-                    scheduler.requestHealth(rejected.requestId()).orElseThrow().state());
-            assertEquals(AiRequestCancellationDisposition.ALREADY_TERMINAL,
-                    rejectedHandle.requestCancellation().toCompletableFuture()
-                            .get(2L, TimeUnit.SECONDS).disposition());
-
-            CompletableFuture<AiResponse> callerCopy =
-                    firstHandle.response().toCompletableFuture();
-            assertTrue(callerCopy.cancel(true));
-            assertFalse(firstHandle.response().toCompletableFuture().isDone());
-            callFor(provider, first).stage().complete(response(first));
-            assertTrue(await(() -> provider.calls().size() == 2, 2_000L));
-            callFor(provider, queued).stage().complete(response(queued));
-            assertEquals(first.requestId(), firstHandle.response().toCompletableFuture()
-                    .get(2L, TimeUnit.SECONDS).requestId());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void acceptedButDroppedProviderWrapperFailsClosedWithoutCallingProvider() throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        try {
-            lanes.set(AiRequestSchedulerSupervisor.Lane.PROVIDER_START,
-                    new DroppingExecutor());
-            ControllableProvider provider = new ControllableProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest request = request("00000000-0000-0000-0000-000000000201");
-
-            CompletableFuture<AiResponse> result = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), CancellationToken.none())
-                    .response().toCompletableFuture();
-
-            assertEquals(AiFailureKind.UNAVAILABLE, failure(result).failureKind());
-            assertEquals(0, provider.calls().size());
-            assertTrue(scheduler.diagnostics().rejectedDispatchCount() > 0L);
-            assertTrue(scheduler.diagnostics().recentQuarantines().stream().anyMatch(
-                    event -> event.requestId().equals(request.requestId())
-                            && event.kind() == AiRequestSchedulerQuarantineKind.DISPATCH_START));
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void wrapperRetainedPastTheStartWatchdogIsAnInertLateNoOp() throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        CapturingExecutor capture = new CapturingExecutor();
-        try {
-            lanes.set(AiRequestSchedulerSupervisor.Lane.PROVIDER_START, capture);
-            ControllableProvider provider = new ControllableProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest request = request("00000000-0000-0000-0000-000000000205");
-
-            CompletableFuture<AiResponse> result = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), CancellationToken.none())
-                    .response().toCompletableFuture();
-            assertTrue(capture.captured.await(2L, TimeUnit.SECONDS));
-            assertEquals(AiFailureKind.UNAVAILABLE, failure(result).failureKind());
-            capture.runCaptured();
-            assertEquals(0, provider.calls().size());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void duplicateWrapperInvocationCanStartProviderOnlyOnce() throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        try {
-            lanes.set(AiRequestSchedulerSupervisor.Lane.PROVIDER_START,
-                    new TwiceExecutor());
-            ControllableProvider provider = new ControllableProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest request = request("00000000-0000-0000-0000-000000000211");
-
-            CompletableFuture<AiResponse> result = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), CancellationToken.none())
-                    .response().toCompletableFuture();
-            assertTrue(await(() -> provider.calls().size() == 1, 2_000L));
-            provider.calls().get(0).stage().complete(response(request));
-            assertEquals(request.requestId(), result.get(2L, TimeUnit.SECONDS).requestId());
-            assertEquals(1, provider.calls().size());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void wrapperThenThrowDoesNotTurnACommittedProviderStartIntoRejection() throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        try {
-            lanes.set(AiRequestSchedulerSupervisor.Lane.PROVIDER_START,
-                    new InvokeThenThrowExecutor());
-            ImmediateProvider provider = new ImmediateProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest request = request("00000000-0000-0000-0000-000000000221");
-
-            AiResponse response = scheduler.submit(scheduled(BOT_A, AGENT_A, request),
-                    CancellationToken.none()).response().toCompletableFuture()
-                    .get(2L, TimeUnit.SECONDS);
-            assertEquals(request.requestId(), response.requestId());
-            assertEquals(1, provider.calls.get());
-            assertEquals(0L, scheduler.diagnostics().rejectedDispatchCount());
-            assertFalse(scheduler.diagnostics().dispatchDegraded());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void blockingExecutorExecuteCannotBlockSubmitAndIsWatchdogFailed() throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        BlockingExecuteExecutor blocking = new BlockingExecuteExecutor();
-        try {
-            lanes.set(AiRequestSchedulerSupervisor.Lane.PROVIDER_START, blocking);
-            ControllableProvider provider = new ControllableProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest request = request("00000000-0000-0000-0000-000000000231");
-
-            long startedAt = System.nanoTime();
-            CompletableFuture<AiResponse> result = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), CancellationToken.none())
-                    .response().toCompletableFuture();
-            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
-            assertTrue(elapsedMillis < 250L, "submit was blocked by executor.execute");
-            assertTrue(blocking.entered.await(2L, TimeUnit.SECONDS));
-            assertEquals(AiFailureKind.UNAVAILABLE, failure(result).failureKind());
-            assertEquals(0, provider.calls().size());
-            assertTrue(scheduler.diagnostics().rejectedDispatchCount() > 0L);
-            scheduler.close();
-        } finally {
-            blocking.release.countDown();
-            lanes.close();
-        }
-    }
-
-    @Test
-    void cancellationBeforeProviderStartCommitNeverCallsProvider() throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        CapturingExecutor capture = new CapturingExecutor();
-        try {
-            lanes.set(AiRequestSchedulerSupervisor.Lane.PROVIDER_START, capture);
-            ControllableProvider provider = new ControllableProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes,
-                    Duration.ofSeconds(1L), STALL_TIMEOUT);
-            AiRequest request = request("00000000-0000-0000-0000-000000000241");
-            AiScheduledRequestHandle handle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), CancellationToken.none());
-
-            assertTrue(capture.captured.await(2L, TimeUnit.SECONDS));
-            assertEquals(AiRequestCancellationDisposition.CANCELLED,
-                    handle.requestCancellation().toCompletableFuture()
-                            .get(2L, TimeUnit.SECONDS).disposition());
-            capture.runCaptured();
-            assertEquals(0, provider.calls().size());
-            assertEquals(AiFailureKind.CANCELLED,
-                    failure(handle.response().toCompletableFuture()).failureKind());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void cancellationAfterProviderStartCommitReportsMayHaveStartedAndQuarantinesPhysicalWork()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        BlockingProvider provider = new BlockingProvider();
-        try {
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest request = request("00000000-0000-0000-0000-000000000251");
-            AiScheduledRequestHandle handle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), CancellationToken.none());
-            assertTrue(provider.entered.await(2L, TimeUnit.SECONDS));
-
-            assertEquals(AiRequestCancellationDisposition.CANCELLED,
-                    handle.requestCancellation().toCompletableFuture()
-                            .get(2L, TimeUnit.SECONDS).disposition());
-            assertEquals(AiFailureKind.CANCELLED,
-                    failure(handle.response().toCompletableFuture()).failureKind());
-            assertEquals(1, provider.calls.get());
-            assertTrue(scheduler.diagnostics().quarantinedProviderInvocationCount() > 0);
-            assertTrue(scheduler.diagnostics().dispatchDegraded());
-
-            provider.release.countDown();
-            assertTrue(await(() -> provider.stage.isCancelled(), 2_000L));
-            assertTrue(await(() -> scheduler.diagnostics()
-                    .quarantinedProviderInvocationCount() == 0, 2_000L));
-            scheduler.close();
-        } finally {
-            provider.release.countDown();
-            lanes.close();
-        }
-    }
-
-    @Test
-    void productionSupervisorKeepsAStalledProviderWithinItsFixedPhysicalLane()
-            throws Exception {
-        AiRequestSchedulerPolicy policy = new AiRequestSchedulerPolicy(1, 1, 8, 8);
-        AiRequestSchedulerSupervisor supervisor = AiRequestSchedulerSupervisor.create(
-                "scheduler-production-bound", policy, START_TIMEOUT, STALL_TIMEOUT);
-        BlockingProvider provider = new BlockingProvider();
-        AiRequestScheduler scheduler = new AiRequestScheduler(
-                PROVIDER_ID, provider, policy, Clock.systemUTC(), supervisor);
-        try {
-            AiRequest first = request("00000000-0000-0000-0000-000000000252");
-            CompletableFuture<AiResponse> firstResult = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, first), CancellationToken.none())
-                    .response().toCompletableFuture();
-            assertTrue(provider.entered.await(2L, TimeUnit.SECONDS));
-            assertEquals(AiFailureKind.UNAVAILABLE, failure(firstResult).failureKind());
-            assertTrue(scheduler.diagnostics().quarantinedProviderInvocationCount() > 0);
-
-            AiRequest second = request("00000000-0000-0000-0000-000000000253");
-            CompletableFuture<AiResponse> rejected = scheduler.submit(
-                    scheduled(BOT_B, AGENT_B, second), CancellationToken.none())
-                    .response().toCompletableFuture();
-            assertEquals(AiFailureKind.UNAVAILABLE, failure(rejected).failureKind());
-            assertEquals(1, provider.calls.get());
-            assertTrue(scheduler.diagnostics().dispatchDegraded());
-
-            provider.release.countDown();
-            assertTrue(await(() -> scheduler.diagnostics()
-                    .quarantinedProviderInvocationCount() == 0, 2_000L));
-            scheduler.close();
-        } finally {
-            provider.release.countDown();
-            scheduler.close();
-            supervisor.close();
-        }
-    }
-
-    @Test
-    void blockedTokenSetupIsQuarantinedAndNeverBecomesProviderEligible() throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        BlockingToken token = new BlockingToken();
-        try {
-            ControllableProvider provider = new ControllableProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest request = request("00000000-0000-0000-0000-000000000261");
-            CompletableFuture<AiResponse> result = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), token).response().toCompletableFuture();
-
-            assertTrue(token.entered.await(2L, TimeUnit.SECONDS));
-            assertEquals(AiFailureKind.UNAVAILABLE, failure(result).failureKind());
-            assertEquals(0, provider.calls().size());
-            assertTrue(scheduler.diagnostics().quarantinedTokenSetupCount() > 0);
-            assertTrue(scheduler.diagnostics().dispatchDegraded());
-
-            token.release.countDown();
-            assertTrue(await(() -> scheduler.diagnostics()
-                    .quarantinedTokenSetupCount() == 0, 2_000L));
-            scheduler.close();
-        } finally {
-            token.release.countDown();
-            lanes.close();
-        }
-    }
-
-    @Test
-    void tokenSetupUsesOnlyItsTwoLinearizedReadsAndExternalCancellationCancelsDelegate()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        try {
-            ControllableProvider provider = new ControllableProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            CountingToken token = new CountingToken();
-            AiRequest request = request("00000000-0000-0000-0000-000000000265");
-            AiScheduledRequestHandle handle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), token);
-            assertTrue(await(() -> provider.calls().size() == 1, 2_000L));
-            assertEquals(2, token.reads.get());
-
-            token.cancel();
-            assertEquals(AiFailureKind.CANCELLED,
-                    failure(handle.response().toCompletableFuture()).failureKind());
-            assertTrue(callFor(provider, request).stage().isCancelled());
-            assertEquals(AiRequestCancellationDisposition.ALREADY_TERMINAL,
-                    handle.requestCancellation().toCompletableFuture()
-                            .get(2L, TimeUnit.SECONDS).disposition());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void earlierSameBotTokenSetupCannotBeOvertakenByALaterReadyRequest() throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        BlockingToken firstToken = new BlockingToken();
-        try {
-            ControllableProvider provider = new ControllableProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(2, 1, 8, 8), lanes,
-                    Duration.ofSeconds(2L), Duration.ofSeconds(2L));
-            AiRequest first = request("00000000-0000-0000-0000-000000000267");
-            AiRequest second = request("00000000-0000-0000-0000-000000000268");
-
-            scheduler.submit(scheduled(BOT_A, AGENT_A, first), firstToken);
-            assertTrue(firstToken.entered.await(2L, TimeUnit.SECONDS));
-            scheduler.submit(scheduled(BOT_A, AGENT_A, second), CancellationToken.none());
-            assertFalse(await(() -> !provider.calls().isEmpty(), 500L));
-
-            firstToken.release.countDown();
-            assertTrue(await(() -> provider.calls().size() == 1, 2_000L));
-            assertEquals(first.requestId(), provider.calls().get(0).request().requestId());
-            callFor(provider, first).stage().complete(response(first));
-            assertTrue(await(() -> provider.calls().size() == 2, 2_000L));
-            assertEquals(second.requestId(), provider.calls().get(1).request().requestId());
-            callFor(provider, second).stage().complete(response(second));
-            scheduler.close();
-        } finally {
-            firstToken.release.countDown();
-            lanes.close();
-        }
-    }
-
-    @Test
-    void terminalCleanupCancelsTheDelegateBeforeAQueuedSuccessorCanInvokeProvider()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        OrderingProvider provider = new OrderingProvider();
-        try {
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest first = request("00000000-0000-0000-0000-000000000269");
-            AiRequest second = request("00000000-0000-0000-0000-000000000270");
-            AiScheduledRequestHandle firstHandle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, first), CancellationToken.none());
-            CompletableFuture<AiResponse> secondResult = scheduler.submit(
-                    scheduled(BOT_B, AGENT_B, second), CancellationToken.none())
-                    .response().toCompletableFuture();
-
-            assertTrue(provider.firstEntered.await(2L, TimeUnit.SECONDS));
-            assertEquals(AiRequestCancellationDisposition.CANCELLED,
-                    firstHandle.requestCancellation().toCompletableFuture()
-                            .get(2L, TimeUnit.SECONDS).disposition());
-            assertTrue(provider.secondEntered.await(2L, TimeUnit.SECONDS));
-            assertFalse(provider.secondStartedBeforeFirstCancellation.get());
-            provider.secondStage.complete(response(second));
-            assertEquals(second.requestId(), secondResult.get(2L, TimeUnit.SECONDS).requestId());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void blockedTerminalCleanupQuarantinesItsPhysicalLaneAndHoldsSuccessorAdmission()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        BlockingCleanupProvider provider = new BlockingCleanupProvider();
-        try {
-            lanes.set(AiRequestSchedulerSupervisor.Lane.COMPLETION_DELIVERY,
-                    new InlineExecutor());
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest first = request("00000000-0000-0000-0000-000000000264");
-            AiRequest second = request("00000000-0000-0000-0000-000000000273");
-            AiScheduledRequestHandle firstHandle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, first), CancellationToken.none());
-            CompletableFuture<AiResponse> secondResult = scheduler.submit(
-                    scheduled(BOT_B, AGENT_B, second), CancellationToken.none())
-                    .response().toCompletableFuture();
-
-            assertTrue(provider.firstEntered.await(2L, TimeUnit.SECONDS));
-            firstHandle.requestCancellation();
-            assertTrue(provider.cancellationEntered.await(2L, TimeUnit.SECONDS));
-            assertEquals(AiFailureKind.CANCELLED,
-                    failure(firstHandle.response().toCompletableFuture()).failureKind());
-            assertTrue(scheduler.diagnostics().quarantinedCleanupCount() > 0);
-            assertTrue(scheduler.diagnostics().quarantinedPhysicalCleanupCount() > 0);
-            assertTrue(scheduler.diagnostics().dispatchDegraded());
-            assertFalse(await(() -> provider.secondEntered.getCount() == 0L, 500L));
-
-            provider.releaseCancellation.countDown();
-            assertTrue(provider.secondEntered.await(2L, TimeUnit.SECONDS));
-            provider.secondStage.complete(response(second));
-            assertEquals(second.requestId(), secondResult.get(2L, TimeUnit.SECONDS).requestId());
-            scheduler.close();
-        } finally {
-            provider.releaseCancellation.countDown();
-            lanes.close();
-        }
-    }
-
-    @Test
-    void blockingCompletionStageAttachmentIsQuarantinedOnTheProviderLane() throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        BlockingAttachmentProvider provider = new BlockingAttachmentProvider();
-        try {
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest request = request("00000000-0000-0000-0000-000000000266");
-            CompletableFuture<AiResponse> result = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), CancellationToken.none())
-                    .response().toCompletableFuture();
-
-            assertTrue(provider.attachmentEntered.await(2L, TimeUnit.SECONDS));
-            assertEquals(AiFailureKind.UNAVAILABLE, failure(result).failureKind());
-            assertTrue(scheduler.diagnostics().quarantinedProviderInvocationCount() > 0);
-            assertTrue(provider.stage.isCancelled());
-
-            provider.releaseAttachment.countDown();
-            assertTrue(await(() -> scheduler.diagnostics()
-                    .quarantinedProviderInvocationCount() == 0, 2_000L));
-            scheduler.close();
-        } finally {
-            provider.releaseAttachment.countDown();
-            lanes.close();
-        }
-    }
-
-    @Test
-    void blockedCompletionDeliveryDoesNotBlockAlreadyQueuedSuccessorProviderStart() throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        CountDownLatch releaseDelivery = new CountDownLatch(1);
-        try {
-            /* Runs only on the delivery broker, never on submit/pump/timer. */
-            lanes.set(AiRequestSchedulerSupervisor.Lane.COMPLETION_DELIVERY,
-                    new InlineExecutor());
-            ControllableProvider provider = new ControllableProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest first = request("00000000-0000-0000-0000-000000000271", 15_000L);
-            AiRequest second = request("00000000-0000-0000-0000-000000000272", 15_000L);
-            AiScheduledRequestHandle firstHandle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, first), CancellationToken.none());
-            CompletableFuture<AiResponse> secondResult = scheduler.submit(
-                    scheduled(BOT_B, AGENT_B, second), CancellationToken.none())
-                    .response().toCompletableFuture();
-            assertTrue(await(() -> provider.calls().size() == 1, 2_000L));
-
-            CountDownLatch deliveryEntered = new CountDownLatch(1);
-            firstHandle.response().whenComplete((ignored, failure) -> {
-                deliveryEntered.countDown();
-                awaitLatch(releaseDelivery);
-            });
-            provider.calls().get(0).stage().complete(response(first));
-
-            assertTrue(deliveryEntered.await(5L, TimeUnit.SECONDS));
-            assertTrue(await(() -> provider.calls().size() == 2, 5_000L));
-            assertEquals(second.requestId(), provider.calls().get(1).request().requestId());
-            assertTrue(await(() -> scheduler.diagnostics()
-                    .quarantinedCompletionDeliveryCount() > 0, 2_000L));
-            assertTrue(scheduler.diagnostics().dispatchDegraded());
-
-            releaseDelivery.countDown();
-            provider.calls().get(1).stage().complete(response(second));
-            assertEquals(second.requestId(), secondResult.get(2L, TimeUnit.SECONDS).requestId());
-            scheduler.close();
-        } finally {
-            releaseDelivery.countDown();
-            lanes.close();
-        }
-    }
-
-    @Test
-    void droppedCleanupIsPublishedAsQuarantineAndRetainedForBoundedRecovery() throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        DropOnceExecutor cleanup = new DropOnceExecutor(lanes.executor(
-                AiRequestSchedulerSupervisor.Lane.TERMINAL_CLEANUP));
-        try {
-            lanes.set(AiRequestSchedulerSupervisor.Lane.TERMINAL_CLEANUP, cleanup);
-            ImmediateProvider provider = new ImmediateProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest request = request("00000000-0000-0000-0000-000000000281");
-
-            AiResponse response = scheduler.submit(scheduled(BOT_A, AGENT_A, request),
-                    CancellationToken.none()).response().toCompletableFuture()
-                    .get(2L, TimeUnit.SECONDS);
-            assertEquals(request.requestId(), response.requestId());
-            assertTrue(await(() -> scheduler.diagnostics().pendingRecoveryDispatchCount() == 1,
-                    2_000L));
-            assertTrue(scheduler.diagnostics().dispatchDegraded());
-            scheduler.resumeDispatch();
-            assertTrue(await(() -> scheduler.diagnostics().pendingRecoveryDispatchCount() == 0,
-                    2_000L));
-            assertFalse(scheduler.diagnostics().dispatchDegraded());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void delayedCleanupWrapperCannotRunAfterWatchdogAndItsRecoveryRemainsRetained()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        CapturingExecutor cleanup = new CapturingExecutor();
-        try {
-            configureInlineLanesExcept(lanes, AiRequestSchedulerSupervisor.Lane.TERMINAL_CLEANUP);
-            lanes.set(AiRequestSchedulerSupervisor.Lane.TERMINAL_CLEANUP, cleanup);
-            ImmediateProvider provider = new ImmediateProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest request = request("00000000-0000-0000-0000-000000000286");
-            AiScheduledRequestHandle handle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), CancellationToken.none());
-
-            assertTrue(cleanup.captured.await(2L, TimeUnit.SECONDS));
-            assertTrue(await(() -> scheduler.diagnostics().pendingRecoveryDispatchCount() == 1,
-                    2_000L));
-            assertEquals(request.requestId(), handle.response().toCompletableFuture()
-                    .get(2L, TimeUnit.SECONDS).requestId());
-            cleanup.runCaptured();
-            assertEquals(1, provider.calls.get());
-
-            scheduler.resumeDispatch();
-            assertTrue(await(() -> cleanup.command.get() != null, 2_000L));
-            cleanup.runCaptured();
-            assertTrue(await(() -> scheduler.diagnostics().pendingRecoveryDispatchCount() == 0,
-                    2_000L));
-            assertFalse(scheduler.diagnostics().dispatchDegraded());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void droppedPublicationIsRetainedUntilExplicitRecoveryThenCompletesThePublicHandle()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        DropOnceExecutor delivery = new DropOnceExecutor(lanes.executor(
-                AiRequestSchedulerSupervisor.Lane.COMPLETION_DELIVERY));
-        try {
-            lanes.set(AiRequestSchedulerSupervisor.Lane.COMPLETION_DELIVERY, delivery);
-            ImmediateProvider provider = new ImmediateProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest request = request("00000000-0000-0000-0000-000000000291");
-            AiScheduledRequestHandle handle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), CancellationToken.none());
-
-            assertTrue(await(() -> scheduler.diagnostics().pendingRecoveryDispatchCount() == 1,
-                    2_000L));
-            assertFalse(handle.response().toCompletableFuture().isDone());
-            scheduler.resumeDispatch();
-            assertEquals(request.requestId(), handle.response().toCompletableFuture()
-                    .get(2L, TimeUnit.SECONDS).requestId());
-            assertFalse(scheduler.diagnostics().dispatchDegraded());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void delayedPublicationWrapperCannotPublishAfterWatchdogAndRecoveryCompletesOnce()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        CapturingExecutor delivery = new CapturingExecutor();
-        try {
-            configureInlineLanesExcept(lanes, AiRequestSchedulerSupervisor.Lane.COMPLETION_DELIVERY);
-            lanes.set(AiRequestSchedulerSupervisor.Lane.COMPLETION_DELIVERY, delivery);
-            ImmediateProvider provider = new ImmediateProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest request = request("00000000-0000-0000-0000-000000000296");
-            AiScheduledRequestHandle handle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), CancellationToken.none());
-
-            assertTrue(delivery.captured.await(2L, TimeUnit.SECONDS));
-            assertTrue(await(() -> scheduler.diagnostics().pendingRecoveryDispatchCount() == 1,
-                    2_000L));
-            assertFalse(handle.response().toCompletableFuture().isDone());
-            delivery.runCaptured();
-            assertFalse(handle.response().toCompletableFuture().isDone());
-
-            scheduler.resumeDispatch();
-            assertTrue(await(() -> delivery.command.get() != null, 2_000L));
-            delivery.runCaptured();
-            assertEquals(request.requestId(), handle.response().toCompletableFuture()
-                    .get(2L, TimeUnit.SECONDS).requestId());
-            assertEquals(1, provider.calls.get());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void supervisorCloseWinsTheArmedToStartedRaceBeforeAnyExternalBodyRuns()
-            throws Exception {
-        CountDownLatch physicalHandoffEntered = new CountDownLatch(1);
-        CountDownLatch releasePhysicalWrapper = new CountDownLatch(1);
-        CountDownLatch closeOpened = new CountDownLatch(1);
-        CountDownLatch releaseCloseInvalidation = new CountDownLatch(1);
-        AtomicInteger started = new AtomicInteger();
-        AtomicInteger startLost = new AtomicInteger();
-        AtomicInteger bodyRuns = new AtomicInteger();
-        AiRequestSchedulerPolicy policy = new AiRequestSchedulerPolicy(1, 1, 8, 8);
-        AiRequestSchedulerSupervisor supervisor =
-                AiRequestSchedulerSupervisor.forAdversarialTesting(
-                        "scheduler-close-race", policy, Duration.ofSeconds(5L),
-                        Duration.ofSeconds(5L), (lane, wrapper) -> {
-                            physicalHandoffEntered.countDown();
-                            awaitLatch(releasePhysicalWrapper);
-                            wrapper.run();
-                        }, () -> {
-                            closeOpened.countDown();
-                            awaitLatch(releaseCloseInvalidation);
-                        });
-        Thread closer = null;
-        try {
-            assertTrue(supervisor.claim());
-            AiRequestSchedulerSupervisor.DispatchAttempt attempt =
-                    new AiRequestSchedulerSupervisor.DispatchAttempt(1L,
-                            AiRequestSchedulerSupervisor.Lane.COMPLETION_DELIVERY,
-                            new AiRequestSchedulerSupervisor.DispatchCallbacks() {
-                                @Override
-                                public boolean started(
-                                        AiRequestSchedulerSupervisor.DispatchAttempt ignored) {
-                                    started.incrementAndGet();
-                                    return true;
-                                }
-
-                                @Override
-                                public void startLost(
-                                        AiRequestSchedulerSupervisor.DispatchAttempt ignored) {
-                                    startLost.incrementAndGet();
-                                }
-
-                                @Override
-                                public void stalled(
-                                        AiRequestSchedulerSupervisor.DispatchAttempt ignored) {
-                                    throw new AssertionError("close race wrapper unexpectedly stalled");
-                                }
-
-                                @Override
-                                public void bodySucceeded(
-                                        AiRequestSchedulerSupervisor.DispatchAttempt ignored) {
-                                    throw new AssertionError("close race wrapper unexpectedly succeeded");
-                                }
-
-                                @Override
-                                public void bodyFailed(
-                                        AiRequestSchedulerSupervisor.DispatchAttempt ignored,
-                                        Throwable failure) {
-                                    throw new AssertionError("close race wrapper unexpectedly failed",
-                                            failure);
-                                }
-                            });
-            supervisor.handoff(attempt, bodyRuns::incrementAndGet);
-            assertTrue(physicalHandoffEntered.await(2L, TimeUnit.SECONDS));
-
-            closer = new Thread(supervisor::close, "scheduler-close-race-closer");
-            closer.setDaemon(true);
-            closer.start();
-            assertTrue(closeOpened.await(2L, TimeUnit.SECONDS));
-
-            /* The old close-before-invalidate window could commit here. */
-            releasePhysicalWrapper.countDown();
-            assertTrue(await(() -> startLost.get() == 1, 2_000L));
-            assertEquals(0, started.get());
-            assertEquals(0, bodyRuns.get());
-
-            releaseCloseInvalidation.countDown();
-            closer.join(2_000L);
-            assertFalse(closer.isAlive());
-        } finally {
-            releasePhysicalWrapper.countDown();
-            releaseCloseInvalidation.countDown();
-            supervisor.close();
-            if (closer != null) {
-                closer.join(2_000L);
-            }
-        }
-    }
-
-    @Test
-    void supervisorCloseInvalidatesAnArmedDeliveryAttemptInsteadOfLosingItsRecovery()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        CapturingExecutor delivery = new CapturingExecutor();
-        AiRequestSchedulerSupervisor supervisor = null;
-        try {
-            configureInlineLanesExcept(lanes, AiRequestSchedulerSupervisor.Lane.COMPLETION_DELIVERY);
-            lanes.set(AiRequestSchedulerSupervisor.Lane.COMPLETION_DELIVERY, delivery);
-            AiRequestSchedulerPolicy policy = new AiRequestSchedulerPolicy(1, 1, 8, 8);
-            supervisor = lanes.supervisor(policy, Duration.ofSeconds(5L), STALL_TIMEOUT);
-            AiRequestScheduler scheduler = new AiRequestScheduler(
-                    PROVIDER_ID, new ImmediateProvider(), policy, Clock.systemUTC(), supervisor);
-            AiRequest request = request("00000000-0000-0000-0000-000000000297");
-            AiScheduledRequestHandle handle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), CancellationToken.none());
-
-            assertTrue(delivery.captured.await(2L, TimeUnit.SECONDS));
-            supervisor.close();
-            assertTrue(await(() -> scheduler.diagnostics().pendingRecoveryDispatchCount() == 1,
-                    2_000L));
-            delivery.runCaptured();
-            assertFalse(handle.response().toCompletableFuture().isDone());
-            scheduler.close();
-        } finally {
-            if (supervisor != null) {
-                supervisor.close();
-            }
-            lanes.close();
-        }
-    }
-
-    @Test
-    void supervisorCloseInvalidatesAnArmedCleanupAttemptAndRetainsItsPublicationChain()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        CapturingExecutor cleanup = new CapturingExecutor();
-        AiRequestSchedulerSupervisor supervisor = null;
-        try {
-            configureInlineLanesExcept(lanes, AiRequestSchedulerSupervisor.Lane.TERMINAL_CLEANUP);
-            lanes.set(AiRequestSchedulerSupervisor.Lane.TERMINAL_CLEANUP, cleanup);
-            AiRequestSchedulerPolicy policy = new AiRequestSchedulerPolicy(1, 1, 8, 8);
-            supervisor = lanes.supervisor(policy, Duration.ofSeconds(5L), STALL_TIMEOUT);
-            AiRequestScheduler scheduler = new AiRequestScheduler(
-                    PROVIDER_ID, new ImmediateProvider(), policy, Clock.systemUTC(), supervisor);
-            AiRequest request = request("00000000-0000-0000-0000-000000000298");
-            AiScheduledRequestHandle handle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), CancellationToken.none());
-
-            assertTrue(cleanup.captured.await(2L, TimeUnit.SECONDS));
-            supervisor.close();
-            assertTrue(await(() -> scheduler.diagnostics().pendingRecoveryDispatchCount() == 2,
-                    2_000L));
-            cleanup.runCaptured();
-            assertFalse(handle.response().toCompletableFuture().isDone());
-            scheduler.close();
-        } finally {
-            if (supervisor != null) {
-                supervisor.close();
-            }
-            lanes.close();
-        }
-    }
-
-    @Test
-    void providerCompleteAssertionErrorFailsClosedWithoutRetryingThatProviderStart()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        try {
-            ThrowingThenImmediateProvider provider = new ThrowingThenImmediateProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest failed = request("00000000-0000-0000-0000-000000000301");
-            AiRequest successor = request("00000000-0000-0000-0000-000000000302");
-
-            assertEquals(AiFailureKind.UNKNOWN, failure(scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, failed), CancellationToken.none())
-                    .response().toCompletableFuture()).failureKind());
-            assertEquals(1, provider.calls.get());
-            assertTrue(scheduler.diagnostics().recentQuarantines().stream().anyMatch(
-                    event -> event.requestId().equals(failed.requestId())
-                            && event.kind()
-                            == AiRequestSchedulerQuarantineKind.PROVIDER_INVOCATION));
-
-            assertEquals(successor.requestId(), scheduler.submit(
-                    scheduled(BOT_B, AGENT_B, successor), CancellationToken.none())
-                    .response().toCompletableFuture().get(2L, TimeUnit.SECONDS).requestId());
-            assertEquals(2, provider.calls.get());
-            assertFalse(scheduler.diagnostics().dispatchDegraded());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void whenCompleteAttachmentAssertionErrorFailsClosedAndAllowsSuccessor()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        try {
-            AttachmentErrorThenImmediateProvider provider = new AttachmentErrorThenImmediateProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest failed = request("00000000-0000-0000-0000-000000000303");
-            AiRequest successor = request("00000000-0000-0000-0000-000000000304");
-
-            assertEquals(AiFailureKind.UNKNOWN, failure(scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, failed), CancellationToken.none())
-                    .response().toCompletableFuture()).failureKind());
-            assertTrue(scheduler.diagnostics().recentQuarantines().stream().anyMatch(
-                    event -> event.requestId().equals(failed.requestId())
-                            && event.kind()
-                            == AiRequestSchedulerQuarantineKind.PROVIDER_INVOCATION));
-
-            assertEquals(successor.requestId(), scheduler.submit(
-                    scheduled(BOT_B, AGENT_B, successor), CancellationToken.none())
-                    .response().toCompletableFuture().get(2L, TimeUnit.SECONDS).requestId());
-            assertEquals(2, provider.calls.get());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void tokenRegistrationAssertionErrorFailsClosedBeforeProviderAdmission()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        try {
-            ImmediateProvider provider = new ImmediateProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest failed = request("00000000-0000-0000-0000-000000000305");
-            AiRequest successor = request("00000000-0000-0000-0000-000000000306");
-
-            assertEquals(AiFailureKind.UNAVAILABLE, failure(scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, failed), new ThrowingRegistrationToken())
-                    .response().toCompletableFuture()).failureKind());
-            assertEquals(0, provider.calls.get());
-            assertTrue(scheduler.diagnostics().recentQuarantines().stream().anyMatch(
-                    event -> event.requestId().equals(failed.requestId())
-                            && event.kind() == AiRequestSchedulerQuarantineKind.TOKEN_SETUP));
-
-            assertEquals(successor.requestId(), scheduler.submit(
-                    scheduled(BOT_B, AGENT_B, successor), CancellationToken.none())
-                    .response().toCompletableFuture().get(2L, TimeUnit.SECONDS).requestId());
-            assertEquals(1, provider.calls.get());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void synchronousCancellationCallbackThenAttachmentErrorFailsClosedWithoutCancellationWin()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        CallbackThenThrowToken token = new CallbackThenThrowToken();
-        try {
-            configureAllInlineLanes(lanes);
-            ImmediateProvider provider = new ImmediateProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes,
-                    Duration.ofSeconds(2L), Duration.ofSeconds(2L));
-            AiRequest request = request("00000000-0000-0000-0000-000000000310");
-            AiScheduledRequestHandle handle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), token);
-
-            assertTrue(token.callbackInvoked.await(2L, TimeUnit.SECONDS));
-            /* The callback has run, but its throwing attachment has not returned yet. */
-            assertFalse(handle.response().toCompletableFuture().isDone());
-            token.releaseThrow.countDown();
-
-            AiProviderException failure = failure(handle.response().toCompletableFuture());
-            assertEquals(AiFailureKind.UNAVAILABLE, failure.failureKind());
-            assertEquals(AiReasonCode.CALLBACK_ATTACHMENT_FAILED, failure.reasonCode());
-            assertEquals(AiRequestCancellationDisposition.ALREADY_TERMINAL,
-                    handle.requestCancellation().toCompletableFuture()
-                            .get(2L, TimeUnit.SECONDS).disposition());
-            assertEquals(0, provider.calls.get());
-            assertEquals(AiSchedulerRequestState.FAILED,
-                    scheduler.requestHealth(request.requestId()).orElseThrow().state());
-            assertTrue(scheduler.diagnostics().recentQuarantines().stream().anyMatch(
-                    event -> event.requestId().equals(request.requestId())
-                            && event.kind() == AiRequestSchedulerQuarantineKind.TOKEN_SETUP));
-            assertEquals(0, scheduler.diagnostics().pendingRecoveryDispatchCount());
-            assertFalse(scheduler.diagnostics().dispatchDegraded());
-
-            AiRequest successor = request("00000000-0000-0000-0000-000000000312");
-            assertEquals(successor.requestId(), scheduler.submit(
-                    scheduled(BOT_B, AGENT_B, successor), CancellationToken.none())
-                    .response().toCompletableFuture().get(2L, TimeUnit.SECONDS).requestId());
-            assertEquals(1, provider.calls.get());
-            scheduler.close();
-        } finally {
-            token.releaseThrow.countDown();
-            lanes.close();
-        }
-    }
-
-    @Test
-    void synchronousCompletionCallbackThenAttachmentErrorFailsClosedWithoutSuccessPublication()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        CallbackThenThrowAttachmentProvider provider =
-                new CallbackThenThrowAttachmentProvider();
-        try {
-            configureAllInlineLanes(lanes);
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes,
-                    Duration.ofSeconds(2L), Duration.ofSeconds(2L));
-            AiRequest request = request("00000000-0000-0000-0000-000000000311");
-            AiScheduledRequestHandle handle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), CancellationToken.none());
-
-            assertTrue(provider.callbackInvoked.await(2L, TimeUnit.SECONDS));
-            /* A valid response was supplied, but attachment has not yet returned normally. */
-            assertFalse(handle.response().toCompletableFuture().isDone());
-            provider.releaseThrow.countDown();
-
-            AiProviderException failure = failure(handle.response().toCompletableFuture());
-            assertEquals(AiFailureKind.UNKNOWN, failure.failureKind());
-            assertEquals(AiReasonCode.CALLBACK_ATTACHMENT_FAILED, failure.reasonCode());
-            assertEquals(AiRequestCancellationDisposition.ALREADY_TERMINAL,
-                    handle.requestCancellation().toCompletableFuture()
-                            .get(2L, TimeUnit.SECONDS).disposition());
-            assertEquals(1, provider.calls.get());
-            assertEquals(AiSchedulerRequestState.FAILED,
-                    scheduler.requestHealth(request.requestId()).orElseThrow().state());
-            assertTrue(scheduler.diagnostics().recentQuarantines().stream().anyMatch(
-                    event -> event.requestId().equals(request.requestId())
-                            && event.kind()
-                            == AiRequestSchedulerQuarantineKind.PROVIDER_INVOCATION));
-            assertEquals(0, scheduler.diagnostics().pendingRecoveryDispatchCount());
-            assertFalse(scheduler.diagnostics().dispatchDegraded());
-
-            AiRequest successor = request("00000000-0000-0000-0000-000000000313");
-            assertEquals(successor.requestId(), scheduler.submit(
-                    scheduled(BOT_B, AGENT_B, successor), CancellationToken.none())
-                    .response().toCompletableFuture().get(2L, TimeUnit.SECONDS).requestId());
-            assertEquals(2, provider.calls.get());
-            scheduler.close();
-        } finally {
-            provider.releaseThrow.countDown();
-            lanes.close();
-        }
-    }
-
-    @Test
-    void synchronousCancellationCallbackWaitsForTokenBodyAckBeforeItCanPublish()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        CallbackThenReturnToken token = new CallbackThenReturnToken();
-        try {
-            configureAllInlineLanes(lanes);
-            ImmediateProvider provider = new ImmediateProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes,
-                    Duration.ofSeconds(2L), Duration.ofSeconds(2L));
-            AiRequest request = request("00000000-0000-0000-0000-000000000314");
-            AiScheduledRequestHandle handle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), token);
-
-            assertTrue(token.callbackInvoked.await(2L, TimeUnit.SECONDS));
-            assertFalse(handle.response().toCompletableFuture().isDone());
-            token.releaseRegistration.countDown();
-            assertTrue(token.registrationCloseEntered.await(2L, TimeUnit.SECONDS));
-            /* Cleanup found the returned registration, so cancellation has not bypassed ACK. */
-            assertFalse(handle.response().toCompletableFuture().isDone());
-            token.releaseRegistrationClose.countDown();
-
-            assertEquals(AiFailureKind.CANCELLED,
-                    failure(handle.response().toCompletableFuture()).failureKind());
-            assertEquals(0, provider.calls.get());
-            assertEquals(1, token.closeCalls.get());
-            scheduler.close();
-        } finally {
-            token.releaseRegistration.countDown();
-            token.releaseRegistrationClose.countDown();
-            lanes.close();
-        }
-    }
-
-    @Test
-    void synchronousCompletionCallbackWaitsForProviderBodyAckBeforeItCanPublish()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        CallbackThenReturnAttachmentProvider provider =
-                new CallbackThenReturnAttachmentProvider();
-        try {
-            configureAllInlineLanes(lanes);
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes,
-                    Duration.ofSeconds(2L), Duration.ofSeconds(2L));
-            AiRequest request = request("00000000-0000-0000-0000-000000000315");
-            AiScheduledRequestHandle handle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), CancellationToken.none());
-
-            assertTrue(provider.callbackInvoked.await(2L, TimeUnit.SECONDS));
-            assertFalse(handle.response().toCompletableFuture().isDone());
-            provider.releaseAttachment.countDown();
-
-            assertEquals(request.requestId(), handle.response().toCompletableFuture()
-                    .get(2L, TimeUnit.SECONDS).requestId());
-            assertEquals(1, provider.calls.get());
-            assertFalse(scheduler.diagnostics().recentQuarantines().stream().anyMatch(
-                    event -> event.requestId().equals(request.requestId())));
-            scheduler.close();
-        } finally {
-            provider.releaseAttachment.countDown();
-            lanes.close();
-        }
-    }
-
-    @Test
-    void synchronousCancellationCallbackThenSecondReadErrorFailsClosedAndClosesRegistration()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        CallbackThenSecondReadErrorToken token = new CallbackThenSecondReadErrorToken();
-        try {
-            configureAllInlineLanes(lanes);
-            ImmediateProvider provider = new ImmediateProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest request = request("00000000-0000-0000-0000-000000000316");
-            AiScheduledRequestHandle handle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), token);
-
-            AiProviderException failure = failure(handle.response().toCompletableFuture());
-            assertEquals(AiFailureKind.UNAVAILABLE, failure.failureKind());
-            assertEquals(AiReasonCode.CALLBACK_ATTACHMENT_FAILED, failure.reasonCode());
-            assertEquals(0, provider.calls.get());
-            assertTrue(await(() -> token.closeCalls.get() == 1, 2_000L));
-            assertEquals(AiRequestCancellationDisposition.ALREADY_TERMINAL,
-                    handle.requestCancellation().toCompletableFuture()
-                            .get(2L, TimeUnit.SECONDS).disposition());
-            assertTrue(scheduler.diagnostics().recentQuarantines().stream().anyMatch(
-                    event -> event.requestId().equals(request.requestId())
-                            && event.kind() == AiRequestSchedulerQuarantineKind.TOKEN_SETUP));
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void cleanupListenerCloseAndStageCancelErrorsRemainRetainedUntilResume()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        try {
-            ThrowOnceCleanupToken token = new ThrowOnceCleanupToken();
-            ThrowOnceCancelProvider provider = new ThrowOnceCancelProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest request = request("00000000-0000-0000-0000-000000000307");
-            AiScheduledRequestHandle handle = scheduler.submit(
-                    scheduled(BOT_A, AGENT_A, request), token);
-            assertTrue(await(() -> provider.calls.get() == 1, 2_000L));
-
-            assertEquals(AiRequestCancellationDisposition.CANCELLED,
-                    handle.requestCancellation().toCompletableFuture()
-                            .get(2L, TimeUnit.SECONDS).disposition());
-            assertEquals(AiFailureKind.CANCELLED,
-                    failure(handle.response().toCompletableFuture()).failureKind());
-            assertTrue(await(() -> scheduler.diagnostics().pendingRecoveryDispatchCount() == 1,
-                    2_000L));
-            assertTrue(scheduler.diagnostics().quarantinedCleanupCount() > 0);
-            assertEquals(1, token.closeCalls.get());
-            assertEquals(1, provider.stage.cancelCalls.get());
-            assertFalse(provider.stage.isCancelled());
-
-            scheduler.resumeDispatch();
-            assertTrue(await(() -> scheduler.diagnostics().pendingRecoveryDispatchCount() == 0,
-                    2_000L));
-            assertTrue(await(provider.stage::isCancelled, 2_000L));
-            assertEquals(2, token.closeCalls.get());
-            assertEquals(2, provider.stage.cancelCalls.get());
-            assertEquals(0, scheduler.diagnostics().quarantinedCleanupCount());
-            assertFalse(scheduler.diagnostics().dispatchDegraded());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void invokeThenAssertionErrorAfterCommittedWrapperDoesNotRejectProviderStart()
-            throws Exception {
-        LaneFixture lanes = new LaneFixture();
-        try {
-            lanes.set(AiRequestSchedulerSupervisor.Lane.PROVIDER_START,
-                    new InvokeThenErrorExecutor());
-            ImmediateProvider provider = new ImmediateProvider();
-            AiRequestScheduler scheduler = scheduler(provider,
-                    new AiRequestSchedulerPolicy(1, 1, 8, 8), lanes);
-            AiRequest first = request("00000000-0000-0000-0000-000000000308");
-            AiRequest second = request("00000000-0000-0000-0000-000000000309");
-
-            assertEquals(first.requestId(), scheduler.submit(scheduled(BOT_A, AGENT_A, first),
-                    CancellationToken.none()).response().toCompletableFuture()
-                    .get(2L, TimeUnit.SECONDS).requestId());
-            assertEquals(second.requestId(), scheduler.submit(scheduled(BOT_B, AGENT_B, second),
-                    CancellationToken.none()).response().toCompletableFuture()
-                    .get(2L, TimeUnit.SECONDS).requestId());
-            assertEquals(2, provider.calls.get());
-            assertEquals(0L, scheduler.diagnostics().rejectedDispatchCount());
-            assertFalse(scheduler.diagnostics().dispatchDegraded());
-            scheduler.close();
-        } finally {
-            lanes.close();
-        }
-    }
-
-    @Test
-    void deliveryAttemptAssertionErrorReportsFailureInsteadOfSuccessAck() throws Exception {
-        CountDownLatch failed = new CountDownLatch(1);
-        AtomicInteger succeeded = new AtomicInteger();
-        AtomicReference<Throwable> observed = new AtomicReference<>();
-        AiRequestSchedulerPolicy policy = new AiRequestSchedulerPolicy(1, 1, 8, 8);
-        AiRequestSchedulerSupervisor supervisor =
-                AiRequestSchedulerSupervisor.forAdversarialTesting(
-                        "scheduler-delivery-error", policy, Duration.ofSeconds(1L),
-                        Duration.ofSeconds(1L), (lane, wrapper) -> wrapper.run());
-        try {
-            assertTrue(supervisor.claim());
-            AiRequestSchedulerSupervisor.DispatchAttempt attempt =
-                    new AiRequestSchedulerSupervisor.DispatchAttempt(1L,
-                            AiRequestSchedulerSupervisor.Lane.COMPLETION_DELIVERY,
-                            new AiRequestSchedulerSupervisor.DispatchCallbacks() {
-                                @Override
-                                public boolean started(
-                                        AiRequestSchedulerSupervisor.DispatchAttempt ignored) {
-                                    return true;
-                                }
-
-                                @Override
-                                public void startLost(
-                                        AiRequestSchedulerSupervisor.DispatchAttempt ignored) {
-                                    throw new AssertionError("delivery attempt unexpectedly lost start");
-                                }
-
-                                @Override
-                                public void stalled(
-                                        AiRequestSchedulerSupervisor.DispatchAttempt ignored) {
-                                    throw new AssertionError("delivery attempt unexpectedly stalled");
-                                }
-
-                                @Override
-                                public void bodySucceeded(
-                                        AiRequestSchedulerSupervisor.DispatchAttempt ignored) {
-                                    succeeded.incrementAndGet();
-                                }
-
-                                @Override
-                                public void bodyFailed(
-                                        AiRequestSchedulerSupervisor.DispatchAttempt ignored,
-                                        Throwable failure) {
-                                    observed.set(failure);
-                                    failed.countDown();
-                                }
-                            });
-            supervisor.handoff(attempt, () -> {
-                throw new AssertionError("delivery body error");
-            });
-            assertTrue(failed.await(2L, TimeUnit.SECONDS));
-            assertEquals(0, succeeded.get());
-            assertTrue(observed.get() instanceof AssertionError);
-        } finally {
-            supervisor.close();
-        }
-    }
-
-    @Test
-    void fatalDeliveryAttemptErrorRecordsFailureBeforeTheWorkerMayRethrow()
-            throws Exception {
-        CountDownLatch failed = new CountDownLatch(1);
-        AtomicInteger succeeded = new AtomicInteger();
-        AtomicReference<Throwable> rethrown = new AtomicReference<>();
-        AiRequestSchedulerPolicy policy = new AiRequestSchedulerPolicy(1, 1, 8, 8);
-        AiRequestSchedulerSupervisor supervisor =
-                AiRequestSchedulerSupervisor.forAdversarialTesting(
-                        "scheduler-delivery-fatal", policy, Duration.ofSeconds(1L),
-                        Duration.ofSeconds(1L), (lane, wrapper) -> {
-                            try {
-                                wrapper.run();
-                            } catch (Throwable failure) {
-                                rethrown.set(failure);
-                            }
-                        });
-        try {
-            assertTrue(supervisor.claim());
-            AiRequestSchedulerSupervisor.DispatchAttempt attempt =
-                    new AiRequestSchedulerSupervisor.DispatchAttempt(1L,
-                            AiRequestSchedulerSupervisor.Lane.COMPLETION_DELIVERY,
-                            new AiRequestSchedulerSupervisor.DispatchCallbacks() {
-                                @Override
-                                public boolean started(
-                                        AiRequestSchedulerSupervisor.DispatchAttempt ignored) {
-                                    return true;
-                                }
-
-                                @Override
-                                public void startLost(
-                                        AiRequestSchedulerSupervisor.DispatchAttempt ignored) {
-                                    throw new AssertionError("fatal delivery attempt lost start");
-                                }
-
-                                @Override
-                                public void stalled(
-                                        AiRequestSchedulerSupervisor.DispatchAttempt ignored) {
-                                    throw new AssertionError("fatal delivery attempt stalled");
-                                }
-
-                                @Override
-                                public void bodySucceeded(
-                                        AiRequestSchedulerSupervisor.DispatchAttempt ignored) {
-                                    succeeded.incrementAndGet();
-                                }
-
-                                @Override
-                                public void bodyFailed(
-                                        AiRequestSchedulerSupervisor.DispatchAttempt ignored,
-                                        Throwable failure) {
-                                    failed.countDown();
-                                }
-                            });
-            supervisor.handoff(attempt, () -> {
-                throw new LinkageError("fatal delivery body error");
-            });
-            assertTrue(failed.await(2L, TimeUnit.SECONDS));
-            assertEquals(0, succeeded.get());
-            assertTrue(await(() -> rethrown.get() instanceof LinkageError, 2_000L));
-        } finally {
-            supervisor.close();
-        }
-    }
-
-    @Test
-    void publicApiUsesSupervisorRatherThanRawExecutorHandoff() {
-        assertEquals(2, AiRequestScheduler.class.getConstructors().length);
-        assertThrows(IllegalArgumentException.class, () -> {
-            AiRequestSchedulerSupervisor supervisor = AiRequestSchedulerSupervisor.create(
-                    "single-claim", new AiRequestSchedulerPolicy(1, 1, 8, 8));
-            try {
-                new AiRequestScheduler(PROVIDER_ID, new ImmediateProvider(),
-                        new AiRequestSchedulerPolicy(1, 1, 8, 8), supervisor);
-                new AiRequestScheduler(PROVIDER_ID, new ImmediateProvider(),
-                        new AiRequestSchedulerPolicy(1, 1, 8, 8), supervisor);
-            } finally {
-                supervisor.close();
-            }
-        });
-    }
-
-    private static AiRequestScheduler scheduler(
-            AiProvider provider, AiRequestSchedulerPolicy policy, LaneFixture lanes) {
-        return scheduler(provider, policy, lanes, START_TIMEOUT, STALL_TIMEOUT);
-    }
-
-    private static AiRequestScheduler scheduler(
-            AiProvider provider,
-            AiRequestSchedulerPolicy policy,
-            LaneFixture lanes,
-            Duration startTimeout,
-            Duration stallTimeout) {
-        return new AiRequestScheduler(PROVIDER_ID, provider, policy, Clock.systemUTC(),
-                lanes.supervisor(policy, startTimeout, stallTimeout));
-    }
-
-    private static AiRequestScheduler scheduler(
-            AiProvider provider,
-            AiRequestSchedulerPolicy policy,
-            LaneFixture lanes,
-            Clock clock) {
-        return new AiRequestScheduler(PROVIDER_ID, provider, policy, clock,
-                lanes.supervisor(policy, START_TIMEOUT, STALL_TIMEOUT));
-    }
-
-    private static void configureInlineLanesExcept(
-            LaneFixture lanes, AiRequestSchedulerSupervisor.Lane exception) {
-        for (AiRequestSchedulerSupervisor.Lane lane
-                : AiRequestSchedulerSupervisor.Lane.values()) {
-            if (lane != exception) {
-                lanes.set(lane, new InlineExecutor());
-            }
-        }
-    }
-
-    private static void configureAllInlineLanes(LaneFixture lanes) {
-        for (AiRequestSchedulerSupervisor.Lane lane
-                : AiRequestSchedulerSupervisor.Lane.values()) {
-            lanes.set(lane, new InlineExecutor());
-        }
-    }
-
-    private static AiScheduledRequest scheduled(
-            UUID botId, UUID agentId, AiRequest request) {
-        return new AiScheduledRequest(OWNER, botId, agentId, 1L, request);
-    }
-
-    private static AiRequest request(String id) {
-        return request(id, 5_000L);
-    }
-
-    private static AiRequest request(String id, long timeoutMillis) {
-        AiRequest base = AiTestFixtures.request(UUID.fromString(id));
-        return new AiRequest(base.requestId(), base.model(), base.messages(),
-                new AiRequestOptions(base.options().maximumOutputTokens(), timeoutMillis,
-                        base.options().responseFormat(), base.options().reasoningAllowed(),
-                        base.options().toolCallsAllowed(), base.options().temperature()),
-                base.responseSchemaJson());
-    }
-
-    private static AiResponse response(AiRequest request) {
-        return AiTestFixtures.response(request, PROVIDER_ID);
-    }
-
-    private static AiProviderException failure(CompletableFuture<?> future) {
-        try {
-            future.get(2L, TimeUnit.SECONDS);
-            throw new AssertionError("future unexpectedly completed normally");
-        } catch (ExecutionException exception) {
-            assertTrue(exception.getCause() instanceof AiProviderException);
-            return (AiProviderException) exception.getCause();
-        } catch (TimeoutException exception) {
-            throw new AssertionError("future did not complete before timeout", exception);
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new AssertionError("future wait was interrupted", exception);
-        }
-    }
-
-    private static Call callFor(ControllableProvider provider, AiRequest request) {
-        return provider.calls().stream().filter(
-                call -> call.request().requestId().equals(request.requestId()))
-                .findFirst().orElseThrow();
-    }
-
-    @FunctionalInterface
-    private interface Condition {
-        boolean evaluate();
-    }
-
-    private static boolean await(Condition condition, long timeoutMillis) throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
-        do {
-            if (condition.evaluate()) {
-                return true;
-            }
-            Thread.sleep(5L);
-        } while (System.nanoTime() < deadline);
-        return condition.evaluate();
-    }
-
-    private static void awaitLatch(CountDownLatch latch) {
-        try {
-            if (!latch.await(5L, TimeUnit.SECONDS)) {
-                throw new AssertionError("test callback did not receive release signal");
-            }
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new AssertionError("test callback was interrupted", exception);
-        }
-    }
-
-    private static final class LaneFixture implements AutoCloseable {
-        private final EnumMap<AiRequestSchedulerSupervisor.Lane, Executor> executors =
-                new EnumMap<>(AiRequestSchedulerSupervisor.Lane.class);
-        private final List<ExecutorService> services = new CopyOnWriteArrayList<>();
-        private final List<AiRequestSchedulerSupervisor> supervisors = new CopyOnWriteArrayList<>();
-
-        private LaneFixture() {
-            for (AiRequestSchedulerSupervisor.Lane lane
-                    : AiRequestSchedulerSupervisor.Lane.values()) {
-                ExecutorService service = Executors.newFixedThreadPool(2, runnable -> {
-                    Thread thread = new Thread(runnable, "scheduler-adversarial-" + lane);
-                    thread.setDaemon(true);
-                    return thread;
-                });
-                services.add(service);
-                executors.put(lane, service);
-            }
-        }
-
-        private Executor executor(AiRequestSchedulerSupervisor.Lane lane) {
-            return executors.get(lane);
-        }
-
-        private void set(AiRequestSchedulerSupervisor.Lane lane, Executor executor) {
-            executors.put(lane, executor);
-        }
-
-        private AiRequestSchedulerSupervisor supervisor(
-                AiRequestSchedulerPolicy policy,
-                Duration startTimeout,
-                Duration stallTimeout) {
-            AiRequestSchedulerSupervisor supervisor =
-                    AiRequestSchedulerSupervisor.forAdversarialTesting(
-                            "scheduler-adversarial", policy, startTimeout, stallTimeout,
-                            (lane, wrapper) -> executors.get(lane).execute(wrapper));
-            supervisors.add(supervisor);
-            return supervisor;
-        }
-
-        @Override
-        public void close() {
-            for (AiRequestSchedulerSupervisor supervisor : supervisors) {
-                supervisor.close();
-            }
-            for (ExecutorService service : services) {
-                service.shutdownNow();
-            }
-            for (ExecutorService service : services) {
-                try {
-                    assertTrue(service.awaitTermination(2L, TimeUnit.SECONDS));
-                } catch (InterruptedException exception) {
-                    Thread.currentThread().interrupt();
-                    throw new AssertionError("test lane did not terminate", exception);
-                }
-            }
-        }
-    }
-
-    private static final class ControllableProvider implements AiProvider {
-        private final List<Call> calls = new CopyOnWriteArrayList<>();
-
-        @Override
-        public CompletionStage<AiResponse> complete(
-                AiRequest request, CancellationToken token) {
-            TrackingFuture<AiResponse> stage = new TrackingFuture<>();
-            calls.add(new Call(request, stage));
-            return stage;
-        }
-
-        @Override
-        public CompletionStage<AiCapabilities> probeCapabilities() {
-            return CompletableFuture.completedFuture(AiTestFixtures.capabilities(PROVIDER_ID));
-        }
-
-        @Override
-        public ProviderHealth health() {
-            return ProviderHealth.healthy(PROVIDER_ID, Instant.EPOCH);
-        }
-
-        private List<Call> calls() {
-            return calls;
-        }
-    }
-
-    private static final class ImmediateProvider implements AiProvider {
-        private final AtomicInteger calls = new AtomicInteger();
-
-        @Override
-        public CompletionStage<AiResponse> complete(
-                AiRequest request, CancellationToken token) {
-            calls.incrementAndGet();
-            return CompletableFuture.completedFuture(response(request));
-        }
-
-        @Override
-        public CompletionStage<AiCapabilities> probeCapabilities() {
-            return CompletableFuture.completedFuture(AiTestFixtures.capabilities(PROVIDER_ID));
-        }
-
-        @Override
-        public ProviderHealth health() {
-            return ProviderHealth.healthy(PROVIDER_ID, Instant.EPOCH);
-        }
-    }
-
-    private static final class ThrowingThenImmediateProvider implements AiProvider {
-        private final AtomicInteger calls = new AtomicInteger();
-
-        @Override
-        public CompletionStage<AiResponse> complete(
-                AiRequest request, CancellationToken token) {
-            if (calls.getAndIncrement() == 0) {
-                throw new AssertionError("provider complete error");
-            }
-            return CompletableFuture.completedFuture(response(request));
-        }
-
-        @Override
-        public CompletionStage<AiCapabilities> probeCapabilities() {
-            return CompletableFuture.completedFuture(AiTestFixtures.capabilities(PROVIDER_ID));
-        }
-
-        @Override
-        public ProviderHealth health() {
-            return ProviderHealth.healthy(PROVIDER_ID, Instant.EPOCH);
-        }
-    }
-
-    private static final class AttachmentErrorThenImmediateProvider implements AiProvider {
-        private final AtomicInteger calls = new AtomicInteger();
-
-        @Override
-        public CompletionStage<AiResponse> complete(
-                AiRequest request, CancellationToken token) {
-            if (calls.getAndIncrement() == 0) {
-                return new AttachmentErrorFuture<>();
-            }
-            return CompletableFuture.completedFuture(response(request));
-        }
-
-        @Override
-        public CompletionStage<AiCapabilities> probeCapabilities() {
-            return CompletableFuture.completedFuture(AiTestFixtures.capabilities(PROVIDER_ID));
-        }
-
-        @Override
-        public ProviderHealth health() {
-            return ProviderHealth.healthy(PROVIDER_ID, Instant.EPOCH);
-        }
-    }
-
-    private static final class ThrowOnceCancelProvider implements AiProvider {
-        private final AtomicInteger calls = new AtomicInteger();
-        private final ThrowOnceCancelFuture<AiResponse> stage = new ThrowOnceCancelFuture<>();
-
-        @Override
-        public CompletionStage<AiResponse> complete(
-                AiRequest request, CancellationToken token) {
-            calls.incrementAndGet();
-            return stage;
-        }
-
-        @Override
-        public CompletionStage<AiCapabilities> probeCapabilities() {
-            return CompletableFuture.completedFuture(AiTestFixtures.capabilities(PROVIDER_ID));
-        }
-
-        @Override
-        public ProviderHealth health() {
-            return ProviderHealth.healthy(PROVIDER_ID, Instant.EPOCH);
-        }
-    }
-
-    private static final class OrderingProvider implements AiProvider {
-        private final AtomicInteger calls = new AtomicInteger();
-        private final CountDownLatch firstEntered = new CountDownLatch(1);
-        private final CountDownLatch secondEntered = new CountDownLatch(1);
-        private final AtomicBoolean secondStartedBeforeFirstCancellation = new AtomicBoolean();
-        private final TrackingFuture<AiResponse> firstStage = new TrackingFuture<>();
-        private final TrackingFuture<AiResponse> secondStage = new TrackingFuture<>();
-
-        @Override
-        public CompletionStage<AiResponse> complete(
-                AiRequest request, CancellationToken token) {
-            if (calls.getAndIncrement() == 0) {
-                firstEntered.countDown();
-                return firstStage;
-            }
-            if (!firstStage.isCancelled()) {
-                secondStartedBeforeFirstCancellation.set(true);
-            }
-            secondEntered.countDown();
-            return secondStage;
-        }
-
-        @Override
-        public CompletionStage<AiCapabilities> probeCapabilities() {
-            return CompletableFuture.completedFuture(AiTestFixtures.capabilities(PROVIDER_ID));
-        }
-
-        @Override
-        public ProviderHealth health() {
-            return ProviderHealth.healthy(PROVIDER_ID, Instant.EPOCH);
-        }
-    }
-
-    private static final class BlockingCleanupProvider implements AiProvider {
-        private final AtomicInteger calls = new AtomicInteger();
-        private final CountDownLatch firstEntered = new CountDownLatch(1);
-        private final CountDownLatch secondEntered = new CountDownLatch(1);
-        private final CountDownLatch cancellationEntered = new CountDownLatch(1);
-        private final CountDownLatch releaseCancellation = new CountDownLatch(1);
-        private final BlockingCancellationFuture<AiResponse> firstStage =
-                new BlockingCancellationFuture<>(cancellationEntered, releaseCancellation);
-        private final TrackingFuture<AiResponse> secondStage = new TrackingFuture<>();
-
-        @Override
-        public CompletionStage<AiResponse> complete(
-                AiRequest request, CancellationToken token) {
-            if (calls.getAndIncrement() == 0) {
-                firstEntered.countDown();
-                return firstStage;
-            }
-            secondEntered.countDown();
-            return secondStage;
-        }
-
-        @Override
-        public CompletionStage<AiCapabilities> probeCapabilities() {
-            return CompletableFuture.completedFuture(AiTestFixtures.capabilities(PROVIDER_ID));
-        }
-
-        @Override
-        public ProviderHealth health() {
-            return ProviderHealth.healthy(PROVIDER_ID, Instant.EPOCH);
-        }
-    }
-
-    private static final class BlockingCancellationFuture<T> extends CompletableFuture<T> {
-        private final CountDownLatch cancellationEntered;
-        private final CountDownLatch releaseCancellation;
-
-        private BlockingCancellationFuture(
-                CountDownLatch cancellationEntered, CountDownLatch releaseCancellation) {
-            this.cancellationEntered = cancellationEntered;
-            this.releaseCancellation = releaseCancellation;
-        }
-
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            cancellationEntered.countDown();
-            try {
-                releaseCancellation.await(5L, TimeUnit.SECONDS);
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-            }
-            return super.cancel(mayInterruptIfRunning);
-        }
-    }
-
-    private static final class BlockingProvider implements AiProvider {
-        private final AtomicInteger calls = new AtomicInteger();
-        private final CountDownLatch entered = new CountDownLatch(1);
-        private final CountDownLatch release = new CountDownLatch(1);
-        private final TrackingFuture<AiResponse> stage = new TrackingFuture<>();
-
-        @Override
-        public CompletionStage<AiResponse> complete(
-                AiRequest request, CancellationToken token) {
-            calls.incrementAndGet();
-            entered.countDown();
-            awaitLatch(release);
-            return stage;
-        }
-
-        @Override
-        public CompletionStage<AiCapabilities> probeCapabilities() {
-            return CompletableFuture.completedFuture(AiTestFixtures.capabilities(PROVIDER_ID));
-        }
-
-        @Override
-        public ProviderHealth health() {
-            return ProviderHealth.healthy(PROVIDER_ID, Instant.EPOCH);
-        }
-    }
-
-    private static final class BlockingToken implements CancellationToken {
-        private final CountDownLatch entered = new CountDownLatch(1);
-        private final CountDownLatch release = new CountDownLatch(1);
-
-        @Override
-        public boolean isCancellationRequested() {
-            return false;
-        }
-
-        @Override
-        public ListenerRegistration onCancellation(Runnable listener) {
-            entered.countDown();
-            awaitLatch(release);
-            return ListenerRegistration.none();
-        }
-    }
-
-    private static final class CountingToken implements CancellationToken {
-        private final AtomicInteger reads = new AtomicInteger();
-        private final CancellationTokenSource source = new CancellationTokenSource();
-
-        @Override
-        public boolean isCancellationRequested() {
-            reads.incrementAndGet();
-            return source.isCancellationRequested();
-        }
-
-        @Override
-        public ListenerRegistration onCancellation(Runnable listener) {
-            return source.onCancellation(listener);
-        }
-
-        private void cancel() {
-            source.cancel();
-        }
-    }
-
-    private static final class ThrowingRegistrationToken implements CancellationToken {
-        @Override
-        public boolean isCancellationRequested() {
-            return false;
-        }
-
-        @Override
-        public ListenerRegistration onCancellation(Runnable listener) {
-            throw new AssertionError("token registration error");
-        }
-    }
-
-    /**
-     * Simulates a hostile token implementation that calls its listener while registration is
-     * still provisional, then reports that registration itself failed. The callback must not win
-     * over the attachment failure.
-     */
-    private static final class CallbackThenThrowToken implements CancellationToken {
-        private final CountDownLatch callbackInvoked = new CountDownLatch(1);
-        private final CountDownLatch releaseThrow = new CountDownLatch(1);
-
-        @Override
-        public boolean isCancellationRequested() {
-            return false;
-        }
-
-        @Override
-        public ListenerRegistration onCancellation(Runnable listener) {
-            listener.run();
-            callbackInvoked.countDown();
-            awaitLatch(releaseThrow);
-            throw new AssertionError("cancellation callback then attachment error");
-        }
-    }
-
-    /** A synchronous callback is provisional until this registration method returns normally. */
-    private static final class CallbackThenReturnToken implements CancellationToken {
-        private final CountDownLatch callbackInvoked = new CountDownLatch(1);
-        private final CountDownLatch releaseRegistration = new CountDownLatch(1);
-        private final CountDownLatch registrationCloseEntered = new CountDownLatch(1);
-        private final CountDownLatch releaseRegistrationClose = new CountDownLatch(1);
-        private final AtomicInteger closeCalls = new AtomicInteger();
-
-        @Override
-        public boolean isCancellationRequested() {
-            return false;
-        }
-
-        @Override
-        public ListenerRegistration onCancellation(Runnable listener) {
-            listener.run();
-            callbackInvoked.countDown();
-            awaitLatch(releaseRegistration);
-            return () -> {
-                closeCalls.incrementAndGet();
-                registrationCloseEntered.countDown();
-                awaitLatch(releaseRegistrationClose);
-            };
-        }
-    }
-
-    /** The listener fires during attachment, while the second token read itself fails. */
-    private static final class CallbackThenSecondReadErrorToken implements CancellationToken {
-        private final AtomicInteger reads = new AtomicInteger();
-        private final AtomicInteger closeCalls = new AtomicInteger();
-
-        @Override
-        public boolean isCancellationRequested() {
-            if (reads.getAndIncrement() == 0) {
-                return false;
-            }
-            throw new AssertionError("second token read error");
-        }
-
-        @Override
-        public ListenerRegistration onCancellation(Runnable listener) {
-            listener.run();
-            return closeCalls::incrementAndGet;
-        }
-    }
-
-    private static final class ThrowOnceCleanupToken implements CancellationToken {
-        private final AtomicBoolean failClose = new AtomicBoolean(true);
-        private final AtomicInteger closeCalls = new AtomicInteger();
-
-        @Override
-        public boolean isCancellationRequested() {
-            return false;
-        }
-
-        @Override
-        public ListenerRegistration onCancellation(Runnable listener) {
-            return () -> {
-                closeCalls.incrementAndGet();
-                if (failClose.compareAndSet(true, false)) {
-                    throw new AssertionError("listener close error");
-                }
-            };
-        }
-    }
-
-    private static final class BlockingAttachmentProvider implements AiProvider {
-        private final CountDownLatch attachmentEntered = new CountDownLatch(1);
-        private final CountDownLatch releaseAttachment = new CountDownLatch(1);
-        private final BlockingAttachmentFuture<AiResponse> stage =
-                new BlockingAttachmentFuture<>(attachmentEntered, releaseAttachment);
-
-        @Override
-        public CompletionStage<AiResponse> complete(
-                AiRequest request, CancellationToken token) {
-            return stage;
-        }
-
-        @Override
-        public CompletionStage<AiCapabilities> probeCapabilities() {
-            return CompletableFuture.completedFuture(AiTestFixtures.capabilities(PROVIDER_ID));
-        }
-
-        @Override
-        public ProviderHealth health() {
-            return ProviderHealth.healthy(PROVIDER_ID, Instant.EPOCH);
-        }
-    }
-
-    /** An attachment boundary which blocks before installing the scheduler's completion callback. */
-    private static final class BlockingAttachmentFuture<T> extends CompletableFuture<T> {
-        private final CountDownLatch attachmentEntered;
-        private final CountDownLatch releaseAttachment;
-
-        private BlockingAttachmentFuture(
-                CountDownLatch attachmentEntered, CountDownLatch releaseAttachment) {
-            this.attachmentEntered = attachmentEntered;
-            this.releaseAttachment = releaseAttachment;
-        }
-
-        @Override
-        public CompletableFuture<T> whenComplete(
-                BiConsumer<? super T, ? super Throwable> action) {
-            attachmentEntered.countDown();
-            try {
-                releaseAttachment.await(5L, TimeUnit.SECONDS);
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-            }
-            return super.whenComplete(action);
-        }
-    }
-
-    private static final class AttachmentErrorFuture<T> extends CompletableFuture<T> {
-        @Override
-        public CompletableFuture<T> whenComplete(
-                BiConsumer<? super T, ? super Throwable> action) {
-            throw new AssertionError("whenComplete attachment error");
-        }
-    }
-
-    /**
-     * Simulates a CompletionStage that synchronously supplies a valid response, but then throws
-     * from attachment. The response is provisional until whenComplete has returned normally.
-     */
-    private static final class CallbackThenThrowAttachmentProvider implements AiProvider {
-        private final AtomicInteger calls = new AtomicInteger();
-        private final CountDownLatch callbackInvoked = new CountDownLatch(1);
-        private final CountDownLatch releaseThrow = new CountDownLatch(1);
-
-        @Override
-        public CompletionStage<AiResponse> complete(
-                AiRequest request, CancellationToken token) {
-            if (calls.getAndIncrement() == 0) {
-                return new CallbackThenThrowFuture<>(response(request), callbackInvoked,
-                        releaseThrow);
-            }
-            return CompletableFuture.completedFuture(response(request));
-        }
-
-        @Override
-        public CompletionStage<AiCapabilities> probeCapabilities() {
-            return CompletableFuture.completedFuture(AiTestFixtures.capabilities(PROVIDER_ID));
-        }
-
-        @Override
-        public ProviderHealth health() {
-            return ProviderHealth.healthy(PROVIDER_ID, Instant.EPOCH);
-        }
-    }
-
-    private static final class CallbackThenThrowFuture<T> extends CompletableFuture<T> {
-        private final T synchronousResponse;
-        private final CountDownLatch callbackInvoked;
-        private final CountDownLatch releaseThrow;
-
-        private CallbackThenThrowFuture(
-                T synchronousResponse,
-                CountDownLatch callbackInvoked,
-                CountDownLatch releaseThrow) {
-            this.synchronousResponse = synchronousResponse;
-            this.callbackInvoked = callbackInvoked;
-            this.releaseThrow = releaseThrow;
-        }
-
-        @Override
-        public CompletableFuture<T> whenComplete(
-                BiConsumer<? super T, ? super Throwable> action) {
-            action.accept(synchronousResponse, null);
-            callbackInvoked.countDown();
-            awaitLatch(releaseThrow);
-            throw new AssertionError("completion callback then attachment error");
-        }
-    }
-
-    /** A synchronous stage callback is provisional until whenComplete returns normally. */
-    private static final class CallbackThenReturnAttachmentProvider implements AiProvider {
-        private final AtomicInteger calls = new AtomicInteger();
-        private final CountDownLatch callbackInvoked = new CountDownLatch(1);
-        private final CountDownLatch releaseAttachment = new CountDownLatch(1);
-
-        @Override
-        public CompletionStage<AiResponse> complete(
-                AiRequest request, CancellationToken token) {
-            calls.incrementAndGet();
-            return new CallbackThenReturnFuture<>(response(request), callbackInvoked,
-                    releaseAttachment);
-        }
-
-        @Override
-        public CompletionStage<AiCapabilities> probeCapabilities() {
-            return CompletableFuture.completedFuture(AiTestFixtures.capabilities(PROVIDER_ID));
-        }
-
-        @Override
-        public ProviderHealth health() {
-            return ProviderHealth.healthy(PROVIDER_ID, Instant.EPOCH);
-        }
-    }
-
-    private static final class CallbackThenReturnFuture<T> extends CompletableFuture<T> {
-        private final T synchronousResponse;
-        private final CountDownLatch callbackInvoked;
-        private final CountDownLatch releaseAttachment;
-
-        private CallbackThenReturnFuture(
-                T synchronousResponse,
-                CountDownLatch callbackInvoked,
-                CountDownLatch releaseAttachment) {
-            this.synchronousResponse = synchronousResponse;
-            this.callbackInvoked = callbackInvoked;
-            this.releaseAttachment = releaseAttachment;
-        }
-
-        @Override
-        public CompletableFuture<T> whenComplete(
-                BiConsumer<? super T, ? super Throwable> action) {
-            action.accept(synchronousResponse, null);
-            callbackInvoked.countDown();
-            awaitLatch(releaseAttachment);
-            return this;
-        }
-    }
-
-    private static final class ThrowOnceCancelFuture<T> extends CompletableFuture<T> {
-        private final AtomicBoolean failCancel = new AtomicBoolean(true);
-        private final AtomicInteger cancelCalls = new AtomicInteger();
-
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            cancelCalls.incrementAndGet();
-            if (failCancel.compareAndSet(true, false)) {
-                throw new AssertionError("stage cancel error");
-            }
-            return super.cancel(mayInterruptIfRunning);
-        }
-    }
-
-    private static final class TrackingFuture<T> extends CompletableFuture<T> {
-        @Override
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            return super.cancel(mayInterruptIfRunning);
-        }
-    }
-
-    private record Call(AiRequest request, TrackingFuture<AiResponse> stage) {
-    }
-
-    private static final class DroppingExecutor implements Executor {
-        @Override
-        public void execute(Runnable command) {
-            // Intentionally reports normal acceptance while silently dropping the wrapper.
-        }
-    }
-
-    private static final class InlineExecutor implements Executor {
-        @Override
-        public void execute(Runnable command) {
-            command.run();
-        }
-    }
-
-    private static final class TwiceExecutor implements Executor {
-        @Override
-        public void execute(Runnable command) {
-            command.run();
-            command.run();
-        }
-    }
-
-    private static final class InvokeThenThrowExecutor implements Executor {
-        @Override
-        public void execute(Runnable command) {
-            command.run();
-            throw new RejectedExecutionException("throws after wrapper invocation");
-        }
-    }
-
-    private static final class InvokeThenErrorExecutor implements Executor {
-        @Override
-        public void execute(Runnable command) {
-            command.run();
-            throw new AssertionError("throws Error after wrapper invocation");
-        }
-    }
-
-    private static final class BlockingExecuteExecutor implements Executor {
-        private final CountDownLatch entered = new CountDownLatch(1);
-        private final CountDownLatch release = new CountDownLatch(1);
-
-        @Override
-        public void execute(Runnable command) {
-            entered.countDown();
-            try {
-                release.await(5L, TimeUnit.SECONDS);
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-            }
-            // A hostile executor can return without ever invoking the retained command.
-        }
-    }
-
-    private static final class CapturingExecutor implements Executor {
-        private final CountDownLatch captured = new CountDownLatch(1);
-        private final AtomicReference<Runnable> command = new AtomicReference<>();
-
-        @Override
-        public void execute(Runnable wrapper) {
-            command.set(wrapper);
-            captured.countDown();
-        }
-
-        private void runCaptured() {
-            Runnable wrapper = command.getAndSet(null);
-            assertTrue(wrapper != null);
-            wrapper.run();
-        }
-    }
-
-    private static final class DropOnceExecutor implements Executor {
-        private final Executor delegate;
-        private final AtomicBoolean drop = new AtomicBoolean(true);
-
-        private DropOnceExecutor(Executor delegate) {
-            this.delegate = delegate;
-        }
-
-        @Override
-        public void execute(Runnable command) {
-            if (drop.compareAndSet(true, false)) {
-                return;
-            }
-            delegate.execute(command);
-        }
-    }
-
-    private static final class MutableClock extends Clock {
-        private final AtomicReference<Instant> instant;
-
-        private MutableClock(Instant initial) {
-            instant = new AtomicReference<>(initial);
-        }
-
-        private void set(Instant next) {
-            instant.set(next);
-        }
-
-        @Override
-        public ZoneId getZone() {
-            return ZoneOffset.UTC;
-        }
-
-        @Override
-        public Clock withZone(ZoneId zone) {
-            return this;
-        }
-
-        @Override
-        public Instant instant() {
-            return instant.get();
-        }
-    }
-}
+YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éíßùõ:-jZ.¶›­–)Ş³W6¶vR–òæv—F‡V"æw&W—F—vöÆbæ&÷GÆ–W"æ“° ¦–×÷'B7FF–2÷&ræ§Væ—Bæ§W—FW"æ’ä76W'F–öç2æ76W'DWVÇ3°¦–×÷'B7FF–2÷&ræ§Væ—Bæ§W—FW"æ’ä76W'F–öç2æ76W'DfÇ6S°¦–×÷'B7FF–2÷&ræ§Væ—Bæ§W—FW"æ’ä76W'F–öç2æ76W'EF‡&÷w3°¦–×÷'B7FF–2÷&ræ§Væ—Bæ§W—FW"æ’ä76W'F–öç2æ76W'EG'VS° ¦–×÷'B¦fçF–ÖRä6Æö6³°¦–×÷'B¦fçF–ÖRäGW&F–öã°¦–×÷'B¦fçF–ÖRä–ç7FçC°¦–×÷'B¦fçF–ÖRå¦öæT–C°¦–×÷'B¦fçF–ÖRå¦öæTöfg6WC°¦–×÷'B¦fçWF–ÂäVçVÔÖ°¦–×÷'B¦fçWF–ÂäÆ—7C°¦–×÷'B¦fçWF–ÂåUT”C°¦–×÷'B¦fçWF–Âæ6öæ7W'&VçBä6ö×ÆWF&ÆTgWGW&S°¦–×÷'B¦fçWF–Âæ6öæ7W'&VçBä6ö×ÆWF–öå7FvS°¦–×÷'B¦fçWF–Âæ6öæ7W'&VçBä6÷”öåw&—FT'&”Æ—7C°¦–×÷'B¦fçWF–Âæ6öæ7W'&VçBä6÷VçDF÷väÆF6ƒ°¦–×÷'B¦fçWF–Âæ6öæ7W'&VçBäW†V7WF÷#°¦–×÷'B¦fçWF–Âæ6öæ7W'&VçBäW†V7WF÷%6W'f–6S°¦–×÷'B¦fçWF–Âæ6öæ7W'&VçBäW†V7WF–öäW†6WF–öã°¦–×÷'B¦fçWF–Âæ6öæ7W'&VçBäW†V7WF÷'3°¦–×÷'B¦fçWF–Âæ6öæ7W'&VçBå&V¦V7FVDW†V7WF–öäW†6WF–öã°¦–×÷'B¦fçWF–Âæ6öæ7W'&VçBåF–ÖUVæ—C°¦–×÷'B¦fçWF–Âæ6öæ7W'&VçBåF–ÖV÷WDW†6WF–öã°¦–×÷'B¦fçWF–Âæ6öæ7W'&VçBæFöÖ–2äFöÖ–4&ööÆVã°¦–×÷'B¦fçWF–Âæ6öæ7W'&VçBæFöÖ–2äFöÖ–4–çFVvW#°¦–×÷'B¦fçWF–Âæ6öæ7W'&VçBæFöÖ–2äFöÖ–5&VfW&Væ6S°¦–×÷'B¦fçWF–ÂægVæ7F–öâä&”6öç7VÖW#°¦–×÷'B÷&ræ§Væ—Bæ§W—FW"æ’åFW7C° ¢ò¢ ¢¢F†W6RFW7G2FVÆ–&W&FVÇ’W6R†÷7F–ÆRW†V7WF÷"–×ÆVÖVçFF–öç2F‡&÷Vv‚F†R6¶vR×&—fFP¢¢7WW'f—6÷"6VÒâ&öGV7F–öâ6öç7G'V7F–öâ†2æò&rW†V7WF÷"–çWC²F†R†÷7F–ÆR†æFöfb'Vç0¢¢öæÇ’öâF†R7WW'f—6÷"w2—6öÆFVB'&ö¶W"ÂæWfW"öâ7V&Ö—B÷V×öFVFÆ–æRF‡2à¢¢ğ¦6Æ72•&WVW7E66†VGVÆW%FW7B°¢&—fFR7FF–2f–æÂ7G&–ær$õd”DU%ô”BÒ'66†VGVÆW"×FW7B#°¢&—fFR7FF–2f–æÂUT”BõtäU"ÒæWrUT”BƒÂÂÂ“°¢&—fFR7FF–2f–æÂUT”B$õEôÒæWrUT”Bƒ$ÂÂ$Â“°¢&—fFR7FF–2f–æÂUT”B$õEô"ÒæWrUT”Bƒ4ÂÂ4Â“°¢&—fFR7FF–2f–æÂUT”BtTåEôÒæWrUT”BƒDÂÂDÂ“°¢&—fFR7FF–2f–æÂUT”BtTåEô"ÒæWrUT”BƒTÂÂTÂ“°¢&—fFR7FF–2f–æÂGW&F–öâ5D%EõD”ÔTõUBÒGW&F–öâæödÖ–ÆÆ—2ƒ#Â“°¢&—fFR7FF–2f–æÂGW&F–öâ5DÄÅõD”ÔTõUBÒGW&F–öâæödÖ–ÆÆ—2ƒ#SÂ“° ¢FW7@¢fö–BVæf÷&6W4vÆö&ÄæEW$&÷D66—G”æEfÆ–FFW5&W7öç6W2‚’F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢G'’°¢6öçG&öÆÆ&ÆU&÷f–FW"&÷f–FW"ÒæWr6öçG&öÆÆ&ÆU&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒ"ÂÂ‚Â‚’ÂÆæW2“°¢•&WVW7Bf—'7BÒ&WVW7B‚#ÓÓÓÓ"“°¢•&WVW7B6V6öæBÒ&WVW7B‚#ÓÓÓÓ""“°¢•&WVW7B÷F†W"Ò&WVW7B‚#ÓÓÓÓ2"“° ¢6ö×ÆWF&ÆTgWGW&SÄ•&W7öç6Sâf—'7E&W7VÇBÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂf—'7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’¢ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚“°¢66†VGVÆW"ç7V&Ö—B‡66†VGVÆVB„$õEôÂtTåEôÂ6V6öæB’Â6æ6VÆÆF–öåFö¶VâææöæR‚’“°¢6ö×ÆWF&ÆTgWGW&SÄ•&W7öç6Sâ÷F†W%&W7VÇBÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEô"ÂtTåEô"Â÷F†W"’Â6æ6VÆÆF–öåFö¶VâææöæR‚’¢ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚“° ¢76W'EG'VR†v—B‚‚’Óâ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’ÓÒ"Â%óÂ’“°¢76W'EG'VR‡&÷f–FW"æ6ÆÇ2‚’ç7G&VÒ‚’æç”ÖF6‚€¢6ÆÂÓâ6ÆÂç&WVW7B‚’ç&WVW7D–B‚’æWVÇ2†f—'7Bç&WVW7D–B‚’’’“°¢76W'EG'VR‡&÷f–FW"æ6ÆÇ2‚’ç7G&VÒ‚’æç”ÖF6‚€¢6ÆÂÓâ6ÆÂç&WVW7B‚’ç&WVW7D–B‚’æWVÇ2†÷F†W"ç&WVW7D–B‚’’’“°¢76W'DWVÇ2ƒÂ66†VGVÆW"çVWVVE&WVW7D6÷VçB‚’“°¢6ÆÄf÷"‡&÷f–FW"Âf—'7B’ç7FvR‚’æ6ö×ÆWFR‡&W7öç6R†f—'7B’“°¢76W'EG'VR†v—B‚‚’Óâ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’ÓÒ2Â%óÂ’“°¢6ÆÄf÷"‡&÷f–FW"Â÷F†W"’ç7FvR‚’æ6ö×ÆWFR‡&W7öç6R†÷F†W"’“°¢6ÆÄf÷"‡&÷f–FW"Â6V6öæB’ç7FvR‚’æ6ö×ÆWFR‡&W7öç6R‡6V6öæB’“° ¢76W'DWVÇ2†f—'7Bç&WVW7D–B‚’Âf—'7E&W7VÇBævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’ç&WVW7D–B‚’“°¢76W'DWVÇ2†÷F†W"ç&WVW7D–B‚’Â÷F†W%&W7VÇBævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’ç&WVW7D–B‚’“°¢76W'DWVÇ2ƒÂ66†VGVÆW"æ–äfÆ–v‡E&WVW7D6÷VçB‚’“° ¢•&WVW7BÖÆf÷&ÖVBÒ&WVW7B‚#ÓÓÓÓB"“°¢6ö×ÆWF&ÆTgWGW&SÄ•&W7öç6SâÖÆf÷&ÖVE&W7VÇBÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂÖÆf÷&ÖVB’Â6æ6VÆÆF–öåFö¶VâææöæR‚’¢ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚“°¢76W'EG'VR†v—B‚‚’Óâ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’ÓÒBÂ%óÂ’“°¢6ÆÄf÷"‡&÷f–FW"ÂÖÆf÷&ÖVB’ç7FvR‚’æ6ö×ÆWFR‡&W7öç6R†÷F†W"’“°¢76W'DWVÇ2„”f–ÇW&T¶–æBäÔÄdõ$ÔTEõ$U5ôå4RÀ¢f–ÇW&R†ÖÆf÷&ÖVE&W7VÇB’æf–ÇW&T¶–æB‚’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–B'6öÇWFTFVFÆ–æTf–Ç4VWVVE&WVW7D&Vf÷&T—G5&÷f–FW$6å7F'B‚’F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢G'’°¢ò¢Ö¶RF†R&W&WV—6—FRf—'7B×7F'B÷&FW&–ærFWFW&Ö–æ—7F–2f÷"F†—2FVFÆ–æRFW7Bâ¢ğ¢ÆæW2ç6WB„•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRåDô´Tåõ4UEUÂæWr–æÆ–æTW†V7WF÷"‚’“°¢×WF&ÆT6Æö6²6Æö6²ÒæWr×WF&ÆT6Æö6²„–ç7FçBäUô4‚“°¢6öçG&öÆÆ&ÆU&÷f–FW"&÷f–FW"ÒæWr6öçG&öÆÆ&ÆU&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2Â6Æö6²“°¢•&WVW7Bf—'7BÒ&WVW7B‚#ÓÓÓÓS"Â#óÂ“°¢•&WVW7BW‡—&VBÒ&WVW7B‚#ÓÓÓÓS""ÂUóÂ“° ¢6ö×ÆWF&ÆTgWGW&SÄ•&W7öç6Sâf—'7E&W7VÇBÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂf—'7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’¢ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚“°¢6ö×ÆWF&ÆTgWGW&SÄ•&W7öç6SâW‡—&VE&W7VÇBÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEô"ÂtTåEô"ÂW‡—&VB’Â6æ6VÆÆF–öåFö¶VâææöæR‚’¢ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚“°¢76W'EG'VR†v—B‚‚’Óâ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’ÓÒÂ%óÂ’“° ¢6Æö6²ç6WB„–ç7FçBäUô4‚çÇW56V6öæG2ƒÂ’“°¢6ÆÄf÷"‡&÷f–FW"Âf—'7B’ç7FvR‚’æ6ö×ÆWFR‡&W7öç6R†f—'7B’“°¢76W'DWVÇ2†f—'7Bç&WVW7D–B‚’Âf—'7E&W7VÇBævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’ç&WVW7D–B‚’“°¢76W'DWVÇ2„”f–ÇW&T¶–æBåD”ÔTõUBÂf–ÇW&R†W‡—&VE&W7VÇB’æf–ÇW&T¶–æB‚’“°¢76W'DWVÇ2ƒÂ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’“°¢76W'DWVÇ2„•66†VGVÆW%&WVW7E7FFRäd”ÄTBÀ¢66†VGVÆW"ç&WVW7D†VÇF‚†W‡—&VBç&WVW7D–B‚’’æ÷$VÇ6UF‡&÷r‚’ç7FFR‚’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–B&÷VæFVEVWVU&V¦V7G5v—F†÷WDÆWGF–æt&W7öç6T6÷”×WFFUF†U66†VGVÆW"‚’F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢G'’°¢6öçG&öÆÆ&ÆU&÷f–FW"&÷f–FW"ÒæWr6öçG&öÆÆ&ÆU&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂÂ’ÂÆæW2“°¢•&WVW7Bf—'7BÒ&WVW7B‚#ÓÓÓÓc"“°¢•&WVW7BVWVVBÒ&WVW7B‚#ÓÓÓÓc""“°¢•&WVW7B&V¦V7FVBÒ&WVW7B‚#ÓÓÓÓc2"“° ¢•66†VGVÆVE&WVW7D†æFÆRf—'7D†æFÆRÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂf—'7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’“°¢76W'EG'VR†v—B‚‚’Óâ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’ÓÒÂ%óÂ’“°¢66†VGVÆW"ç7V&Ö—B‡66†VGVÆVB„$õEô"ÂtTåEô"ÂVWVVB’Â6æ6VÆÆF–öåFö¶VâææöæR‚’“°¢76W'EG'VR†v—B‚‚’Óâ66†VGVÆW"çVWVVE&WVW7D6÷VçB‚’ÓÒÂ%óÂ’“°¢•66†VGVÆVE&WVW7D†æFÆR&V¦V7FVD†æFÆRÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB†æWrUT”Bƒ„ÂÂ„Â’ÂæWrUT”Bƒ”ÂÂ”Â’Â&V¦V7FVB’À¢6æ6VÆÆF–öåFö¶VâææöæR‚’“° ¢76W'DWVÇ2„”f–ÇW&T¶–æBäõdU$ÄôDTBÀ¢f–ÇW&R‡&V¦V7FVD†æFÆRç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚’’æf–ÇW&T¶–æB‚’“°¢76W'DWVÇ2„•66†VGVÆW%&WVW7E7FFRå$T¤T5DTBÀ¢66†VGVÆW"ç&WVW7D†VÇF‚‡&V¦V7FVBç&WVW7D–B‚’’æ÷$VÇ6UF‡&÷r‚’ç7FFR‚’“°¢76W'DWVÇ2„•&WVW7D6æ6VÆÆF–öäF—7÷6—F–öâäÅ$TE•õDU$Ô”äÂÀ¢&V¦V7FVD†æFÆRç&WVW7D6æ6VÆÆF–öâ‚’çFô6ö×ÆWF&ÆTgWGW&R‚¢ævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’æF—7÷6—F–öâ‚’“° ¢6ö×ÆWF&ÆTgWGW&SÄ•&W7öç6Sâ6ÆÆW$6÷’Ğ¢f—'7D†æFÆRç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚“°¢76W'EG'VR†6ÆÆW$6÷’æ6æ6VÂ‡G'VR’“°¢76W'DfÇ6R†f—'7D†æFÆRç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚’æ—4FöæR‚’“°¢6ÆÄf÷"‡&÷f–FW"Âf—'7B’ç7FvR‚’æ6ö×ÆWFR‡&W7öç6R†f—'7B’“°¢76W'EG'VR†v—B‚‚’Óâ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’ÓÒ"Â%óÂ’“°¢6ÆÄf÷"‡&÷f–FW"ÂVWVVB’ç7FvR‚’æ6ö×ÆWFR‡&W7öç6R‡VWVVB’“°¢76W'DWVÇ2†f—'7Bç&WVW7D–B‚’Âf—'7D†æFÆRç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚¢ævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’ç&WVW7D–B‚’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–B66WFVD'WDG&÷VE&÷f–FW%w&W$f–Ç46Æ÷6VEv—F†÷WD6ÆÆ–æu&÷f–FW"‚’F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢G'’°¢ÆæW2ç6WB„•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRå$õd”DU%õ5D%BÀ¢æWrG&÷–ætW†V7WF÷"‚’“°¢6öçG&öÆÆ&ÆU&÷f–FW"&÷f–FW"ÒæWr6öçG&öÆÆ&ÆU&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2“°¢•&WVW7B&WVW7BÒ&WVW7B‚#ÓÓÓÓ#"“° ¢6ö×ÆWF&ÆTgWGW&SÄ•&W7öç6Sâ&W7VÇBÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂ&WVW7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’¢ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚“° ¢76W'DWVÇ2„”f–ÇW&T¶–æBåTäd”Ä$ÄRÂf–ÇW&R‡&W7VÇB’æf–ÇW&T¶–æB‚’“°¢76W'DWVÇ2ƒÂ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’“°¢76W'EG'VR‡66†VGVÆW"æF–væ÷7F–72‚’ç&V¦V7FVDF—7F6„6÷VçB‚’âÂ“°¢76W'EG'VR‡66†VGVÆW"æF–væ÷7F–72‚’ç&V6VçEV&çF–æW2‚’ç7G&VÒ‚’æç”ÖF6‚€¢WfVçBÓâWfVçBç&WVW7D–B‚’æWVÇ2‡&WVW7Bç&WVW7D–B‚’¢bbWfVçBæ¶–æB‚’ÓÒ•&WVW7E66†VGVÆW%V&çF–æT¶–æBäD•5D4…õ5D%B’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–Bw&W%&WF–æVE7EF†U7F'EvF6†Föt—4ä–æW'DÆFTæô÷‚’F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢6GW&–ætW†V7WF÷"6GW&RÒæWr6GW&–ætW†V7WF÷"‚“°¢G'’°¢ÆæW2ç6WB„•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRå$õd”DU%õ5D%BÂ6GW&R“°¢6öçG&öÆÆ&ÆU&÷f–FW"&÷f–FW"ÒæWr6öçG&öÆÆ&ÆU&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2“°¢•&WVW7B&WVW7BÒ&WVW7B‚#ÓÓÓÓ#R"“° ¢6ö×ÆWF&ÆTgWGW&SÄ•&W7öç6Sâ&W7VÇBÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂ&WVW7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’¢ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚“°¢76W'EG'VR†6GW&Ræ6GW&VBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“°¢76W'DWVÇ2„”f–ÇW&T¶–æBåTäd”Ä$ÄRÂf–ÇW&R‡&W7VÇB’æf–ÇW&T¶–æB‚’“°¢6GW&Rç'Vä6GW&VB‚“°¢76W'DWVÇ2ƒÂ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–BGWÆ–6FUw&W$–çfö6F–öä6å7F'E&÷f–FW$öæÇ”öæ6R‚’F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢G'’°¢ÆæW2ç6WB„•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRå$õd”DU%õ5D%BÀ¢æWrGv–6TW†V7WF÷"‚’“°¢6öçG&öÆÆ&ÆU&÷f–FW"&÷f–FW"ÒæWr6öçG&öÆÆ&ÆU&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2“°¢•&WVW7B&WVW7BÒ&WVW7B‚#ÓÓÓÓ#"“° ¢6ö×ÆWF&ÆTgWGW&SÄ•&W7öç6Sâ&W7VÇBÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂ&WVW7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’¢ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚“°¢76W'EG'VR†v—B‚‚’Óâ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’ÓÒÂ%óÂ’“°¢&÷f–FW"æ6ÆÇ2‚’ævWBƒ’ç7FvR‚’æ6ö×ÆWFR‡&W7öç6R‡&WVW7B’“°¢76W'DWVÇ2‡&WVW7Bç&WVW7D–B‚’Â&W7VÇBævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’ç&WVW7D–B‚’“°¢76W'DWVÇ2ƒÂ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–Bw&W%F†VåF‡&÷tFöW4æ÷EGW&ä6öÖÖ—GFVE&÷f–FW%7F'D–çFõ&V¦V7F–öâ‚’F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢G'’°¢ÆæW2ç6WB„•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRå$õd”DU%õ5D%BÀ¢æWr–çfö¶UF†VåF‡&÷tW†V7WF÷"‚’“°¢–ÖÖVF–FU&÷f–FW"&÷f–FW"ÒæWr–ÖÖVF–FU&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2“°¢•&WVW7B&WVW7BÒ&WVW7B‚#ÓÓÓÓ##"“° ¢•&W7öç6R&W7öç6RÒ66†VGVÆW"ç7V&Ö—B‡66†VGVÆVB„$õEôÂtTåEôÂ&WVW7B’À¢6æ6VÆÆF–öåFö¶VâææöæR‚’’ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚¢ævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2“°¢76W'DWVÇ2‡&WVW7Bç&WVW7D–B‚’Â&W7öç6Rç&WVW7D–B‚’“°¢76W'DWVÇ2ƒÂ&÷f–FW"æ6ÆÇ2ævWB‚’“°¢76W'DWVÇ2ƒÂÂ66†VGVÆW"æF–væ÷7F–72‚’ç&V¦V7FVDF—7F6„6÷VçB‚’“°¢76W'DfÇ6R‡66†VGVÆW"æF–væ÷7F–72‚’æF—7F6„FVw&FVB‚’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–B&Æö6¶–ætW†V7WF÷$W†V7WFT6ææ÷D&Æö6µ7V&Ö—DæD—5vF6†Fötf–ÆVB‚’F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢&Æö6¶–ætW†V7WFTW†V7WF÷"&Æö6¶–ærÒæWr&Æö6¶–ætW†V7WFTW†V7WF÷"‚“°¢G'’°¢ÆæW2ç6WB„•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRå$õd”DU%õ5D%BÂ&Æö6¶–ær“°¢6öçG&öÆÆ&ÆU&÷f–FW"&÷f–FW"ÒæWr6öçG&öÆÆ&ÆU&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2“°¢•&WVW7B&WVW7BÒ&WVW7B‚#ÓÓÓÓ#3"“° ¢Æöær7F'FVDBÒ7—7FVÒæææõF–ÖR‚“°¢6ö×ÆWF&ÆTgWGW&SÄ•&W7öç6Sâ&W7VÇBÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂ&WVW7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’¢ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚“°¢ÆöærVÆ6VDÖ–ÆÆ—2ÒF–ÖUVæ—Bäääõ4T4ôäE2çFôÖ–ÆÆ—2…7—7FVÒæææõF–ÖR‚’Ò7F'FVDB“°¢76W'EG'VR†VÆ6VDÖ–ÆÆ—2Â#SÂÂ'7V&Ö—Bv2&Æö6¶VB'’W†V7WF÷"æW†V7WFR"“°¢76W'EG'VR†&Æö6¶–æræVçFW&VBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“°¢76W'DWVÇ2„”f–ÇW&T¶–æBåTäd”Ä$ÄRÂf–ÇW&R‡&W7VÇB’æf–ÇW&T¶–æB‚’“°¢76W'DWVÇ2ƒÂ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’“°¢76W'EG'VR‡66†VGVÆW"æF–væ÷7F–72‚’ç&V¦V7FVDF—7F6„6÷VçB‚’âÂ“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢&Æö6¶–ærç&VÆV6Ræ6÷VçDF÷vâ‚“°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–B6æ6VÆÆF–öä&Vf÷&U&÷f–FW%7F'D6öÖÖ—DæWfW$6ÆÇ5&÷f–FW"‚’F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢6GW&–ætW†V7WF÷"6GW&RÒæWr6GW&–ætW†V7WF÷"‚“°¢G'’°¢ÆæW2ç6WB„•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRå$õd”DU%õ5D%BÂ6GW&R“°¢6öçG&öÆÆ&ÆU&÷f–FW"&÷f–FW"ÒæWr6öçG&öÆÆ&ÆU&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2À¢GW&F–öâæöe6V6öæG2ƒÂ’Â5DÄÅõD”ÔTõUB“°¢•&WVW7B&WVW7BÒ&WVW7B‚#ÓÓÓÓ#C"“°¢•66†VGVÆVE&WVW7D†æFÆR†æFÆRÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂ&WVW7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’“° ¢76W'EG'VR†6GW&Ræ6GW&VBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“°¢76W'DWVÇ2„•&WVW7D6æ6VÆÆF–öäF—7÷6—F–öâä4ä4TÄÄTBÀ¢†æFÆRç&WVW7D6æ6VÆÆF–öâ‚’çFô6ö×ÆWF&ÆTgWGW&R‚¢ævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’æF—7÷6—F–öâ‚’“°¢6GW&Rç'Vä6GW&VB‚“°¢76W'DWVÇ2ƒÂ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’“°¢76W'DWVÇ2„”f–ÇW&T¶–æBä4ä4TÄÄTBÀ¢f–ÇW&R††æFÆRç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚’’æf–ÇW&T¶–æB‚’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–B6æ6VÆÆF–öägFW%&÷f–FW%7F'D6öÖÖ—E&W÷'G4Ö”†fU7F'FVDæEV&çF–æW5‡—6–6Åv÷&²‚¢F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢&Æö6¶–æu&÷f–FW"&÷f–FW"ÒæWr&Æö6¶–æu&÷f–FW"‚“°¢G'’°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2“°¢•&WVW7B&WVW7BÒ&WVW7B‚#ÓÓÓÓ#S"“°¢•66†VGVÆVE&WVW7D†æFÆR†æFÆRÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂ&WVW7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’“°¢76W'EG'VR‡&÷f–FW"æVçFW&VBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“° ¢76W'DWVÇ2„•&WVW7D6æ6VÆÆF–öäF—7÷6—F–öâä4ä4TÄÄTBÀ¢†æFÆRç&WVW7D6æ6VÆÆF–öâ‚’çFô6ö×ÆWF&ÆTgWGW&R‚¢ævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’æF—7÷6—F–öâ‚’“°¢76W'DWVÇ2„”f–ÇW&T¶–æBä4ä4TÄÄTBÀ¢f–ÇW&R††æFÆRç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚’’æf–ÇW&T¶–æB‚’“°¢76W'DWVÇ2ƒÂ&÷f–FW"æ6ÆÇ2ævWB‚’“°¢76W'EG'VR‡66†VGVÆW"æF–væ÷7F–72‚’çV&çF–æVE&÷f–FW$–çfö6F–öä6÷VçB‚’â“°¢76W'EG'VR‡66†VGVÆW"æF–væ÷7F–72‚’æF—7F6„FVw&FVB‚’“° ¢&÷f–FW"ç&VÆV6Ræ6÷VçDF÷vâ‚“°¢76W'EG'VR†v—B‚‚’Óâ&÷f–FW"ç7FvRæ—46æ6VÆÆVB‚’Â%óÂ’“°¢76W'EG'VR†v—B‚‚’Óâ66†VGVÆW"æF–væ÷7F–72‚¢çV&çF–æVE&÷f–FW$–çfö6F–öä6÷VçB‚’ÓÒÂ%óÂ’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢&÷f–FW"ç&VÆV6Ræ6÷VçDF÷vâ‚“°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–B&öGV7F–öå7WW'f—6÷$¶VW47FÆÆVE&÷f–FW%v—F†–ä—G4f—†VE‡—6–6ÄÆæR‚¢F‡&÷w2W†6WF–öâ°¢•&WVW7E66†VGVÆW%öÆ–7’öÆ–7’ÒæWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚“°¢•&WVW7E66†VGVÆW%7WW'f—6÷"7WW'f—6÷"Ò•&WVW7E66†VGVÆW%7WW'f—6÷"æ7&VFR€¢'66†VGVÆW"×&öGV7F–öâÖ&÷VæB"ÂöÆ–7’Â5D%EõD”ÔTõUBÂ5DÄÅõD”ÔTõUB“°¢&Æö6¶–æu&÷f–FW"&÷f–FW"ÒæWr&Æö6¶–æu&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"ÒæWr•&WVW7E66†VGVÆW"€¢$õd”DU%ô”BÂ&÷f–FW"ÂöÆ–7’Â6Æö6²ç7—7FVÕUD2‚’Â7WW'f—6÷"“°¢G'’°¢•&WVW7Bf—'7BÒ&WVW7B‚#ÓÓÓÓ#S""“°¢6ö×ÆWF&ÆTgWGW&SÄ•&W7öç6Sâf—'7E&W7VÇBÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂf—'7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’¢ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚“°¢76W'EG'VR‡&÷f–FW"æVçFW&VBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“°¢76W'DWVÇ2„”f–ÇW&T¶–æBåTäd”Ä$ÄRÂf–ÇW&R†f—'7E&W7VÇB’æf–ÇW&T¶–æB‚’“°¢76W'EG'VR‡66†VGVÆW"æF–væ÷7F–72‚’çV&çF–æVE&÷f–FW$–çfö6F–öä6÷VçB‚’â“° ¢•&WVW7B6V6öæBÒ&WVW7B‚#ÓÓÓÓ#S2"“°¢6ö×ÆWF&ÆTgWGW&SÄ•&W7öç6Sâ&V¦V7FVBÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEô"ÂtTåEô"Â6V6öæB’Â6æ6VÆÆF–öåFö¶VâææöæR‚’¢ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚“°¢76W'DWVÇ2„”f–ÇW&T¶–æBåTäd”Ä$ÄRÂf–ÇW&R‡&V¦V7FVB’æf–ÇW&T¶–æB‚’“°¢76W'DWVÇ2ƒÂ&÷f–FW"æ6ÆÇ2ævWB‚’“°¢76W'EG'VR‡66†VGVÆW"æF–væ÷7F–72‚’æF—7F6„FVw&FVB‚’“° ¢&÷f–FW"ç&VÆV6Ræ6÷VçDF÷vâ‚“°¢76W'EG'VR†v—B‚‚’Óâ66†VGVÆW"æF–væ÷7F–72‚¢çV&çF–æVE&÷f–FW$–çfö6F–öä6÷VçB‚’ÓÒÂ%óÂ’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢&÷f–FW"ç&VÆV6Ræ6÷VçDF÷vâ‚“°¢66†VGVÆW"æ6Æ÷6R‚“°¢7WW'f—6÷"æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–B&Æö6¶VEFö¶Vå6WGW—5V&çF–æVDæDæWfW$&V6öÖW5&÷f–FW$VÆ–v–&ÆR‚’F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢&Æö6¶–æuFö¶VâFö¶VâÒæWr&Æö6¶–æuFö¶Vâ‚“°¢G'’°¢6öçG&öÆÆ&ÆU&÷f–FW"&÷f–FW"ÒæWr6öçG&öÆÆ&ÆU&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2“°¢•&WVW7B&WVW7BÒ&WVW7B‚#ÓÓÓÓ#c"“°¢6ö×ÆWF&ÆTgWGW&SÄ•&W7öç6Sâ&W7VÇBÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂ&WVW7B’ÂFö¶Vâ’ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚“° ¢76W'EG'VR‡Fö¶VâæVçFW&VBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“°¢76W'DWVÇ2„”f–ÇW&T¶–æBåTäd”Ä$ÄRÂf–ÇW&R‡&W7VÇB’æf–ÇW&T¶–æB‚’“°¢76W'DWVÇ2ƒÂ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’“°¢76W'EG'VR‡66†VGVÆW"æF–væ÷7F–72‚’çV&çF–æVEFö¶Vå6WGW6÷VçB‚’â“°¢76W'EG'VR‡66†VGVÆW"æF–væ÷7F–72‚’æF—7F6„FVw&FVB‚’“° ¢Fö¶Vâç&VÆV6Ræ6÷VçDF÷vâ‚“°¢76W'EG'VR†v—B‚‚’Óâ66†VGVÆW"æF–væ÷7F–72‚¢çV&çF–æVEFö¶Vå6WGW6÷VçB‚’ÓÒÂ%óÂ’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢Fö¶Vâç&VÆV6Ræ6÷VçDF÷vâ‚“°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–BFö¶Vå6WGWW6W4öæÇ”—G5GvôÆ–æV&—¦VE&VG4æDW‡FW&æÄ6æ6VÆÆF–öä6æ6VÇ4FVÆVvFR‚¢F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢G'’°¢6öçG&öÆÆ&ÆU&÷f–FW"&÷f–FW"ÒæWr6öçG&öÆÆ&ÆU&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2“°¢6÷VçF–æuFö¶VâFö¶VâÒæWr6÷VçF–æuFö¶Vâ‚“°¢•&WVW7B&WVW7BÒ&WVW7B‚#ÓÓÓÓ#cR"“°¢•66†VGVÆVE&WVW7D†æFÆR†æFÆRÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂ&WVW7B’ÂFö¶Vâ“°¢76W'EG'VR†v—B‚‚’Óâ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’ÓÒÂ%óÂ’“°¢76W'DWVÇ2ƒ"ÂFö¶Vâç&VG2ævWB‚’“° ¢Fö¶Vâæ6æ6VÂ‚“°¢76W'DWVÇ2„”f–ÇW&T¶–æBä4ä4TÄÄTBÀ¢f–ÇW&R††æFÆRç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚’’æf–ÇW&T¶–æB‚’“°¢76W'EG'VR†6ÆÄf÷"‡&÷f–FW"Â&WVW7B’ç7FvR‚’æ—46æ6VÆÆVB‚’“°¢76W'DWVÇ2„•&WVW7D6æ6VÆÆF–öäF—7÷6—F–öâäÅ$TE•õDU$Ô”äÂÀ¢†æFÆRç&WVW7D6æ6VÆÆF–öâ‚’çFô6ö×ÆWF&ÆTgWGW&R‚¢ævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’æF—7÷6—F–öâ‚’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–BV&Æ–W%6ÖT&÷EFö¶Vå6WGW6ææ÷D&T÷fW'F¶Vä'”ÆFW%&VG•&WVW7B‚’F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢&Æö6¶–æuFö¶Vâf—'7EFö¶VâÒæWr&Æö6¶–æuFö¶Vâ‚“°¢G'’°¢6öçG&öÆÆ&ÆU&÷f–FW"&÷f–FW"ÒæWr6öçG&öÆÆ&ÆU&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒ"ÂÂ‚Â‚’ÂÆæW2À¢GW&F–öâæöe6V6öæG2ƒ$Â’ÂGW&F–öâæöe6V6öæG2ƒ$Â’“°¢•&WVW7Bf—'7BÒ&WVW7B‚#ÓÓÓÓ#cr"“°¢•&WVW7B6V6öæBÒ&WVW7B‚#ÓÓÓÓ#c‚"“° ¢66†VGVÆW"ç7V&Ö—B‡66†VGVÆVB„$õEôÂtTåEôÂf—'7B’Âf—'7EFö¶Vâ“°¢76W'EG'VR†f—'7EFö¶VâæVçFW&VBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“°¢66†VGVÆW"ç7V&Ö—B‡66†VGVÆVB„$õEôÂtTåEôÂ6V6öæB’Â6æ6VÆÆF–öåFö¶VâææöæR‚’“°¢76W'DfÇ6R†v—B‚‚’Óâ&÷f–FW"æ6ÆÇ2‚’æ—4V×G’‚’ÂSÂ’“° ¢f—'7EFö¶Vâç&VÆV6Ræ6÷VçDF÷vâ‚“°¢76W'EG'VR†v—B‚‚’Óâ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’ÓÒÂ%óÂ’“°¢76W'DWVÇ2†f—'7Bç&WVW7D–B‚’Â&÷f–FW"æ6ÆÇ2‚’ævWBƒ’ç&WVW7B‚’ç&WVW7D–B‚’“°¢6ÆÄf÷"‡&÷f–FW"Âf—'7B’ç7FvR‚’æ6ö×ÆWFR‡&W7öç6R†f—'7B’“°¢76W'EG'VR†v—B‚‚’Óâ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’ÓÒ"Â%óÂ’“°¢76W'DWVÇ2‡6V6öæBç&WVW7D–B‚’Â&÷f–FW"æ6ÆÇ2‚’ævWBƒ’ç&WVW7B‚’ç&WVW7D–B‚’“°¢6ÆÄf÷"‡&÷f–FW"Â6V6öæB’ç7FvR‚’æ6ö×ÆWFR‡&W7öç6R‡6V6öæB’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢f—'7EFö¶Vâç&VÆV6Ræ6÷VçDF÷vâ‚“°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–BFW&Ö–æÄ6ÆVçW6æ6VÇ5F†TFVÆVvFT&Vf÷&TVWVVE7V66W76÷$6ä–çfö¶U&÷f–FW"‚¢F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢÷&FW&–æu&÷f–FW"&÷f–FW"ÒæWr÷&FW&–æu&÷f–FW"‚“°¢G'’°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2“°¢•&WVW7Bf—'7BÒ&WVW7B‚#ÓÓÓÓ#c’"“°¢•&WVW7B6V6öæBÒ&WVW7B‚#ÓÓÓÓ#s"“°¢•66†VGVÆVE&WVW7D†æFÆRf—'7D†æFÆRÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂf—'7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’“°¢6ö×ÆWF&ÆTgWGW&SÄ•&W7öç6Sâ6V6öæE&W7VÇBÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEô"ÂtTåEô"Â6V6öæB’Â6æ6VÆÆF–öåFö¶VâææöæR‚’¢ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚“° ¢76W'EG'VR‡&÷f–FW"æf—'7DVçFW&VBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“°¢76W'EG'VR†v—B‚‚’Óâ66†VGVÆW"æF–væ÷7F–72‚¢æ7F—fU&÷f–FW$–çfö6F–öä6÷VçB‚’ÓÒÂ%óÂ’“°¢76W'DWVÇ2„•&WVW7D6æ6VÆÆF–öäF—7÷6—F–öâä4ä4TÄÄTBÀ¢f—'7D†æFÆRç&WVW7D6æ6VÆÆF–öâ‚’çFô6ö×ÆWF&ÆTgWGW&R‚¢ævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’æF—7÷6—F–öâ‚’“°¢76W'EG'VR‡&÷f–FW"ç6V6öæDVçFW&VBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“°¢76W'DfÇ6R‡&÷f–FW"ç6V6öæE7F'FVD&Vf÷&Tf—'7D6æ6VÆÆF–öâævWB‚’“°¢&÷f–FW"ç6V6öæE7FvRæ6ö×ÆWFR‡&W7öç6R‡6V6öæB’“°¢76W'DWVÇ2‡6V6öæBç&WVW7D–B‚’Â6V6öæE&W7VÇBævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’ç&WVW7D–B‚’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–B&Æö6¶VEFW&Ö–æÄ6ÆVçWV&çF–æW4—G5‡—6–6ÄÆæTæD†öÆG57V66W76÷$FÖ—76–öâ‚¢F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢&Æö6¶–æt6ÆVçW&÷f–FW"&÷f–FW"ÒæWr&Æö6¶–æt6ÆVçW&÷f–FW"‚“°¢G'’°¢ÆæW2ç6WB„•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRä4ôÕÄUD”ôåôDTÄ•dU%’À¢æWr–æÆ–æTW†V7WF÷"‚’“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2“°¢•&WVW7Bf—'7BÒ&WVW7B‚#ÓÓÓÓ#cB"“°¢•&WVW7B6V6öæBÒ&WVW7B‚#ÓÓÓÓ#s2"“°¢•66†VGVÆVE&WVW7D†æFÆRf—'7D†æFÆRÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂf—'7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’“°¢6ö×ÆWF&ÆTgWGW&SÄ•&W7öç6Sâ6V6öæE&W7VÇBÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEô"ÂtTåEô"Â6V6öæB’Â6æ6VÆÆF–öåFö¶VâææöæR‚’¢ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚“° ¢76W'EG'VR‡&÷f–FW"æf—'7DVçFW&VBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“°¢76W'EG'VR†v—B‚‚’Óâ66†VGVÆW"æF–væ÷7F–72‚¢æ7F—fU&÷f–FW$–çfö6F–öä6÷VçB‚’ÓÒÂ%óÂ’“°¢f—'7D†æFÆRç&WVW7D6æ6VÆÆF–öâ‚“°¢76W'EG'VR‡&÷f–FW"æ6æ6VÆÆF–öäVçFW&VBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“°¢76W'DWVÇ2„”f–ÇW&T¶–æBä4ä4TÄÄTBÀ¢f–ÇW&R†f—'7D†æFÆRç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚’’æf–ÇW&T¶–æB‚’“°¢76W'EG'VR†v—B‚‚’Óâ66†VGVÆW"æF–væ÷7F–72‚’çV&çF–æVD6ÆVçW6÷VçB‚’â ¢bb66†VGVÆW"æF–væ÷7F–72‚’çV&çF–æVE‡—6–6Ä6ÆVçW6÷VçB‚’â ¢bb66†VGVÆW"æF–væ÷7F–72‚’æF—7F6„FVw&FVB‚’Â%óÂ’“°¢76W'DfÇ6R†v—B‚‚’Óâ&÷f–FW"ç6V6öæDVçFW&VBævWD6÷VçB‚’ÓÒÂÂSÂ’“° ¢&÷f–FW"ç&VÆV6T6æ6VÆÆF–öâæ6÷VçDF÷vâ‚“°¢76W'EG'VR‡&÷f–FW"ç6V6öæDVçFW&VBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“°¢&÷f–FW"ç6V6öæE7FvRæ6ö×ÆWFR‡&W7öç6R‡6V6öæB’“°¢76W'DWVÇ2‡6V6öæBç&WVW7D–B‚’Â6V6öæE&W7VÇBævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’ç&WVW7D–B‚’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢&÷f–FW"ç&VÆV6T6æ6VÆÆF–öâæ6÷VçDF÷vâ‚“°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–B&Æö6¶–æt6ö×ÆWF–öå7FvTGF6†ÖVçD—5V&çF–æVDöåF†U&÷f–FW$ÆæR‚’F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢&Æö6¶–ætGF6†ÖVçE&÷f–FW"&÷f–FW"ÒæWr&Æö6¶–ætGF6†ÖVçE&÷f–FW"‚“°¢G'’°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2“°¢•&WVW7B&WVW7BÒ&WVW7B‚#ÓÓÓÓ#cb"“°¢6ö×ÆWF&ÆTgWGW&SÄ•&W7öç6Sâ&W7VÇBÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂ&WVW7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’¢ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚“° ¢76W'EG'VR‡&÷f–FW"æGF6†ÖVçDVçFW&VBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“°¢76W'DWVÇ2„”f–ÇW&T¶–æBåTäd”Ä$ÄRÂf–ÇW&R‡&W7VÇB’æf–ÇW&T¶–æB‚’“°¢76W'EG'VR‡66†VGVÆW"æF–væ÷7F–72‚’çV&çF–æVE&÷f–FW$–çfö6F–öä6÷VçB‚’â“°¢76W'EG'VR‡&÷f–FW"ç7FvRæ—46æ6VÆÆVB‚’“° ¢&÷f–FW"ç&VÆV6TGF6†ÖVçBæ6÷VçDF÷vâ‚“°¢76W'EG'VR†v—B‚‚’Óâ66†VGVÆW"æF–væ÷7F–72‚¢çV&çF–æVE&÷f–FW$–çfö6F–öä6÷VçB‚’ÓÒÂ%óÂ’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢&÷f–FW"ç&VÆV6TGF6†ÖVçBæ6÷VçDF÷vâ‚“°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–B&Æö6¶VD6ö×ÆWF–öäFVÆ—fW'”FöW4æ÷D&Æö6´Ç&VG•VWVVE7V66W76÷%&÷f–FW%7F'B‚’F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢6÷VçDF÷väÆF6‚&VÆV6TFVÆ—fW'’ÒæWr6÷VçDF÷väÆF6‚ƒ“°¢G'’°¢ò¢'Vç2öæÇ’öâF†RFVÆ—fW'’'&ö¶W"ÂæWfW"öâ7V&Ö—B÷V×÷F–ÖW"â¢ğ¢ÆæW2ç6WB„•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRä4ôÕÄUD”ôåôDTÄ•dU%’À¢æWr–æÆ–æTW†V7WF÷"‚’“°¢6öçG&öÆÆ&ÆU&÷f–FW"&÷f–FW"ÒæWr6öçG&öÆÆ&ÆU&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2“°¢•&WVW7Bf—'7BÒ&WVW7B‚#ÓÓÓÓ#s"ÂUóÂ“°¢•&WVW7B6V6öæBÒ&WVW7B‚#ÓÓÓÓ#s""ÂUóÂ“°¢•66†VGVÆVE&WVW7D†æFÆRf—'7D†æFÆRÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂf—'7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’“°¢6ö×ÆWF&ÆTgWGW&SÄ•&W7öç6Sâ6V6öæE&W7VÇBÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEô"ÂtTåEô"Â6V6öæB’Â6æ6VÆÆF–öåFö¶VâææöæR‚’¢ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚“°¢76W'EG'VR†v—B‚‚’Óâ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’ÓÒÂ%óÂ’“° ¢6÷VçDF÷väÆF6‚FVÆ—fW'”VçFW&VBÒæWr6÷VçDF÷väÆF6‚ƒ“°¢f—'7D†æFÆRç&W7öç6R‚’çv†Vä6ö×ÆWFR‚†–væ÷&VBÂf–ÇW&R’Óâ°¢FVÆ—fW'”VçFW&VBæ6÷VçDF÷vâ‚“°¢v—DÆF6‚‡&VÆV6TFVÆ—fW'’“°¢Ò“°¢&÷f–FW"æ6ÆÇ2‚’ævWBƒ’ç7FvR‚’æ6ö×ÆWFR‡&W7öç6R†f—'7B’“° ¢76W'EG'VR†FVÆ—fW'”VçFW&VBæv—BƒTÂÂF–ÖUVæ—Bå4T4ôäE2’“°¢76W'EG'VR†v—B‚‚’Óâ&÷f–FW"æ6ÆÇ2‚’ç6—¦R‚’ÓÒ"ÂUóÂ’“°¢76W'DWVÇ2‡6V6öæBç&WVW7D–B‚’Â&÷f–FW"æ6ÆÇ2‚’ævWBƒ’ç&WVW7B‚’ç&WVW7D–B‚’“°¢76W'EG'VR†v—B‚‚’Óâ66†VGVÆW"æF–væ÷7F–72‚¢çV&çF–æVD6ö×ÆWF–öäFVÆ—fW'”6÷VçB‚’âÂ%óÂ’“°¢76W'EG'VR‡66†VGVÆW"æF–væ÷7F–72‚’æF—7F6„FVw&FVB‚’“° ¢&VÆV6TFVÆ—fW'’æ6÷VçDF÷vâ‚“°¢&÷f–FW"æ6ÆÇ2‚’ævWBƒ’ç7FvR‚’æ6ö×ÆWFR‡&W7öç6R‡6V6öæB’“°¢76W'DWVÇ2‡6V6öæBç&WVW7D–B‚’Â6V6öæE&W7VÇBævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’ç&WVW7D–B‚’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢&VÆV6TFVÆ—fW'’æ6÷VçDF÷vâ‚“°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–BG&÷VD6ÆVçW—5V&Æ—6†VD5V&çF–æTæE&WF–æVDf÷$&÷VæFVE&V6÷fW'’‚’F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢G&÷öæ6TW†V7WF÷"6ÆVçWÒæWrG&÷öæ6TW†V7WF÷"†ÆæW2æW†V7WF÷"€¢•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRåDU$Ô”äÅô4ÄTåU’“°¢G'’°¢ÆæW2ç6WB„•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRåDU$Ô”äÅô4ÄTåUÂ6ÆVçW“°¢–ÖÖVF–FU&÷f–FW"&÷f–FW"ÒæWr–ÖÖVF–FU&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2“°¢•&WVW7B&WVW7BÒ&WVW7B‚#ÓÓÓÓ#ƒ"“° ¢•&W7öç6R&W7öç6RÒ66†VGVÆW"ç7V&Ö—B‡66†VGVÆVB„$õEôÂtTåEôÂ&WVW7B’À¢6æ6VÆÆF–öåFö¶VâææöæR‚’’ç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚¢ævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2“°¢76W'DWVÇ2‡&WVW7Bç&WVW7D–B‚’Â&W7öç6Rç&WVW7D–B‚’“°¢76W'EG'VR†v—B‚‚’Óâ66†VGVÆW"æF–væ÷7F–72‚’çVæF–æu&V6÷fW'”F—7F6„6÷VçB‚’ÓÒÀ¢%óÂ’“°¢76W'EG'VR‡66†VGVÆW"æF–væ÷7F–72‚’æF—7F6„FVw&FVB‚’“°¢66†VGVÆW"ç&W7VÖTF—7F6‚‚“°¢76W'EG'VR†v—B‚‚’Óâ66†VGVÆW"æF–væ÷7F–72‚’çVæF–æu&V6÷fW'”F—7F6„6÷VçB‚’ÓÒÀ¢%óÂ’“°¢76W'DfÇ6R‡66†VGVÆW"æF–væ÷7F–72‚’æF—7F6„FVw&FVB‚’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–BFVÆ–VD6ÆVçWw&W$6ææ÷E'VägFW%vF6†FötæD—G5&V6÷fW'•&VÖ–ç5&WF–æVB‚¢F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢6GW&–ætW†V7WF÷"6ÆVçWÒæWr6GW&–ætW†V7WF÷"‚“°¢G'’°¢6öæf–wW&T–æÆ–æTÆæW4W†6WB†ÆæW2Â•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRåDU$Ô”äÅô4ÄTåU“°¢ÆæW2ç6WB„•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRåDU$Ô”äÅô4ÄTåUÂ6ÆVçW“°¢–ÖÖVF–FU&÷f–FW"&÷f–FW"ÒæWr–ÖÖVF–FU&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2“°¢•&WVW7B&WVW7BÒ&WVW7B‚#ÓÓÓÓ#ƒb"“°¢•66†VGVÆVE&WVW7D†æFÆR†æFÆRÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂ&WVW7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’“° ¢76W'EG'VR†6ÆVçWæ6GW&VBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“°¢76W'EG'VR†v—B‚‚’Óâ66†VGVÆW"æF–væ÷7F–72‚’çVæF–æu&V6÷fW'”F—7F6„6÷VçB‚’ÓÒÀ¢%óÂ’“°¢76W'DWVÇ2‡&WVW7Bç&WVW7D–B‚’Â†æFÆRç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚¢ævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’ç&WVW7D–B‚’“°¢6ÆVçWç'Vä6GW&VB‚“°¢76W'DWVÇ2ƒÂ&÷f–FW"æ6ÆÇ2ævWB‚’“° ¢66†VGVÆW"ç&W7VÖTF—7F6‚‚“°¢76W'EG'VR†v—B‚‚’Óâ6ÆVçWæ6öÖÖæBævWB‚’ÒçVÆÂÂ%óÂ’“°¢6ÆVçWç'Vä6GW&VB‚“°¢76W'EG'VR†v—B‚‚’Óâ66†VGVÆW"æF–væ÷7F–72‚’çVæF–æu&V6÷fW'”F—7F6„6÷VçB‚’ÓÒÀ¢%óÂ’“°¢76W'DfÇ6R‡66†VGVÆW"æF–væ÷7F–72‚’æF—7F6„FVw&FVB‚’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–BG&÷VEV&Æ–6F–öä—5&WF–æVEVçF–ÄW‡Æ–6—E&V6÷fW'•F†Vä6ö×ÆWFW5F†UV&Æ–4†æFÆR‚¢F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢G&÷öæ6TW†V7WF÷"FVÆ—fW'’ÒæWrG&÷öæ6TW†V7WF÷"†ÆæW2æW†V7WF÷"€¢•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRä4ôÕÄUD”ôåôDTÄ•dU%’’“°¢G'’°¢ÆæW2ç6WB„•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRä4ôÕÄUD”ôåôDTÄ•dU%’ÂFVÆ—fW'’“°¢–ÖÖVF–FU&÷f–FW"&÷f–FW"ÒæWr–ÖÖVF–FU&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2“°¢•&WVW7B&WVW7BÒ&WVW7B‚#ÓÓÓÓ#“"“°¢•66†VGVÆVE&WVW7D†æFÆR†æFÆRÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂ&WVW7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’“° ¢76W'EG'VR†v—B‚‚’Óâ66†VGVÆW"æF–væ÷7F–72‚’çVæF–æu&V6÷fW'”F—7F6„6÷VçB‚’ÓÒÀ¢%óÂ’“°¢76W'DfÇ6R††æFÆRç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚’æ—4FöæR‚’“°¢66†VGVÆW"ç&W7VÖTF—7F6‚‚“°¢76W'DWVÇ2‡&WVW7Bç&WVW7D–B‚’Â†æFÆRç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚¢ævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’ç&WVW7D–B‚’“°¢76W'DfÇ6R‡66†VGVÆW"æF–væ÷7F–72‚’æF—7F6„FVw&FVB‚’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–BFVÆ–VEV&Æ–6F–öåw&W$6ææ÷EV&Æ—6„gFW%vF6†FötæE&V6÷fW'”6ö×ÆWFW4öæ6R‚¢F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢6GW&–ætW†V7WF÷"FVÆ—fW'’ÒæWr6GW&–ætW†V7WF÷"‚“°¢G'’°¢6öæf–wW&T–æÆ–æTÆæW4W†6WB†ÆæW2Â•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRä4ôÕÄUD”ôåôDTÄ•dU%’“°¢ÆæW2ç6WB„•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRä4ôÕÄUD”ôåôDTÄ•dU%’ÂFVÆ—fW'’“°¢–ÖÖVF–FU&÷f–FW"&÷f–FW"ÒæWr–ÖÖVF–FU&÷f–FW"‚“°¢•&WVW7E66†VGVÆW"66†VGVÆW"Ò66†VGVÆW"‡&÷f–FW"À¢æWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚’ÂÆæW2“°¢•&WVW7B&WVW7BÒ&WVW7B‚#ÓÓÓÓ#“b"“°¢•66†VGVÆVE&WVW7D†æFÆR†æFÆRÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂ&WVW7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’“° ¢76W'EG'VR†FVÆ—fW'’æ6GW&VBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“°¢76W'EG'VR†v—B‚‚’Óâ66†VGVÆW"æF–væ÷7F–72‚’çVæF–æu&V6÷fW'”F—7F6„6÷VçB‚’ÓÒÀ¢%óÂ’“°¢76W'DfÇ6R††æFÆRç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚’æ—4FöæR‚’“°¢FVÆ—fW'’ç'Vä6GW&VB‚“°¢76W'DfÇ6R††æFÆRç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚’æ—4FöæR‚’“° ¢66†VGVÆW"ç&W7VÖTF—7F6‚‚“°¢76W'EG'VR†v—B‚‚’ÓâFVÆ—fW'’æ6öÖÖæBævWB‚’ÒçVÆÂÂ%óÂ’“°¢FVÆ—fW'’ç'Vä6GW&VB‚“°¢76W'DWVÇ2‡&WVW7Bç&WVW7D–B‚’Â†æFÆRç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚¢ævWBƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’ç&WVW7D–B‚’“°¢76W'DWVÇ2ƒÂ&÷f–FW"æ6ÆÇ2ævWB‚’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–B7WW'f—6÷$6Æ÷6Uv–ç5F†T&ÖVEFõ7F'FVE&6T&Vf÷&Tç”W‡FW&æÄ&öG•'Vç2‚¢F‡&÷w2W†6WF–öâ°¢6÷VçDF÷väÆF6‚‡—6–6Ä†æFöfdVçFW&VBÒæWr6÷VçDF÷väÆF6‚ƒ“°¢6÷VçDF÷väÆF6‚&VÆV6U‡—6–6Åw&W"ÒæWr6÷VçDF÷väÆF6‚ƒ“°¢6÷VçDF÷väÆF6‚6Æ÷6T÷VæVBÒæWr6÷VçDF÷väÆF6‚ƒ“°¢6÷VçDF÷väÆF6‚&VÆV6T6Æ÷6T–çfÆ–FF–öâÒæWr6÷VçDF÷väÆF6‚ƒ“°¢FöÖ–4–çFVvW"7F'FVBÒæWrFöÖ–4–çFVvW"‚“°¢FöÖ–4–çFVvW"7F'DÆ÷7BÒæWrFöÖ–4–çFVvW"‚“°¢FöÖ–4–çFVvW"&öG•'Vç2ÒæWrFöÖ–4–çFVvW"‚“°¢•&WVW7E66†VGVÆW%öÆ–7’öÆ–7’ÒæWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚“°¢•&WVW7E66†VGVÆW%7WW'f—6÷"7WW'f—6÷"Ğ¢•&WVW7E66†VGVÆW%7WW'f—6÷"æf÷$GfW'6&–ÅFW7F–ær€¢'66†VGVÆW"Ö6Æ÷6R×&6R"ÂöÆ–7’ÂGW&F–öâæöe6V6öæG2ƒTÂ’À¢GW&F–öâæöe6V6öæG2ƒTÂ’Â†ÆæRÂw&W"’Óâ°¢‡—6–6Ä†æFöfdVçFW&VBæ6÷VçDF÷vâ‚“°¢v—DÆF6‚‡&VÆV6U‡—6–6Åw&W"“°¢w&W"ç'Vâ‚“°¢ÒÂ‚’Óâ°¢6Æ÷6T÷VæVBæ6÷VçDF÷vâ‚“°¢v—DÆF6‚‡&VÆV6T6Æ÷6T–çfÆ–FF–öâ“°¢Ò“°¢F‡&VB6Æ÷6W"ÒçVÆÃ°¢G'’°¢76W'EG'VR‡7WW'f—6÷"æ6Æ–Ò‚’“°¢•&WVW7E66†VGVÆW%7WW'f—6÷"äF—7F6„GFV×BGFV×BĞ¢æWr•&WVW7E66†VGVÆW%7WW'f—6÷"äF—7F6„GFV×BƒÂÀ¢•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRä4ôÕÄUD”ôåôDTÄ•dU%’À¢æWr•&WVW7E66†VGVÆW%7WW'f—6÷"äF—7F6„6ÆÆ&6·2‚’°¢÷fW'&–FP¢V&Æ–2&ööÆVâ7F'FVB€¢•&WVW7E66†VGVÆW%7WW'f—6÷"äF—7F6„GFV×B–væ÷&VB’°¢7F'FVBæ–æ7&VÖVçDæDvWB‚“°¢&WGW&âG'VS°¢Ğ ¢÷fW'&–FP¢V&Æ–2fö–B7F'DÆ÷7B€¢•&WVW7E66†VGVÆW%7WW'f—6÷"äF—7F6„GFV×B–væ÷&VB’°¢7F'DÆ÷7Bæ–æ7&VÖVçDæDvWB‚“°¢Ğ ¢÷fW'&–FP¢V&Æ–2fö–B7FÆÆVB€¢•&WVW7E66†VGVÆW%7WW'f—6÷"äF—7F6„GFV×B–væ÷&VB’°¢F‡&÷ræWr76W'F–öäW'&÷"‚&6Æ÷6R&6Rw&W"VæW‡V7FVFÇ’7FÆÆVB"“°¢Ğ ¢÷fW'&–FP¢V&Æ–2fö–B&öG•7V66VVFVB€¢•&WVW7E66†VGVÆW%7WW'f—6÷"äF—7F6„GFV×B–væ÷&VB’°¢F‡&÷ræWr76W'F–öäW'&÷"‚&6Æ÷6R&6Rw&W"VæW‡V7FVFÇ’7V66VVFVB"“°¢Ğ ¢÷fW'&–FP¢V&Æ–2fö–B&öG”f–ÆVB€¢•&WVW7E66†VGVÆW%7WW'f—6÷"äF—7F6„GFV×B–væ÷&VBÀ¢F‡&÷v&ÆRf–ÇW&R’°¢F‡&÷ræWr76W'F–öäW'&÷"‚&6Æ÷6R&6Rw&W"VæW‡V7FVFÇ’f–ÆVB"À¢f–ÇW&R“°¢Ğ¢Ò“°¢7WW'f—6÷"æ†æFöfb†GFV×BÂ&öG•'Vç3£¦–æ7&VÖVçDæDvWB“°¢76W'EG'VR‡‡—6–6Ä†æFöfdVçFW&VBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“° ¢6Æ÷6W"ÒæWrF‡&VB‡7WW'f—6÷#£¦6Æ÷6RÂ'66†VGVÆW"Ö6Æ÷6R×&6RÖ6Æ÷6W""“°¢6Æ÷6W"ç6WDFVÖöâ‡G'VR“°¢6Æ÷6W"ç7F'B‚“°¢76W'EG'VR†6Æ÷6T÷VæVBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“° ¢ò¢F†RöÆB6Æ÷6RÖ&Vf÷&RÖ–çfÆ–FFRv–æF÷r6÷VÆB6öÖÖ—B†W&Râ¢ğ¢&VÆV6U‡—6–6Åw&W"æ6÷VçDF÷vâ‚“°¢76W'EG'VR†v—B‚‚’Óâ7F'DÆ÷7BævWB‚’ÓÒÂ%óÂ’“°¢76W'DWVÇ2ƒÂ7F'FVBævWB‚’“°¢76W'DWVÇ2ƒÂ&öG•'Vç2ævWB‚’“° ¢&VÆV6T6Æ÷6T–çfÆ–FF–öâæ6÷VçDF÷vâ‚“°¢6Æ÷6W"æ¦ö–âƒ%óÂ“°¢76W'DfÇ6R†6Æ÷6W"æ—4Æ—fR‚’“°¢Òf–æÆÇ’°¢&VÆV6U‡—6–6Åw&W"æ6÷VçDF÷vâ‚“°¢&VÆV6T6Æ÷6T–çfÆ–FF–öâæ6÷VçDF÷vâ‚“°¢7WW'f—6÷"æ6Æ÷6R‚“°¢–b†6Æ÷6W"ÒçVÆÂ’°¢6Æ÷6W"æ¦ö–âƒ%óÂ“°¢Ğ¢Ğ¢Ğ ¢FW7@¢fö–B7WW'f—6÷$6Æ÷6T–çfÆ–FFW4ä&ÖVDFVÆ—fW'”GFV×D–ç7FVDödÆ÷6–æt—G5&V6÷fW'’‚¢F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢6GW&–ætW†V7WF÷"FVÆ—fW'’ÒæWr6GW&–ætW†V7WF÷"‚“°¢•&WVW7E66†VGVÆW%7WW'f—6÷"7WW'f—6÷"ÒçVÆÃ°¢G'’°¢6öæf–wW&T–æÆ–æTÆæW4W†6WB†ÆæW2Â•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRä4ôÕÄUD”ôåôDTÄ•dU%’“°¢ÆæW2ç6WB„•&WVW7E66†VGVÆW%7WW'f—6÷"äÆæRä4ôÕÄUD”ôåôDTÄ•dU%’ÂFVÆ—fW'’“°¢•&WVW7E66†VGVÆW%öÆ–7’öÆ–7’ÒæWr•&WVW7E66†VGVÆW%öÆ–7’ƒÂÂ‚Â‚“°¢7WW'f—6÷"ÒÆæW2ç7WW'f—6÷"‡öÆ–7’ÂGW&F–öâæöe6V6öæG2ƒTÂ’Â5DÄÅõD”ÔTõUB“°¢•&WVW7E66†VGVÆW"66†VGVÆW"ÒæWr•&WVW7E66†VGVÆW"€¢$õd”DU%ô”BÂæWr–ÖÖVF–FU&÷f–FW"‚’ÂöÆ–7’Â6Æö6²ç7—7FVÕUD2‚’Â7WW'f—6÷"“°¢•&WVW7B&WVW7BÒ&WVW7B‚#ÓÓÓÓ#“r"“°¢•66†VGVÆVE&WVW7D†æFÆR†æFÆRÒ66†VGVÆW"ç7V&Ö—B€¢66†VGVÆVB„$õEôÂtTåEôÂ&WVW7B’Â6æ6VÆÆF–öåFö¶VâææöæR‚’“° ¢76W'EG'VR†FVÆ—fW'’æ6GW&VBæv—Bƒ$ÂÂF–ÖUVæ—Bå4T4ôäE2’“°¢7WW'f—6÷"æ6Æ÷6R‚“°¢76W'EG'VR†v—B‚‚’Óâ66†VGVÆW"æF–væ÷7F–72‚’çVæF–æu&V6÷fW'”F—7F6„6÷VçB‚’ÓÒÀ¢%óÂ’“°¢FVÆ—fW'’ç'Vä6GW&VB‚“°¢76W'DfÇ6R††æFÆRç&W7öç6R‚’çFô6ö×ÆWF&ÆTgWGW&R‚’æ—4FöæR‚’“°¢66†VGVÆW"æ6Æ÷6R‚“°¢Òf–æÆÇ’°¢–b‡7WW'f—6÷"ÒçVÆÂ’°¢7WW'f—6÷"æ6Æ÷6R‚“°¢Ğ¢ÆæW2æ6Æ÷6R‚“°¢Ğ¢Ğ ¢FW7@¢fö–B7WW'f—6÷$6Æ÷6T–çfÆ–FFW4ä&ÖVD6ÆVçWGFV×DæE&WF–ç4—G5V&Æ–6F–öä6†–â‚¢F‡&÷w2W†6WF–öâ°¢ÆæTf—‡GW&RÆæW2ÒæWrÆæTf—‡GW&R‚“°¢6GW&–ætW†V7WF÷"6ÆVçWÒæWr6GW&–ætW†V7WF÷"‚“°¢•&WVW7E66†VGVÆW%7WW'f—6÷"7WW'f—6÷"ÒçVÆÃ°¢G'’°¢6öæf–w^7çÛh‘éì¶»§q«^u¥áÑÕÉ”±…¹•Ì€ô¹•Ü1…¹•¥áÑÕÉ” ¤ì(€€€€€€€…±±‰…­Q¡•¹I•ÑÕÉ¹ÑÑ…¡µ•¹ÑAÉ½Ù¥‘•ÈÁÉ½Ù¥‘•È€ô(€€€€€€€€€€€€€€€¹•Ü…±±‰…­Q¡•¹I•ÑÕÉ¹ÑÑ…¡µ•¹ÑAÉ½Ù¥‘•È ¤ì(€€€€€€€ÑÉäì(€€€€€€€€€€€½¹™¥ÕÉ•±±%¹±¥¹•1…¹•Ì¡±…¹•Ì¤ì(€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÈÍ¡•‘Õ±•È€ôÍ¡•‘Õ±•È¡ÁÉ½Ù¥‘•È°(€€€€€€€€€€€€€€€€€€€¹•Ü¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉA½±¥ä Ä°€Ä°€à°€à¤°±…¹•Ì°(€€€€€€€€€€€€€€€€€€€ÕÉ…Ñ¥½¸¹½™M•½¹‘Ì É0¤°ÕÉ…Ñ¥½¸¹½™M•½¹‘Ì É0¤¤ì(€€€€€€€€€€€¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ€ôÉ•ÅÕ•ÍĞ ˆÀÀÀÀÀÀÀÀ´ÀÀÀÀ´ÀÀÀÀ´ÀÀÀÀ´ÀÀÀÀÀÀÀÀÀÌÄÔˆ¤ì(€€€€€€€€€€€¥M¡•‘Õ±•‘I•ÅÕ•ÍÑ!…¹‘±”¡…¹‘±”€ôÍ¡•‘Õ±•È¹ÍÕ‰µ¥Ğ (€€€€€€€€€€€€€€€€€€€Í¡•‘Õ±•¡	=Q}°9Q}°É•ÅÕ•ÍĞ¤°…¹•±±…Ñ¥½¹Q½­•¸¹¹½¹” ¤¤ì((€€€€€€€€€€€…ÍÍ•ÉÑQÉÕ”¡ÁÉ½Ù¥‘•È¹…±±‰…­%¹Ù½­•¹…İ…¥Ğ É0°Q¥µ•U¹¥Ğ¹M=9L¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑ…±Í”¡¡…¹‘±”¹É•ÍÁ½¹Í” ¤¹Ñ½½µÁ±•Ñ…‰±•ÕÑÕÉ” ¤¹¥Í½¹” ¤¤ì(€€€€€€€€€€€ÁÉ½Ù¥‘•È¹É•±•…Í•ÑÑ…¡µ•¹Ğ¹½Õ¹Ñ½İ¸ ¤ì((€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì¡É•ÅÕ•ÍĞ¹É•ÅÕ•ÍÑ% ¤°¡…¹‘±”¹É•ÍÁ½¹Í” ¤¹Ñ½½µÁ±•Ñ…‰±•ÕÑÕÉ” ¤(€€€€€€€€€€€€€€€€€€€€¹•Ğ É0°Q¥µ•U¹¥Ğ¹M=9L¤¹É•ÅÕ•ÍÑ% ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì Ä°ÁÉ½Ù¥‘•È¹…±±Ì¹•Ğ ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑ…±Í”¡Í¡•‘Õ±•È¹‘¥…¹½ÍÑ¥Ì ¤¹É••¹ÑEÕ…É…¹Ñ¥¹•Ì ¤¹ÍÑÉ•…´ ¤¹…¹å5…Ñ  (€€€€€€€€€€€€€€€€€€€•Ù•¹Ğ€´ø•Ù•¹Ğ¹É•ÅÕ•ÍÑ% ¤¹•ÅÕ…±Ì¡É•ÅÕ•ÍĞ¹É•ÅÕ•ÍÑ% ¤¤¤¤ì(€€€€€€€€€€€Í¡•‘Õ±•È¹±½Í” ¤ì(€€€€€€€ô™¥¹…±±äì(€€€€€€€€€€€ÁÉ½Ù¥‘•È¹É•±•…Í•ÑÑ…¡µ•¹Ğ¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€€€€€±…¹•Ì¹±½Í” ¤ì(€€€€€€€ô(€€€ô((€€€Q•ÍĞ(€€€Ù½¥Íå¹¡É½¹½ÕÍ…¹•±±…Ñ¥½¹…±±‰…­Q¡•¹M•½¹‘I•…‘ÉÉ½É…¥±Í±½Í•‘¹‘±½Í•ÍI•¥ÍÑÉ…Ñ¥½¸ ¤(€€€€€€€€€€€Ñ¡É½İÌá•ÁÑ¥½¸ì(€€€€€€€1…¹•¥áÑÕÉ”±…¹•Ì€ô¹•Ü1…¹•¥áÑÕÉ” ¤ì(€€€€€€€…±±‰…­Q¡•¹M•½¹‘I•…‘ÉÉ½ÉQ½­•¸Ñ½­•¸€ô¹•Ü…±±‰…­Q¡•¹M•½¹‘I•…‘ÉÉ½ÉQ½­•¸ ¤ì(€€€€€€€ÑÉäì(€€€€€€€€€€€½¹™¥ÕÉ•±±%¹±¥¹•1…¹•Ì¡±…¹•Ì¤ì(€€€€€€€€€€€%µµ•‘¥…Ñ•AÉ½Ù¥‘•ÈÁÉ½Ù¥‘•È€ô¹•Ü%µµ•‘¥…Ñ•AÉ½Ù¥‘•È ¤ì(€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÈÍ¡•‘Õ±•È€ôÍ¡•‘Õ±•È¡ÁÉ½Ù¥‘•È°(€€€€€€€€€€€€€€€€€€€¹•Ü¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉA½±¥ä Ä°€Ä°€à°€à¤°±…¹•Ì¤ì(€€€€€€€€€€€¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ€ôÉ•ÅÕ•ÍĞ ˆÀÀÀÀÀÀÀÀ´ÀÀÀÀ´ÀÀÀÀ´ÀÀÀÀ´ÀÀÀÀÀÀÀÀÀÌÄØˆ¤ì(€€€€€€€€€€€¥M¡•‘Õ±•‘I•ÅÕ•ÍÑ!…¹‘±”¡…¹‘±”€ôÍ¡•‘Õ±•È¹ÍÕ‰µ¥Ğ (€€€€€€€€€€€€€€€€€€€Í¡•‘Õ±•¡	=Q}°9Q}°É•ÅÕ•ÍĞ¤°Ñ½­•¸¤ì((€€€€€€€€€€€¥AÉ½Ù¥‘•Éá•ÁÑ¥½¸™…¥±ÕÉ”€ô™…¥±ÕÉ”¡¡…¹‘±”¹É•ÍÁ½¹Í” ¤¹Ñ½½µÁ±•Ñ…‰±•ÕÑÕÉ” ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì¡¥…¥±ÕÉ•-¥¹¹U9Y%1	1°™…¥±ÕÉ”¹™…¥±ÕÉ•-¥¹ ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì¡¥I•…Í½¹½‘”¹11	-}QQ!59Q}%1°™…¥±ÕÉ”¹É•…Í½¹½‘” ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì À°ÁÉ½Ù¥‘•È¹…±±Ì¹•Ğ ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑQÉÕ”¡…İ…¥Ğ  ¤€´øÑ½­•¸¹±½Í•…±±Ì¹•Ğ ¤€ôô€Ä°€É|ÀÀÁ0¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì¡¥I•ÅÕ•ÍÑ…¹•±±…Ñ¥½¹¥ÍÁ½Í¥Ñ¥½¸¹1Ie}QI5%90°(€€€€€€€€€€€€€€€€€€€¡…¹‘±”¹É•ÅÕ•ÍÑ…¹•±±…Ñ¥½¸ ¤¹Ñ½½µÁ±•Ñ…‰±•ÕÑÕÉ” ¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€€¹•Ğ É0°Q¥µ•U¹¥Ğ¹M=9L¤¹‘¥ÍÁ½Í¥Ñ¥½¸ ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑQÉÕ”¡Í¡•‘Õ±•È¹‘¥…¹½ÍÑ¥Ì ¤¹É••¹ÑEÕ…É…¹Ñ¥¹•Ì ¤¹ÍÑÉ•…´ ¤¹…¹å5…Ñ  (€€€€€€€€€€€€€€€€€€€•Ù•¹Ğ€´ø•Ù•¹Ğ¹É•ÅÕ•ÍÑ% ¤¹•ÅÕ…±Ì¡É•ÅÕ•ÍĞ¹É•ÅÕ•ÍÑ% ¤¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€€˜˜•Ù•¹Ğ¹­¥¹ ¤€ôô¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉEÕ…É…¹Ñ¥¹•-¥¹¹Q=-9}MQU@¤¤ì(€€€€€€€€€€€Í¡•‘Õ±•È¹±½Í” ¤ì(€€€€€€€ô™¥¹…±±äì(€€€€€€€€€€€±…¹•Ì¹±½Í” ¤ì(€€€€€€€ô(€€€ô((€€€Q•ÍĞ(€€€Ù½¥±•…¹ÕÁ1¥ÍÑ•¹•É±½Í•¹‘MÑ…•…¹•±ÉÉ½ÉÍI•µ…¥¹I•Ñ…¥¹•‘U¹Ñ¥±I•ÍÕµ” ¤(€€€€€€€€€€€Ñ¡É½İÌá•ÁÑ¥½¸ì(€€€€€€€1…¹•¥áÑÕÉ”±…¹•Ì€ô¹•Ü1…¹•¥áÑÕÉ” ¤ì(€€€€€€€ÑÉäì(€€€€€€€€€€€Q¡É½İ=¹•±•…¹ÕÁQ½­•¸Ñ½­•¸€ô¹•ÜQ¡É½İ=¹•±•…¹ÕÁQ½­•¸ ¤ì(€€€€€€€€€€€Q¡É½İ=¹•…¹•±AÉ½Ù¥‘•ÈÁÉ½Ù¥‘•È€ô¹•ÜQ¡É½İ=¹•…¹•±AÉ½Ù¥‘•È ¤ì(€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÈÍ¡•‘Õ±•È€ôÍ¡•‘Õ±•È¡ÁÉ½Ù¥‘•È°(€€€€€€€€€€€€€€€€€€€¹•Ü¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉA½±¥ä Ä°€Ä°€à°€à¤°±…¹•Ì¤ì(€€€€€€€€€€€¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ€ôÉ•ÅÕ•ÍĞ ˆÀÀÀÀÀÀÀÀ´ÀÀÀÀ´ÀÀÀÀ´ÀÀÀÀ´ÀÀÀÀÀÀÀÀÀÌÀÜˆ¤ì(€€€€€€€€€€€¥M¡•‘Õ±•‘I•ÅÕ•ÍÑ!…¹‘±”¡…¹‘±”€ôÍ¡•‘Õ±•È¹ÍÕ‰µ¥Ğ (€€€€€€€€€€€€€€€€€€€Í¡•‘Õ±•¡	=Q}°9Q}°É•ÅÕ•ÍĞ¤°Ñ½­•¸¤ì(€€€€€€€€€€€…ÍÍ•ÉÑQÉÕ”¡…İ…¥Ğ  ¤€´øÁÉ½Ù¥‘•È¹…±±Ì¹•Ğ ¤€ôô€Ä°€É|ÀÀÁ0¤¤ì((€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì¡¥I•ÅÕ•ÍÑ…¹•±±…Ñ¥½¹¥ÍÁ½Í¥Ñ¥½¸¹911°(€€€€€€€€€€€€€€€€€€€¡…¹‘±”¹É•ÅÕ•ÍÑ…¹•±±…Ñ¥½¸ ¤¹Ñ½½µÁ±•Ñ…‰±•ÕÑÕÉ” ¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€€¹•Ğ É0°Q¥µ•U¹¥Ğ¹M=9L¤¹‘¥ÍÁ½Í¥Ñ¥½¸ ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì¡¥…¥±ÕÉ•-¥¹¹911°(€€€€€€€€€€€€€€€€€€€™…¥±ÕÉ”¡¡…¹‘±”¹É•ÍÁ½¹Í” ¤¹Ñ½½µÁ±•Ñ…‰±•ÕÑÕÉ” ¤¤¹™…¥±ÕÉ•-¥¹ ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑQÉÕ”¡…İ…¥Ğ  ¤€´øÍ¡•‘Õ±•È¹‘¥…¹½ÍÑ¥Ì ¤¹Á•¹‘¥¹I•½Ù•Éå¥ÍÁ…Ñ¡½Õ¹Ğ ¤€ôô€Ä°(€€€€€€€€€€€€€€€€€€€€É|ÀÀÁ0¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑQÉÕ”¡Í¡•‘Õ±•È¹‘¥…¹½ÍÑ¥Ì ¤¹ÅÕ…É…¹Ñ¥¹•‘±•…¹ÕÁ½Õ¹Ğ ¤€ø€À¤ì(€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì Ä°Ñ½­•¸¹±½Í•…±±Ì¹•Ğ ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì Ä°ÁÉ½Ù¥‘•È¹ÍÑ…”¹…¹•±…±±Ì¹•Ğ ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑ…±Í”¡ÁÉ½Ù¥‘•È¹ÍÑ…”¹¥Í…¹•±±• ¤¤ì((€€€€€€€€€€€Í¡•‘Õ±•È¹É•ÍÕµ•¥ÍÁ…Ñ  ¤ì(€€€€€€€€€€€…ÍÍ•ÉÑQÉÕ”¡…İ…¥Ğ  ¤€´øÍ¡•‘Õ±•È¹‘¥…¹½ÍÑ¥Ì ¤¹Á•¹‘¥¹I•½Ù•Éå¥ÍÁ…Ñ¡½Õ¹Ğ ¤€ôô€À°(€€€€€€€€€€€€€€€€€€€€É|ÀÀÁ0¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑQÉÕ”¡…İ…¥Ğ¡ÁÉ½Ù¥‘•È¹ÍÑ…”èé¥Í…¹•±±•°€É|ÀÀÁ0¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì È°Ñ½­•¸¹±½Í•…±±Ì¹•Ğ ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì È°ÁÉ½Ù¥‘•È¹ÍÑ…”¹…¹•±…±±Ì¹•Ğ ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì À°Í¡•‘Õ±•È¹‘¥…¹½ÍÑ¥Ì ¤¹ÅÕ…É…¹Ñ¥¹•‘±•…¹ÕÁ½Õ¹Ğ ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑ…±Í”¡Í¡•‘Õ±•È¹‘¥…¹½ÍÑ¥Ì ¤¹‘¥ÍÁ…Ñ¡•É…‘• ¤¤ì(€€€€€€€€€€€Í¡•‘Õ±•È¹±½Í” ¤ì(€€€€€€€ô™¥¹…±±äì(€€€€€€€€€€€±…¹•Ì¹±½Í” ¤ì(€€€€€€€ô(€€€ô((€€€Q•ÍĞ(€€€Ù½¥¥¹Ù½­•Q¡•¹ÍÍ•ÉÑ¥½¹ÉÉ½É™Ñ•É½µµ¥ÑÑ•‘]É…ÁÁ•É½•Í9½ÑI•©•ÑAÉ½Ù¥‘•ÉMÑ…ÉĞ ¤(€€€€€€€€€€€Ñ¡É½İÌá•ÁÑ¥½¸ì(€€€€€€€1…¹•¥áÑÕÉ”±…¹•Ì€ô¹•Ü1…¹•¥áÑÕÉ” ¤ì(€€€€€€€ÑÉäì(€€€€€€€€€€€±…¹•Ì¹Í•Ğ¡¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹1…¹”¹AI=Y%I}MQIP°(€€€€€€€€€€€€€€€€€€€¹•Ü%¹Ù½­•Q¡•¹ÉÉ½Éá•ÕÑ½È ¤¤ì(€€€€€€€€€€€%µµ•‘¥…Ñ•AÉ½Ù¥‘•ÈÁÉ½Ù¥‘•È€ô¹•Ü%µµ•‘¥…Ñ•AÉ½Ù¥‘•È ¤ì(€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÈÍ¡•‘Õ±•È€ôÍ¡•‘Õ±•È¡ÁÉ½Ù¥‘•È°(€€€€€€€€€€€€€€€€€€€¹•Ü¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉA½±¥ä Ä°€Ä°€à°€à¤°±…¹•Ì¤ì(€€€€€€€€€€€¥I•ÅÕ•ÍĞ™¥ÉÍĞ€ôÉ•ÅÕ•ÍĞ ˆÀÀÀÀÀÀÀÀ´ÀÀÀÀ´ÀÀÀÀ´ÀÀÀÀ´ÀÀÀÀÀÀÀÀÀÌÀàˆ¤ì(€€€€€€€€€€€¥I•ÅÕ•ÍĞÍ•½¹€ôÉ•ÅÕ•ÍĞ ˆÀÀÀÀÀÀÀÀ´ÀÀÀÀ´ÀÀÀÀ´ÀÀÀÀ´ÀÀÀÀÀÀÀÀÀÌÀäˆ¤ì((€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì¡™¥ÉÍĞ¹É•ÅÕ•ÍÑ% ¤°Í¡•‘Õ±•È¹ÍÕ‰µ¥Ğ¡Í¡•‘Õ±•¡	=Q}°9Q}°™¥ÉÍĞ¤°(€€€€€€€€€€€€€€€€€€€…¹•±±…Ñ¥½¹Q½­•¸¹¹½¹” ¤¤¹É•ÍÁ½¹Í” ¤¹Ñ½½µÁ±•Ñ…‰±•ÕÑÕÉ” ¤(€€€€€€€€€€€€€€€€€€€€¹•Ğ É0°Q¥µ•U¹¥Ğ¹M=9L¤¹É•ÅÕ•ÍÑ% ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì¡Í•½¹¹É•ÅÕ•ÍÑ% ¤°Í¡•‘Õ±•È¹ÍÕ‰µ¥Ğ¡Í¡•‘Õ±•¡	=Q}°9Q}°Í•½¹¤°(€€€€€€€€€€€€€€€€€€€…¹•±±…Ñ¥½¹Q½­•¸¹¹½¹” ¤¤¹É•ÍÁ½¹Í” ¤¹Ñ½½µÁ±•Ñ…‰±•ÕÑÕÉ” ¤(€€€€€€€€€€€€€€€€€€€€¹•Ğ É0°Q¥µ•U¹¥Ğ¹M=9L¤¹É•ÅÕ•ÍÑ% ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì È°ÁÉ½Ù¥‘•È¹…±±Ì¹•Ğ ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì Á0°Í¡•‘Õ±•È¹‘¥…¹½ÍÑ¥Ì ¤¹É•©•Ñ•‘¥ÍÁ…Ñ¡½Õ¹Ğ ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑ…±Í”¡Í¡•‘Õ±•È¹‘¥…¹½ÍÑ¥Ì ¤¹‘¥ÍÁ…Ñ¡•É…‘• ¤¤ì(€€€€€€€€€€€Í¡•‘Õ±•È¹±½Í” ¤ì(€€€€€€€ô™¥¹…±±äì(€€€€€€€€€€€±…¹•Ì¹±½Í” ¤ì(€€€€€€€ô(€€€ô((€€€Q•ÍĞ(€€€Ù½¥‘•±¥Ù•ÉåÑÑ•µÁÑÍÍ•ÉÑ¥½¹ÉÉ½ÉI•Á½ÉÑÍ…¥±ÕÉ•%¹ÍÑ•…‘=™MÕ•ÍÍ¬ ¤Ñ¡É½İÌá•ÁÑ¥½¸ì(€€€€€€€½Õ¹Ñ½İ¹1…Ñ ™…¥±•€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€Ñ½µ¥%¹Ñ••ÈÍÕ••‘•€ô¹•ÜÑ½µ¥%¹Ñ••È ¤ì(€€€€€€€Ñ½µ¥I•™•É•¹”ñQ¡É½İ…‰±”ø½‰Í•ÉÙ•€ô¹•ÜÑ½µ¥I•™•É•¹”ğø ¤ì(€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉA½±¥äÁ½±¥ä€ô¹•Ü¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉA½±¥ä Ä°€Ä°€à°€à¤ì(€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½ÈÍÕÁ•ÉÙ¥Í½È€ô(€€€€€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹™½É‘Ù•ÉÍ…É¥…±Q•ÍÑ¥¹œ (€€€€€€€€€€€€€€€€€€€€€€€€‰Í¡•‘Õ±•Èµ‘•±¥Ù•Éäµ•ÉÉ½Èˆ°Á½±¥ä°ÕÉ…Ñ¥½¸¹½™M•½¹‘Ì Å0¤°(€€€€€€€€€€€€€€€€€€€€€€€ÕÉ…Ñ¥½¸¹½™M•½¹‘Ì Å0¤°€¡±…¹”°İÉ…ÁÁ•È¤€´øİÉ…ÁÁ•È¹ÉÕ¸ ¤¤ì(€€€€€€€ÑÉäì(€€€€€€€€€€€…ÍÍ•ÉÑQÉÕ”¡ÍÕÁ•ÉÙ¥Í½È¹±…¥´ ¤¤ì(€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹¥ÍÁ…Ñ¡ÑÑ•µÁĞ…ÑÑ•µÁĞ€ô(€€€€€€€€€€€€€€€€€€€¹•Ü¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹¥ÍÁ…Ñ¡ÑÑ•µÁĞ Å0°(€€€€€€€€€€€€€€€€€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹1…¹”¹=5A1Q%=9}1%YId°(€€€€€€€€€€€€€€€€€€€€€€€€€€€¹•Ü¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹¥ÍÁ…Ñ¡…±±‰…­Ì ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÁÕ‰±¥Œ‰½½±•…¸ÍÑ…ÉÑ• (€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹¥ÍÁ…Ñ¡ÑÑ•µÁĞ¥¹½É•¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸ÑÉÕ”ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÁÕ‰±¥ŒÙ½¥ÍÑ…ÉÑ1½ÍĞ (€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹¥ÍÁ…Ñ¡ÑÑ•µÁĞ¥¹½É•¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰‘•±¥Ù•Éä…ÑÑ•µÁĞÕ¹•áÁ•Ñ•‘±ä±½ÍĞÍÑ…ÉĞˆ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÁÕ‰±¥ŒÙ½¥ÍÑ…±±• (€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹¥ÍÁ…Ñ¡ÑÑ•µÁĞ¥¹½É•¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰‘•±¥Ù•Éä…ÑÑ•µÁĞÕ¹•áÁ•Ñ•‘±äÍÑ…±±•ˆ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÁÕ‰±¥ŒÙ½¥‰½‘åMÕ••‘• (€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹¥ÍÁ…Ñ¡ÑÑ•µÁĞ¥¹½É•¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÍÕ••‘•¹¥¹É•µ•¹Ñ¹‘•Ğ ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÁÕ‰±¥ŒÙ½¥‰½‘å…¥±• (€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹¥ÍÁ…Ñ¡ÑÑ•µÁĞ¥¹½É•°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€Q¡É½İ…‰±”™…¥±ÕÉ”¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€½‰Í•ÉÙ•¹Í•Ğ¡™…¥±ÕÉ”¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€™…¥±•¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€€€€€€€€ô¤ì(€€€€€€€€€€€ÍÕÁ•ÉÙ¥Í½È¹¡…¹‘½™˜¡…ÑÑ•µÁĞ°€ ¤€´øì(€€€€€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰‘•±¥Ù•Éä‰½‘ä•ÉÉ½Èˆ¤ì(€€€€€€€€€€€ô¤ì(€€€€€€€€€€€…ÍÍ•ÉÑQÉÕ”¡™…¥±•¹…İ…¥Ğ É0°Q¥µ•U¹¥Ğ¹M=9L¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì À°ÍÕ••‘•¹•Ğ ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑQÉÕ”¡½‰Í•ÉÙ•¹•Ğ ¤¥¹ÍÑ…¹•½˜ÍÍ•ÉÑ¥½¹ÉÉ½È¤ì(€€€€€€€ô™¥¹…±±äì(€€€€€€€€€€€ÍÕÁ•ÉÙ¥Í½È¹±½Í” ¤ì(€€€€€€€ô(€€€ô((€€€Q•ÍĞ(€€€Ù½¥™…Ñ…±•±¥Ù•ÉåÑÑ•µÁÑÉÉ½ÉI•½É‘Í…¥±ÕÉ•	•™½É•Q¡•]½É­•É5…åI•Ñ¡É½Ü ¤(€€€€€€€€€€€Ñ¡É½İÌá•ÁÑ¥½¸ì(€€€€€€€½Õ¹Ñ½İ¹1…Ñ ™…¥±•€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€Ñ½µ¥%¹Ñ••ÈÍÕ••‘•€ô¹•ÜÑ½µ¥%¹Ñ••È ¤ì(€€€€€€€Ñ½µ¥I•™•É•¹”ñQ¡É½İ…‰±”øÉ•Ñ¡É½İ¸€ô¹•ÜÑ½µ¥I•™•É•¹”ğø ¤ì(€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉA½±¥äÁ½±¥ä€ô¹•Ü¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉA½±¥ä Ä°€Ä°€à°€à¤ì(€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½ÈÍÕÁ•ÉÙ¥Í½È€ô(€€€€€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹™½É‘Ù•ÉÍ…É¥…±Q•ÍÑ¥¹œ (€€€€€€€€€€€€€€€€€€€€€€€€‰Í¡•‘Õ±•Èµ‘•±¥Ù•Éäµ™…Ñ…°ˆ°Á½±¥ä°ÕÉ…Ñ¥½¸¹½™M•½¹‘Ì Å0¤°(€€€€€€€€€€€€€€€€€€€€€€€ÕÉ…Ñ¥½¸¹½™M•½¹‘Ì Å0¤°€¡±…¹”°İÉ…ÁÁ•È¤€´øì(€€€€€€€€€€€€€€€€€€€€€€€€€€€ÑÉäì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€İÉ…ÁÁ•È¹ÉÕ¸ ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€ô…Ñ €¡Q¡É½İ…‰±”™…¥±ÕÉ”¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€É•Ñ¡É½İ¸¹Í•Ğ¡™…¥±ÕÉ”¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€€€€ô¤ì(€€€€€€€ÑÉäì(€€€€€€€€€€€…ÍÍ•ÉÑQÉÕ”¡ÍÕÁ•ÉÙ¥Í½È¹±…¥´ ¤¤ì(€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹¥ÍÁ…Ñ¡ÑÑ•µÁĞ…ÑÑ•µÁĞ€ô(€€€€€€€€€€€€€€€€€€€¹•Ü¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹¥ÍÁ…Ñ¡ÑÑ•µÁĞ Å0°(€€€€€€€€€€€€€€€€€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹1…¹”¹=5A1Q%=9}1%YId°(€€€€€€€€€€€€€€€€€€€€€€€€€€€¹•Ü¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹¥ÍÁ…Ñ¡…±±‰…­Ì ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÁÕ‰±¥Œ‰½½±•…¸ÍÑ…ÉÑ• (€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹¥ÍÁ…Ñ¡ÑÑ•µÁĞ¥¹½É•¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸ÑÉÕ”ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÁÕ‰±¥ŒÙ½¥ÍÑ…ÉÑ1½ÍĞ (€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹¥ÍÁ…Ñ¡ÑÑ•µÁĞ¥¹½É•¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰™…Ñ…°‘•±¥Ù•Éä…ÑÑ•µÁĞ±½ÍĞÍÑ…ÉĞˆ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÁÕ‰±¥ŒÙ½¥ÍÑ…±±• (€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹¥ÍÁ…Ñ¡ÑÑ•µÁĞ¥¹½É•¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰™…Ñ…°‘•±¥Ù•Éä…ÑÑ•µÁĞÍÑ…±±•ˆ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÁÕ‰±¥ŒÙ½¥‰½‘åMÕ••‘• (€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹¥ÍÁ…Ñ¡ÑÑ•µÁĞ¥¹½É•¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÍÕ••‘•¹¥¹É•µ•¹Ñ¹‘•Ğ ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÁÕ‰±¥ŒÙ½¥‰½‘å…¥±• (€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹¥ÍÁ…Ñ¡ÑÑ•µÁĞ¥¹½É•°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€Q¡É½İ…‰±”™…¥±ÕÉ”¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€™…¥±•¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€€€€€€€€ô¤ì(€€€€€€€€€€€ÍÕÁ•ÉÙ¥Í½È¹¡…¹‘½™˜¡…ÑÑ•µÁĞ°€ ¤€´øì(€€€€€€€€€€€€€€€Ñ¡É½Ü¹•Ü1¥¹­…•ÉÉ½È ‰™…Ñ…°‘•±¥Ù•Éä‰½‘ä•ÉÉ½Èˆ¤ì(€€€€€€€€€€€ô¤ì(€€€€€€€€€€€…ÍÍ•ÉÑQÉÕ”¡™…¥±•¹…İ…¥Ğ É0°Q¥µ•U¹¥Ğ¹M=9L¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì À°ÍÕ••‘•¹•Ğ ¤¤ì(€€€€€€€€€€€…ÍÍ•ÉÑQÉÕ”¡…İ…¥Ğ  ¤€´øÉ•Ñ¡É½İ¸¹•Ğ ¤¥¹ÍÑ…¹•½˜1¥¹­…•ÉÉ½È°€É|ÀÀÁ0¤¤ì(€€€€€€€ô™¥¹…±±äì(€€€€€€€€€€€ÍÕÁ•ÉÙ¥Í½È¹±½Í” ¤ì(€€€€€€€ô(€€€ô((€€€Q•ÍĞ(€€€Ù½¥ÁÕ‰±¥Á¥UÍ•ÍMÕÁ•ÉÙ¥Í½ÉI…Ñ¡•ÉQ¡…¹I…İá•ÕÑ½É!…¹‘½™˜ ¤ì(€€€€€€€…ÍÍ•ÉÑÅÕ…±Ì È°¥I•ÅÕ•ÍÑM¡•‘Õ±•È¹±…ÍÌ¹•Ñ½¹ÍÑÉÕÑ½ÉÌ ¤¹±•¹Ñ ¤ì(€€€€€€€…ÍÍ•ÉÑQ¡É½İÌ¡%±±•…±ÉÕµ•¹Ñá•ÁÑ¥½¸¹±…ÍÌ°€ ¤€´øì(€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½ÈÍÕÁ•ÉÙ¥Í½È€ô¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹É•…Ñ” (€€€€€€€€€€€€€€€€€€€€‰Í¥¹±”µ±…¥´ˆ°¹•Ü¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉA½±¥ä Ä°€Ä°€à°€à¤¤ì(€€€€€€€€€€€ÑÉäì(€€€€€€€€€€€€€€€¹•Ü¥I•ÅÕ•ÍÑM¡•‘Õ±•È¡AI=Y%I}%°¹•Ü%µµ•‘¥…Ñ•AÉ½Ù¥‘•È ¤°(€€€€€€€€€€€€€€€€€€€€€€€¹•Ü¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉA½±¥ä Ä°€Ä°€à°€à¤°ÍÕÁ•ÉÙ¥Í½È¤ì(€€€€€€€€€€€€€€€¹•Ü¥I•ÅÕ•ÍÑM¡•‘Õ±•È¡AI=Y%I}%°¹•Ü%µµ•‘¥…Ñ•AÉ½Ù¥‘•È ¤°(€€€€€€€€€€€€€€€€€€€€€€€¹•Ü¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉA½±¥ä Ä°€Ä°€à°€à¤°ÍÕÁ•ÉÙ¥Í½È¤ì(€€€€€€€€€€€ô™¥¹…±±äì(€€€€€€€€€€€€€€€ÍÕÁ•ÉÙ¥Í½È¹±½Í” ¤ì(€€€€€€€€€€€ô(€€€€€€€ô¤ì(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ¥I•ÅÕ•ÍÑM¡•‘Õ±•ÈÍ¡•‘Õ±•È (€€€€€€€€€€€¥AÉ½Ù¥‘•ÈÁÉ½Ù¥‘•È°¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉA½±¥äÁ½±¥ä°1…¹•¥áÑÕÉ”±…¹•Ì¤ì(€€€€€€€É•ÑÕÉ¸Í¡•‘Õ±•È¡ÁÉ½Ù¥‘•È°Á½±¥ä°±…¹•Ì°MQIQ}Q%5=UP°MQ11}Q%5=UP¤ì(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ¥I•ÅÕ•ÍÑM¡•‘Õ±•ÈÍ¡•‘Õ±•È (€€€€€€€€€€€¥AÉ½Ù¥‘•ÈÁÉ½Ù¥‘•È°(€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉA½±¥äÁ½±¥ä°(€€€€€€€€€€€1…¹•¥áÑÕÉ”±…¹•Ì°(€€€€€€€€€€€ÕÉ…Ñ¥½¸ÍÑ…ÉÑQ¥µ•½ÕĞ°(€€€€€€€€€€€ÕÉ…Ñ¥½¸ÍÑ…±±Q¥µ•½ÕĞ¤ì(€€€€€€€É•ÑÕÉ¸¹•Ü¥I•ÅÕ•ÍÑM¡•‘Õ±•È¡AI=Y%I}%°ÁÉ½Ù¥‘•È°Á½±¥ä°±½¬¹ÍåÍÑ•µUQ ¤°(€€€€€€€€€€€€€€€±…¹•Ì¹ÍÕÁ•ÉÙ¥Í½È¡Á½±¥ä°ÍÑ…ÉÑQ¥µ•½ÕĞ°ÍÑ…±±Q¥µ•½ÕĞ¤¤ì(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ¥I•ÅÕ•ÍÑM¡•‘Õ±•ÈÍ¡•‘Õ±•È (€€€€€€€€€€€¥AÉ½Ù¥‘•ÈÁÉ½Ù¥‘•È°(€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉA½±¥äÁ½±¥ä°(€€€€€€€€€€€1…¹•¥áÑÕÉ”±…¹•Ì°(€€€€€€€€€€€±½¬±½¬¤ì(€€€€€€€É•ÑÕÉ¸¹•Ü¥I•ÅÕ•ÍÑM¡•‘Õ±•È¡AI=Y%I}%°ÁÉ½Ù¥‘•È°Á½±¥ä°±½¬°(€€€€€€€€€€€€€€€±…¹•Ì¹ÍÕÁ•ÉÙ¥Í½È¡Á½±¥ä°MQIQ}Q%5=UP°MQ11}Q%5=UP¤¤ì(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥ŒÙ½¥½¹™¥ÕÉ•%¹±¥¹•1…¹•Íá•ÁĞ (€€€€€€€€€€€1…¹•¥áÑÕÉ”±…¹•Ì°¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹1…¹”•á•ÁÑ¥½¸¤ì(€€€€€€€™½È€¡¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹1…¹”±…¹”(€€€€€€€€€€€€€€€€è¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹1…¹”¹Ù…±Õ•Ì ¤¤ì(€€€€€€€€€€€¥˜€¡±…¹”€„ô•á•ÁÑ¥½¸¤ì(€€€€€€€€€€€€€€€±…¹•Ì¹Í•Ğ¡±…¹”°¹•Ü%¹±¥¹•á•ÕÑ½È ¤¤ì(€€€€€€€€€€€ô(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥ŒÙ½¥½¹™¥ÕÉ•±±%¹±¥¹•1…¹•Ì¡1…¹•¥áÑÕÉ”±…¹•Ì¤ì(€€€€€€€™½È€¡¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹1…¹”±…¹”(€€€€€€€€€€€€€€€€è¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹1…¹”¹Ù…±Õ•Ì ¤¤ì(€€€€€€€€€€€±…¹•Ì¹Í•Ğ¡±…¹”°¹•Ü%¹±¥¹•á•ÕÑ½È ¤¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ¥M¡•‘Õ±•‘I•ÅÕ•ÍĞÍ¡•‘Õ±• (€€€€€€€€€€€UU%‰½Ñ%°UU%…•¹Ñ%°¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ¤ì(€€€€€€€É•ÑÕÉ¸¹•Ü¥M¡•‘Õ±•‘I•ÅÕ•ÍĞ¡=]9H°‰½Ñ%°…•¹Ñ%°€Å0°É•ÅÕ•ÍĞ¤ì(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ¡MÑÉ¥¹œ¥¤ì(€€€€€€€É•ÑÕÉ¸É•ÅÕ•ÍĞ¡¥°€Õ|ÀÀÁ0¤ì(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ¡MÑÉ¥¹œ¥°±½¹œÑ¥µ•½ÕÑ5¥±±¥Ì¤ì(€€€€€€€¥I•ÅÕ•ÍĞ‰…Í”€ô¥Q•ÍÑ¥áÑÕÉ•Ì¹É•ÅÕ•ÍĞ¡UU%¹™É½µMÑÉ¥¹œ¡¥¤¤ì(€€€€€€€É•ÑÕÉ¸¹•Ü¥I•ÅÕ•ÍĞ¡‰…Í”¹É•ÅÕ•ÍÑ% ¤°‰…Í”¹µ½‘•° ¤°‰…Í”¹µ•ÍÍ…•Ì ¤°(€€€€€€€€€€€€€€€¹•Ü¥I•ÅÕ•ÍÑ=ÁÑ¥½¹Ì¡‰…Í”¹½ÁÑ¥½¹Ì ¤¹µ…á¥µÕµ=ÕÑÁÕÑQ½­•¹Ì ¤°Ñ¥µ•½ÕÑ5¥±±¥Ì°(€€€€€€€€€€€€€€€€€€€€€€€‰…Í”¹½ÁÑ¥½¹Ì ¤¹É•ÍÁ½¹Í•½Éµ…Ğ ¤°‰…Í”¹½ÁÑ¥½¹Ì ¤¹É•…Í½¹¥¹±±½İ• ¤°(€€€€€€€€€€€€€€€€€€€€€€€‰…Í”¹½ÁÑ¥½¹Ì ¤¹Ñ½½±…±±Í±±½İ• ¤°‰…Í”¹½ÁÑ¥½¹Ì ¤¹Ñ•µÁ•É…ÑÕÉ” ¤¤°(€€€€€€€€€€€€€€€‰…Í”¹É•ÍÁ½¹Í•M¡•µ…)Í½¸ ¤¤ì(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ¥I•ÍÁ½¹Í”É•ÍÁ½¹Í”¡¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ¤ì(€€€€€€€É•ÑÕÉ¸¥Q•ÍÑ¥áÑÕÉ•Ì¹É•ÍÁ½¹Í”¡É•ÅÕ•ÍĞ°AI=Y%I}%¤ì(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ¥AÉ½Ù¥‘•Éá•ÁÑ¥½¸™…¥±ÕÉ”¡½µÁ±•Ñ…‰±•ÕÑÕÉ”ğüø™ÕÑÕÉ”¤ì(€€€€€€€ÑÉäì(€€€€€€€€€€€™ÕÑÕÉ”¹•Ğ É0°Q¥µ•U¹¥Ğ¹M=9L¤ì(€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰™ÕÑÕÉ”Õ¹•áÁ•Ñ•‘±ä½µÁ±•Ñ•¹½Éµ…±±äˆ¤ì(€€€€€€€ô…Ñ €¡á•ÕÑ¥½¹á•ÁÑ¥½¸•á•ÁÑ¥½¸¤ì(€€€€€€€€€€€…ÍÍ•ÉÑQÉÕ”¡•á•ÁÑ¥½¸¹•Ñ…ÕÍ” ¤¥¹ÍÑ…¹•½˜¥AÉ½Ù¥‘•Éá•ÁÑ¥½¸¤ì(€€€€€€€€€€€É•ÑÕÉ¸€¡¥AÉ½Ù¥‘•Éá•ÁÑ¥½¸¤•á•ÁÑ¥½¸¹•Ñ…ÕÍ” ¤ì(€€€€€€€ô…Ñ €¡Q¥µ•½ÕÑá•ÁÑ¥½¸•á•ÁÑ¥½¸¤ì(€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰™ÕÑÕÉ”‘¥¹½Ğ½µÁ±•Ñ”‰•™½É”Ñ¥µ•½ÕĞˆ°•á•ÁÑ¥½¸¤ì(€€€€€€€ô…Ñ €¡%¹Ñ•ÉÉÕÁÑ•‘á•ÁÑ¥½¸•á•ÁÑ¥½¸¤ì(€€€€€€€€€€€Q¡É•…¹ÕÉÉ•¹ÑQ¡É•… ¤¹¥¹Ñ•ÉÉÕÁĞ ¤ì(€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰™ÕÑÕÉ”İ…¥Ğİ…Ì¥¹Ñ•ÉÉÕÁÑ•ˆ°•á•ÁÑ¥½¸¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ…±°…±±½È¡½¹ÑÉ½±±…‰±•AÉ½Ù¥‘•ÈÁÉ½Ù¥‘•È°¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ¤ì(€€€€€€€É•ÑÕÉ¸ÁÉ½Ù¥‘•È¹…±±Ì ¤¹ÍÑÉ•…´ ¤¹™¥±Ñ•È (€€€€€€€€€€€€€€€…±°€´ø…±°¹É•ÅÕ•ÍĞ ¤¹É•ÅÕ•ÍÑ% ¤¹•ÅÕ…±Ì¡É•ÅÕ•ÍĞ¹É•ÅÕ•ÍÑ% ¤¤¤(€€€€€€€€€€€€€€€€¹™¥¹‘¥ÉÍĞ ¤¹½É±Í•Q¡É½Ü ¤ì(€€€ô((€€€Õ¹Ñ¥½¹…±%¹Ñ•É™…”(€€€ÁÉ¥Ù…Ñ”¥¹Ñ•É™…”½¹‘¥Ñ¥½¸ì(€€€€€€€‰½½±•…¸•Ù…±Õ…Ñ” ¤ì(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ‰½½±•…¸…İ…¥Ğ¡½¹‘¥Ñ¥½¸½¹‘¥Ñ¥½¸°±½¹œÑ¥µ•½ÕÑ5¥±±¥Ì¤Ñ¡É½İÌ%¹Ñ•ÉÉÕÁÑ•‘á•ÁÑ¥½¸ì(€€€€€€€±½¹œ‘•…‘±¥¹”€ôMåÍÑ•´¹¹…¹½Q¥µ” ¤€¬Q¥µ•U¹¥Ğ¹5%11%M=9L¹Ñ½9…¹½Ì¡Ñ¥µ•½ÕÑ5¥±±¥Ì¤ì(€€€€€€€‘¼ì(€€€€€€€€€€€¥˜€¡½¹‘¥Ñ¥½¸¹•Ù…±Õ…Ñ” ¤¤ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ÑÉÕ”ì(€€€€€€€€€€€ô(€€€€€€€€€€€Q¡É•…¹Í±••À Õ0¤ì(€€€€€€€ôİ¡¥±”€¡MåÍÑ•´¹¹…¹½Q¥µ” ¤€ğ‘•…‘±¥¹”¤ì(€€€€€€€É•ÑÕÉ¸½¹‘¥Ñ¥½¸¹•Ù…±Õ…Ñ” ¤ì(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥ŒÙ½¥…İ…¥Ñ1…Ñ ¡½Õ¹Ñ½İ¹1…Ñ ±…Ñ ¤ì(€€€€€€€ÑÉäì(€€€€€€€€€€€¥˜€ …±…Ñ ¹…İ…¥Ğ Õ0°Q¥µ•U¹¥Ğ¹M=9L¤¤ì(€€€€€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰Ñ•ÍĞ…±±‰…¬‘¥¹½ĞÉ••¥Ù”É•±•…Í”Í¥¹…°ˆ¤ì(€€€€€€€€€€€ô(€€€€€€€ô…Ñ €¡%¹Ñ•ÉÉÕÁÑ•‘á•ÁÑ¥½¸•á•ÁÑ¥½¸¤ì(€€€€€€€€€€€Q¡É•…¹ÕÉÉ•¹ÑQ¡É•… ¤¹¥¹Ñ•ÉÉÕÁĞ ¤ì(€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰Ñ•ÍĞ…±±‰…¬İ…Ì¥¹Ñ•ÉÉÕÁÑ•ˆ°•á•ÁÑ¥½¸¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ1…¹•¥áÑÕÉ”¥µÁ±•µ•¹ÑÌÕÑ½±½Í•…‰±”ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°¹Õµ5…Àñ¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹1…¹”°á•ÕÑ½Èø•á•ÕÑ½ÉÌ€ô(€€€€€€€€€€€€€€€¹•Ü¹Õµ5…Àğø¡¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹1…¹”¹±…ÍÌ¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°1¥ÍĞñá•ÕÑ½ÉM•ÉÙ¥”øÍ•ÉÙ¥•Ì€ô¹•Ü½Áå=¹]É¥Ñ•ÉÉ…å1¥ÍĞğø ¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°1¥ÍĞñ¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½ÈøÍÕÁ•ÉÙ¥Í½ÉÌ€ô¹•Ü½Áå=¹]É¥Ñ•ÉÉ…å1¥ÍĞğø ¤ì((€€€€€€€ÁÉ¥Ù…Ñ”1…¹•¥áÑÕÉ” ¤ì(€€€€€€€€€€€™½È€¡¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹1…¹”±…¹”(€€€€€€€€€€€€€€€€€€€€è¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹1…¹”¹Ù…±Õ•Ì ¤¤ì(€€€€€€€€€€€€€€€á•ÕÑ½ÉM•ÉÙ¥”Í•ÉÙ¥”€ôá•ÕÑ½ÉÌ¹¹•İ¥á•‘Q¡É•…‘A½½° È°ÉÕ¹¹…‰±”€´øì(€€€€€€€€€€€€€€€€€€€Q¡É•…Ñ¡É•…€ô¹•ÜQ¡É•…¡ÉÕ¹¹…‰±”°€‰Í¡•‘Õ±•Èµ…‘Ù•ÉÍ…É¥…°´ˆ€¬±…¹”¤ì(€€€€€€€€€€€€€€€€€€€Ñ¡É•…¹Í•Ñ…•µ½¸¡ÑÉÕ”¤ì(€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸Ñ¡É•…ì(€€€€€€€€€€€€€€€ô¤ì(€€€€€€€€€€€€€€€Í•ÉÙ¥•Ì¹…‘¡Í•ÉÙ¥”¤ì(€€€€€€€€€€€€€€€•á•ÕÑ½ÉÌ¹ÁÕĞ¡±…¹”°Í•ÉÙ¥”¤ì(€€€€€€€€€€€ô(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”á•ÕÑ½È•á•ÕÑ½È¡¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹1…¹”±…¹”¤ì(€€€€€€€€€€€É•ÑÕÉ¸•á•ÕÑ½ÉÌ¹•Ğ¡±…¹”¤ì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”Ù½¥Í•Ğ¡¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹1…¹”±…¹”°á•ÕÑ½È•á•ÕÑ½È¤ì(€€€€€€€€€€€•á•ÕÑ½ÉÌ¹ÁÕĞ¡±…¹”°•á•ÕÑ½È¤ì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½ÈÍÕÁ•ÉÙ¥Í½È (€€€€€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉA½±¥äÁ½±¥ä°(€€€€€€€€€€€€€€€ÕÉ…Ñ¥½¸ÍÑ…ÉÑQ¥µ•½ÕĞ°(€€€€€€€€€€€€€€€ÕÉ…Ñ¥½¸ÍÑ…±±Q¥µ•½ÕĞ¤ì(€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½ÈÍÕÁ•ÉÙ¥Í½È€ô(€€€€€€€€€€€€€€€€€€€¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½È¹™½É‘Ù•ÉÍ…É¥…±Q•ÍÑ¥¹œ (€€€€€€€€€€€€€€€€€€€€€€€€€€€€‰Í¡•‘Õ±•Èµ…‘Ù•ÉÍ…É¥…°ˆ°Á½±¥ä°ÍÑ…ÉÑQ¥µ•½ÕĞ°ÍÑ…±±Q¥µ•½ÕĞ°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€¡±…¹”°İÉ…ÁÁ•È¤€´ø•á•ÕÑ½ÉÌ¹•Ğ¡±…¹”¤¹•á•ÕÑ”¡İÉ…ÁÁ•È¤¤ì(€€€€€€€€€€€ÍÕÁ•ÉÙ¥Í½ÉÌ¹…‘¡ÍÕÁ•ÉÙ¥Í½È¤ì(€€€€€€€€€€€É•ÑÕÉ¸ÍÕÁ•ÉÙ¥Í½Èì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒÙ½¥±½Í” ¤ì(€€€€€€€€€€€™½È€¡¥I•ÅÕ•ÍÑM¡•‘Õ±•ÉMÕÁ•ÉÙ¥Í½ÈÍÕÁ•ÉÙ¥Í½È€èÍÕÁ•ÉÙ¥Í½ÉÌ¤ì(€€€€€€€€€€€€€€€ÍÕÁ•ÉÙ¥Í½È¹±½Í” ¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€™½È€¡á•ÕÑ½ÉM•ÉÙ¥”Í•ÉÙ¥”€èÍ•ÉÙ¥•Ì¤ì(€€€€€€€€€€€€€€€Í•ÉÙ¥”¹Í¡ÕÑ‘½İ¹9½Ü ¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€™½È€¡á•ÕÑ½ÉM•ÉÙ¥”Í•ÉÙ¥”€èÍ•ÉÙ¥•Ì¤ì(€€€€€€€€€€€€€€€ÑÉäì(€€€€€€€€€€€€€€€€€€€…ÍÍ•ÉÑQÉÕ”¡Í•ÉÙ¥”¹…İ…¥ÑQ•Éµ¥¹…Ñ¥½¸ É0°Q¥µ•U¹¥Ğ¹M=9L¤¤ì(€€€€€€€€€€€€€€€ô…Ñ €¡%¹Ñ•ÉÉÕÁÑ•‘á•ÁÑ¥½¸•á•ÁÑ¥½¸¤ì(€€€€€€€€€€€€€€€€€€€Q¡É•…¹ÕÉÉ•¹ÑQ¡É•… ¤¹¥¹Ñ•ÉÉÕÁĞ ¤ì(€€€€€€€€€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰Ñ•ÍĞ±…¹”‘¥¹½ĞÑ•Éµ¥¹…Ñ”ˆ°•á•ÁÑ¥½¸¤ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€ô(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ½¹ÑÉ½±±…‰±•AÉ½Ù¥‘•È¥µÁ±•µ•¹ÑÌ¥AÉ½Ù¥‘•Èì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°1¥ÍĞñ…±°ø…±±Ì€ô¹•Ü½Áå=¹]É¥Ñ•ÉÉ…å1¥ÍĞğø ¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥I•ÍÁ½¹Í”ø½µÁ±•Ñ” (€€€€€€€€€€€€€€€¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ°…¹•±±…Ñ¥½¹Q½­•¸Ñ½­•¸¤ì(€€€€€€€€€€€QÉ…­¥¹ÕÑÕÉ”ñ¥I•ÍÁ½¹Í”øÍÑ…”€ô¹•ÜQÉ…­¥¹ÕÑÕÉ”ğø ¤ì(€€€€€€€€€€€…±±Ì¹…‘¡¹•Ü…±°¡É•ÅÕ•ÍĞ°ÍÑ…”¤¤ì(€€€€€€€€€€€É•ÑÕÉ¸ÍÑ…”ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥…Á…‰¥±¥Ñ¥•ÌøÁÉ½‰•…Á…‰¥±¥Ñ¥•Ì ¤ì(€€€€€€€€€€€É•ÑÕÉ¸½µÁ±•Ñ…‰±•ÕÑÕÉ”¹½µÁ±•Ñ•‘ÕÑÕÉ”¡¥Q•ÍÑ¥áÑÕÉ•Ì¹…Á…‰¥±¥Ñ¥•Ì¡AI=Y%I}%¤¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒAÉ½Ù¥‘•É!•…±Ñ ¡•…±Ñ  ¤ì(€€€€€€€€€€€É•ÑÕÉ¸AÉ½Ù¥‘•É!•…±Ñ ¹¡•…±Ñ¡ä¡AI=Y%I}%°%¹ÍÑ…¹Ğ¹A= ¤ì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”1¥ÍĞñ…±°ø…±±Ì ¤ì(€€€€€€€€€€€É•ÑÕÉ¸…±±Ìì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ%µµ•‘¥…Ñ•AÉ½Ù¥‘•È¥µÁ±•µ•¹ÑÌ¥AÉ½Ù¥‘•Èì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥%¹Ñ••È…±±Ì€ô¹•ÜÑ½µ¥%¹Ñ••È ¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥I•ÍÁ½¹Í”ø½µÁ±•Ñ” (€€€€€€€€€€€€€€€¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ°…¹•±±…Ñ¥½¹Q½­•¸Ñ½­•¸¤ì(€€€€€€€€€€€…±±Ì¹¥¹É•µ•¹Ñ¹‘•Ğ ¤ì(€€€€€€€€€€€É•ÑÕÉ¸½µÁ±•Ñ…‰±•ÕÑÕÉ”¹½µÁ±•Ñ•‘ÕÑÕÉ”¡É•ÍÁ½¹Í”¡É•ÅÕ•ÍĞ¤¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥…Á…‰¥±¥Ñ¥•ÌøÁÉ½‰•…Á…‰¥±¥Ñ¥•Ì ¤ì(€€€€€€€€€€€É•ÑÕÉ¸½µÁ±•Ñ…‰±•ÕÑÕÉ”¹½µÁ±•Ñ•‘ÕÑÕÉ”¡¥Q•ÍÑ¥áÑÕÉ•Ì¹…Á…‰¥±¥Ñ¥•Ì¡AI=Y%I}%¤¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒAÉ½Ù¥‘•É!•…±Ñ ¡•…±Ñ  ¤ì(€€€€€€€€€€€É•ÑÕÉ¸AÉ½Ù¥‘•É!•…±Ñ ¹¡•…±Ñ¡ä¡AI=Y%I}%°%¹ÍÑ…¹Ğ¹A= ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌQ¡É½İ¥¹Q¡•¹%µµ•‘¥…Ñ•AÉ½Ù¥‘•È¥µÁ±•µ•¹ÑÌ¥AÉ½Ù¥‘•Èì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥%¹Ñ••È…±±Ì€ô¹•ÜÑ½µ¥%¹Ñ••È ¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥I•ÍÁ½¹Í”ø½µÁ±•Ñ” (€€€€€€€€€€€€€€€¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ°…¹•±±…Ñ¥½¹Q½­•¸Ñ½­•¸¤ì(€€€€€€€€€€€¥˜€¡…±±Ì¹•Ñ¹‘%¹É•µ•¹Ğ ¤€ôô€À¤ì(€€€€€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰ÁÉ½Ù¥‘•È½µÁ±•Ñ”•ÉÉ½Èˆ¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€É•ÑÕÉ¸½µÁ±•Ñ…‰±•ÕÑÕÉ”¹½µÁ±•Ñ•‘ÕÑÕÉ”¡É•ÍÁ½¹Í”¡É•ÅÕ•ÍĞ¤¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥…Á…‰¥±¥Ñ¥•ÌøÁÉ½‰•…Á…‰¥±¥Ñ¥•Ì ¤ì(€€€€€€€€€€€É•ÑÕÉ¸½µÁ±•Ñ…‰±•ÕÑÕÉ”¹½µÁ±•Ñ•‘ÕÑÕÉ”¡¥Q•ÍÑ¥áÑÕÉ•Ì¹…Á…‰¥±¥Ñ¥•Ì¡AI=Y%I}%¤¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒAÉ½Ù¥‘•É!•…±Ñ ¡•…±Ñ  ¤ì(€€€€€€€€€€€É•ÑÕÉ¸AÉ½Ù¥‘•É!•…±Ñ ¹¡•…±Ñ¡ä¡AI=Y%I}%°%¹ÍÑ…¹Ğ¹A= ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌÑÑ…¡µ•¹ÑÉÉ½ÉQ¡•¹%µµ•‘¥…Ñ•AÉ½Ù¥‘•È¥µÁ±•µ•¹ÑÌ¥AÉ½Ù¥‘•Èì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥%¹Ñ••È…±±Ì€ô¹•ÜÑ½µ¥%¹Ñ••È ¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥I•ÍÁ½¹Í”ø½µÁ±•Ñ” (€€€€€€€€€€€€€€€¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ°…¹•±±…Ñ¥½¹Q½­•¸Ñ½­•¸¤ì(€€€€€€€€€€€¥˜€¡…±±Ì¹•Ñ¹‘%¹É•µ•¹Ğ ¤€ôô€À¤ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸¹•ÜÑÑ…¡µ•¹ÑÉÉ½ÉÕÑÕÉ”ğø ¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€É•ÑÕÉ¸½µÁ±•Ñ…‰±•ÕÑÕÉ”¹½µÁ±•Ñ•‘ÕÑÕÉ”¡É•ÍÁ½¹Í”¡É•ÅÕ•ÍĞ¤¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥…Á…‰¥±¥Ñ¥•ÌøÁÉ½‰•…Á…‰¥±¥Ñ¥•Ì ¤ì(€€€€€€€€€€€É•ÑÕÉ¸½µÁ±•Ñ…‰±•ÕÑÕÉ”¹½µÁ±•Ñ•‘ÕÑÕÉ”¡¥Q•ÍÑ¥áÑÕÉ•Ì¹…Á…‰¥±¥Ñ¥•Ì¡AI=Y%I}%¤¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒAÉ½Ù¥‘•É!•…±Ñ ¡•…±Ñ  ¤ì(€€€€€€€€€€€É•ÑÕÉ¸AÉ½Ù¥‘•É!•…±Ñ ¹¡•…±Ñ¡ä¡AI=Y%I}%°%¹ÍÑ…¹Ğ¹A= ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌQ¡É½İ=¹•…¹•±AÉ½Ù¥‘•È¥µÁ±•µ•¹ÑÌ¥AÉ½Ù¥‘•Èì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥%¹Ñ••È…±±Ì€ô¹•ÜÑ½µ¥%¹Ñ••È ¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Q¡É½İ=¹•…¹•±ÕÑÕÉ”ñ¥I•ÍÁ½¹Í”øÍÑ…”€ô¹•ÜQ¡É½İ=¹•…¹•±ÕÑÕÉ”ğø ¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥I•ÍÁ½¹Í”ø½µÁ±•Ñ” (€€€€€€€€€€€€€€€¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ°…¹•±±…Ñ¥½¹Q½­•¸Ñ½­•¸¤ì(€€€€€€€€€€€…±±Ì¹¥¹É•µ•¹Ñ¹‘•Ğ ¤ì(€€€€€€€€€€€É•ÑÕÉ¸ÍÑ…”ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥…Á…‰¥±¥Ñ¥•ÌøÁÉ½‰•…Á…‰¥±¥Ñ¥•Ì ¤ì(€€€€€€€€€€€É•ÑÕÉ¸½µÁ±•Ñ…‰±•ÕÑÕÉ”¹½µÁ±•Ñ•‘ÕÑÕÉ”¡¥Q•ÍÑ¥áÑÕÉ•Ì¹…Á…‰¥±¥Ñ¥•Ì¡AI=Y%I}%¤¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒAÉ½Ù¥‘•É!•…±Ñ ¡•…±Ñ  ¤ì(€€€€€€€€€€€É•ÑÕÉ¸AÉ½Ù¥‘•É!•…±Ñ ¹¡•…±Ñ¡ä¡AI=Y%I}%°%¹ÍÑ…¹Ğ¹A= ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ=É‘•É¥¹AÉ½Ù¥‘•È¥µÁ±•µ•¹ÑÌ¥AÉ½Ù¥‘•Èì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥%¹Ñ••È…±±Ì€ô¹•ÜÑ½µ¥%¹Ñ••È ¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ ™¥ÉÍÑ¹Ñ•É•€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ Í•½¹‘¹Ñ•É•€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥	½½±•…¸Í•½¹‘MÑ…ÉÑ•‘	•™½É•¥ÉÍÑ…¹•±±…Ñ¥½¸€ô¹•ÜÑ½µ¥	½½±•…¸ ¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°QÉ…­¥¹ÕÑÕÉ”ñ¥I•ÍÁ½¹Í”ø™¥ÉÍÑMÑ…”€ô¹•ÜQÉ…­¥¹ÕÑÕÉ”ğø ¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°QÉ…­¥¹ÕÑÕÉ”ñ¥I•ÍÁ½¹Í”øÍ•½¹‘MÑ…”€ô¹•ÜQÉ…­¥¹ÕÑÕÉ”ğø ¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥I•ÍÁ½¹Í”ø½µÁ±•Ñ” (€€€€€€€€€€€€€€€¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ°…¹•±±…Ñ¥½¹Q½­•¸Ñ½­•¸¤ì(€€€€€€€€€€€¥˜€¡…±±Ì¹•Ñ¹‘%¹É•µ•¹Ğ ¤€ôô€À¤ì(€€€€€€€€€€€€€€€™¥ÉÍÑ¹Ñ•É•¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸™¥ÉÍÑMÑ…”ì(€€€€€€€€€€€ô(€€€€€€€€€€€¥˜€ …™¥ÉÍÑMÑ…”¹¥Í…¹•±±• ¤¤ì(€€€€€€€€€€€€€€€Í•½¹‘MÑ…ÉÑ•‘	•™½É•¥ÉÍÑ…¹•±±…Ñ¥½¸¹Í•Ğ¡ÑÉÕ”¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€Í•½¹‘¹Ñ•É•¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€€€€€É•ÑÕÉ¸Í•½¹‘MÑ…”ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥…Á…‰¥±¥Ñ¥•ÌøÁÉ½‰•…Á…‰¥±¥Ñ¥•Ì ¤ì(€€€€€€€€€€€É•ÑÕÉ¸½µÁ±•Ñ…‰±•ÕÑÕÉ”¹½µÁ±•Ñ•‘ÕÑÕÉ”¡¥Q•ÍÑ¥áÑÕÉ•Ì¹…Á…‰¥±¥Ñ¥•Ì¡AI=Y%I}%¤¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒAÉ½Ù¥‘•É!•…±Ñ ¡•…±Ñ  ¤ì(€€€€€€€€€€€É•ÑÕÉ¸AÉ½Ù¥‘•É!•…±Ñ ¹¡•…±Ñ¡ä¡AI=Y%I}%°%¹ÍÑ…¹Ğ¹A= ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ	±½­¥¹±•…¹ÕÁAÉ½Ù¥‘•È¥µÁ±•µ•¹ÑÌ¥AÉ½Ù¥‘•Èì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥%¹Ñ••È…±±Ì€ô¹•ÜÑ½µ¥%¹Ñ••È ¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ ™¥ÉÍÑ¹Ñ•É•€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ Í•½¹‘¹Ñ•É•€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ …¹•±±…Ñ¥½¹¹Ñ•É•€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ É•±•…Í•…¹•±±…Ñ¥½¸€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°	±½­¥¹…¹•±±…Ñ¥½¹ÕÑÕÉ”ñ¥I•ÍÁ½¹Í”ø™¥ÉÍÑMÑ…”€ô(€€€€€€€€€€€€€€€¹•Ü	±½­¥¹…¹•±±…Ñ¥½¹ÕÑÕÉ”ğø¡…¹•±±…Ñ¥½¹¹Ñ•É•°É•±•…Í•…¹•±±…Ñ¥½¸¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°QÉ…­¥¹ÕÑÕÉ”ñ¥I•ÍÁ½¹Í”øÍ•½¹‘MÑ…”€ô¹•ÜQÉ…­¥¹ÕÑÕÉ”ğø ¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥I•ÍÁ½¹Í”ø½µÁ±•Ñ” (€€€€€€€€€€€€€€€¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ°…¹•±±…Ñ¥½¹Q½­•¸Ñ½­•¸¤ì(€€€€€€€€€€€¥˜€¡…±±Ì¹•Ñ¹‘%¹É•µ•¹Ğ ¤€ôô€À¤ì(€€€€€€€€€€€€€€€™¥ÉÍÑ¹Ñ•É•¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸™¥ÉÍÑMÑ…”ì(€€€€€€€€€€€ô(€€€€€€€€€€€Í•½¹‘¹Ñ•É•¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€€€€€É•ÑÕÉ¸Í•½¹‘MÑ…”ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥…Á…‰¥±¥Ñ¥•ÌøÁÉ½‰•…Á…‰¥±¥Ñ¥•Ì ¤ì(€€€€€€€€€€€É•ÑÕÉ¸½µÁ±•Ñ…‰±•ÕÑÕÉ”¹½µÁ±•Ñ•‘ÕÑÕÉ”¡¥Q•ÍÑ¥áÑÕÉ•Ì¹…Á…‰¥±¥Ñ¥•Ì¡AI=Y%I}%¤¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒAÉ½Ù¥‘•É!•…±Ñ ¡•…±Ñ  ¤ì(€€€€€€€€€€€É•ÑÕÉ¸AÉ½Ù¥‘•É!•…±Ñ ¹¡•…±Ñ¡ä¡AI=Y%I}%°%¹ÍÑ…¹Ğ¹A= ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ	±½­¥¹…¹•±±…Ñ¥½¹ÕÑÕÉ”ñPø•áÑ•¹‘Ì½µÁ±•Ñ…‰±•ÕÑÕÉ”ñPøì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ …¹•±±…Ñ¥½¹¹Ñ•É•ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ É•±•…Í•…¹•±±…Ñ¥½¸ì((€€€€€€€ÁÉ¥Ù…Ñ”	±½­¥¹…¹•±±…Ñ¥½¹ÕÑÕÉ” (€€€€€€€€€€€€€€€½Õ¹Ñ½İ¹1…Ñ …¹•±±…Ñ¥½¹¹Ñ•É•°½Õ¹Ñ½İ¹1…Ñ É•±•…Í•…¹•±±…Ñ¥½¸¤ì(€€€€€€€€€€€Ñ¡¥Ì¹…¹•±±…Ñ¥½¹¹Ñ•É•€ô…¹•±±…Ñ¥½¹¹Ñ•É•ì(€€€€€€€€€€€Ñ¡¥Ì¹É•±•…Í•…¹•±±…Ñ¥½¸€ôÉ•±•…Í•…¹•±±…Ñ¥½¸ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ‰½½±•…¸…¹•°¡‰½½±•…¸µ…å%¹Ñ•ÉÉÕÁÑ%™IÕ¹¹¥¹œ¤ì(€€€€€€€€€€€…¹•±±…Ñ¥½¹¹Ñ•É•¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€€€€€ÑÉäì(€€€€€€€€€€€€€€€É•±•…Í•…¹•±±…Ñ¥½¸¹…İ…¥Ğ Õ0°Q¥µ•U¹¥Ğ¹M=9L¤ì(€€€€€€€€€€€ô…Ñ €¡%¹Ñ•ÉÉÕÁÑ•‘á•ÁÑ¥½¸•á•ÁÑ¥½¸¤ì(€€€€€€€€€€€€€€€Q¡É•…¹ÕÉÉ•¹ÑQ¡É•… ¤¹¥¹Ñ•ÉÉÕÁĞ ¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€É•ÑÕÉ¸ÍÕÁ•È¹…¹•°¡µ…å%¹Ñ•ÉÉÕÁÑ%™IÕ¹¹¥¹œ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ	±½­¥¹AÉ½Ù¥‘•È¥µÁ±•µ•¹ÑÌ¥AÉ½Ù¥‘•Èì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥%¹Ñ••È…±±Ì€ô¹•ÜÑ½µ¥%¹Ñ••È ¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ •¹Ñ•É•€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ É•±•…Í”€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°QÉ…­¥¹ÕÑÕÉ”ñ¥I•ÍÁ½¹Í”øÍÑ…”€ô¹•ÜQÉ…­¥¹ÕÑÕÉ”ğø ¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥I•ÍÁ½¹Í”ø½µÁ±•Ñ” (€€€€€€€€€€€€€€€¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ°…¹•±±…Ñ¥½¹Q½­•¸Ñ½­•¸¤ì(€€€€€€€€€€€…±±Ì¹¥¹É•µ•¹Ñ¹‘•Ğ ¤ì(€€€€€€€€€€€•¹Ñ•É•¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€€€€€…İ…¥Ñ1…Ñ ¡É•±•…Í”¤ì(€€€€€€€€€€€É•ÑÕÉ¸ÍÑ…”ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥…Á…‰¥±¥Ñ¥•ÌøÁÉ½‰•…Á…‰¥±¥Ñ¥•Ì ¤ì(€€€€€€€€€€€É•ÑÕÉ¸½µÁ±•Ñ…‰±•ÕÑÕÉ”¹½µÁ±•Ñ•‘ÕÑÕÉ”¡¥Q•ÍÑ¥áÑÕÉ•Ì¹…Á…‰¥±¥Ñ¥•Ì¡AI=Y%I}%¤¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒAÉ½Ù¥‘•É!•…±Ñ ¡•…±Ñ  ¤ì(€€€€€€€€€€€É•ÑÕÉ¸AÉ½Ù¥‘•É!•…±Ñ ¹¡•…±Ñ¡ä¡AI=Y%I}%°%¹ÍÑ…¹Ğ¹A= ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ	±½­¥¹Q½­•¸¥µÁ±•µ•¹ÑÌ…¹•±±…Ñ¥½¹Q½­•¸ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ •¹Ñ•É•€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ É•±•…Í”€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ‰½½±•…¸¥Í…¹•±±…Ñ¥½¹I•ÅÕ•ÍÑ• ¤ì(€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ1¥ÍÑ•¹•ÉI•¥ÍÑÉ…Ñ¥½¸½¹…¹•±±…Ñ¥½¸¡IÕ¹¹…‰±”±¥ÍÑ•¹•È¤ì(€€€€€€€€€€€•¹Ñ•É•¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€€€€€…İ…¥Ñ1…Ñ ¡É•±•…Í”¤ì(€€€€€€€€€€€É•ÑÕÉ¸1¥ÍÑ•¹•ÉI•¥ÍÑÉ…Ñ¥½¸¹¹½¹” ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ½Õ¹Ñ¥¹Q½­•¸¥µÁ±•µ•¹ÑÌ…¹•±±…Ñ¥½¹Q½­•¸ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥%¹Ñ••ÈÉ•…‘Ì€ô¹•ÜÑ½µ¥%¹Ñ••È ¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°…¹•±±…Ñ¥½¹Q½­•¹M½ÕÉ”Í½ÕÉ”€ô¹•Ü…¹•±±…Ñ¥½¹Q½­•¹M½ÕÉ” ¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ‰½½±•…¸¥Í…¹•±±…Ñ¥½¹I•ÅÕ•ÍÑ• ¤ì(€€€€€€€€€€€É•…‘Ì¹¥¹É•µ•¹Ñ¹‘•Ğ ¤ì(€€€€€€€€€€€É•ÑÕÉ¸Í½ÕÉ”¹¥Í…¹•±±…Ñ¥½¹I•ÅÕ•ÍÑ• ¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ1¥ÍÑ•¹•ÉI•¥ÍÑÉ…Ñ¥½¸½¹…¹•±±…Ñ¥½¸¡IÕ¹¹…‰±”±¥ÍÑ•¹•È¤ì(€€€€€€€€€€€É•ÑÕÉ¸Í½ÕÉ”¹½¹…¹•±±…Ñ¥½¸¡±¥ÍÑ•¹•È¤ì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”Ù½¥…¹•° ¤ì(€€€€€€€€€€€Í½ÕÉ”¹…¹•° ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌQ¡É½İ¥¹I•¥ÍÑÉ…Ñ¥½¹Q½­•¸¥µÁ±•µ•¹ÑÌ…¹•±±…Ñ¥½¹Q½­•¸ì(€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ‰½½±•…¸¥Í…¹•±±…Ñ¥½¹I•ÅÕ•ÍÑ• ¤ì(€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ1¥ÍÑ•¹•ÉI•¥ÍÑÉ…Ñ¥½¸½¹…¹•±±…Ñ¥½¸¡IÕ¹¹…‰±”±¥ÍÑ•¹•È¤ì(€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰Ñ½­•¸É•¥ÍÑÉ…Ñ¥½¸•ÉÉ½Èˆ¤ì(€€€€€€€ô(€€€ô((€€€€¼¨¨(€€€€€¨M¥µÕ±…Ñ•Ì„¡½ÍÑ¥±”Ñ½­•¸¥µÁ±•µ•¹Ñ…Ñ¥½¸Ñ¡…Ğ…±±Ì¥ÑÌ±¥ÍÑ•¹•Èİ¡¥±”É•¥ÍÑÉ…Ñ¥½¸¥Ì(€€€€€¨ÍÑ¥±°ÁÉ½Ù¥Í¥½¹…°°Ñ¡•¸É•Á½ÉÑÌÑ¡…ĞÉ•¥ÍÑÉ…Ñ¥½¸¥ÑÍ•±˜™…¥±•¸Q¡”…±±‰…¬µÕÍĞ¹½Ğİ¥¸(€€€€€¨½Ù•ÈÑ¡”…ÑÑ…¡µ•¹Ğ™…¥±ÕÉ”¸(€€€€€¨¼(€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ…±±‰…­Q¡•¹Q¡É½İQ½­•¸¥µÁ±•µ•¹ÑÌ…¹•±±…Ñ¥½¹Q½­•¸ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ …±±‰…­%¹Ù½­•€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ É•±•…Í•Q¡É½Ü€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ‰½½±•…¸¥Í…¹•±±…Ñ¥½¹I•ÅÕ•ÍÑ• ¤ì(€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ1¥ÍÑ•¹•ÉI•¥ÍÑÉ…Ñ¥½¸½¹…¹•±±…Ñ¥½¸¡IÕ¹¹…‰±”±¥ÍÑ•¹•È¤ì(€€€€€€€€€€€±¥ÍÑ•¹•È¹ÉÕ¸ ¤ì(€€€€€€€€€€€…±±‰…­%¹Ù½­•¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€€€€€…İ…¥Ñ1…Ñ ¡É•±•…Í•Q¡É½Ü¤ì(€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰…¹•±±…Ñ¥½¸…±±‰…¬Ñ¡•¸…ÑÑ…¡µ•¹Ğ•ÉÉ½Èˆ¤ì(€€€€€€€ô(€€€ô((€€€€¼¨¨Íå¹¡É½¹½ÕÌ…±±‰…¬¥ÌÁÉ½Ù¥Í¥½¹…°Õ¹Ñ¥°Ñ¡¥ÌÉ•¥ÍÑÉ…Ñ¥½¸µ•Ñ¡½É•ÑÕÉ¹Ì¹½Éµ…±±ä¸€¨¼(€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ…±±‰…­Q¡•¹I•ÑÕÉ¹Q½­•¸¥µÁ±•µ•¹ÑÌ…¹•±±…Ñ¥½¹Q½­•¸ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ …±±‰…­%¹Ù½­•€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ É•±•…Í•I•¥ÍÑÉ…Ñ¥½¸€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ É•¥ÍÑÉ…Ñ¥½¹±½Í•¹Ñ•É•€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ É•±•…Í•I•¥ÍÑÉ…Ñ¥½¹±½Í”€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥%¹Ñ••È±½Í•…±±Ì€ô¹•ÜÑ½µ¥%¹Ñ••È ¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ‰½½±•…¸¥Í…¹•±±…Ñ¥½¹I•ÅÕ•ÍÑ• ¤ì(€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ1¥ÍÑ•¹•ÉI•¥ÍÑÉ…Ñ¥½¸½¹…¹•±±…Ñ¥½¸¡IÕ¹¹…‰±”±¥ÍÑ•¹•È¤ì(€€€€€€€€€€€±¥ÍÑ•¹•È¹ÉÕ¸ ¤ì(€€€€€€€€€€€…±±‰…­%¹Ù½­•¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€€€€€…İ…¥Ñ1…Ñ ¡É•±•…Í•I•¥ÍÑÉ…Ñ¥½¸¤ì(€€€€€€€€€€€É•ÑÕÉ¸€ ¤€´øì(€€€€€€€€€€€€€€€±½Í•…±±Ì¹¥¹É•µ•¹Ñ¹‘•Ğ ¤ì(€€€€€€€€€€€€€€€É•¥ÍÑÉ…Ñ¥½¹±½Í•¹Ñ•É•¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€€€€€€€€€…İ…¥Ñ1…Ñ ¡É•±•…Í•I•¥ÍÑÉ…Ñ¥½¹±½Í”¤ì(€€€€€€€€€€€ôì(€€€€€€€ô(€€€ô((€€€€¼¨¨Q¡”±¥ÍÑ•¹•È™¥É•Ì‘ÕÉ¥¹œ…ÑÑ…¡µ•¹Ğ°İ¡¥±”Ñ¡”Í•½¹Ñ½­•¸É•…¥ÑÍ•±˜™…¥±Ì¸€¨¼(€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ…±±‰…­Q¡•¹M•½¹‘I•…‘ÉÉ½ÉQ½­•¸¥µÁ±•µ•¹ÑÌ…¹•±±…Ñ¥½¹Q½­•¸ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥%¹Ñ••ÈÉ•…‘Ì€ô¹•ÜÑ½µ¥%¹Ñ••È ¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥%¹Ñ••È±½Í•…±±Ì€ô¹•ÜÑ½µ¥%¹Ñ••È ¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ‰½½±•…¸¥Í…¹•±±…Ñ¥½¹I•ÅÕ•ÍÑ• ¤ì(€€€€€€€€€€€¥˜€¡É•…‘Ì¹•Ñ¹‘%¹É•µ•¹Ğ ¤€ôô€À¤ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€€€€€ô(€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰Í•½¹Ñ½­•¸É•…•ÉÉ½Èˆ¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ1¥ÍÑ•¹•ÉI•¥ÍÑÉ…Ñ¥½¸½¹…¹•±±…Ñ¥½¸¡IÕ¹¹…‰±”±¥ÍÑ•¹•È¤ì(€€€€€€€€€€€±¥ÍÑ•¹•È¹ÉÕ¸ ¤ì(€€€€€€€€€€€É•ÑÕÉ¸±½Í•…±±Ìèé¥¹É•µ•¹Ñ¹‘•Ğì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌQ¡É½İ=¹•±•…¹ÕÁQ½­•¸¥µÁ±•µ•¹ÑÌ…¹•±±…Ñ¥½¹Q½­•¸ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥	½½±•…¸™…¥±±½Í”€ô¹•ÜÑ½µ¥	½½±•…¸¡ÑÉÕ”¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥%¹Ñ••È±½Í•…±±Ì€ô¹•ÜÑ½µ¥%¹Ñ••È ¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ‰½½±•…¸¥Í…¹•±±…Ñ¥½¹I•ÅÕ•ÍÑ• ¤ì(€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ1¥ÍÑ•¹•ÉI•¥ÍÑÉ…Ñ¥½¸½¹…¹•±±…Ñ¥½¸¡IÕ¹¹…‰±”±¥ÍÑ•¹•È¤ì(€€€€€€€€€€€É•ÑÕÉ¸€ ¤€´øì(€€€€€€€€€€€€€€€±½Í•…±±Ì¹¥¹É•µ•¹Ñ¹‘•Ğ ¤ì(€€€€€€€€€€€€€€€¥˜€¡™…¥±±½Í”¹½µÁ…É•¹‘M•Ğ¡ÑÉÕ”°™…±Í”¤¤ì(€€€€€€€€€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰±¥ÍÑ•¹•È±½Í”•ÉÉ½Èˆ¤ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€ôì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ	±½­¥¹ÑÑ…¡µ•¹ÑAÉ½Ù¥‘•È¥µÁ±•µ•¹ÑÌ¥AÉ½Ù¥‘•Èì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ …ÑÑ…¡µ•¹Ñ¹Ñ•É•€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ É•±•…Í•ÑÑ…¡µ•¹Ğ€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°	±½­¥¹ÑÑ…¡µ•¹ÑÕÑÕÉ”ñ¥I•ÍÁ½¹Í”øÍÑ…”€ô(€€€€€€€€€€€€€€€¹•Ü	±½­¥¹ÑÑ…¡µ•¹ÑÕÑÕÉ”ğø¡…ÑÑ…¡µ•¹Ñ¹Ñ•É•°É•±•…Í•ÑÑ…¡µ•¹Ğ¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥I•ÍÁ½¹Í”ø½µÁ±•Ñ” (€€€€€€€€€€€€€€€¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ°…¹•±±…Ñ¥½¹Q½­•¸Ñ½­•¸¤ì(€€€€€€€€€€€É•ÑÕÉ¸ÍÑ…”ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥…Á…‰¥±¥Ñ¥•ÌøÁÉ½‰•…Á…‰¥±¥Ñ¥•Ì ¤ì(€€€€€€€€€€€É•ÑÕÉ¸½µÁ±•Ñ…‰±•ÕÑÕÉ”¹½µÁ±•Ñ•‘ÕÑÕÉ”¡¥Q•ÍÑ¥áÑÕÉ•Ì¹…Á…‰¥±¥Ñ¥•Ì¡AI=Y%I}%¤¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒAÉ½Ù¥‘•É!•…±Ñ ¡•…±Ñ  ¤ì(€€€€€€€€€€€É•ÑÕÉ¸AÉ½Ù¥‘•É!•…±Ñ ¹¡•…±Ñ¡ä¡AI=Y%I}%°%¹ÍÑ…¹Ğ¹A= ¤ì(€€€€€€€ô(€€€ô((€€€€¼¨¨¸…ÑÑ…¡µ•¹Ğ‰½Õ¹‘…Éäİ¡¥ ‰±½­Ì‰•™½É”¥¹ÍÑ…±±¥¹œÑ¡”Í¡•‘Õ±•ÈÌ½µÁ±•Ñ¥½¸…±±‰…¬¸€¨¼(€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ	±½­¥¹ÑÑ…¡µ•¹ÑÕÑÕÉ”ñPø•áÑ•¹‘Ì½µÁ±•Ñ…‰±•ÕÑÕÉ”ñPøì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ …ÑÑ…¡µ•¹Ñ¹Ñ•É•ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ É•±•…Í•ÑÑ…¡µ•¹Ğì((€€€€€€€ÁÉ¥Ù…Ñ”	±½­¥¹ÑÑ…¡µ•¹ÑÕÑÕÉ” (€€€€€€€€€€€€€€€½Õ¹Ñ½İ¹1…Ñ …ÑÑ…¡µ•¹Ñ¹Ñ•É•°½Õ¹Ñ½İ¹1…Ñ É•±•…Í•ÑÑ…¡µ•¹Ğ¤ì(€€€€€€€€€€€Ñ¡¥Ì¹…ÑÑ…¡µ•¹Ñ¹Ñ•É•€ô…ÑÑ…¡µ•¹Ñ¹Ñ•É•ì(€€€€€€€€€€€Ñ¡¥Ì¹É•±•…Í•ÑÑ…¡µ•¹Ğ€ôÉ•±•…Í•ÑÑ…¡µ•¹Ğì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ…‰±•ÕÑÕÉ”ñPøİ¡•¹½µÁ±•Ñ” (€€€€€€€€€€€€€€€	¥½¹ÍÕµ•ÈğüÍÕÁ•ÈP°€üÍÕÁ•ÈQ¡É½İ…‰±”ø…Ñ¥½¸¤ì(€€€€€€€€€€€…ÑÑ…¡µ•¹Ñ¹Ñ•É•¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€€€€€ÑÉäì(€€€€€€€€€€€€€€€É•±•…Í•ÑÑ…¡µ•¹Ğ¹…İ…¥Ğ Õ0°Q¥µ•U¹¥Ğ¹M=9L¤ì(€€€€€€€€€€€ô…Ñ €¡%¹Ñ•ÉÉÕÁÑ•‘á•ÁÑ¥½¸•á•ÁÑ¥½¸¤ì(€€€€€€€€€€€€€€€Q¡É•…¹ÕÉÉ•¹ÑQ¡É•… ¤¹¥¹Ñ•ÉÉÕÁĞ ¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€É•ÑÕÉ¸ÍÕÁ•È¹İ¡•¹½µÁ±•Ñ”¡…Ñ¥½¸¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌÑÑ…¡µ•¹ÑÉÉ½ÉÕÑÕÉ”ñPø•áÑ•¹‘Ì½µÁ±•Ñ…‰±•ÕÑÕÉ”ñPøì(€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ…‰±•ÕÑÕÉ”ñPøİ¡•¹½µÁ±•Ñ” (€€€€€€€€€€€€€€€	¥½¹ÍÕµ•ÈğüÍÕÁ•ÈP°€üÍÕÁ•ÈQ¡É½İ…‰±”ø…Ñ¥½¸¤ì(€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰İ¡•¹½µÁ±•Ñ”…ÑÑ…¡µ•¹Ğ•ÉÉ½Èˆ¤ì(€€€€€€€ô(€€€ô((€€€€¼¨¨(€€€€€¨M¥µÕ±…Ñ•Ì„½µÁ±•Ñ¥½¹MÑ…”Ñ¡…ĞÍå¹¡É½¹½ÕÍ±äÍÕÁÁ±¥•Ì„Ù…±¥É•ÍÁ½¹Í”°‰ÕĞÑ¡•¸Ñ¡É½İÌ(€€€€€¨™É½´…ÑÑ…¡µ•¹Ğ¸Q¡”É•ÍÁ½¹Í”¥ÌÁÉ½Ù¥Í¥½¹…°Õ¹Ñ¥°İ¡•¹½µÁ±•Ñ”¡…ÌÉ•ÑÕÉ¹•¹½Éµ…±±ä¸(€€€€€¨¼(€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ…±±‰…­Q¡•¹Q¡É½İÑÑ…¡µ•¹ÑAÉ½Ù¥‘•È¥µÁ±•µ•¹ÑÌ¥AÉ½Ù¥‘•Èì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥%¹Ñ••È…±±Ì€ô¹•ÜÑ½µ¥%¹Ñ••È ¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ …±±‰…­%¹Ù½­•€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ É•±•…Í•Q¡É½Ü€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥I•ÍÁ½¹Í”ø½µÁ±•Ñ” (€€€€€€€€€€€€€€€¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ°…¹•±±…Ñ¥½¹Q½­•¸Ñ½­•¸¤ì(€€€€€€€€€€€¥˜€¡…±±Ì¹•Ñ¹‘%¹É•µ•¹Ğ ¤€ôô€À¤ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸¹•Ü…±±‰…­Q¡•¹Q¡É½İÕÑÕÉ”ğø¡É•ÍÁ½¹Í”¡É•ÅÕ•ÍĞ¤°…±±‰…­%¹Ù½­•°(€€€€€€€€€€€€€€€€€€€€€€€É•±•…Í•Q¡É½Ü¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€É•ÑÕÉ¸½µÁ±•Ñ…‰±•ÕÑÕÉ”¹½µÁ±•Ñ•‘ÕÑÕÉ”¡É•ÍÁ½¹Í”¡É•ÅÕ•ÍĞ¤¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥…Á…‰¥±¥Ñ¥•ÌøÁÉ½‰•…Á…‰¥±¥Ñ¥•Ì ¤ì(€€€€€€€€€€€É•ÑÕÉ¸½µÁ±•Ñ…‰±•ÕÑÕÉ”¹½µÁ±•Ñ•‘ÕÑÕÉ”¡¥Q•ÍÑ¥áÑÕÉ•Ì¹…Á…‰¥±¥Ñ¥•Ì¡AI=Y%I}%¤¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒAÉ½Ù¥‘•É!•…±Ñ ¡•…±Ñ  ¤ì(€€€€€€€€€€€É•ÑÕÉ¸AÉ½Ù¥‘•É!•…±Ñ ¹¡•…±Ñ¡ä¡AI=Y%I}%°%¹ÍÑ…¹Ğ¹A= ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ…±±‰…­Q¡•¹Q¡É½İÕÑÕÉ”ñPø•áÑ•¹‘Ì½µÁ±•Ñ…‰±•ÕÑÕÉ”ñPøì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°PÍå¹¡É½¹½ÕÍI•ÍÁ½¹Í”ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ …±±‰…­%¹Ù½­•ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ É•±•…Í•Q¡É½Üì((€€€€€€€ÁÉ¥Ù…Ñ”…±±‰…­Q¡•¹Q¡É½İÕÑÕÉ” (€€€€€€€€€€€€€€€PÍå¹¡É½¹½ÕÍI•ÍÁ½¹Í”°(€€€€€€€€€€€€€€€½Õ¹Ñ½İ¹1…Ñ …±±‰…­%¹Ù½­•°(€€€€€€€€€€€€€€€½Õ¹Ñ½İ¹1…Ñ É•±•…Í•Q¡É½Ü¤ì(€€€€€€€€€€€Ñ¡¥Ì¹Íå¹¡É½¹½ÕÍI•ÍÁ½¹Í”€ôÍå¹¡É½¹½ÕÍI•ÍÁ½¹Í”ì(€€€€€€€€€€€Ñ¡¥Ì¹…±±‰…­%¹Ù½­•€ô…±±‰…­%¹Ù½­•ì(€€€€€€€€€€€Ñ¡¥Ì¹É•±•…Í•Q¡É½Ü€ôÉ•±•…Í•Q¡É½Üì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ…‰±•ÕÑÕÉ”ñPøİ¡•¹½µÁ±•Ñ” (€€€€€€€€€€€€€€€	¥½¹ÍÕµ•ÈğüÍÕÁ•ÈP°€üÍÕÁ•ÈQ¡É½İ…‰±”ø…Ñ¥½¸¤ì(€€€€€€€€€€€…Ñ¥½¸¹…•ÁĞ¡Íå¹¡É½¹½ÕÍI•ÍÁ½¹Í”°¹Õ±°¤ì(€€€€€€€€€€€…±±‰…­%¹Ù½­•¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€€€€€…İ…¥Ñ1…Ñ ¡É•±•…Í•Q¡É½Ü¤ì(€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰½µÁ±•Ñ¥½¸…±±‰…¬Ñ¡•¸…ÑÑ…¡µ•¹Ğ•ÉÉ½Èˆ¤ì(€€€€€€€ô(€€€ô((€€€€¼¨¨Íå¹¡É½¹½ÕÌÍÑ…”…±±‰…¬¥ÌÁÉ½Ù¥Í¥½¹…°Õ¹Ñ¥°İ¡•¹½µÁ±•Ñ”É•ÑÕÉ¹Ì¹½Éµ…±±ä¸€¨¼(€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ…±±‰…­Q¡•¹I•ÑÕÉ¹ÑÑ…¡µ•¹ÑAÉ½Ù¥‘•È¥µÁ±•µ•¹ÑÌ¥AÉ½Ù¥‘•Èì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥%¹Ñ••È…±±Ì€ô¹•ÜÑ½µ¥%¹Ñ••È ¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ …±±‰…­%¹Ù½­•€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ É•±•…Í•ÑÑ…¡µ•¹Ğ€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥I•ÍÁ½¹Í”ø½µÁ±•Ñ” (€€€€€€€€€€€€€€€¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ°…¹•±±…Ñ¥½¹Q½­•¸Ñ½­•¸¤ì(€€€€€€€€€€€…±±Ì¹¥¹É•µ•¹Ñ¹‘•Ğ ¤ì(€€€€€€€€€€€É•ÑÕÉ¸¹•Ü…±±‰…­Q¡•¹I•ÑÕÉ¹ÕÑÕÉ”ğø¡É•ÍÁ½¹Í”¡É•ÅÕ•ÍĞ¤°…±±‰…­%¹Ù½­•°(€€€€€€€€€€€€€€€€€€€É•±•…Í•ÑÑ…¡µ•¹Ğ¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ¥½¹MÑ…”ñ¥…Á…‰¥±¥Ñ¥•ÌøÁÉ½‰•…Á…‰¥±¥Ñ¥•Ì ¤ì(€€€€€€€€€€€É•ÑÕÉ¸½µÁ±•Ñ…‰±•ÕÑÕÉ”¹½µÁ±•Ñ•‘ÕÑÕÉ”¡¥Q•ÍÑ¥áÑÕÉ•Ì¹…Á…‰¥±¥Ñ¥•Ì¡AI=Y%I}%¤¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒAÉ½Ù¥‘•É!•…±Ñ ¡•…±Ñ  ¤ì(€€€€€€€€€€€É•ÑÕÉ¸AÉ½Ù¥‘•É!•…±Ñ ¹¡•…±Ñ¡ä¡AI=Y%I}%°%¹ÍÑ…¹Ğ¹A= ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ…±±‰…­Q¡•¹I•ÑÕÉ¹ÕÑÕÉ”ñPø•áÑ•¹‘Ì½µÁ±•Ñ…‰±•ÕÑÕÉ”ñPøì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°PÍå¹¡É½¹½ÕÍI•ÍÁ½¹Í”ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ …±±‰…­%¹Ù½­•ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ É•±•…Í•ÑÑ…¡µ•¹Ğì((€€€€€€€ÁÉ¥Ù…Ñ”…±±‰…­Q¡•¹I•ÑÕÉ¹ÕÑÕÉ” (€€€€€€€€€€€€€€€PÍå¹¡É½¹½ÕÍI•ÍÁ½¹Í”°(€€€€€€€€€€€€€€€½Õ¹Ñ½İ¹1…Ñ …±±‰…­%¹Ù½­•°(€€€€€€€€€€€€€€€½Õ¹Ñ½İ¹1…Ñ É•±•…Í•ÑÑ…¡µ•¹Ğ¤ì(€€€€€€€€€€€Ñ¡¥Ì¹Íå¹¡É½¹½ÕÍI•ÍÁ½¹Í”€ôÍå¹¡É½¹½ÕÍI•ÍÁ½¹Í”ì(€€€€€€€€€€€Ñ¡¥Ì¹…±±‰…­%¹Ù½­•€ô…±±‰…­%¹Ù½­•ì(€€€€€€€€€€€Ñ¡¥Ì¹É•±•…Í•ÑÑ…¡µ•¹Ğ€ôÉ•±•…Í•ÑÑ…¡µ•¹Ğì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ½µÁ±•Ñ…‰±•ÕÑÕÉ”ñPøİ¡•¹½µÁ±•Ñ” (€€€€€€€€€€€€€€€	¥½¹ÍÕµ•ÈğüÍÕÁ•ÈP°€üÍÕÁ•ÈQ¡É½İ…‰±”ø…Ñ¥½¸¤ì(€€€€€€€€€€€…Ñ¥½¸¹…•ÁĞ¡Íå¹¡É½¹½ÕÍI•ÍÁ½¹Í”°¹Õ±°¤ì(€€€€€€€€€€€…±±‰…­%¹Ù½­•¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€€€€€…İ…¥Ñ1…Ñ ¡É•±•…Í•ÑÑ…¡µ•¹Ğ¤ì(€€€€€€€€€€€É•ÑÕÉ¸Ñ¡¥Ìì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌQ¡É½İ=¹•…¹•±ÕÑÕÉ”ñPø•áÑ•¹‘Ì½µÁ±•Ñ…‰±•ÕÑÕÉ”ñPøì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥	½½±•…¸™…¥±…¹•°€ô¹•ÜÑ½µ¥	½½±•…¸¡ÑÉÕ”¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥%¹Ñ••È…¹•±…±±Ì€ô¹•ÜÑ½µ¥%¹Ñ••È ¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ‰½½±•…¸…¹•°¡‰½½±•…¸µ…å%¹Ñ•ÉÉÕÁÑ%™IÕ¹¹¥¹œ¤ì(€€€€€€€€€€€…¹•±…±±Ì¹¥¹É•µ•¹Ñ¹‘•Ğ ¤ì(€€€€€€€€€€€¥˜€¡™…¥±…¹•°¹½µÁ…É•¹‘M•Ğ¡ÑÉÕ”°™…±Í”¤¤ì(€€€€€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰ÍÑ…”…¹•°•ÉÉ½Èˆ¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€É•ÑÕÉ¸ÍÕÁ•È¹…¹•°¡µ…å%¹Ñ•ÉÉÕÁÑ%™IÕ¹¹¥¹œ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌQÉ…­¥¹ÕÑÕÉ”ñPø•áÑ•¹‘Ì½µÁ±•Ñ…‰±•ÕÑÕÉ”ñPøì(€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ‰½½±•…¸…¹•°¡‰½½±•…¸µ…å%¹Ñ•ÉÉÕÁÑ%™IÕ¹¹¥¹œ¤ì(€€€€€€€€€€€É•ÑÕÉ¸ÍÕÁ•È¹…¹•°¡µ…å%¹Ñ•ÉÉÕÁÑ%™IÕ¹¹¥¹œ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”É•½É…±°¡¥I•ÅÕ•ÍĞÉ•ÅÕ•ÍĞ°QÉ…­¥¹ÕÑÕÉ”ñ¥I•ÍÁ½¹Í”øÍÑ…”¤ì(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌÉ½ÁÁ¥¹á•ÕÑ½È¥µÁ±•µ•¹ÑÌá•ÕÑ½Èì(€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒÙ½¥•á•ÕÑ”¡IÕ¹¹…‰±”½µµ…¹¤ì(€€€€€€€€€€€€¼¼%¹Ñ•¹Ñ¥½¹…±±äÉ•Á½ÉÑÌ¹½Éµ…°…•ÁÑ…¹”İ¡¥±”Í¥±•¹Ñ±ä‘É½ÁÁ¥¹œÑ¡”İÉ…ÁÁ•È¸(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ%¹±¥¹•á•ÕÑ½È¥µÁ±•µ•¹ÑÌá•ÕÑ½Èì(€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒÙ½¥•á•ÕÑ”¡IÕ¹¹…‰±”½µµ…¹¤ì(€€€€€€€€€€€½µµ…¹¹ÉÕ¸ ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌQİ¥•á•ÕÑ½È¥µÁ±•µ•¹ÑÌá•ÕÑ½Èì(€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒÙ½¥•á•ÕÑ”¡IÕ¹¹…‰±”½µµ…¹¤ì(€€€€€€€€€€€½µµ…¹¹ÉÕ¸ ¤ì(€€€€€€€€€€€½µµ…¹¹ÉÕ¸ ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ%¹Ù½­•Q¡•¹Q¡É½İá•ÕÑ½È¥µÁ±•µ•¹ÑÌá•ÕÑ½Èì(€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒÙ½¥•á•ÕÑ”¡IÕ¹¹…‰±”½µµ…¹¤ì(€€€€€€€€€€€½µµ…¹¹ÉÕ¸ ¤ì(€€€€€€€€€€€Ñ¡É½Ü¹•ÜI•©•Ñ•‘á•ÕÑ¥½¹á•ÁÑ¥½¸ ‰Ñ¡É½İÌ…™Ñ•ÈİÉ…ÁÁ•È¥¹Ù½…Ñ¥½¸ˆ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ%¹Ù½­•Q¡•¹ÉÉ½Éá•ÕÑ½È¥µÁ±•µ•¹ÑÌá•ÕÑ½Èì(€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒÙ½¥•á•ÕÑ”¡IÕ¹¹…‰±”½µµ…¹¤ì(€€€€€€€€€€€½µµ…¹¹ÉÕ¸ ¤ì(€€€€€€€€€€€Ñ¡É½Ü¹•ÜÍÍ•ÉÑ¥½¹ÉÉ½È ‰Ñ¡É½İÌÉÉ½È…™Ñ•ÈİÉ…ÁÁ•È¥¹Ù½…Ñ¥½¸ˆ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ	±½­¥¹á•ÕÑ•á•ÕÑ½È¥µÁ±•µ•¹ÑÌá•ÕÑ½Èì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ •¹Ñ•É•€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ É•±•…Í”€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒÙ½¥•á•ÕÑ”¡IÕ¹¹…‰±”½µµ…¹¤ì(€€€€€€€€€€€•¹Ñ•É•¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€€€€€ÑÉäì(€€€€€€€€€€€€€€€É•±•…Í”¹…İ…¥Ğ Õ0°Q¥µ•U¹¥Ğ¹M=9L¤ì(€€€€€€€€€€€ô…Ñ €¡%¹Ñ•ÉÉÕÁÑ•‘á•ÁÑ¥½¸•á•ÁÑ¥½¸¤ì(€€€€€€€€€€€€€€€Q¡É•…¹ÕÉÉ•¹ÑQ¡É•… ¤¹¥¹Ñ•ÉÉÕÁĞ ¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€€¼¼¡½ÍÑ¥±”•á•ÕÑ½È…¸É•ÑÕÉ¸İ¥Ñ¡½ÕĞ•Ù•È¥¹Ù½­¥¹œÑ¡”É•Ñ…¥¹•½µµ…¹¸(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ…ÁÑÕÉ¥¹á•ÕÑ½È¥µÁ±•µ•¹ÑÌá•ÕÑ½Èì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°½Õ¹Ñ½İ¹1…Ñ …ÁÑÕÉ•€ô¹•Ü½Õ¹Ñ½İ¹1…Ñ  Ä¤ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥I•™•É•¹”ñIÕ¹¹…‰±”ø½µµ…¹€ô¹•ÜÑ½µ¥I•™•É•¹”ğø ¤ì((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒÙ½¥•á•ÕÑ”¡IÕ¹¹…‰±”İÉ…ÁÁ•È¤ì(€€€€€€€€€€€½µµ…¹¹Í•Ğ¡İÉ…ÁÁ•È¤ì(€€€€€€€€€€€…ÁÑÕÉ•¹½Õ¹Ñ½İ¸ ¤ì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”Ù½¥ÉÕ¹…ÁÑÕÉ• ¤ì(€€€€€€€€€€€IÕ¹¹…‰±”İÉ…ÁÁ•È€ô½µµ…¹¹•Ñ¹‘M•Ğ¡¹Õ±°¤ì(€€€€€€€€€€€…ÍÍ•ÉÑQÉÕ”¡İÉ…ÁÁ•È€„ô¹Õ±°¤ì(€€€€€€€€€€€İÉ…ÁÁ•È¹ÉÕ¸ ¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌÉ½Á=¹•á•ÕÑ½È¥µÁ±•µ•¹ÑÌá•ÕÑ½Èì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°á•ÕÑ½È‘•±•…Ñ”ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥	½½±•…¸‘É½À€ô¹•ÜÑ½µ¥	½½±•…¸¡ÑÉÕ”¤ì((€€€€€€€ÁÉ¥Ù…Ñ”É½Á=¹•á•ÕÑ½È¡á•ÕÑ½È‘•±•…Ñ”¤ì(€€€€€€€€€€€Ñ¡¥Ì¹‘•±•…Ñ”€ô‘•±•…Ñ”ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥ŒÙ½¥•á•ÕÑ”¡IÕ¹¹…‰±”½µµ…¹¤ì(€€€€€€€€€€€¥˜€¡‘É½À¹½µÁ…É•¹‘M•Ğ¡ÑÉÕ”°™…±Í”¤¤ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€ô(€€€€€€€€€€€‘•±•…Ñ”¹•á•ÕÑ”¡½µµ…¹¤ì(€€€€€€€ô(€€€ô((€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ™¥¹…°±…ÍÌ5ÕÑ…‰±•±½¬•áÑ•¹‘Ì±½¬ì(€€€€€€€ÁÉ¥Ù…Ñ”™¥¹…°Ñ½µ¥I•™•É•¹”ñ%¹ÍÑ…¹Ğø¥¹ÍÑ…¹Ğì((€€€€€€€ÁÉ¥Ù…Ñ”5ÕÑ…‰±•±½¬¡%¹ÍÑ…¹Ğ¥¹¥Ñ¥…°¤ì(€€€€€€€€€€€¥¹ÍÑ…¹Ğ€ô¹•ÜÑ½µ¥I•™•É•¹”ğø¡¥¹¥Ñ¥…°¤ì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”Ù½¥Í•Ğ¡%¹ÍÑ…¹Ğ¹•áĞ¤ì(€€€€€€€€€€€¥¹ÍÑ…¹Ğ¹Í•Ğ¡¹•áĞ¤ì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œi½¹•%•Ñi½¹” ¤ì(€€€€€€€€€€€É•ÑÕÉ¸i½¹•=™™Í•Ğ¹UQì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ±½¬İ¥Ñ¡i½¹”¡i½¹•%é½¹”¤ì(€€€€€€€€€€€É•ÑÕÉ¸Ñ¡¥Ìì(€€€€€€€ô((€€€€€€€=Ù•ÉÉ¥‘”(€€€€€€€ÁÕ‰±¥Œ%¹ÍÑ…¹Ğ¥¹ÍÑ…¹Ğ ¤ì(€€€€€€€€€€€É•ÑÕÉ¸¥¹ÍÑ…¹Ğ¹•Ğ ¤ì(€€€€€€€ô(€€€ô)ô(
