@@ -106,7 +106,7 @@ public enum P5ARecipe {
     RAW_CHICKEN_TO_COOKED_CHICKEN_SMOKING(
             "raw_chicken_to_cooked_chicken_smoking",
             FurnaceKind.SMOKER,
-            "minecraft:raw_chicken",
+            "minecraft:chicken",
             1,
             "minecraft:coal",
             1,

@@ -38,7 +38,10 @@ class FurnaceKindTest {
                                 .furnaceOutputPerInput()),
                 () -> Assertions.assertEquals(1,
                         P5ARecipe.RAW_CHICKEN_TO_COOKED_CHICKEN_SMOKING
-                                .furnaceOutputPerInput()));
+                                .furnaceOutputPerInput()),
+                () -> Assertions.assertEquals("minecraft:chicken",
+                        P5ARecipe.RAW_CHICKEN_TO_COOKED_CHICKEN_SMOKING
+                                .furnaceInput().value()));
     }
 
     @Test

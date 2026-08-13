@@ -744,7 +744,11 @@ public final class P5RecipeMenuGameTests {
                     80,
                     () -> bot.player().containerMenu instanceof SmokerMenu
                             && !bot.player().containerMenu.getCarried()
-                                    .isEmpty(),
+                                    .isEmpty()
+                            && bot.player().containerMenu.getSlot(0)
+                                    .getItem().isEmpty()
+                            && bot.player().containerMenu.getSlot(1)
+                                    .getItem().isEmpty(),
                     "Smoker recipe never reached a real non-empty cursor",
                     cleanup,
                     () -> requestSmokerCancellation(
