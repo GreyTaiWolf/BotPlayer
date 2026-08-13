@@ -47,6 +47,8 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @PrefixGameTestTemplate(false)
 public final class P5RecipeMenuGameTests {
     private static final String BATCH = "p5_recipe_menu";
+    private static final String SECONDARY_BATCH =
+            "p5_recipe_menu_secondary";
     private static final int CRAFTING_TIMEOUT_TICKS = 220;
     private static final int FURNACE_TIMEOUT_TICKS = 920;
 
@@ -249,7 +251,7 @@ public final class P5RecipeMenuGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "recipe_crafting_table_cancel_cursor");
-        TestBot bot = fixture.spawn("cancel");
+        TestBot bot = fixture.spawn("cncl");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             bot.player().getInventory().clearContent();
@@ -552,7 +554,7 @@ public final class P5RecipeMenuGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "recipe_smoker_native");
-        TestBot bot = fixture.spawn("smoker");
+        TestBot bot = fixture.spawn("smokr");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             bot.player().getInventory().clearContent();
@@ -759,7 +761,7 @@ public final class P5RecipeMenuGameTests {
      */
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = SECONDARY_BATCH,
             timeoutTicks = CRAFTING_TIMEOUT_TICKS)
     public static void blastFurnaceReplacementDuringWaitFailsClosed(
             GameTestHelper helper) {
@@ -818,7 +820,7 @@ public final class P5RecipeMenuGameTests {
      */
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = SECONDARY_BATCH,
             timeoutTicks = CRAFTING_TIMEOUT_TICKS)
     public static void singleChestTransferUsesNativeThreeByNineMenuAndCloses(
             GameTestHelper helper) {
@@ -904,7 +906,7 @@ public final class P5RecipeMenuGameTests {
      */
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = SECONDARY_BATCH,
             timeoutTicks = CRAFTING_TIMEOUT_TICKS)
     public static void singleChestTransferWithdrawsExactPartialAmount(
             GameTestHelper helper) {
@@ -991,7 +993,7 @@ public final class P5RecipeMenuGameTests {
      */
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = SECONDARY_BATCH,
             timeoutTicks = CRAFTING_TIMEOUT_TICKS)
     public static void singleChestTransferDepositsExactPartialAmount(
             GameTestHelper helper) {
@@ -1079,7 +1081,7 @@ public final class P5RecipeMenuGameTests {
      */
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = SECONDARY_BATCH,
             timeoutTicks = CRAFTING_TIMEOUT_TICKS)
     public static void singleChestTransferRejectsEmptySourceAndClosesMenu(
             GameTestHelper helper) {
