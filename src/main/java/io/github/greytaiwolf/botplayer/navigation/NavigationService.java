@@ -2,6 +2,7 @@ package io.github.greytaiwolf.botplayer.navigation;
 
 import io.github.greytaiwolf.botplayer.action.ActionCancellationReason;
 import io.github.greytaiwolf.botplayer.action.ActionEnvelope;
+import io.github.greytaiwolf.botplayer.action.ActionFailureCode;
 import io.github.greytaiwolf.botplayer.action.ActionMailbox;
 import io.github.greytaiwolf.botplayer.action.ActionOrigin;
 import io.github.greytaiwolf.botplayer.action.ActionOutcome;
@@ -13,6 +14,8 @@ import io.github.greytaiwolf.botplayer.action.ControllerKind;
 import io.github.greytaiwolf.botplayer.action.JumpAction;
 import io.github.greytaiwolf.botplayer.action.LookAtAction;
 import io.github.greytaiwolf.botplayer.action.MoveInputAction;
+import io.github.greytaiwolf.botplayer.action.StopAction;
+import io.github.greytaiwolf.botplayer.action.WaitAction;
 import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockHitTarget;
 import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
@@ -46,6 +49,14 @@ import java.util.function.BiFunction;
 import java.util.function.Supplier;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.util.AbortableIterationConsumer;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.ExperienceOrb;
+import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.monster.Enemy;
+import net.minecraft.world.entity.projectile.Projectile;
+import net.minecraft.world.level.entity.EntityTypeTest;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
@@ -60,6 +71,9 @@ public final class NavigationService implements AutoCloseable {
     private static final int MAXIMUM_WAYPOINT_ATTEMPTS = 12;
     private static final int WATER_HORIZONTAL_INPUT_TICKS = 8;
     private static final int WATER_HORIZONTAL_STUCK_TICKS = 4;
+    private static final int TRANSIENT_ENTITY_WAIT_TICKS = 4;
+    private static final int MAXIMUM_ENTITY_OVERLAY_RAW_READS = 32;
+    private static final double ENTITY_CORRIDOR_PADDING = 0.05D;
 
     private final NavigationSettings settings;
     private final NavigationSnapshotBuilder snapshotBuilder;
@@ -766,6 +780,10 @@ public final class NavigationService implements AutoCloseable {
             submitDoorAction(session, player, node, currentTick);
             return;
         }
+        if (hasTransientEntityBlocker(player, node)) {
+            beginTransientEntityWait(session, currentTick);
+            return;
+        }
         ActionRequest movement =
                 movementFor(session, player, node);
         submitAction(
@@ -999,6 +1017,10 @@ public final class NavigationService implements AutoCloseable {
                                     + "（"
                                     + outcome.safeSummary()
                                     + "）");
+                } else if (purpose == ActionPhase.MOVE
+                        && requiresForcedStuckRecovery(outcome)) {
+                    beginForcedStuckRecovery(
+                            session, currentTick);
                 } else {
                     recoverOrFail(
                             session,
@@ -1045,8 +1067,162 @@ public final class NavigationService implements AutoCloseable {
                         ? "世界交互完成，重新采样真实方块状态"
                         : "Terrain Assist 已验证真实世界变化，重新采样";
             }
+            case WAIT_FOR_TRANSIENT_ENTITY -> {
+                if (transientEntityStillBlocks(session)) {
+                    recoverOrFail(
+                            session,
+                            currentTick,
+                            "前方实体在短暂等待后仍占用路线");
+                } else {
+                    session.state = NavigationState.FOLLOWING;
+                    session.safeSummary = "前方实体已离开，继续原有路线";
+                }
+            }
+            case FORCED_STUCK_STOP -> {
+                session.route = List.of();
+                session.routeIndex = 0;
+                session.replans++;
+                session.state = NavigationState.REPLANNING;
+                session.safeSummary = "已确认停止输入，将从真实位置重采样";
+            }
         }
         session.lastStateTick = currentTick;
+    }
+
+    /**
+     * 在静态方块快照之外读取下一段的短时实体覆盖层。
+     *
+     * <p>这里只在服务器主线程、下一条真实路线边即将执行时读取有界空间索引；结果不会进入异步
+     * planner，也不会保留活动实体。扫描不完整或读取异常时保守视为占位，先停下而不是试图推挤。
+     */
+    private static boolean hasTransientEntityBlocker(
+            BotServerPlayer player, RouteNode node) {
+        AABB corridor = waypointCorridor(player, node.point());
+        int[] rawReads = {0};
+        boolean[] blockedOrIncomplete = {false};
+        try {
+            player.serverLevel().getEntities().get(
+                    EntityTypeTest.forClass(Entity.class),
+                    corridor,
+                    entity -> {
+                        if (rawReads[0]++
+                                >= MAXIMUM_ENTITY_OVERLAY_RAW_READS) {
+                            blockedOrIncomplete[0] = true;
+                            return AbortableIterationConsumer
+                                    .Continuation.ABORT;
+                        }
+                        if (isTransientEntityBlocker(
+                                player, entity, corridor)) {
+                            blockedOrIncomplete[0] = true;
+                            return AbortableIterationConsumer
+                                    .Continuation.ABORT;
+                        }
+                        return AbortableIterationConsumer
+                                .Continuation.CONTINUE;
+                    });
+        } catch (RuntimeException ignored) {
+            return true;
+        }
+        return blockedOrIncomplete[0];
+    }
+
+    private static AABB waypointCorridor(
+            BotServerPlayer player, GridPoint waypoint) {
+        double halfWidth = Math.max(0.3D, player.getBbWidth() / 2.0D);
+        double bodyHeight = Math.max(1.0D, player.getBbHeight());
+        AABB waypointBody = new AABB(
+                waypoint.x() + 0.5D - halfWidth,
+                waypoint.y(),
+                waypoint.z() + 0.5D - halfWidth,
+                waypoint.x() + 0.5D + halfWidth,
+                waypoint.y() + bodyHeight,
+                waypoint.z() + 0.5D + halfWidth);
+        return player.getBoundingBox()
+                .minmax(waypointBody)
+                .inflate(ENTITY_CORRIDOR_PADDING);
+    }
+
+    private static boolean isTransientEntityBlocker(
+            BotServerPlayer player, Entity entity, AABB corridor) {
+        if (entity == null
+                || entity == player
+                || entity.isRemoved()
+                || entity.isSpectator()
+                || entity instanceof ItemEntity
+                || entity instanceof ExperienceOrb
+                || entity instanceof Projectile
+                || entity instanceof Enemy
+                || !entity.isPushable()) {
+            return false;
+        }
+        return entity.getBoundingBox().intersects(corridor);
+    }
+
+    private void beginTransientEntityWait(
+            Session session, long currentTick) {
+        if (submitAction(
+                session,
+                new WaitAction(TRANSIENT_ENTITY_WAIT_TICKS),
+                ActionPhase.WAIT_FOR_TRANSIENT_ENTITY,
+                ActionPriority.AUTONOMOUS,
+                currentTick,
+                TRANSIENT_ENTITY_WAIT_TICKS + 5)) {
+            session.state = NavigationState.RECOVERING;
+            session.safeSummary = "前方实体暂时占用路线，停止输入并短暂等待";
+            session.lastStateTick = currentTick;
+        }
+    }
+
+    private boolean transientEntityStillBlocks(Session session) {
+        if (session.routeIndex >= session.route.size()) {
+            return false;
+        }
+        return activeBotResolver.apply(
+                        session.request.botId(),
+                        session.request.botGeneration())
+                .map(player -> hasTransientEntityBlocker(
+                        player, session.route.get(session.routeIndex)))
+                .orElse(true);
+    }
+
+    /**
+     * P2 已用真实位移和碰撞证据证明本次短输入无进展。先以原生 STOP 清空所有输入，再重新
+     * 采样；不能把一次碰撞动作的失败直接当成已经恢复。
+     */
+    private void beginForcedStuckRecovery(
+            Session session, long currentTick) {
+        session.recoveryAttempts++;
+        if (session.recoveryAttempts
+                > session.request.policy().maximumRecoveryAttempts()) {
+            terminate(
+                    session,
+                    NavigationState.FAILED,
+                    NavigationFailure.STUCK,
+                    currentTick,
+                    "移动动作持续无进展，停止输入恢复预算已耗尽");
+            return;
+        }
+        if (submitAction(
+                session,
+                new StopAction(),
+                ActionPhase.FORCED_STUCK_STOP,
+                ActionPriority.AUTONOMOUS,
+                currentTick,
+                5)) {
+            session.state = NavigationState.RECOVERING;
+            session.safeSummary = "检测到物理移动阻塞，先确认停止输入再重采样";
+            session.lastStateTick = currentTick;
+        }
+    }
+
+    static boolean requiresForcedStuckRecovery(ActionOutcome outcome) {
+        Objects.requireNonNull(outcome, "outcome");
+        return outcome.state() == ActionState.FAILED
+                && outcome.failureCode()
+                        == ActionFailureCode.PRECONDITION_FAILED
+                && outcome.evidence().stream().anyMatch(evidence ->
+                        evidence.key().equals("move.horizontal_collision")
+                                && evidence.value().equals("true"));
     }
 
     private void recoverOrFail(
@@ -1305,7 +1481,9 @@ public final class NavigationService implements AutoCloseable {
     private enum ActionPhase {
         LOOK,
         MOVE,
-        INTERACT
+        INTERACT,
+        WAIT_FOR_TRANSIENT_ENTITY,
+        FORCED_STUCK_STOP
     }
 
     private record PlanningResult(

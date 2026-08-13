@@ -123,6 +123,7 @@ class SafetyHandoffRequestTest {
                 List.of(),
                 false,
                 Optional.empty(),
+                Optional.empty(),
                 0.0F);
     }
 }

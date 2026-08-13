@@ -214,7 +214,7 @@ public final class MinecraftProductionSkillPorts
                 Candidate candidate = selectCandidate(
                         player,
                         context,
-                        expectedWorkstationBlock(recipe.family())).orElse(null);
+                        expectedWorkstationBlock(recipe)).orElse(null);
                 if (candidate == null) {
                     return Optional.empty();
                 }
@@ -1214,6 +1214,27 @@ public final class MinecraftProductionSkillPorts
                 && frozenProperties.equals(currentProperties);
     }
 
+    /**
+     * 与仅描述槽位布局的 {@link MenuFamily} 校验不同，炉型配方必须额外绑定精确方块身份与
+     * {@code facing + lit} 的完整状态合同。这样高炉/烟熏炉不能在 P5A 原有的泛炉子 state
+     * 路径里互换。
+     */
+    static boolean workstationStateValidAfter(
+            BlockTargetFingerprint frozen,
+            BlockTargetFingerprint current,
+            P5ARecipe recipe) {
+        Objects.requireNonNull(recipe, "recipe");
+        if (!workstationStateValidAfter(frozen, current, recipe.family())) {
+            return false;
+        }
+        if (!recipe.isFurnace()) {
+            return true;
+        }
+        return recipe.furnaceKind().matchesWorkstationState(frozen.state())
+                && recipe.furnaceKind().matchesWorkstationState(
+                        current.state());
+    }
+
     private static BlockHitTarget hit(BlockTargetFingerprint target) {
         return new BlockHitTarget(
                 target,
@@ -1378,18 +1399,23 @@ public final class MinecraftProductionSkillPorts
             case "minecraft:crafting_table" ->
                     TaskSensorResourceFilter.CRAFTING_TABLE;
             case "minecraft:furnace" -> TaskSensorResourceFilter.FURNACE;
+            case "minecraft:blast_furnace" ->
+                    TaskSensorResourceFilter.BLAST_FURNACE;
+            case "minecraft:smoker" -> TaskSensorResourceFilter.SMOKER;
             default -> throw new IllegalArgumentException(
                     "production has no reviewed resource filter for "
                             + expectedBlockId);
         };
     }
 
-    private static String expectedWorkstationBlock(MenuFamily family) {
-        return switch (family) {
+    private static String expectedWorkstationBlock(P5ARecipe recipe) {
+        Objects.requireNonNull(recipe, "recipe");
+        return switch (recipe.family()) {
             case CRAFTING_3X3 -> "minecraft:crafting_table";
-            case FURNACE -> "minecraft:furnace";
-            case INVENTORY_2X2, CHEST_3X9 -> throw new IllegalArgumentException(
-                    "production recipe has no world workstation for " + family);
+            case FURNACE -> recipe.furnaceKind().blockId().value();
+            case INVENTORY_2X2, MERCHANT, CHEST_3X9, CHEST_6X9 -> throw new IllegalArgumentException(
+                    "production recipe has no world workstation for "
+                            + recipe.family());
         };
     }
 
@@ -1522,6 +1548,8 @@ public final class MinecraftProductionSkillPorts
                 ProductionMaterials.WOODEN_PICKAXE,
                 ProductionMaterials.COBBLESTONE,
                 ProductionMaterials.FURNACE,
+                ProductionMaterials.BLAST_FURNACE,
+                ProductionMaterials.SMOKER,
                 ProductionMaterials.STONE_PICKAXE,
                 ProductionMaterials.RAW_IRON,
                 ProductionMaterials.COAL,
@@ -1781,7 +1809,7 @@ public final class MinecraftProductionSkillPorts
                 return workstationStateValidAfter(
                         target,
                         MinecraftActionSnapshot.block(player, position),
-                        recipe.family());
+                        recipe);
             } catch (RuntimeException exception) {
                 return false;
             }

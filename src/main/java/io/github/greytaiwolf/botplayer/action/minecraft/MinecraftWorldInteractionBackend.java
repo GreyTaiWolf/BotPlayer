@@ -9,6 +9,7 @@ import io.github.greytaiwolf.botplayer.action.ActionCleanupStatus;
 import io.github.greytaiwolf.botplayer.action.ActionEnvelope;
 import io.github.greytaiwolf.botplayer.action.ActionEvidence;
 import io.github.greytaiwolf.botplayer.action.ActionFailureCode;
+import io.github.greytaiwolf.botplayer.action.ActionOutcome;
 import io.github.greytaiwolf.botplayer.action.ResourceIdEvidence;
 import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockHitTarget;
@@ -23,7 +24,10 @@ import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanup
 import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanupResult;
 import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
+import io.github.greytaiwolf.botplayer.action.interaction.ActiveEffectObservation;
+import io.github.greytaiwolf.botplayer.action.interaction.UseItemPreconditions;
 import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
+import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec.WorldVillagerTrade.MerchantOfferState;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuClickStep;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuCleanupSession;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuPrefixAuthority;
@@ -35,9 +39,11 @@ import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSwap
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuTransaction;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuTransactionState;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.PlayerInventoryMenuLayout;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.FurnaceKind;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.P5ARecipe;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.lifecycle.BotLifecycleManager;
+import io.github.greytaiwolf.botplayer.skill.builtin.trading.VillagerTradeInventoryConservation;
 import io.github.greytaiwolf.botplayer.skill.menu.CraftingPreviewResolver;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuClick;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuClickType;
@@ -50,14 +56,17 @@ import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionPlan;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionState;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionTemplate;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionTemplateBuilder;
+import io.github.greytaiwolf.botplayer.skill.menu.MerchantTradeMenuPlanBuilder;
 import io.github.greytaiwolf.botplayer.skill.menu.P5ACraftingMenuPlanBuilder;
 import io.github.greytaiwolf.botplayer.skill.menu.P5AFurnaceMenuPlanBuilder;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -71,13 +80,20 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.npc.Villager;
+import net.minecraft.world.entity.npc.VillagerData;
+import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.inventory.AbstractContainerMenu;
-import net.minecraft.world.inventory.AbstractFurnaceMenu;
+import net.minecraft.world.inventory.BlastFurnaceMenu;
 import net.minecraft.world.inventory.ChestMenu;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.inventory.CraftingMenu;
+import net.minecraft.world.inventory.FurnaceMenu;
 import net.minecraft.world.inventory.InventoryMenu;
+import net.minecraft.world.inventory.MerchantMenu;
 import net.minecraft.world.inventory.ResultContainer;
+import net.minecraft.world.inventory.ShulkerBoxMenu;
+import net.minecraft.world.inventory.SmokerMenu;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Item;
@@ -87,20 +103,52 @@ import net.minecraft.world.item.crafting.CraftingInput;
 import net.minecraft.world.item.crafting.CraftingRecipe;
 import net.minecraft.world.item.crafting.RecipeHolder;
 import net.minecraft.world.item.crafting.RecipeType;
+import net.minecraft.world.item.crafting.SingleRecipeInput;
+import net.minecraft.world.item.trading.MerchantOffer;
 import net.minecraft.world.item.enchantment.EnchantmentEffectComponents;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
 /**
- * 通过真人玩家使用的服务端入口执行 P2-C 与 P5A 世界交互。
+ * 通过真人玩家使用的服务端入口执行 P2-C、P5A 与受限 P5B 世界交互。
  *
  * <p>全部状态均为短生命周期、generation 隔离并限制在服务器主线程。第一次副作用前先登记
  * 状态，使 packet handler 重入生命周期逻辑时，运行时清理仍能撤销持续使用或方块破坏。
  */
 final class MinecraftWorldInteractionBackend implements ActionBackend {
     private static final int MAX_COMPLETED_MENU_CLEANUPS = 256;
+    private static final int VERIFY_BREAK_BASE_EVIDENCE_ITEMS = 3;
     private static final long FURNACE_POLL_INTERVAL_TICKS = 20L;
+    private static final Set<String> VANILLA_DIRECTION_NAMES = Set.of(
+            "down", "up", "north", "south", "west", "east");
+    private static final Set<String> HORIZONTAL_DIRECTION_NAMES = Set.of(
+            "north", "south", "west", "east");
+    private static final Set<String> BOOLEAN_PROPERTY_VALUES = Set.of(
+            "false", "true");
+    private static final Set<String> CHEST_PROPERTY_NAMES = Set.of(
+            "facing", "type", "waterlogged");
+    private static final Set<String> BARREL_PROPERTY_NAMES = Set.of(
+            "facing", "open");
+    private static final Set<String> SHULKER_PROPERTY_NAMES = Set.of("facing");
+    private static final Set<String> VANILLA_SHULKER_IDS = Set.of(
+            "minecraft:shulker_box",
+            "minecraft:white_shulker_box",
+            "minecraft:orange_shulker_box",
+            "minecraft:magenta_shulker_box",
+            "minecraft:light_blue_shulker_box",
+            "minecraft:yellow_shulker_box",
+            "minecraft:lime_shulker_box",
+            "minecraft:pink_shulker_box",
+            "minecraft:gray_shulker_box",
+            "minecraft:light_gray_shulker_box",
+            "minecraft:cyan_shulker_box",
+            "minecraft:purple_shulker_box",
+            "minecraft:blue_shulker_box",
+            "minecraft:brown_shulker_box",
+            "minecraft:green_shulker_box",
+            "minecraft:red_shulker_box",
+            "minecraft:black_shulker_box");
     private final BotLifecycleManager lifecycleManager;
     private final Map<ActionKey, InteractionState> active = new LinkedHashMap<>();
     private final Map<ActionKey, ActionCleanupReceipt>
@@ -113,6 +161,62 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
     MinecraftWorldInteractionBackend(BotLifecycleManager lifecycleManager) {
         this.lifecycleManager =
                 Objects.requireNonNull(lifecycleManager, "lifecycleManager");
+    }
+
+    /**
+     * Last-chance strict-use fence invoked immediately before vanilla advances
+     * an item's native use state.
+     *
+     * <p>The normal action-runtime tick runs after the bot player's native
+     * {@code doTick()}. That is intentionally too late for the final tick of a
+     * consumable: a mod can add an unapproved effect during
+     * {@code PlayerTickEvent.Pre}, then vanilla can consume milk and clear it
+     * before the ordinary post-tick verifier observes the drift. The mixin
+     * hook calls this method directly before {@code LivingEntity} updates the
+     * use item. It never performs a world mutation other than the same native
+     * release/stop cleanup already used for an in-flight strict-use failure.
+     *
+     * @return {@code true} when vanilla must skip this item-use update because
+     *     a strict action was stopped fail-closed
+     */
+    boolean beforeNativeItemUseUpdate(BotServerPlayer player) {
+        Objects.requireNonNull(player, "player");
+        if (!player.isUsingItem()) {
+            return false;
+        }
+        boolean interrupted = false;
+        long generation = player.runtimeHandle().generation();
+        for (InteractionState state : List.copyOf(active.values())) {
+            if (!state.botId.equals(player.getUUID())
+                    || state.botGeneration != generation
+                    || !state.startedUsing
+                    || !(state.spec
+                            instanceof WorldInteractionActionSpec.UseItem
+                                    useItem)
+                    || useItem.strictPreconditions().isEmpty()) {
+                continue;
+            }
+            if (strictUseStillMatches(player, useItem)) {
+                continue;
+            }
+            /*
+             * Record the failure before native cleanup. The next ordinary
+             * action-runtime tick must not reinterpret stopUsingItem() as a
+             * successful natural completion.
+             */
+            state.strictUsePreflightRejected = true;
+            try {
+                interruptStrictUse(player, state);
+            } catch (RuntimeException exception) {
+                try {
+                    player.stopUsingItem();
+                } catch (RuntimeException ignored) {
+                    // The caller will cancel vanilla's update as a fail-closed fence.
+                }
+            }
+            interrupted = true;
+        }
+        return interrupted;
     }
 
     @Override
@@ -171,7 +275,21 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         instanceof WorldInteractionActionSpec
                                 .WorldMenuRecipe
                 || action.spec()
-                        instanceof WorldInteractionActionSpec.PlaceBlock) {
+                        instanceof WorldInteractionActionSpec
+                                .WorldVillagerTrade
+                || action.spec()
+                        instanceof WorldInteractionActionSpec.PlaceBlock
+                || action.spec()
+                        instanceof WorldInteractionActionSpec.BreakBlock
+                || action.spec()
+                        instanceof WorldInteractionActionSpec.AttackEntity
+                || action.spec()
+                        instanceof WorldInteractionActionSpec
+                                .InteractEntity
+                || action.spec()
+                        instanceof WorldInteractionActionSpec.UseItem
+                                useItem
+                        && useItem.strictPreconditions().isPresent()) {
             if (!lifecycleManager.mayActionMutateInventory(
                     envelope.botId(), envelope.botGeneration())) {
                 return failure(
@@ -180,26 +298,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         "Bot inventory is write-locked by an open viewer");
             }
         }
-        if (action.spec()
-                        instanceof WorldInteractionActionSpec
-                                .SwapInventoryHotbar
-                || action.spec()
-                        instanceof WorldInteractionActionSpec
-                                .InventoryMenuSwap
-                || action.spec()
-                        instanceof WorldInteractionActionSpec
-                                .WorldMenuTransaction
-                || action.spec()
-                        instanceof WorldInteractionActionSpec
-                                .WorldMenuTransfer
-                || action.spec()
-                        instanceof WorldInteractionActionSpec
-                                .WorldMenuRecipe
-                || action.spec()
-                        instanceof WorldInteractionActionSpec.PlaceBlock
-                || action.spec()
-                        instanceof WorldInteractionActionSpec
-                                .SelectHotbar) {
+        if (requiresStartRevalidation(action.spec())) {
             BackendResult revalidated =
                     validateSpec(envelope, player, action.spec());
             if (revalidated.step() != BackendStep.ACCEPTED) {
@@ -222,13 +321,21 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         }
 
         try {
-            dispatchStart(player, state);
+            BackendResult dispatch = dispatchStart(envelope, player, state);
+            if (dispatch.step() != BackendStep.ACCEPTED) {
+                active.remove(key, state);
+                return dispatch;
+            }
         } catch (MenuPreconditionChangedException exception) {
             /*
              * 世界菜单的右键已经可能成功打开窗口。不能像纯 InventoryMenu 计划那样
              * 清掉副作用标志，否则失败路径会把窗口留给下一动作。
              */
             if (state.spec
+                    instanceof WorldInteractionActionSpec.WorldVillagerTrade
+                            trade) {
+                closeVillagerTradeDuringCleanup(player, state, trade);
+            } else if (state.spec
                             instanceof WorldInteractionActionSpec
                                     .WorldMenuTransaction
                     || state.spec
@@ -316,6 +423,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             case WorldInteractionActionSpec.WorldMenuRecipe menu ->
                     tickWorldMenuRecipe(
                             envelope, player, state, menu, currentTick);
+            case WorldInteractionActionSpec.WorldVillagerTrade trade ->
+                    tickWorldVillagerTrade(
+                            envelope, player, state, trade, currentTick);
             default -> BackendResult.readyToVerify(envelope);
         };
     }
@@ -351,6 +461,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                             envelope, player, state, menu.family());
             case WorldInteractionActionSpec.WorldMenuRecipe menu ->
                     verifyWorldMenuRecipe(envelope, player, state, menu);
+            case WorldInteractionActionSpec.WorldVillagerTrade trade ->
+                    verifyWorldVillagerTrade(envelope, player, state, trade);
             case WorldInteractionActionSpec.UseItem useItem ->
                     verifyUse(envelope, player, state, useItem);
             case WorldInteractionActionSpec.ReleaseUse releaseUse ->
@@ -1365,6 +1477,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     validateWorldMenuTransfer(envelope, player, menu);
             case WorldInteractionActionSpec.WorldMenuRecipe menu ->
                     validateWorldMenuRecipe(envelope, player, menu);
+            case WorldInteractionActionSpec.WorldVillagerTrade trade ->
+                    validateWorldVillagerTrade(envelope, player, trade);
             case WorldInteractionActionSpec.UseItem useItem ->
                     validateHeldUse(envelope, player, useItem);
             case WorldInteractionActionSpec.ReleaseUse releaseUse ->
@@ -1379,12 +1493,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             case WorldInteractionActionSpec.PlaceBlock placeBlock ->
                     validatePlaceBlock(envelope, player, placeBlock);
             case WorldInteractionActionSpec.BreakBlock breakBlock ->
-                    validateBlockInteraction(
-                            envelope,
-                            player,
-                            breakBlock.target(),
-                            InteractionHand.MAIN_HAND,
-                            breakBlock.expectedTool());
+                    validateBreakBlock(envelope, player, breakBlock);
             case WorldInteractionActionSpec.AttackEntity attackEntity ->
                     validateEntity(
                             envelope,
@@ -1396,7 +1505,10 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                             envelope,
                             player,
                             interactEntity.target(),
-                            false);
+                            false,
+                            MinecraftInteractionView.hand(
+                                    interactEntity.hand()),
+                            interactEntity.expectedHeldItem());
             case WorldInteractionActionSpec.DropSelected dropSelected ->
                     requireFingerprint(
                             envelope,
@@ -1512,6 +1624,12 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             ActionEnvelope envelope,
             BotServerPlayer player,
             WorldInteractionActionSpec.WorldMenuTransaction menu) {
+        if (menu.template().family() == MenuFamily.MERCHANT) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.UNSUPPORTED,
+                    "MerchantMenu requires the dedicated vanilla villager trade action");
+        }
         if (menu.template().family() == MenuFamily.INVENTORY_2X2) {
             if (player.containerMenu != player.inventoryMenu) {
                 return failure(
@@ -1563,11 +1681,24 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             ActionEnvelope envelope,
             BotServerPlayer player,
             WorldInteractionActionSpec.WorldMenuTransfer menu) {
+        if (menu.family() == MenuFamily.MERCHANT) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.UNSUPPORTED,
+                    "MerchantMenu cannot use the generic world transfer action");
+        }
         if (player.containerMenu != player.inventoryMenu) {
             return failure(
                     envelope,
                     ActionFailureCode.PRECONDITION_FAILED,
                     "A world menu transfer requires the native menu before opening");
+        }
+        if (!isAllowedVanillaContainerTarget(
+                menu.opener().target(), menu.family())) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "World menu transfer target is outside the P5B vanilla container whitelist");
         }
         return validateBlockInteraction(
                 envelope,
@@ -1616,12 +1747,246 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     ActionFailureCode.PRECONDITION_FAILED,
                     "A world recipe requires the native menu before opening");
         }
+        BlockHitTarget opener = menu.opener().orElseThrow();
+        if (!isAllowedVanillaWorkstationTarget(
+                opener.target(), menu.recipe())) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "World recipe target is outside the strict vanilla workstation whitelist");
+        }
         return validateBlockInteraction(
                 envelope,
                 player,
-                menu.opener().orElseThrow(),
+                opener,
                 MinecraftInteractionView.hand(menu.hand()),
                 menu.expectedHeldItem());
+    }
+
+    /**
+     * 交易不是泛用 {@code Merchant} 自动化。开始前就必须同时证明：空 native 背包 cursor、
+     * 精确原版 {@link Villager}、冻结 offer/等级、空主手，以及能让 result QUICK_MOVE 落到唯一
+     * output 格的完整 36 格玩家布局。任何一项不能证明都会在调用原版 interaction packet 前失败。
+     */
+    private BackendResult validateWorldVillagerTrade(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            WorldInteractionActionSpec.WorldVillagerTrade trade) {
+        if (!exactNativeInventoryMenuHasEmptyCursor(player)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Villager trade requires the native inventory menu with an empty cursor");
+        }
+        if (!MinecraftInteractionView.itemFingerprint(
+                        player, player.getMainHandItem())
+                .isEmpty()) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Villager trade requires an empty main hand");
+        }
+        Entity resolved = MinecraftInteractionView.entity(
+                        player, trade.villager())
+                .orElse(null);
+        if (resolved == null || resolved.getClass() != Villager.class) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.TARGET_UNAVAILABLE,
+                    "Villager trade target is not the exact vanilla Villager class");
+        }
+        Villager villager = (Villager) resolved;
+        if (!player.canInteractWithEntity(villager, 1.0D)
+                || !player.hasLineOfSight(villager)
+                || villager.getTradingPlayer() != null) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Villager trade target is unavailable, out of reach, or already trading");
+        }
+        MerchantOffer offer = merchantOfferAt(villager, trade.offerIndex())
+                .orElse(null);
+        if (offer == null) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Villager offer is unavailable before trade");
+        }
+        MerchantOfferState offerState = merchantOfferStaticState(
+                player, offer).orElse(null);
+        if (offerState == null
+                || !merchantOfferMatches(player, villager, offer, trade,
+                        trade.expectedOfferUses(), trade.expectedVillagerXp(),
+                        true)
+                || villagerTradeWouldChangeLevel(
+                        villager, offerState,
+                        trade.expectedVillagerXp())) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Villager offer, price, stock, XP, or level changed before trade");
+        }
+        if (!strictVillagerTradeInventoryLayout(player, trade)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Villager trade player inventory layout is not uniquely auditable");
+        }
+        return BackendResult.accepted(envelope);
+    }
+
+    private static Optional<MerchantOffer> merchantOfferAt(
+            Villager villager, int offerIndex) {
+        Objects.requireNonNull(villager, "villager");
+        if (offerIndex < 0 || offerIndex >= villager.getOffers().size()) {
+            return Optional.empty();
+        }
+        MerchantOffer offer = villager.getOffers().get(offerIndex);
+        return offer == null || offer.getClass() != MerchantOffer.class
+                ? Optional.empty() : Optional.of(offer);
+    }
+
+    /**
+     * 确认当前 offer 仍是动作冻结的单支付、可用原版 offer。uses 是单独参数，因为最后一次
+     * QUICK_MOVE 后它恰好允许加一；其余字段在整个会话内绝不允许漂移。
+     */
+    private static boolean merchantOfferMatches(
+            BotServerPlayer player,
+            Villager villager,
+            MerchantOffer offer,
+            WorldInteractionActionSpec.WorldVillagerTrade trade,
+            int expectedUses,
+            int expectedVillagerXp,
+            boolean requireInStock) {
+        try {
+            return villager.getVillagerData().getLevel()
+                            == trade.expectedVillagerLevel()
+                    && villager.getVillagerXp() == expectedVillagerXp
+                    && (!requireInStock || !offer.isOutOfStock())
+                    && offer.getUses() == expectedUses
+                    && offer.getMaxUses() == trade.expectedOfferMaxUses()
+                    && MinecraftInteractionView.itemFingerprint(
+                                    player, offer.getCostA())
+                            .equals(trade.expectedCost())
+                    && MinecraftInteractionView.itemFingerprint(
+                                    player, offer.getCostB())
+                            .isEmpty()
+                    && MinecraftInteractionView.itemFingerprint(
+                                    player, offer.getResult())
+                            .equals(trade.expectedResult())
+                    && merchantOfferStaticState(player, offer)
+                            .filter(trade.expectedOfferState()::equals)
+                            .isPresent();
+        } catch (RuntimeException exception) {
+            return false;
+        }
+    }
+
+    /**
+     * The narrow slice intentionally refuses a trade that can level the villager. The real
+     * {@code MerchantMenu} trade still grants its normal XP below the threshold, but refusing a
+     * level transition keeps the frozen offer list and level contract stable through close and
+     * verification.
+     */
+    private static boolean villagerTradeWouldChangeLevel(
+            Villager villager,
+            MerchantOfferState offer,
+            int expectedVillagerXp) {
+        try {
+            VillagerData data = villager.getVillagerData();
+            int level = data.getLevel();
+            if (!VillagerData.canLevelUp(level)) {
+                return false;
+            }
+            int threshold = VillagerData.getMinXpPerLevel(level);
+            int xpAfter = villagerXpAfterTrade(
+                    expectedVillagerXp, offer).orElseThrow();
+            return expectedVillagerXp >= threshold || xpAfter >= threshold;
+        } catch (RuntimeException exception) {
+            return true;
+        }
+    }
+
+    private static Optional<Integer> villagerXpAfterTrade(
+            int xpBefore, MerchantOfferState offer) {
+        Objects.requireNonNull(offer, "offer");
+        if (xpBefore < 0) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(Math.addExact(
+                    xpBefore, offer.rewardsExperience() ? offer.xp() : 0));
+        } catch (ArithmeticException exception) {
+            return Optional.empty();
+        }
+    }
+
+    private static Optional<MerchantOfferState> merchantOfferStaticState(
+            BotServerPlayer player, MerchantOffer offer) {
+        try {
+            ItemStackFingerprint baseCost = MinecraftInteractionView
+                    .itemFingerprint(player, offer.getBaseCostA());
+            float priceMultiplier = offer.getPriceMultiplier();
+            int xp = offer.getXp();
+            if (baseCost.isEmpty()
+                    || !Float.isFinite(priceMultiplier)
+                    || priceMultiplier < 0.0F
+                    || xp < 0) {
+                return Optional.empty();
+            }
+            return Optional.of(new MerchantOfferState(
+                    baseCost,
+                    offer.getDemand(),
+                    offer.getSpecialPriceDiff(),
+                    Float.floatToIntBits(priceMultiplier),
+                    xp,
+                    offer.shouldRewardExp()));
+        } catch (RuntimeException exception) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * 原版 MerchantMenu 的 result QUICK_MOVE 先尝试合并、再从末尾向前寻找空 player slot。
+     * 这里只留下一个指定空格，且禁止其他格出现相同 result identity，因此没有模糊落点。
+     */
+    private static boolean strictVillagerTradeInventoryLayout(
+            BotServerPlayer player,
+            WorldInteractionActionSpec.WorldVillagerTrade trade) {
+        try {
+            for (int inventorySlot =
+                    WorldInteractionActionSpec.WorldVillagerTrade
+                            .FIRST_PLAYER_INVENTORY_SLOT;
+                    inventorySlot <= WorldInteractionActionSpec
+                            .WorldVillagerTrade
+                            .LAST_PLAYER_INVENTORY_SLOT;
+                    inventorySlot++) {
+                ItemStackFingerprint current =
+                        MinecraftInteractionView.itemFingerprint(
+                                player,
+                                player.getInventory().getItem(inventorySlot));
+                if (inventorySlot == trade.sourceInventorySlot()) {
+                    if (!current.equals(trade.expectedSource())) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (inventorySlot == trade.outputInventorySlot()) {
+                    if (!current.isEmpty()) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (current.isEmpty()
+                        || current.sameItemAndComponents(
+                                trade.expectedResult())) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (RuntimeException exception) {
+            return false;
+        }
     }
 
     private static boolean menuPlanHasReversiblePermissions(
@@ -1788,8 +2153,166 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     ActionFailureCode.PRECONDITION_FAILED,
                     "Held item cooldown is still active");
         }
+        return useItem.strictPreconditions()
+                .map(preconditions -> validateUseItemPreconditions(
+                        envelope, player, preconditions))
+                .orElseGet(() -> BackendResult.accepted(envelope));
+    }
+
+    /**
+     * Strict item users freeze the native menu and the complete bounded active
+     * effect identity set. This check is intentionally run by {@link #validate},
+     * again from {@link #start} immediately before {@code handleUseItem}, and
+     * while a strict natural use remains active. A request which drifted while
+     * queued never reaches the vanilla packet path; a state which drifts during
+     * a multi-tick use is released before vanilla can consume an unapproved
+     * effect or inventory state.
+     */
+    private BackendResult validateUseItemPreconditions(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            UseItemPreconditions expected) {
+        try {
+            InventoryMenu nativeMenu = player.inventoryMenu;
+            if (player.containerMenu == nativeMenu
+                    && nativeMenu.getClass() == InventoryMenu.class
+                    && nativeMenu.stillValid(player)
+                    && nativeMenu.slots.size()
+                            == MenuFamily.INVENTORY_2X2.slotCount()
+                    && nativeMenu.getCarried().isEmpty()) {
+                return validateExactUseItemPreconditions(
+                        envelope, player, expected);
+            }
+        } catch (RuntimeException exception) {
+            // A broken or replaced menu is never a safe strict-use boundary.
+        }
+        return failure(
+                envelope,
+                ActionFailureCode.UNSAFE_CONTROL_STATE,
+                "Strict item use requires an exact valid native inventory menu with an empty cursor");
+    }
+
+    private BackendResult validateExactUseItemPreconditions(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            UseItemPreconditions expected) {
+        InventoryMenuSnapshot actualMenu;
+        try {
+            actualMenu = MinecraftActionSnapshot.inventoryMenu(player);
+        } catch (RuntimeException exception) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.UNSAFE_CONTROL_STATE,
+                    "Strict item use could not capture the native inventory menu");
+        }
+        if (!expected.nativeInventoryMenu().equals(actualMenu)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Strict item use inventory menu precondition changed");
+        }
+        Optional<List<ActiveEffectObservation>> actualEffects =
+                activeEffectObservations(player);
+        if (actualEffects.isEmpty()) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Strict item use active-effect snapshot is unavailable");
+        }
+        if (!expected.matchesActiveEffects(actualEffects.orElseThrow())) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Strict item use active-effect precondition changed");
+        }
         return BackendResult.accepted(envelope);
     }
+
+    /**
+     * Equivalent to the strict portion of {@link #tickUse}, but deliberately
+     * side-effect free so it is safe to call from the native-use mixin hook.
+     */
+    private static boolean strictUseStillMatches(
+            BotServerPlayer player,
+            WorldInteractionActionSpec.UseItem useItem) {
+        try {
+            if (!player.isUsingItem()
+                    || player.getUsedItemHand()
+                            != MinecraftInteractionView.hand(useItem.hand())
+                    || !MinecraftInteractionView.itemFingerprint(
+                                    player, player.getUseItem())
+                            .sameItemAndComponents(
+                                    useItem.expectedHeldItem())) {
+                return false;
+            }
+            UseItemPreconditions expected =
+                    useItem.strictPreconditions().orElseThrow();
+            InventoryMenu nativeMenu = player.inventoryMenu;
+            if (player.containerMenu != nativeMenu
+                    || nativeMenu.getClass() != InventoryMenu.class
+                    || !nativeMenu.stillValid(player)
+                    || nativeMenu.slots.size()
+                            != MenuFamily.INVENTORY_2X2.slotCount()
+                    || !nativeMenu.getCarried().isEmpty()) {
+                return false;
+            }
+            if (!expected.nativeInventoryMenu().equals(
+                    MinecraftActionSnapshot.inventoryMenu(player))) {
+                return false;
+            }
+            Optional<List<ActiveEffectObservation>> effects =
+                    activeEffectObservations(player);
+            return effects.isPresent()
+                    && expected.matchesActiveEffects(effects.orElseThrow());
+        } catch (RuntimeException exception) {
+            return false;
+        }
+    }
+
+    /**
+     * Converts live effects only at the server-thread backend boundary. Any
+     * unregistered, malformed, duplicated or over-limit effect makes the caller
+     * reject the action rather than serializing an ambiguous mutable object.
+     */
+    private static Optional<List<ActiveEffectObservation>>
+            activeEffectObservations(BotServerPlayer player) {
+        List<ActiveEffectObservation> effects = new ArrayList<>();
+        try {
+            for (MobEffectInstance effect : player.getActiveEffects()) {
+                if (effects.size()
+                        >= UseItemPreconditions.MAXIMUM_ACTIVE_EFFECTS) {
+                    return Optional.empty();
+                }
+                net.minecraft.resources.ResourceLocation key =
+                        BuiltInRegistries.MOB_EFFECT.getKey(
+                                effect.getEffect().value());
+                if (key == null) {
+                    return Optional.empty();
+                }
+                int duration = effect.getDuration();
+                if (duration < 0) {
+                    return Optional.empty();
+                }
+                effects.add(new ActiveEffectObservation(
+                        new ResourceId(key.toString()),
+                        effect.getAmplifier(),
+                        duration,
+                        effect.isAmbient(),
+                        effect.isVisible()));
+            }
+            effects.sort(null);
+            for (int index = 1; index < effects.size(); index++) {
+                if (effects.get(index - 1).effectId().equals(
+                        effects.get(index).effectId())) {
+                    return Optional.empty();
+                }
+            }
+            return Optional.of(List.copyOf(effects));
+        } catch (RuntimeException exception) {
+            return Optional.empty();
+        }
+    }
+
 
     private BackendResult validateRelease(
             ActionEnvelope envelope,
@@ -1873,6 +2396,58 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
     }
 
     /**
+     * Validates the legacy source/hand fence and any optional face-adjacent
+     * world-state fences declared by a strict block-break request.
+     *
+     * <p>Some vanilla blocks have structural neighbours whose change can widen a
+     * single source break into a cascade.  Those callers must not rely on an
+     * earlier skill-layer observation alone: the action boundary rechecks the
+     * frozen neighbours immediately before {@code START_DESTROY_BLOCK}, on every
+     * mining tick, and again before success is reported.
+     */
+    private BackendResult validateBreakBlock(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            WorldInteractionActionSpec.BreakBlock breakBlock) {
+        BackendResult target = validateBlockInteraction(
+                envelope,
+                player,
+                breakBlock.target(),
+                InteractionHand.MAIN_HAND,
+                breakBlock.expectedTool());
+        if (target.step() != BackendStep.ACCEPTED) {
+            return target;
+        }
+        return validateBreakNeighborPreconditions(envelope, player,
+                breakBlock);
+    }
+
+    private BackendResult validateBreakNeighborPreconditions(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            WorldInteractionActionSpec.BreakBlock breakBlock) {
+        for (BlockTargetFingerprint expected : breakBlock
+                .neighborPreconditions()) {
+            BlockPos position = MinecraftInteractionView.position(
+                    expected.position());
+            if (!player.serverLevel().isLoaded(position)) {
+                return failure(
+                        envelope,
+                        ActionFailureCode.TARGET_UNAVAILABLE,
+                        "Break neighbor chunk is not loaded");
+            }
+            if (!MinecraftInteractionView.blockFingerprint(player, position)
+                    .equals(expected)) {
+                return failure(
+                        envelope,
+                        ActionFailureCode.PRECONDITION_FAILED,
+                        "Break neighbor fingerprint changed");
+            }
+        }
+        return BackendResult.accepted(envelope);
+    }
+
+    /**
      * 生产工作站放置不能借用泛用 {@code UseOnBlock} 的“任意可观察变化”语义。锚点、空目标、
      * 主手方块物品和预期原版 block id 都必须在 packet 前再次成立；完整 placement state 则在
      * {@link #verifyPlaceBlock(ActionEnvelope, BotServerPlayer, InteractionState,
@@ -1943,6 +2518,41 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             BotServerPlayer player,
             EntityTargetFingerprint target,
             boolean attack) {
+        return validateEntity(
+                envelope,
+                player,
+                target,
+                attack,
+                InteractionHand.MAIN_HAND,
+                Optional.empty());
+    }
+
+    /**
+     * Validate the declared hand before resolving or dispatching an entity
+     * interaction.  The strict check is intentionally repeated by
+     * {@link #start(ActionEnvelope, long)} for {@code INTERACT_ENTITY}, closing
+     * the mailbox-to-packet gap for item-consuming interactions.
+     */
+    private BackendResult validateEntity(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            EntityTargetFingerprint target,
+            boolean attack,
+            InteractionHand hand,
+            Optional<ItemStackFingerprint> expectedHeldItem) {
+        Objects.requireNonNull(hand, "hand");
+        Objects.requireNonNull(expectedHeldItem, "expectedHeldItem");
+        if (expectedHeldItem.isPresent()) {
+            BackendResult held = requireFingerprint(
+                    envelope,
+                    MinecraftInteractionView.itemFingerprint(
+                            player, player.getItemInHand(hand)),
+                    expectedHeldItem.orElseThrow(),
+                    "Held item changed before entity interaction");
+            if (held.step() != BackendStep.ACCEPTED) {
+                return held;
+            }
+        }
         Optional<Entity> entity =
                 MinecraftInteractionView.entity(player, target);
         if (entity.isEmpty()) {
@@ -1996,8 +2606,15 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         return BackendResult.accepted(envelope);
     }
 
-    private void dispatchStart(
-            BotServerPlayer player, InteractionState state) {
+    private BackendResult dispatchStart(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            InteractionState state) {
+        if (state.spec instanceof WorldInteractionActionSpec
+                .BreakBlock breakBlock) {
+            return dispatchBreakStartWithDropProvenance(envelope, player,
+                    state, breakBlock);
+        }
         // Mark the operation as possibly applied before calling a packet/menu
         // entry point: handlers may mutate state and then throw.
         state.sideEffectDispatched = true;
@@ -2023,6 +2640,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     dispatchWorldMenuTransfer(player, state, menu);
             case WorldInteractionActionSpec.WorldMenuRecipe menu ->
                     dispatchWorldMenuRecipe(player, state, menu);
+            case WorldInteractionActionSpec.WorldVillagerTrade trade ->
+                    dispatchWorldVillagerTrade(player, state, trade);
             case WorldInteractionActionSpec.UseItem useItem ->
                     dispatchUseItem(player, useItem);
             case WorldInteractionActionSpec.ReleaseUse ignored ->
@@ -2042,12 +2661,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                     MinecraftInteractionView.hit(
                                             placeBlock.anchor()),
                                     nextSequence()));
-            case WorldInteractionActionSpec.BreakBlock breakBlock ->
-                    dispatchBreak(
-                            player,
-                            breakBlock,
-                            ServerboundPlayerActionPacket.Action
-                                    .START_DESTROY_BLOCK);
+            case WorldInteractionActionSpec.BreakBlock ignored ->
+                    throw new IllegalStateException(
+                            "Break start escaped drop-provenance capture");
             case WorldInteractionActionSpec.AttackEntity attackEntity -> {
                 Entity target = MinecraftInteractionView.entity(
                                 player, attackEntity.target())
@@ -2109,6 +2725,40 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         && MinecraftInteractionView.itemFingerprint(
                                         player, player.getUseItem())
                                 .equals(useItem.expectedHeldItem());
+        return BackendResult.accepted(envelope);
+    }
+
+    /**
+     * Vanilla {@code instabreak()} blocks can complete from START_DESTROY_BLOCK,
+     * before {@link #tickBreak(ActionEnvelope, BotServerPlayer,
+     * InteractionState, WorldInteractionActionSpec.BreakBlock, long)} reaches
+     * STOP_DESTROY_BLOCK. Capture this one synchronous packet as well, so a
+     * verified instant break cannot lose its exact native drop receipt.
+     */
+    private BackendResult dispatchBreakStartWithDropProvenance(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            InteractionState state,
+            WorldInteractionActionSpec.BreakBlock breakBlock) {
+        BreakDropProvenanceCapture.Scope capture;
+        try {
+            capture = BreakDropProvenanceCapture.arm(player,
+                    breakBlock.target().target(), state.botGeneration);
+        } catch (RuntimeException exception) {
+            return failure(envelope, ActionFailureCode.INTERNAL_ERROR,
+                    "Could not arm exact vanilla block-drop provenance");
+        }
+        try {
+            // Mark immediately before the packet: it may break an instabreak
+            // source synchronously and then throw from a listener.
+            state.sideEffectDispatched = true;
+            dispatchBreak(player, breakBlock,
+                    ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK);
+        } finally {
+            capture.close();
+            state.breakDropProvenances = capture.provenances();
+        }
+        return BackendResult.accepted(envelope);
     }
 
     private void dispatchMenuSwap(
@@ -2156,8 +2806,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
     }
 
     /**
-     * 单次 strict transfer 只在原版容器打开以后读取完整布局，再构造守恒的 2/3 点击
-     * 模板；这避免在未打开箱子、熔炉或工作台时窥探其内容。
+     * 单次 strict transfer 只在原版容器打开以后读取完整布局，再构造守恒的完整堆叠
+     * 或逐右键精确数量模板；这避免在未打开箱子、熔炉或工作台时窥探其内容。
      */
     private void dispatchWorldMenuTransfer(
             BotServerPlayer player,
@@ -2170,8 +2820,14 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         nextSequence()));
         MenuSnapshot opened = snapshotMenu(player, menu.family())
                 .orElseThrow(MenuPreconditionChangedException::new);
-        MenuTransactionTemplate template = MenuTransactionTemplateBuilder
-                .moveOrSwap(opened, menu.sourceSlot(), menu.targetSlot())
+        MenuTransactionTemplate template = (menu.requestedAmount() == 0
+                ? MenuTransactionTemplateBuilder.moveOrSwap(
+                        opened, menu.sourceSlot(), menu.targetSlot())
+                : MenuTransactionTemplateBuilder.moveExactAmount(
+                        opened,
+                        menu.sourceSlot(),
+                        menu.targetSlot(),
+                        menu.requestedAmount()))
                 .orElseThrow(MenuPreconditionChangedException::new);
         MenuTransactionPlan plan = template.bind(opened)
                 .orElseThrow(MenuPreconditionChangedException::new);
@@ -2196,8 +2852,12 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                 MinecraftInteractionView.hand(menu.hand()),
                                 MinecraftInteractionView.hit(opener),
                                 nextSequence())));
-        MenuSnapshot opened = snapshotMenu(player, menu.recipe().family())
-                .orElseThrow(MenuPreconditionChangedException::new);
+        MenuSnapshot opened = menu.recipe().isFurnace()
+                ? snapshotFurnaceMenu(
+                        player, menu.recipe().furnaceKind()).orElseThrow(
+                                MenuPreconditionChangedException::new)
+                : snapshotMenu(player, menu.recipe().family()).orElseThrow(
+                        MenuPreconditionChangedException::new);
         Map<ResourceId, ItemStackFingerprint> prototypes =
                 vanillaRecipePrototypes(player, menu.recipe());
         if (menu.recipe().isCrafting()) {
@@ -2221,9 +2881,16 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             return;
         }
 
+        if (!matchesExactFurnaceRecipe(
+                player, menu.recipe(), prototypes)) {
+            throw new MenuPreconditionChangedException();
+        }
         P5AFurnaceMenuPlanBuilder.Deposit deposit =
                 P5AFurnaceMenuPlanBuilder.deposit(
-                        opened, menu.recipe(), prototypes).orElseThrow(
+                        opened,
+                        menu.recipe(),
+                        prototypes,
+                        menu.recipe().furnaceKind()).orElseThrow(
                                 MenuPreconditionChangedException::new);
         if (deposit.plan().orderedSteps().size()
                 > menu.limits().maxClicks()) {
@@ -2236,6 +2903,124 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 menu.recipe(), menu.batches(), prototypes,
                 MinecraftInteractionView.inventoryContents(player),
                 deposit.expectation());
+    }
+
+    /**
+     * 打开和选择 offer 都通过原版实体 interaction / MerchantMenu API；不调用 villager、offer 或
+     * Inventory 的任何写入方法。真正的支付和领取也只在后续 tick 经 {@link
+     * AbstractContainerMenu#clicked(int, int, ClickType, net.minecraft.world.entity.player.Player)} 完成。
+     */
+    private void dispatchWorldVillagerTrade(
+            BotServerPlayer player,
+            InteractionState state,
+            WorldInteractionActionSpec.WorldVillagerTrade trade) {
+        if (!exactNativeInventoryMenuHasEmptyCursor(player)) {
+            throw new MenuPreconditionChangedException();
+        }
+        Entity target = MinecraftInteractionView.entity(player,
+                        trade.villager())
+                .orElseThrow(MenuPreconditionChangedException::new);
+        if (target.getClass() != Villager.class) {
+            throw new MenuPreconditionChangedException();
+        }
+        Villager villager = (Villager) target;
+        MerchantOffer offer = merchantOfferAt(villager, trade.offerIndex())
+                .orElseThrow(MenuPreconditionChangedException::new);
+        MerchantOfferState offerState = merchantOfferStaticState(
+                player, offer).orElseThrow(MenuPreconditionChangedException::new);
+        int villagerXpAfter = villagerXpAfterTrade(
+                trade.expectedVillagerXp(), offerState).orElseThrow(
+                        MenuPreconditionChangedException::new);
+        if (!merchantOfferMatches(player, villager, offer, trade,
+                trade.expectedOfferUses(), trade.expectedVillagerXp(), true)
+                || villagerTradeWouldChangeLevel(
+                        villager, offerState, trade.expectedVillagerXp())
+                || !strictVillagerTradeInventoryLayout(player, trade)) {
+            throw new MenuPreconditionChangedException();
+        }
+        InventoryContentsSnapshot inventoryBefore =
+                MinecraftInteractionView.inventoryContents(player);
+        InventoryMenuSnapshot inventoryMenuBefore =
+                MinecraftActionSnapshot.inventoryMenu(player);
+        if (state.villagerTradeInventoryBefore == null
+                || !inventoryMenuBefore.layoutEqualsIgnoringState(
+                        state.villagerTradeInventoryBefore)) {
+            throw new MenuPreconditionChangedException();
+        }
+        state.villagerTradeOfferStateBefore = offerState;
+        state.villagerTradeVillagerDataBefore = villager.getVillagerData();
+        player.connection.handleInteract(
+                ServerboundInteractPacket.createInteractionPacket(
+                        villager,
+                        player.isSecondaryUseActive(),
+                        InteractionHand.MAIN_HAND));
+        if (player.containerMenu.getClass() != MerchantMenu.class
+                || !(player.containerMenu instanceof MerchantMenu merchantMenu)
+                || !merchantMenu.stillValid(player)
+                || villager.getTradingPlayer() != player
+                || merchantMenu.getTraderLevel()
+                        != trade.expectedVillagerLevel()
+                || merchantMenu.getTraderXp() != trade.expectedVillagerXp()
+                || merchantMenu.getOffers().size() <= trade.offerIndex()
+                || merchantMenu.getOffers().get(trade.offerIndex()) != offer
+                || merchantOfferAt(villager, trade.offerIndex()).orElse(null)
+                        != offer
+                || !merchantOfferMatches(player, villager, offer, trade,
+                        trade.expectedOfferUses(), trade.expectedVillagerXp(),
+                        true)
+                || !merchantOfferStaticState(player, offer)
+                        .filter(offerState::equals)
+                        .isPresent()) {
+            throw new MenuPreconditionChangedException();
+        }
+        merchantMenu.setSelectionHint(trade.offerIndex());
+        MenuSnapshot opened = snapshotMenu(player, MenuFamily.MERCHANT)
+                .orElseThrow(MenuPreconditionChangedException::new);
+        state.merchantTradeSession = new MerchantTradeSession(
+                villager,
+                merchantMenu,
+                offer,
+                trade.offerIndex(),
+                trade.expectedOfferUses(),
+                villager.getVillagerData(),
+                offerState,
+                trade.expectedVillagerXp(),
+                villagerXpAfter,
+                inventoryBefore,
+                inventoryMenuBefore);
+        MenuTransactionTemplate template = MerchantTradeMenuPlanBuilder.build(
+                        opened,
+                        trade.expectedCost(),
+                        trade.expectedResult(),
+                        merchantMenuSlotForInventorySlot(
+                                trade.sourceInventorySlot()),
+                        merchantMenuSlotForInventorySlot(
+                                trade.outputInventorySlot()))
+                .orElseThrow(MenuPreconditionChangedException::new);
+        MenuTransactionPlan plan = template.bind(opened)
+                .orElseThrow(MenuPreconditionChangedException::new);
+        if (plan.orderedSteps().size() > trade.limits().maxClicks()) {
+            throw new MenuPreconditionChangedException();
+        }
+        installWorldMenuPlan(
+                state, MenuFamily.MERCHANT, trade.limits(), opened, plan);
+    }
+
+    /**
+     * MerchantMenu 固定为两个支付/一个结果，随后 27 主背包和 9 快捷栏。这里不从
+     * Slot.containerSlot 猜映射，避免一个 modded menu 通过相同数字伪装；调用点已先要求精确
+     * {@link MerchantMenu} 类。
+     */
+    private static int merchantMenuSlotForInventorySlot(int inventorySlot) {
+        if (inventorySlot >= 9 && inventorySlot <= 35) {
+            return MerchantTradeMenuPlanBuilder.FIRST_PLAYER_SLOT
+                    + inventorySlot - 9;
+        }
+        if (inventorySlot >= 0 && inventorySlot <= 8) {
+            return 30 + inventorySlot;
+        }
+        throw new IllegalArgumentException(
+                "merchant trade inventory slot is outside the player storage layout");
     }
 
     private static void installWorldMenuPlan(
@@ -2263,6 +3048,17 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             InteractionState state,
             MenuFamily family,
             long currentTick) {
+        return tickWorldMenuTransaction(
+                envelope, player, state, family, Optional.empty(), currentTick);
+    }
+
+    private BackendResult tickWorldMenuTransaction(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            InteractionState state,
+            MenuFamily family,
+            Optional<FurnaceKind> expectedFurnaceKind,
+            long currentTick) {
         if (!lifecycleManager.mayActionMutateInventory(
                 envelope.botId(), envelope.botGeneration())
                 || !isCurrentActionTarget(state, player)) {
@@ -2281,9 +3077,18 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         try {
             return switch (transaction.state()) {
                 case APPLYING -> tickWorldMenuClick(
-                        envelope, player, state, family, currentTick);
+                        envelope,
+                        player,
+                        state,
+                        family,
+                        expectedFurnaceKind,
+                        currentTick);
                 case VERIFYING -> closeVerifiedWorldMenu(
-                        envelope, player, state, currentTick);
+                        envelope,
+                        player,
+                        state,
+                        expectedFurnaceKind,
+                        currentTick);
                 case COMPLETED -> BackendResult.readyToVerify(envelope);
                 case OPENING,
                         SNAPSHOT,
@@ -2303,6 +3108,99 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     envelope,
                     ActionFailureCode.UNSAFE_CONTROL_STATE,
                     "World menu adapter failed closed during click or close");
+        }
+    }
+
+    /**
+     * 交易的每个 tick 先重验实体、精确 MerchantMenu、offer 对象/价格/等级和已确认 click
+     * 前缀对应的 uses。随后才允许通用 menu transaction 读取快照并调用一次原版 clicked。
+     */
+    private BackendResult tickWorldVillagerTrade(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            InteractionState state,
+            WorldInteractionActionSpec.WorldVillagerTrade trade,
+            long currentTick) {
+        MerchantTradeSession session = state.merchantTradeSession;
+        MenuTransaction transaction = state.worldMenuTransaction;
+        if (session == null || transaction == null) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.INTERNAL_ERROR,
+                    "Villager trade has no bound merchant session");
+        }
+        boolean paymentConsumed = transaction.plan()
+                .map(plan -> transaction.confirmedClicks()
+                        == plan.orderedSteps().size())
+                .orElse(false);
+        int expectedUses;
+        int expectedVillagerXp;
+        try {
+            expectedUses = Math.addExact(
+                    session.usesBefore, paymentConsumed ? 1 : 0);
+            expectedVillagerXp = paymentConsumed
+                    ? session.villagerXpAfter
+                    : session.villagerXpBefore;
+        } catch (ArithmeticException exception) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.UNSAFE_CONTROL_STATE,
+                    "Villager trade offer uses overflowed");
+        }
+        if (!merchantTradeSessionMatchesOpen(
+                player, session, trade, expectedUses, expectedVillagerXp)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Villager, MerchantMenu, offer, price, stock, or level drifted during trade");
+        }
+        return tickWorldMenuTransaction(
+                envelope, player, state, MenuFamily.MERCHANT, currentTick);
+    }
+
+    private static boolean merchantTradeSessionMatchesOpen(
+            BotServerPlayer player,
+            MerchantTradeSession session,
+            WorldInteractionActionSpec.WorldVillagerTrade trade,
+            int expectedUses,
+            int expectedVillagerXp) {
+        try {
+            Entity current = MinecraftInteractionView.entity(
+                            player, trade.villager())
+                    .orElse(null);
+            if (current != session.villager
+                    || current == null
+                    || current.getClass() != Villager.class
+                    || player.containerMenu != session.menu
+                    || session.menu.getClass() != MerchantMenu.class
+                    || !session.menu.stillValid(player)
+                    || session.villager.getTradingPlayer() != player
+                    || session.villager.getVillagerData()
+                            != session.villagerDataBefore
+                    || session.menu.getTraderLevel()
+                            != trade.expectedVillagerLevel()
+                    || session.menu.getTraderXp() != expectedVillagerXp
+                    || session.menu.getOffers().size() <= session.offerIndex
+                    || session.menu.getOffers().get(session.offerIndex)
+                            != session.offer
+                    || merchantOfferAt(session.villager,
+                                    session.offerIndex)
+                            .orElse(null) != session.offer) {
+                return false;
+            }
+            return merchantOfferMatches(
+                    player,
+                    session.villager,
+                    session.offer,
+                    trade,
+                    expectedUses,
+                    expectedVillagerXp,
+                    expectedUses < trade.expectedOfferMaxUses())
+                    && merchantOfferStaticState(player, session.offer)
+                            .filter(session.offerState::equals)
+                            .isPresent();
+        } catch (RuntimeException exception) {
+            return false;
         }
     }
 
@@ -2372,7 +3270,11 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         return switch (transaction.state()) {
             case APPLYING -> {
                 BackendResult click = tickWorldMenuClick(
-                        envelope, player, state, MenuFamily.FURNACE,
+                        envelope,
+                        player,
+                        state,
+                        MenuFamily.FURNACE,
+                        Optional.of(session.furnaceExpectation.furnaceKind()),
                         currentTick);
                 // 最后一颗燃料一经原版接受，下一世界 tick 即可被炉子消耗。必须在同一
                 // server tick 复核并关闭投入窗口，不能把一个已经确认的精确布局暴露给
@@ -2409,15 +3311,15 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             long currentTick) {
         MenuTransaction transaction = Objects.requireNonNull(
                 state.worldMenuTransaction, "worldMenuTransaction");
-        MenuSnapshot finalSnapshot = snapshotMenu(player, MenuFamily.FURNACE)
-                .orElse(null);
+        MenuSnapshot finalSnapshot = snapshotFurnaceMenu(
+                player, session.furnaceExpectation.furnaceKind()).orElse(null);
         if (!transaction.verify(finalSnapshot, currentTick)) {
             return menuTransactionFailure(
                     envelope, transaction.failure().orElseThrow());
         }
         state.worldMenuLastSnapshot = finalSnapshot;
         player.closeContainer();
-        if (player.containerMenu != player.inventoryMenu
+        if (!nativeInventoryMenuHasEmptyCursor(player)
                 || !transaction.closeConfirmed(currentTick)) {
             return failure(
                     envelope,
@@ -2440,6 +3342,13 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         if (currentTick < session.nextFurnacePollTick) {
             return BackendResult.running(envelope);
         }
+        if (!recipeWorkstationFingerprintStillMatches(player, menu)) {
+            closeWorldMenuDuringCleanup(player, state);
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Furnace workstation changed while smelting");
+        }
         if (player.containerMenu != player.inventoryMenu) {
             return failure(
                     envelope,
@@ -2450,18 +3359,20 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 MinecraftInteractionView.hand(menu.hand()),
                 MinecraftInteractionView.hit(menu.opener().orElseThrow()),
                 nextSequence()));
-        MenuSnapshot observed = snapshotMenu(player, MenuFamily.FURNACE)
-                .orElse(null);
+        MenuSnapshot observed = snapshotFurnaceMenu(
+                player, session.furnaceExpectation.furnaceKind()).orElse(null);
         if (observed == null
                 || !session.furnaceExpectation.pollingSnapshotAllowed(
-                        observed)) {
+                        observed,
+                        session.furnaceExpectation.furnaceKind())) {
             closeWorldMenuDuringCleanup(player, state);
             return failure(
                     envelope,
                     ActionFailureCode.PRECONDITION_FAILED,
                     "Furnace contents or player inventory drifted while smelting");
         }
-        if (!session.furnaceExpectation.readyToCollect(observed)) {
+        if (!session.furnaceExpectation.readyToCollect(
+                observed, session.furnaceExpectation.furnaceKind())) {
             player.closeContainer();
             if (player.containerMenu != player.inventoryMenu) {
                 return failure(
@@ -2474,7 +3385,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             return BackendResult.running(envelope);
         }
         MenuTransactionPlan collection = P5AFurnaceMenuPlanBuilder.collect(
-                observed, session.furnaceExpectation).orElse(null);
+                observed,
+                session.furnaceExpectation,
+                session.furnaceExpectation.furnaceKind()).orElse(null);
         if (collection == null
                 || collection.orderedSteps().size()
                         > menu.limits().maxClicks()) {
@@ -2498,7 +3411,12 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             RecipeSession session,
             long currentTick) {
         BackendResult result = tickWorldMenuTransaction(
-                envelope, player, state, MenuFamily.FURNACE, currentTick);
+                envelope,
+                player,
+                state,
+                MenuFamily.FURNACE,
+                Optional.of(session.furnaceExpectation.furnaceKind()),
+                currentTick);
         if (result.step() == BackendStep.READY_TO_VERIFY) {
             session.furnaceStage = FurnaceStage.COMPLETED;
         }
@@ -2510,11 +3428,12 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             BotServerPlayer player,
             InteractionState state,
             MenuFamily family,
+            Optional<FurnaceKind> expectedFurnaceKind,
             long currentTick) {
         MenuTransaction transaction = Objects.requireNonNull(
                 state.worldMenuTransaction, "worldMenuTransaction");
         MenuSnapshot before = snapshotMenu(
-                player, family).orElse(null);
+                player, family, expectedFurnaceKind).orElse(null);
         Optional<MenuClick> click = transaction.issueNextClick(
                 currentTick, before);
         if (transaction.state() == MenuTransactionState.FAILED) {
@@ -2542,7 +3461,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 player);
         nativeMenu.broadcastChanges();
         MenuSnapshot after = snapshotMenu(
-                player, family).orElse(null);
+                player, family, expectedFurnaceKind).orElse(null);
         if (!transaction.acknowledge(after, currentTick)) {
             MenuTransactionFailure failure = transaction.failure()
                     .orElseThrow();
@@ -2559,18 +3478,21 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             ActionEnvelope envelope,
             BotServerPlayer player,
             InteractionState state,
+            Optional<FurnaceKind> expectedFurnaceKind,
             long currentTick) {
         MenuTransaction transaction = Objects.requireNonNull(
                 state.worldMenuTransaction, "worldMenuTransaction");
         MenuSnapshot finalSnapshot = snapshotMenu(
-                player, transaction.expectedFamily()).orElse(null);
+                player,
+                transaction.expectedFamily(),
+                expectedFurnaceKind).orElse(null);
         if (!transaction.verify(finalSnapshot, currentTick)) {
             return menuTransactionFailure(
                     envelope, transaction.failure().orElseThrow());
         }
         state.worldMenuLastSnapshot = finalSnapshot;
         player.closeContainer();
-        if (player.containerMenu != player.inventoryMenu
+        if (!nativeInventoryMenuHasEmptyCursor(player)
                 || !transaction.closeConfirmed(currentTick)) {
             return failure(
                     envelope,
@@ -2590,7 +3512,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         if (transaction == null
                 || transaction.state() != MenuTransactionState.COMPLETED
                 || finalSnapshot == null
-                || player.containerMenu != player.inventoryMenu) {
+                || !nativeInventoryMenuHasEmptyCursor(player)) {
             return failure(
                     envelope,
                     ActionFailureCode.PRECONDITION_FAILED,
@@ -2614,6 +3536,149 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 "Verified and closed vanilla menu transaction");
     }
 
+    private BackendResult verifyWorldVillagerTrade(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            InteractionState state,
+            WorldInteractionActionSpec.WorldVillagerTrade trade) {
+        MerchantTradeSession session = state.merchantTradeSession;
+        MenuTransaction transaction = state.worldMenuTransaction;
+        MenuSnapshot finalSnapshot = state.worldMenuLastSnapshot;
+        if (session == null
+                || transaction == null
+                || transaction.state() != MenuTransactionState.COMPLETED
+                || finalSnapshot == null
+                || !exactNativeInventoryMenuHasEmptyCursor(player)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Villager trade was not fully verified and closed");
+        }
+        int expectedUses;
+        try {
+            expectedUses = Math.addExact(session.usesBefore, 1);
+        } catch (ArithmeticException exception) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.UNSAFE_CONTROL_STATE,
+                    "Villager trade offer uses overflowed");
+        }
+        Entity resolved = MinecraftInteractionView.entity(player,
+                        trade.villager())
+                .orElse(null);
+        if (resolved != session.villager
+                || resolved == null
+                || resolved.getClass() != Villager.class
+                || session.villager.getTradingPlayer() != null
+                || merchantOfferAt(session.villager, session.offerIndex)
+                        .orElse(null) != session.offer
+                || session.villager.getVillagerData()
+                        != session.villagerDataBefore
+                || !merchantOfferMatches(
+                        player,
+                        session.villager,
+                        session.offer,
+                        trade,
+                        expectedUses,
+                        session.villagerXpAfter,
+                        false)
+                || !merchantOfferStaticState(player, session.offer)
+                        .filter(session.offerState::equals)
+                        .isPresent()) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Villager offer, price, stock, XP, or level changed during trade");
+        }
+        InventoryContentsSnapshot inventoryAfter =
+                MinecraftInteractionView.inventoryContents(player);
+        if (!VillagerTradeInventoryConservation.matchesCompletedTrade(
+                session.inventoryBefore,
+                inventoryAfter,
+                trade.expectedCost(),
+                trade.expectedResult())) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.UNSAFE_CONTROL_STATE,
+                    "Villager trade inventory totals did not match exactly one offer");
+        }
+        if (!merchantTradeInventoryLayoutMatches(
+                player, session, trade, true)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.UNSAFE_CONTROL_STATE,
+                    "Villager trade source or unique result slot drifted after close");
+        }
+        return success(
+                envelope,
+                List.of(
+                        evidence("merchant.entity_id",
+                                session.villager.getUUID().toString()),
+                        evidence("merchant.offer_index", Integer.toString(
+                                session.offerIndex)),
+                        evidence("merchant.villager_level", Integer.toString(
+                                trade.expectedVillagerLevel())),
+                        evidence("merchant.xp_before", Integer.toString(
+                                session.villagerXpBefore)),
+                        evidence("merchant.xp_after", Integer.toString(
+                                session.villagerXpAfter)),
+                        evidence("merchant.uses_before", Integer.toString(
+                                session.usesBefore)),
+                        evidence("merchant.uses_after", Integer.toString(
+                                expectedUses)),
+                        evidence("menu.family", MenuFamily.MERCHANT.stableId()),
+                        evidence("menu.container_id", Integer.toString(
+                                finalSnapshot.containerId())),
+                        evidence("menu.clicks", Integer.toString(
+                                transaction.confirmedClicks())),
+                        evidence("menu.closed", "true")),
+                "Verified exactly one vanilla villager trade");
+    }
+
+    /**
+     * 总量守恒仍不足以证明外部代码没有在菜单外重排库存。因此对完成/取消两种落点均重放
+     * 41 槽 native inventory 基线：完成时只有 source 和唯一 output 可以变化。
+     */
+    private static boolean merchantTradeInventoryLayoutMatches(
+            BotServerPlayer player,
+            MerchantTradeSession session,
+            WorldInteractionActionSpec.WorldVillagerTrade trade,
+            boolean completed) {
+        try {
+            InventoryMenuSnapshot after =
+                    MinecraftActionSnapshot.inventoryMenu(player);
+            InventoryMenuSnapshot before = session.inventoryMenuBefore;
+            if (after.containerId() != before.containerId()
+                    || after.selectedHotbar() != before.selectedHotbar()
+                    || !after.cursor().isEmpty()) {
+                return false;
+            }
+            for (int inventorySlot = 0;
+                    inventorySlot < after.inventorySlots().size();
+                    inventorySlot++) {
+                ItemStackFingerprint expected = before.itemAt(inventorySlot);
+                if (completed
+                        && inventorySlot == trade.sourceInventorySlot()) {
+                    expected = new ItemStackFingerprint(
+                            trade.expectedSource().itemId(),
+                            trade.expectedSource().count()
+                                    - trade.expectedCost().count(),
+                            trade.expectedSource().damage(),
+                            trade.expectedSource().componentsDigest());
+                } else if (completed
+                        && inventorySlot == trade.outputInventorySlot()) {
+                    expected = trade.expectedResult();
+                }
+                if (!after.itemAt(inventorySlot).equals(expected)) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (RuntimeException exception) {
+            return false;
+        }
+    }
+
     private BackendResult verifyWorldMenuRecipe(
             ActionEnvelope envelope,
             BotServerPlayer player,
@@ -2627,9 +3692,10 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 || transaction == null
                 || transaction.state() != MenuTransactionState.COMPLETED
                 || finalSnapshot == null
-                || player.containerMenu != player.inventoryMenu
+                || !nativeInventoryMenuHasEmptyCursor(player)
                 || menu.recipe().isFurnace()
-                        && session.furnaceStage != FurnaceStage.COMPLETED) {
+                        && session.furnaceStage != FurnaceStage.COMPLETED
+                || !recipeWorkstationFingerprintStillMatches(player, menu)) {
             return failure(
                     envelope,
                     ActionFailureCode.PRECONDITION_FAILED,
@@ -2654,29 +3720,66 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     ActionFailureCode.UNSAFE_CONTROL_STATE,
                     "World recipe player inventory delta did not match its whitelist contract");
         }
+        List<ActionEvidence> evidence = new ArrayList<>(8);
+        evidence.add(evidence("recipe.id", menu.recipe().stableId()));
+        evidence.add(evidence("recipe.batches", Integer.toString(
+                session.batches)));
+        evidence.add(evidence("menu.family", menu.recipe().family()
+                .stableId()));
+        evidence.add(evidence("menu.container_id", Integer.toString(
+                finalSnapshot.containerId())));
+        evidence.add(evidence("menu.clicks", Integer.toString(
+                transaction.confirmedClicks())));
+        evidence.add(evidence("menu.closed", "true"));
+        if (menu.recipe().isFurnace()) {
+            evidence.add(evidence("furnace.kind", menu.recipe()
+                    .furnaceKind().stableId()));
+            evidence.add(evidence("furnace.recipe_type", menu.recipe()
+                    .furnaceKind().recipeTypeStableId()));
+        }
         return success(
                 envelope,
-                List.of(
-                        evidence("recipe.id", menu.recipe().stableId()),
-                        evidence("recipe.batches", Integer.toString(
-                                session.batches)),
-                        evidence("menu.family", menu.recipe().family()
-                                .stableId()),
-                        evidence("menu.container_id", Integer.toString(
-                                finalSnapshot.containerId())),
-                        evidence("menu.clicks", Integer.toString(
-                                transaction.confirmedClicks())),
-                        evidence("menu.closed", "true")),
+                List.copyOf(evidence),
                 "Verified and closed vanilla recipe menu transaction");
     }
 
     private static Optional<MenuSnapshot> snapshotMenu(
             BotServerPlayer player, MenuFamily expectedFamily) {
+        return snapshotMenu(player, expectedFamily, Optional.empty());
+    }
+
+    /**
+     * 炉型动作必须在每次打开、点击前后和关闭前都重新验证精确 Mojang menu class；39 槽形状
+     * 只是第二道形状检查，不能代替这个类身份合同。
+     */
+    private static Optional<MenuSnapshot> snapshotFurnaceMenu(
+            BotServerPlayer player, FurnaceKind expectedKind) {
+        return snapshotMenu(
+                player,
+                MenuFamily.FURNACE,
+                Optional.of(Objects.requireNonNull(
+                        expectedKind, "expectedKind")));
+    }
+
+    private static Optional<MenuSnapshot> snapshotMenu(
+            BotServerPlayer player,
+            MenuFamily expectedFamily,
+            Optional<FurnaceKind> expectedFurnaceKind) {
         Objects.requireNonNull(player, "player");
         Objects.requireNonNull(expectedFamily, "expectedFamily");
+        Objects.requireNonNull(expectedFurnaceKind, "expectedFurnaceKind");
         AbstractContainerMenu menu = player.containerMenu;
         MenuFamily observed = menuFamily(player, menu).orElse(null);
+        FurnaceKind observedFurnaceKind = expectedFamily
+                == MenuFamily.FURNACE
+                ? exactVanillaFurnaceKind(menu.getClass()).orElse(null)
+                : null;
+        boolean furnaceKindMatches = expectedFamily == MenuFamily.FURNACE
+                ? expectedFurnaceKind.filter(
+                        expected -> expected == observedFurnaceKind).isPresent()
+                : expectedFurnaceKind.isEmpty();
         if (observed != expectedFamily
+                || !furnaceKindMatches
                 || !menu.stillValid(player)
                 || menu.slots.size() != expectedFamily.slotCount()) {
             return Optional.empty();
@@ -2701,21 +3804,206 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             return MenuFamily.resolveExact(
                     MenuFamily.INVENTORY_2X2.stableId(), menu.slots.size());
         }
-        if (menu instanceof CraftingMenu) {
+        if (menu.getClass() == CraftingMenu.class) {
             return MenuFamily.resolveExact(
                     MenuFamily.CRAFTING_3X3.stableId(), menu.slots.size());
         }
-        if (menu instanceof AbstractFurnaceMenu) {
+        if (exactVanillaFurnaceKind(menu.getClass()).isPresent()) {
             return MenuFamily.resolveExact(
                     MenuFamily.FURNACE.stableId(), menu.slots.size());
         }
-        if (menu instanceof ChestMenu chest
-                && chest.getRowCount() == 3
-                && chest.getContainer().getContainerSize() == 27) {
+        if (menu.getClass() == MerchantMenu.class) {
+            return MenuFamily.resolveExact(
+                    MenuFamily.MERCHANT.stableId(), menu.slots.size());
+        }
+        /*
+         * 只信任 Mojang 的精确 ChestMenu 类；模组即使复用相同槽位数也不能靠子类伪装成
+         * 原版普通箱子和木桶本身都走这个原版类。潜影盒是另一种原版精确 menu，见下方。
+         */
+        if (menu.getClass() == ChestMenu.class) {
+            ChestMenu chest = (ChestMenu) menu;
+            if (chest.getRowCount() == 3
+                    && chest.getContainer().getContainerSize() == 27) {
+                return MenuFamily.resolveExact(
+                        MenuFamily.CHEST_3X9.stableId(), menu.slots.size());
+            }
+            if (chest.getRowCount() == 6
+                    && chest.getContainer().getContainerSize() == 54) {
+                return MenuFamily.resolveExact(
+                        MenuFamily.CHEST_6X9.stableId(), menu.slots.size());
+            }
+        }
+        // 潜影盒在原版中使用独立的 ShulkerBoxMenu；不能因类不同而误当作模组 menu。
+        if (menu.getClass() == ShulkerBoxMenu.class) {
             return MenuFamily.resolveExact(
                     MenuFamily.CHEST_3X9.stableId(), menu.slots.size());
         }
         return Optional.empty();
+    }
+
+    /**
+     * 绝不以 {@code AbstractFurnaceMenu} 或 {@code instanceof} 接受炉子：模组子类和错误炉型
+     * 即使具有同样的槽位布局，也只能返回空并由调用方安全关闭。
+     */
+    static Optional<FurnaceKind> exactVanillaFurnaceKind(
+            Class<?> menuClass) {
+        Objects.requireNonNull(menuClass, "menuClass");
+        if (menuClass == FurnaceMenu.class) {
+            return Optional.of(FurnaceKind.FURNACE);
+        }
+        if (menuClass == BlastFurnaceMenu.class) {
+            return Optional.of(FurnaceKind.BLAST_FURNACE);
+        }
+        if (menuClass == SmokerMenu.class) {
+            return Optional.of(FurnaceKind.SMOKER);
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * 将每种封闭炉型映射到它唯一允许查询的原版 {@link RecipeType}。调用方不能以三者共享
+     * 39 槽布局为由回退到 {@code SMELTING}。
+     */
+    static RecipeType<?> exactVanillaFurnaceRecipeType(
+            FurnaceKind furnaceKind) {
+        Objects.requireNonNull(furnaceKind, "furnaceKind");
+        return switch (furnaceKind) {
+            case FURNACE -> RecipeType.SMELTING;
+            case BLAST_FURNACE -> RecipeType.BLASTING;
+            case SMOKER -> RecipeType.SMOKING;
+        };
+    }
+
+    /**
+     * P5B 的 Action 边界也重验 opener 指纹，不能只依赖上层 skill handler：模组方块可以
+     * 主动创建 Mojang 的 {@link ChestMenu}，而仅检查 menu 的精确 Java 类仍会误放行。
+     * 指纹随后仍由 {@link #validateBlockInteraction} 与世界当前状态逐字段比较。
+     */
+    static boolean isAllowedVanillaContainerTarget(
+            BlockTargetFingerprint target, MenuFamily family) {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(family, "family");
+        Map<String, String> properties = target.state().properties();
+        String blockId = target.state().blockId().value();
+        return switch (family) {
+            case CHEST_3X9 -> isSingleChestTarget(blockId, properties)
+                    || isBarrelTarget(blockId, properties)
+                    || isVanillaShulkerTarget(blockId, properties);
+            case CHEST_6X9 -> isDoubleChestTarget(blockId, properties);
+            case INVENTORY_2X2, CRAFTING_3X3, FURNACE, MERCHANT -> false;
+        };
+    }
+
+    /**
+     * 世界配方不能只根据菜单槽数判断类型：模组方块可以打开同形状菜单。三种原版炉型共享
+     * 39 槽布局，却各自绑定不同方块、精确 menu class 与 RecipeType；任何一项不匹配都由
+     * 后续打开/轮询快照继续拒绝，不能退回 {@code AbstractFurnaceMenu} 的宽松父类判断。
+     */
+    static boolean isAllowedVanillaWorkstationTarget(
+            BlockTargetFingerprint target, P5ARecipe recipe) {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(recipe, "recipe");
+        Map<String, String> properties = target.state().properties();
+        String blockId = target.state().blockId().value();
+        return switch (recipe.family()) {
+            case CRAFTING_3X3 -> isCraftingTableTarget(blockId, properties);
+            case FURNACE -> recipe.furnaceKind().matchesWorkstationState(
+                    target.state());
+            case INVENTORY_2X2, MERCHANT, CHEST_3X9, CHEST_6X9 -> false;
+        };
+    }
+
+    private static boolean isCraftingTableTarget(
+            String blockId, Map<String, String> properties) {
+        return "minecraft:crafting_table".equals(blockId)
+                && properties.isEmpty();
+    }
+
+    /**
+     * 配方 action 成功前仍要复核它最初绑定的工作站。每种已绑定炉型的 {@code lit} 都是
+     * 本 action 合法改变的原版运行态，其他坐标、维度、方块 id 和状态字段必须保持精确相同。
+     */
+    private static boolean recipeWorkstationFingerprintStillMatches(
+            BotServerPlayer player,
+            WorldInteractionActionSpec.WorldMenuRecipe menu) {
+        if (menu.recipe().family() == MenuFamily.INVENTORY_2X2) {
+            return true;
+        }
+        try {
+            BlockTargetFingerprint expected = menu.opener()
+                    .orElseThrow()
+                    .target();
+            BlockPos position = MinecraftInteractionView.position(
+                    expected.position());
+            if (!expected.dimension().value().equals(player.serverLevel()
+                    .dimension().location().toString())
+                    || !player.serverLevel().isLoaded(position)) {
+                return false;
+            }
+            BlockTargetFingerprint actual = MinecraftInteractionView
+                    .blockFingerprint(player, position);
+            if (!expected.dimension().equals(actual.dimension())
+                    || !expected.position().equals(actual.position())
+                    || !expected.state().blockId().equals(
+                            actual.state().blockId())) {
+                return false;
+            }
+            if (menu.recipe().family() != MenuFamily.FURNACE) {
+                return expected.state().equals(actual.state());
+            }
+            Map<String, String> expectedProperties = new LinkedHashMap<>(
+                    expected.state().properties());
+            Map<String, String> actualProperties = new LinkedHashMap<>(
+                    actual.state().properties());
+            String expectedLit = expectedProperties.remove("lit");
+            String actualLit = actualProperties.remove("lit");
+            return expectedLit != null
+                    && actualLit != null
+                    && BOOLEAN_PROPERTY_VALUES.contains(expectedLit)
+                    && BOOLEAN_PROPERTY_VALUES.contains(actualLit)
+                    && expectedProperties.equals(actualProperties);
+        } catch (RuntimeException exception) {
+            return false;
+        }
+    }
+
+    private static boolean isSingleChestTarget(
+            String blockId, Map<String, String> properties) {
+        return isChestTarget(blockId, properties)
+                && "single".equals(properties.get("type"));
+    }
+
+    private static boolean isDoubleChestTarget(
+            String blockId, Map<String, String> properties) {
+        if (!isChestTarget(blockId, properties)) {
+            return false;
+        }
+        String type = properties.get("type");
+        return "left".equals(type) || "right".equals(type);
+    }
+
+    private static boolean isChestTarget(
+            String blockId, Map<String, String> properties) {
+        return "minecraft:chest".equals(blockId)
+                && properties.keySet().equals(CHEST_PROPERTY_NAMES)
+                && HORIZONTAL_DIRECTION_NAMES.contains(properties.get("facing"))
+                && BOOLEAN_PROPERTY_VALUES.contains(
+                        properties.get("waterlogged"));
+    }
+
+    private static boolean isBarrelTarget(
+            String blockId, Map<String, String> properties) {
+        return "minecraft:barrel".equals(blockId)
+                && properties.keySet().equals(BARREL_PROPERTY_NAMES)
+                && VANILLA_DIRECTION_NAMES.contains(properties.get("facing"))
+                && BOOLEAN_PROPERTY_VALUES.contains(properties.get("open"));
+    }
+
+    private static boolean isVanillaShulkerTarget(
+            String blockId, Map<String, String> properties) {
+        return VANILLA_SHULKER_IDS.contains(blockId)
+                && properties.keySet().equals(SHULKER_PROPERTY_NAMES)
+                && VANILLA_DIRECTION_NAMES.contains(properties.get("facing"));
     }
 
     private static boolean menuClickAllowed(
@@ -2780,13 +4068,102 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             case "minecraft:furnace" -> Items.FURNACE;
             case "minecraft:stone_pickaxe" -> Items.STONE_PICKAXE;
             case "minecraft:raw_iron" -> Items.RAW_IRON;
+            case "minecraft:raw_chicken" -> Items.RAW_CHICKEN;
             case "minecraft:coal" -> Items.COAL;
             case "minecraft:iron_ingot" -> Items.IRON_INGOT;
+            case "minecraft:cooked_chicken" -> Items.COOKED_CHICKEN;
             case "minecraft:iron_pickaxe" -> Items.IRON_PICKAXE;
             default -> throw new IllegalStateException(
                     "P5A recipe exposes an unbound vanilla material: "
                             + material.value());
         };
+    }
+
+    /**
+     * 在把任何物品投入炉子前，用当前服务端的 {@link RecipeType} 查询精确炉型合同。即使某个
+     * 数据包 recipe 恰好产生同名物品，只要它不属于配方声明的 smelting/blasting/smoking 类型，
+     * 也会被拒绝；反过来，正确类型但输出组件或数量漂移同样失败关闭。
+     */
+    private static boolean matchesExactFurnaceRecipe(
+            BotServerPlayer player,
+            P5ARecipe recipe,
+            Map<ResourceId, ItemStackFingerprint> prototypes) {
+        Objects.requireNonNull(player, "player");
+        Objects.requireNonNull(recipe, "recipe");
+        Objects.requireNonNull(prototypes, "prototypes");
+        if (!recipe.isFurnace()) {
+            return false;
+        }
+        try {
+            RecipeType<?> expectedRecipeType =
+                    exactVanillaFurnaceRecipeType(recipe.furnaceKind());
+            SingleRecipeInput input = new SingleRecipeInput(
+                    new ItemStack(
+                            vanillaRecipeItem(recipe.furnaceInput()),
+                            recipe.furnaceInputCount()));
+            Optional<ItemStack> output = switch (recipe.furnaceKind()) {
+                case FURNACE -> {
+                    if (expectedRecipeType != RecipeType.SMELTING) {
+                        yield Optional.empty();
+                    }
+                    yield player.serverLevel().getRecipeManager()
+                            .getRecipeFor(
+                                    RecipeType.SMELTING,
+                                    input,
+                                    player.serverLevel())
+                            .map(holder -> holder.value().assemble(
+                                    input,
+                                    player.serverLevel().registryAccess()));
+                }
+                case BLAST_FURNACE -> {
+                    if (expectedRecipeType != RecipeType.BLASTING) {
+                        yield Optional.empty();
+                    }
+                    yield player.serverLevel().getRecipeManager()
+                            .getRecipeFor(
+                                    RecipeType.BLASTING,
+                                    input,
+                                    player.serverLevel())
+                            .map(holder -> holder.value().assemble(
+                                    input,
+                                    player.serverLevel().registryAccess()));
+                }
+                case SMOKER -> {
+                    if (expectedRecipeType != RecipeType.SMOKING) {
+                        yield Optional.empty();
+                    }
+                    yield player.serverLevel().getRecipeManager()
+                            .getRecipeFor(
+                                    RecipeType.SMOKING,
+                                    input,
+                                    player.serverLevel())
+                            .map(holder -> holder.value().assemble(
+                                    input,
+                                    player.serverLevel().registryAccess()));
+                }
+            };
+            ItemStack assembled = output.orElse(ItemStack.EMPTY);
+            if (assembled.isEmpty()
+                    || !assembled.isItemEnabled(
+                            player.serverLevel().enabledFeatures())) {
+                return false;
+            }
+            ItemStackFingerprint expectedPrototype = prototypes.get(
+                    recipe.output());
+            if (expectedPrototype == null
+                    || expectedPrototype.isEmpty()) {
+                return false;
+            }
+            ItemStackFingerprint expected = new ItemStackFingerprint(
+                    expectedPrototype.itemId(),
+                    recipe.furnaceOutputPerInput(),
+                    expectedPrototype.damage(),
+                    expectedPrototype.componentsDigest());
+            return MinecraftInteractionView.itemFingerprint(
+                    player, assembled).equals(expected);
+        } catch (RuntimeException exception) {
+            return false;
+        }
     }
 
     /**
@@ -2835,8 +4212,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         int width = switch (postInput.family()) {
             case INVENTORY_2X2 -> 2;
             case CRAFTING_3X3 -> 3;
-            case FURNACE,
-                    CHEST_3X9 -> throw new IllegalArgumentException(
+            case FURNACE, MERCHANT,
+                    CHEST_3X9,
+                    CHEST_6X9 -> throw new IllegalArgumentException(
                             "only native crafting menus have a crafting preview");
         };
         List<ItemStack> inputs = new ArrayList<>(width * width);
@@ -3132,6 +4510,11 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     ActionFailureCode.PRECONDITION_FAILED,
                     "Break tool changed while mining");
         }
+        BackendResult neighbors = validateBreakNeighborPreconditions(
+                envelope, player, breakBlock);
+        if (neighbors.step() != BackendStep.ACCEPTED) {
+            return neighbors;
+        }
         MinecraftInteractionView.BlockReachEvidence reach =
                 MinecraftInteractionView.blockReachEvidence(
                         player, breakBlock.target());
@@ -3151,6 +4534,15 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         long elapsed = currentTick - state.startedTick + 1L;
         if (progressPerTick > 0.0F
                 && progressPerTick * (double) elapsed >= 1.0D) {
+            /* Re-read the complete source/hand/neighbour fence in the same call
+             * that will emit STOP_DESTROY_BLOCK. This is intentionally stronger
+             * than the per-tick check above: a vanilla structural block must not
+             * cross the last pre-dispatch boundary on a stale observation. */
+            BackendResult beforeStop = validateBreakBlock(envelope, player,
+                    breakBlock);
+            if (beforeStop.step() != BackendStep.ACCEPTED) {
+                return beforeStop;
+            }
             BreakDropProvenanceCapture.Scope capture;
             try {
                 capture = BreakDropProvenanceCapture.arm(player,
@@ -3170,7 +4562,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             } finally {
                 capture.close();
             }
-            state.breakDropProvenance = capture.provenance();
+            state.breakDropProvenances = capture.provenances();
             return BackendResult.readyToVerify(envelope);
         }
         return BackendResult.running(envelope);
@@ -3182,6 +4574,12 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             InteractionState state,
             WorldInteractionActionSpec.UseItem useItem,
             long currentTick) {
+        if (state.strictUsePreflightRejected) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Strict item-use preflight changed before native consumption");
+        }
         if (!state.startedUsing
                 && useItem.mode()
                         != WorldInteractionActionSpec.ItemUseMode
@@ -3204,6 +4602,14 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     ActionFailureCode.PRECONDITION_FAILED,
                     "Active item use no longer matches the declared hand and stack");
         }
+        if (player.isUsingItem() && useItem.strictPreconditions().isPresent()) {
+            BackendResult strict = validateUseItemPreconditions(envelope,
+                    player, useItem.strictPreconditions().orElseThrow());
+            if (strict.step() != BackendStep.ACCEPTED) {
+                interruptStrictUse(player, state);
+                return strict;
+            }
+        }
         return switch (useItem.mode()) {
             case INSTANT -> BackendResult.readyToVerify(envelope);
             case FINISH_NATURALLY -> player.isUsingItem()
@@ -3219,6 +4625,26 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 yield BackendResult.readyToVerify(envelope);
             }
         };
+    }
+
+    /**
+     * A strict-use drift is discovered while vanilla is still holding the item.
+     * Release through the normal packet path and stop the native use immediately;
+     * neither inventory nor effects are edited here. The action runtime will
+     * still perform its ordinary terminal cleanup, for which {@code releaseSent}
+     * suppresses a duplicate packet.
+     */
+    private void interruptStrictUse(BotServerPlayer player,
+            InteractionState state) {
+        if (!player.isUsingItem()) {
+            return;
+        }
+        try {
+            dispatchReleaseUse(player);
+            state.releaseSent = true;
+        } finally {
+            player.stopUsingItem();
+        }
     }
 
     private BackendResult tickPickup(
@@ -3694,7 +5120,13 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                             ? "Block break was denied by world rules"
                             : "Block target changed before break completion");
         }
-        List<ActionEvidence> evidence = new ArrayList<>(6);
+        BackendResult neighbors = validateBreakNeighborPreconditions(
+                envelope, player, breakBlock);
+        if (neighbors.step() != BackendStep.ACCEPTED) {
+            return neighbors;
+        }
+        List<ActionEvidence> evidence = new ArrayList<>(
+                VERIFY_BREAK_BASE_EVIDENCE_ITEMS + 3);
         evidence.add(evidence(
                 "block.position",
                 position.getX()
@@ -3707,13 +5139,17 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 "inventory.changed",
                 Boolean.toString(!MinecraftInteractionView.inventoryDigest(player)
                         .equals(state.inventoryBefore))));
-        state.breakDropProvenance.ifPresent(drop -> {
-            evidence.add(evidence("block.drop.entity.id",
-                    drop.entityId().toString()));
-            evidence.add(evidence("block.drop.item", drop.itemId()));
-            evidence.add(evidence("block.drop.count",
-                    Integer.toString(drop.count())));
-        });
+        if (state.breakDropProvenances.isPresent()) {
+            Optional<List<ActionEvidence>> receipts = breakDropEvidence(
+                    state.breakDropProvenances.orElseThrow());
+            if (receipts.isEmpty()) {
+                return failure(
+                        envelope,
+                        ActionFailureCode.UNSAFE_CONTROL_STATE,
+                        "Captured block drops exceed the bounded evidence protocol");
+            }
+            evidence.addAll(receipts.orElseThrow());
+        }
         return success(envelope, List.copyOf(evidence),
                 "Verified block break");
     }
@@ -3924,7 +5360,10 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                         .WorldMenuTransfer
                         || state.spec
                                 instanceof WorldInteractionActionSpec
-                                        .WorldMenuRecipe)
+                                        .WorldMenuRecipe
+                        || state.spec
+                                instanceof WorldInteractionActionSpec
+                                        .WorldVillagerTrade)
                 && (state.worldMenuTransaction == null
                         || state.worldMenuTransaction.state()
                                 != MenuTransactionState.COMPLETED)) {
@@ -3953,6 +5392,10 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     || state.spec
                             instanceof WorldInteractionActionSpec.WorldMenuRecipe) {
                 closeWorldMenuDuringCleanup(player, state);
+            } else if (state.spec
+                    instanceof WorldInteractionActionSpec.WorldVillagerTrade
+                            trade) {
+                closeVillagerTradeDuringCleanup(player, state, trade);
             } else if (state.spec
                     instanceof WorldInteractionActionSpec.PlaceBlock) {
                 closeWorldMenuDuringCleanup(player, state);
@@ -4003,9 +5446,147 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         if (player.containerMenu != player.inventoryMenu) {
             player.closeContainer();
         }
-        if (player.containerMenu != player.inventoryMenu) {
+        if (!nativeInventoryMenuHasEmptyCursor(player)) {
             throw new IllegalStateException(
-                    "World menu cleanup could not restore native inventory menu");
+                    "World menu cleanup could not restore native menu with an empty cursor");
+        }
+    }
+
+    /**
+     * 取消不尝试直接把 payment 或 result 写回村民/库存。先让原版关闭 MerchantMenu，再只接受
+     * 两种可证明结算：关闭返还后的完整原样，或最后一次 QUICK_MOVE 已经完成的一笔精确交易。
+     */
+    private static void closeVillagerTradeDuringCleanup(
+            BotServerPlayer player,
+            InteractionState state,
+            WorldInteractionActionSpec.WorldVillagerTrade trade) {
+        closeWorldMenuDuringCleanup(player, state);
+        if (!exactNativeInventoryMenuHasEmptyCursor(player)) {
+            throw new IllegalStateException(
+                    "Villager trade cleanup did not restore the exact native inventory menu");
+        }
+        MerchantTradeSession session = state.merchantTradeSession;
+        if (session == null) {
+            // interaction packet may have opened an unknown menu and failed before binding one.
+            // The dispatch baseline still has to prove that this path made no inventory/offer change.
+            InventoryMenuSnapshot before = state.villagerTradeInventoryBefore;
+            Entity resolved = MinecraftInteractionView.entity(player,
+                            trade.villager())
+                    .orElse(null);
+            Villager villager = resolved != null
+                    && resolved.getClass() == Villager.class
+                            ? (Villager) resolved : null;
+            MerchantOffer offer = villager == null ? null
+                    : merchantOfferAt(villager, trade.offerIndex())
+                            .orElse(null);
+            boolean offerMatches = offer != null && merchantOfferMatches(
+                    player,
+                    villager,
+                    offer,
+                    trade,
+                    trade.expectedOfferUses(),
+                    trade.expectedVillagerXp(),
+                    true);
+            boolean villagerDataMatches = state.villagerTradeVillagerDataBefore
+                    == null || villager != null && villager.getVillagerData()
+                            == state.villagerTradeVillagerDataBefore;
+            boolean offerStateMatches = state.villagerTradeOfferStateBefore
+                    == null || offer != null && merchantOfferStaticState(
+                            player, offer)
+                    .filter(state.villagerTradeOfferStateBefore::equals)
+                    .isPresent();
+            if (before == null
+                    || villager == null
+                    || villager.getTradingPlayer() != null
+                    || !MinecraftActionSnapshot.inventoryMenu(player)
+                            .layoutEqualsIgnoringState(before)
+                    || !offerMatches
+                    || !villagerDataMatches
+                    || !offerStateMatches) {
+                throw new IllegalStateException(
+                        "Unbound villager trade cleanup cannot prove unchanged vanilla state");
+            }
+            return;
+        }
+        Entity resolved = MinecraftInteractionView.entity(player,
+                        trade.villager())
+                .orElse(null);
+        if (resolved != session.villager
+                || resolved == null
+                || resolved.getClass() != Villager.class
+                || session.villager.getTradingPlayer() != null
+                || merchantOfferAt(session.villager, session.offerIndex)
+                        .orElse(null) != session.offer) {
+            throw new IllegalStateException(
+                    "Villager trade cleanup lost its exact entity or offer identity");
+        }
+        InventoryContentsSnapshot after =
+                MinecraftInteractionView.inventoryContents(player);
+        VillagerTradeInventoryConservation.CancellationSettlement settlement =
+                VillagerTradeInventoryConservation.cancellationSettlement(
+                        session.inventoryBefore,
+                        after,
+                        trade.expectedCost(),
+                        trade.expectedResult());
+        boolean completed = settlement
+                == VillagerTradeInventoryConservation.CancellationSettlement
+                        .COMPLETED;
+        if (settlement
+                == VillagerTradeInventoryConservation.CancellationSettlement
+                        .UNSAFE) {
+            throw new IllegalStateException(
+                    "Villager trade cancellation did not settle to a proven vanilla boundary");
+        }
+        int expectedUses;
+        int expectedVillagerXp;
+        try {
+            expectedUses = Math.addExact(
+                    session.usesBefore, completed ? 1 : 0);
+            expectedVillagerXp = completed
+                    ? session.villagerXpAfter
+                    : session.villagerXpBefore;
+        } catch (ArithmeticException exception) {
+            throw new IllegalStateException(
+                    "Villager trade cleanup offer uses overflowed", exception);
+        }
+        if (!merchantOfferMatches(
+                        player,
+                        session.villager,
+                        session.offer,
+                        trade,
+                        expectedUses,
+                        expectedVillagerXp,
+                        expectedUses < trade.expectedOfferMaxUses())
+                || session.villager.getVillagerData()
+                        != session.villagerDataBefore
+                || !merchantOfferStaticState(player, session.offer)
+                        .filter(session.offerState::equals)
+                        .isPresent()
+                || !merchantTradeInventoryLayoutMatches(
+                        player, session, trade, completed)) {
+            throw new IllegalStateException(
+                    "Villager trade cancellation observed offer or inventory drift");
+        }
+    }
+
+    private static boolean nativeInventoryMenuHasEmptyCursor(
+            BotServerPlayer player) {
+        return player.containerMenu == player.inventoryMenu
+                && player.inventoryMenu.getCarried().isEmpty();
+    }
+
+    /** P5B never accepts a custom inventory menu as the native inventory settlement surface. */
+    private static boolean exactNativeInventoryMenuHasEmptyCursor(
+            BotServerPlayer player) {
+        try {
+            return player.containerMenu == player.inventoryMenu
+                    && player.inventoryMenu.getClass() == InventoryMenu.class
+                    && player.inventoryMenu.stillValid(player)
+                    && player.inventoryMenu.slots.size()
+                            == MenuFamily.INVENTORY_2X2.slotCount()
+                    && player.inventoryMenu.getCarried().isEmpty();
+        } catch (RuntimeException exception) {
+            return false;
         }
     }
 
@@ -4454,6 +6035,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         instanceof WorldInteractionActionSpec
                                 .WorldMenuRecipe
                 || state.spec
+                        instanceof WorldInteractionActionSpec
+                                .WorldVillagerTrade
+                || state.spec
                         instanceof WorldInteractionActionSpec.PlaceBlock
                 || state.spec
                         instanceof WorldInteractionActionSpec
@@ -4498,6 +6082,35 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         return packetSequence++;
     }
 
+    /**
+     * Operations whose source, hand, menu or structural fences may not cross the
+     * validate-to-start boundary. BreakBlock is included because START_DESTROY_BLOCK
+     * may synchronously destroy vanilla instabreak blocks.
+     */
+    static boolean requiresStartRevalidation(
+            WorldInteractionActionSpec spec) {
+        return spec instanceof WorldInteractionActionSpec
+                        .SwapInventoryHotbar
+                || spec instanceof WorldInteractionActionSpec
+                        .InventoryMenuSwap
+                || spec instanceof WorldInteractionActionSpec
+                        .WorldMenuTransaction
+                || spec instanceof WorldInteractionActionSpec
+                        .WorldMenuTransfer
+                || spec instanceof WorldInteractionActionSpec
+                        .WorldMenuRecipe
+                || spec instanceof WorldInteractionActionSpec
+                        .WorldVillagerTrade
+                || spec instanceof WorldInteractionActionSpec.PlaceBlock
+                || spec instanceof WorldInteractionActionSpec.BreakBlock
+                || spec instanceof WorldInteractionActionSpec.AttackEntity
+                || spec instanceof WorldInteractionActionSpec
+                        .InteractEntity
+                || spec instanceof WorldInteractionActionSpec.SelectHotbar
+                || spec instanceof WorldInteractionActionSpec.UseItem useItem
+                        && useItem.strictPreconditions().isPresent();
+    }
+
     private static boolean requiresTicks(
             WorldInteractionActionSpec spec) {
         return switch (spec) {
@@ -4510,6 +6123,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             case WorldInteractionActionSpec.WorldMenuTransfer ignored ->
                     true;
             case WorldInteractionActionSpec.WorldMenuRecipe ignored -> true;
+            case WorldInteractionActionSpec.WorldVillagerTrade ignored ->
+                    true;
             case WorldInteractionActionSpec.UseItem useItem ->
                     useItem.mode()
                             != WorldInteractionActionSpec.ItemUseMode
@@ -4547,6 +6162,55 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
 
     private static ActionEvidence evidence(String key, String value) {
         return new ActionEvidence(key, value);
+    }
+
+    /**
+     * The global action outcome allows only sixteen evidence items.  A singleton
+     * remains in the old three-field protocol for the existing P5A resource
+     * collector; a multi-drop break instead uses exactly one compact receipt per
+     * entity.  Invalid or over-budget lists return empty as a whole, never a
+     * prefix that could make a partial harvest look complete.
+     */
+    static Optional<List<ActionEvidence>> breakDropEvidence(
+            List<BreakDropProvenanceCapture.Provenance> drops) {
+        Objects.requireNonNull(drops, "drops");
+        if (drops.isEmpty()
+                || drops.size() > ActionOutcome.MAX_EVIDENCE_ITEMS
+                        - VERIFY_BREAK_BASE_EVIDENCE_ITEMS) {
+            return Optional.empty();
+        }
+        try {
+            Set<UUID> entityIds = new HashSet<>(drops.size());
+            for (BreakDropProvenanceCapture.Provenance drop : drops) {
+                if (drop == null || !entityIds.add(drop.entityId())) {
+                    return Optional.empty();
+                }
+            }
+            if (drops.size() == 1) {
+                BreakDropProvenanceCapture.Provenance drop = drops.getFirst();
+                return Optional.of(List.of(
+                        evidence("block.drop.entity.id",
+                                drop.entityId().toString()),
+                        evidence("block.drop.item", drop.itemId()),
+                        evidence("block.drop.count",
+                                Integer.toString(drop.count()))));
+            }
+            List<ActionEvidence> receipts = new ArrayList<>(drops.size());
+            for (BreakDropProvenanceCapture.Provenance drop : drops) {
+                String value = BreakDropProvenanceCapture
+                        .compactReceiptValue(drop).orElse(null);
+                if (value == null) {
+                    return Optional.empty();
+                }
+                receipts.add(evidence(
+                        BreakDropProvenanceCapture
+                                .COMPACT_RECEIPT_EVIDENCE_KEY,
+                        value));
+            }
+            return Optional.of(List.copyOf(receipts));
+        } catch (IllegalArgumentException exception) {
+            return Optional.empty();
+        }
     }
 
     private static List<ActionEvidence> blockReachEvidence(
@@ -4674,6 +6338,58 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         }
     }
 
+    /**
+     * 服务端线程内单次交易的短生命周期锚点。它保存的都是同一 action 内重新核验的原版对象
+     * 身份和不可变快照；不会跨 action、generation 或清理边界复用。
+     */
+    private static final class MerchantTradeSession {
+        private final Villager villager;
+        private final MerchantMenu menu;
+        private final MerchantOffer offer;
+        private final int offerIndex;
+        private final int usesBefore;
+        private final VillagerData villagerDataBefore;
+        private final MerchantOfferState offerState;
+        private final int villagerXpBefore;
+        private final int villagerXpAfter;
+        private final InventoryContentsSnapshot inventoryBefore;
+        private final InventoryMenuSnapshot inventoryMenuBefore;
+
+        private MerchantTradeSession(
+                Villager villager,
+                MerchantMenu menu,
+                MerchantOffer offer,
+                int offerIndex,
+                int usesBefore,
+                VillagerData villagerDataBefore,
+                MerchantOfferState offerState,
+                int villagerXpBefore,
+                int villagerXpAfter,
+                InventoryContentsSnapshot inventoryBefore,
+                InventoryMenuSnapshot inventoryMenuBefore) {
+            this.villager = Objects.requireNonNull(villager, "villager");
+            this.menu = Objects.requireNonNull(menu, "menu");
+            this.offer = Objects.requireNonNull(offer, "offer");
+            if (offerIndex < 0 || usesBefore < 0
+                    || villagerXpBefore < 0 || villagerXpAfter < 0) {
+                throw new IllegalArgumentException(
+                        "merchant session offer fields are invalid");
+            }
+            this.offerIndex = offerIndex;
+            this.usesBefore = usesBefore;
+            this.villagerDataBefore = Objects.requireNonNull(
+                    villagerDataBefore, "villagerDataBefore");
+            this.offerState = Objects.requireNonNull(
+                    offerState, "offerState");
+            this.villagerXpBefore = villagerXpBefore;
+            this.villagerXpAfter = villagerXpAfter;
+            this.inventoryBefore = Objects.requireNonNull(
+                    inventoryBefore, "inventoryBefore");
+            this.inventoryMenuBefore = Objects.requireNonNull(
+                    inventoryMenuBefore, "inventoryMenuBefore");
+        }
+    }
+
     private static final class InteractionState {
         private final UUID botId;
         private final long botGeneration;
@@ -4694,13 +6410,18 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         private boolean sideEffectDispatched;
         private boolean startedUsing;
         private boolean releaseSent;
+        private boolean strictUsePreflightRejected;
         private boolean breakStopSent;
-        private Optional<BreakDropProvenanceCapture.Provenance>
-                breakDropProvenance = Optional.empty();
+        private Optional<List<BreakDropProvenanceCapture.Provenance>>
+                breakDropProvenances = Optional.empty();
         private InventoryMenuTransaction menuTransaction;
         private MenuTransaction worldMenuTransaction;
         private MenuSnapshot worldMenuLastSnapshot;
         private RecipeSession recipeSession;
+        private MerchantTradeSession merchantTradeSession;
+        private InventoryMenuSnapshot villagerTradeInventoryBefore;
+        private VillagerData villagerTradeVillagerDataBefore;
+        private MerchantOfferState villagerTradeOfferStateBefore;
         private InventoryMenuSnapshot menuLastSnapshot;
         private int menuForwardInFlight = -1;
         private final InventoryMenuCleanupSession
@@ -4786,6 +6507,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         MinecraftInteractionView.hand(menu.hand());
                 case WorldInteractionActionSpec.WorldMenuRecipe menu ->
                         MinecraftInteractionView.hand(menu.hand());
+                case WorldInteractionActionSpec.WorldVillagerTrade ignored ->
+                        InteractionHand.MAIN_HAND;
                 case WorldInteractionActionSpec.InteractEntity
                         interactEntity ->
                         MinecraftInteractionView.hand(
@@ -4837,6 +6560,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                                 opener.target()
                                                         .position())))
                                 .orElse(null);
+                case WorldInteractionActionSpec.WorldVillagerTrade ignored ->
+                        null;
                 default -> null;
             };
             float targetHealthBefore = Float.NaN;
@@ -4874,7 +6599,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 }
             }
 
-            return new InteractionState(
+            InteractionState state = new InteractionState(
                     botId,
                     botGeneration,
                     spec,
@@ -4898,6 +6623,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                                     .WorldMenuRecipe
                                     || spec
                                             instanceof WorldInteractionActionSpec
+                                                    .WorldVillagerTrade
+                                    || spec
+                                            instanceof WorldInteractionActionSpec
                                                     .PlaceBlock
                             ? MinecraftInteractionView
                                     .inventoryMultisetDigest(player)
@@ -4911,6 +6639,11 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     matchingCountBefore,
                     player.getInventory().selected,
                     player.getFoodData().getFoodLevel());
+            if (spec instanceof WorldInteractionActionSpec.WorldVillagerTrade) {
+                state.villagerTradeInventoryBefore =
+                        MinecraftActionSnapshot.inventoryMenu(player);
+            }
+            return state;
         }
     }
 }

@@ -174,6 +174,7 @@ class HazardEvaluatorTest {
                 false,
                 threats,
                 false,
+                Optional.empty(),
                 damage,
                 vitalLoss);
     }

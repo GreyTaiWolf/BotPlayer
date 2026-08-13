@@ -2,6 +2,8 @@ package io.github.greytaiwolf.botplayer.client;
 
 import io.github.greytaiwolf.botplayer.network.payload.AgentBindingResultPayload;
 import io.github.greytaiwolf.botplayer.network.payload.AgentBindingStatus;
+import io.github.greytaiwolf.botplayer.network.payload.AiRequestCancellationPayload;
+import io.github.greytaiwolf.botplayer.network.payload.AiRequestDispatchPayload;
 import io.github.greytaiwolf.botplayer.network.payload.OpenCredentialScreenPayload;
 import java.util.Objects;
 import net.minecraft.ChatFormatting;
@@ -22,6 +24,12 @@ public final class ClientPayloadHandlers {
 
         @Override
         public void showBindingResult(AgentBindingResultPayload payload) {}
+
+        @Override
+        public void handleAiRequestDispatch(AiRequestDispatchPayload payload) {}
+
+        @Override
+        public void handleAiRequestCancellation(AiRequestCancellationPayload payload) {}
     };
 
     private static volatile ClientPayloadSink sink = NO_OP;
@@ -40,6 +48,21 @@ public final class ClientPayloadHandlers {
     public static void handleAgentBindingResult(
             AgentBindingResultPayload payload, IPayloadContext context) {
         sink.showBindingResult(payload);
+    }
+
+    /**
+     * Delivers a server-generated, secret-free request only to the physical-client session
+     * controller. The common facade never invokes a Provider or touches local credentials.
+     */
+    public static void handleAiRequestDispatch(
+            AiRequestDispatchPayload payload, IPayloadContext context) {
+        sink.handleAiRequestDispatch(payload);
+    }
+
+    /** Delivers a correlation-only server cancellation to the physical client session controller. */
+    public static void handleAiRequestCancellation(
+            AiRequestCancellationPayload payload, IPayloadContext context) {
+        sink.handleAiRequestCancellation(payload);
     }
 
     public static Component bindingResultMessage(AgentBindingStatus status) {
@@ -84,5 +107,9 @@ public final class ClientPayloadHandlers {
         void openCredentialScreen(OpenCredentialScreenPayload payload);
 
         void showBindingResult(AgentBindingResultPayload payload);
+
+        void handleAiRequestDispatch(AiRequestDispatchPayload payload);
+
+        void handleAiRequestCancellation(AiRequestCancellationPayload payload);
     }
 }

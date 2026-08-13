@@ -14,8 +14,6 @@ final class AiChecks {
             Pattern.compile("[a-z0-9_.-]{1,64}");
     private static final Pattern TOOL_NAME =
             Pattern.compile("[A-Za-z0-9_.:/-]{1,128}");
-    private static final Pattern REASON_CODE =
-            Pattern.compile("[a-z0-9_.-]{1,64}");
 
     private AiChecks() {
         throw new AssertionError("No instances");
@@ -54,11 +52,7 @@ final class AiChecks {
     }
 
     static String reasonCode(String value, String name) {
-        return requirePattern(
-                value,
-                name,
-                REASON_CODE,
-                "1-64 lower-case reason-code characters");
+        return AiReasonCode.checkedWireCode(value, name);
     }
 
     static String boundedText(
@@ -74,6 +68,14 @@ final class AiChecks {
         if (!allowEmpty && value.isBlank()) {
             throw new IllegalArgumentException(name + " must not be blank");
         }
+        /*
+         * Java String may contain isolated UTF-16 surrogate code units.  Letting one through
+         * here would make later JSON/UTF-8 boundaries disagree about the bytes that were
+         * reviewed.  All callers of this common text guard are model input/output, schemas or
+         * diagnostic-safe text, so reject it at construction rather than relying on a later
+         * transport encoder to replace it.
+         */
+        ContextBudget.estimateTextTokens(value);
         return value;
     }
 
@@ -129,6 +131,7 @@ final class AiChecks {
             throw new IllegalArgumentException(
                     name + " must not contain whitespace or control characters");
         }
+        ContextBudget.estimateTextTokens(value);
         return value;
     }
 }

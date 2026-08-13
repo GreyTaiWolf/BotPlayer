@@ -175,6 +175,201 @@ class BotActionRuntimeTest {
    }
 
    @Test
+   void exactQueuedContainmentReturnsAnExactSafeReceiptWithoutStartingTheAction() {
+      BotActionRuntimeTest.ScriptedBackend backend = new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime runtime = runtime(backend);
+      ActionEnvelope queued = envelope(
+         FIRST_BOT, 1L, "contained-queued", new WaitAction(20), 100L, 20
+      );
+      ActionMailbox.Submission submission = runtime.submit(
+         queued, ActionPriority.OWNER_TASK
+      );
+
+      BotActionRuntime.CancellationContainmentResult result =
+         runtime.cancelOrContain(
+            FIRST_BOT, 1L, queued.actionId(),
+            ActionCancellationReason.REQUESTED, 1L
+         );
+
+      Assertions.assertEquals(
+         ActionCancellationReceipt.Disposition.EXACT_QUEUED_RETRACTED,
+         result.receipt().disposition()
+      );
+      Assertions.assertTrue(result.safelyRetracted());
+      Assertions.assertTrue(result.receipt().matches(
+         FIRST_BOT, 1L, queued.actionId()
+      ));
+      Assertions.assertEquals(ActionState.CANCELLED, outcome(submission).state());
+      Assertions.assertEquals(0, backend.startCount(queued.actionId()));
+   }
+
+   @Test
+   void cancelOrContainFencesAnExactActiveTicketBeforeBackendStart() {
+      BotActionRuntimeTest.ScriptedBackend backend = new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime runtime = runtime(backend);
+      ActionEnvelope target = envelope(
+         FIRST_BOT, 1L, "contained-before-start", new WaitAction(20), 100L, 20
+      );
+      AtomicReference<BotActionRuntime.CancellationContainmentResult> receipt =
+         new AtomicReference<>();
+      backend.onValidate(target.actionId(), () -> receipt.set(
+         runtime.cancelOrContain(
+            FIRST_BOT, 1L, target.actionId(),
+            ActionCancellationReason.REQUESTED, 1L
+         )
+      ));
+      ActionMailbox.Submission submission = runtime.submit(
+         target, ActionPriority.OWNER_TASK
+      );
+
+      runtime.tick(1L);
+
+      Assertions.assertEquals(
+         ActionCancellationReceipt.Disposition.FENCED_BEFORE_START,
+         receipt.get().receipt().disposition()
+      );
+      Assertions.assertTrue(receipt.get().safelyRetracted());
+      Assertions.assertEquals(ActionState.CANCELLED, outcome(submission).state());
+      Assertions.assertEquals(0, backend.startCount(target.actionId()));
+   }
+
+   @Test
+   void cancelOrContainMarksAStartedActionUnsafeEvenWhenQuarantineClosesIngress() {
+      BotActionRuntimeTest.ScriptedBackend backend = new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime runtime = runtime(backend);
+      ActionEnvelope target = envelope(
+         FIRST_BOT, 1L, "contained-started", new WaitAction(20), 100L, 20
+      );
+      AtomicReference<BotActionRuntime.CancellationContainmentResult> receipt =
+         new AtomicReference<>();
+      backend.onStart(target.actionId(), () -> receipt.set(
+         runtime.cancelOrContain(
+            FIRST_BOT, 1L, target.actionId(),
+            ActionCancellationReason.REQUESTED, 1L
+         )
+      ));
+      ActionMailbox.Submission submission = runtime.submit(
+         target, ActionPriority.OWNER_TASK
+      );
+
+      runtime.tick(1L);
+
+      Assertions.assertEquals(
+         ActionCancellationReceipt.Disposition.STARTED,
+         receipt.get().receipt().disposition()
+      );
+      Assertions.assertFalse(receipt.get().safelyRetracted());
+      Assertions.assertEquals(1, backend.startCount(target.actionId()));
+      Assertions.assertEquals(ActionState.FAILED, outcome(submission).state());
+      Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE,
+         outcome(submission).failureCode());
+      Assertions.assertFalse(runtime.isGenerationSafe(FIRST_BOT, 1L));
+   }
+
+   @Test
+   void cancelOrContainTreatsACompletedExactActionAsUnsafeInsteadOfSilentCancellation() {
+      BotActionRuntimeTest.ScriptedBackend backend = new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime runtime = runtime(backend);
+      ActionEnvelope target = envelope(
+         FIRST_BOT, 1L, "contained-terminal", new StopAction(), 100L, 20
+      );
+      ActionMailbox.Submission submission = runtime.submit(
+         target, ActionPriority.OWNER_TASK
+      );
+      runtime.tick(1L);
+      Assertions.assertEquals(ActionState.SUCCEEDED, outcome(submission).state());
+
+      BotActionRuntime.CancellationContainmentResult receipt =
+         runtime.cancelOrContain(
+            FIRST_BOT, 1L, target.actionId(),
+            ActionCancellationReason.REQUESTED, 2L
+         );
+
+      Assertions.assertEquals(ActionCancellationReceipt.Disposition.TERMINAL,
+         receipt.receipt().disposition());
+      Assertions.assertFalse(receipt.safelyRetracted());
+      Assertions.assertFalse(runtime.isGenerationSafe(FIRST_BOT, 1L));
+   }
+
+   @Test
+   void cancelOrContainRejectsAnActionIdObservedInAnotherGeneration() {
+      BotActionRuntimeTest.ScriptedBackend backend = new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime runtime = runtime(backend);
+      ActionEnvelope target = envelope(
+         FIRST_BOT, 1L, 701L, "contained-generation-mismatch",
+         new StopAction(), 100L, 20
+      );
+      ActionMailbox.Submission submission = runtime.submit(
+         target, ActionPriority.OWNER_TASK
+      );
+      runtime.tick(1L);
+      Assertions.assertEquals(ActionState.SUCCEEDED, outcome(submission).state());
+
+      BotActionRuntime.CancellationContainmentResult receipt =
+         runtime.cancelOrContain(
+            FIRST_BOT, 2L, target.actionId(),
+            ActionCancellationReason.REQUESTED, 2L
+         );
+
+      Assertions.assertEquals(ActionCancellationReceipt.Disposition.UNKNOWN,
+         receipt.receipt().disposition());
+      Assertions.assertFalse(receipt.safelyRetracted());
+      Assertions.assertEquals(1L, receipt.receipt().observed()
+         .orElseThrow().botGeneration());
+      Assertions.assertEquals(target.actionId(), receipt.receipt().observed()
+         .orElseThrow().actionId());
+      Assertions.assertFalse(runtime.isGenerationSafe(FIRST_BOT, 2L));
+   }
+
+   @Test
+   void cancelOrContainTreatsAQueuedAliasWithAnActiveCanonicalAsUnsafe() {
+      BotActionRuntimeTest.ScriptedBackend backend = new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime runtime = runtime(backend);
+      ActionEnvelope canonical = envelope(
+         FIRST_BOT, 1L, "contained-cleanup-alias", new WaitAction(20), 100L, 20
+      );
+      backend.runForever(canonical.actionId());
+      runtime.submit(canonical, ActionPriority.OWNER_TASK);
+      runtime.tick(1L);
+
+      backend.failCleanupFor(canonical.actionId());
+      ActionEnvelope exactQueuedChild = envelope(
+         FIRST_BOT, 2L, "contained-cleanup-alias", canonical.action(), 100L, 20
+      );
+      ActionMailbox.Submission childSubmission = runtime.submit(
+         exactQueuedChild, ActionPriority.OWNER_TASK
+      );
+      BotActionRuntime.CancellationContainmentResult result =
+         runtime.cancelOrContain(
+            FIRST_BOT, 1L, exactQueuedChild.actionId(),
+            ActionCancellationReason.REQUESTED, 2L
+         );
+      Assertions.assertEquals(
+         ActionCancellationReceipt.Disposition.ALIAS,
+         result.receipt().disposition()
+      );
+      Assertions.assertFalse(result.safelyRetracted());
+      Assertions.assertEquals(canonical.actionId(), result.receipt().observed()
+         .orElseThrow().actionId());
+      runtime.tick(2L);
+
+      Assertions.assertEquals(0, backend.startCount(exactQueuedChild.actionId()));
+      Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE,
+         outcome(childSubmission).failureCode());
+      Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE,
+         runtime.completedOutcome(FIRST_BOT, canonical.actionId())
+            .orElseThrow().failureCode());
+      Assertions.assertFalse(runtime.isGenerationSafe(FIRST_BOT, 1L));
+      Assertions.assertEquals(
+         ActionMailbox.SubmissionStatus.BOT_GENERATION_CLOSED,
+         runtime.submit(
+            envelope(FIRST_BOT, 3L, "contained-cleanup-after", new StopAction(), 100L, 5),
+            ActionPriority.OWNER_CONTROL
+         ).status()
+      );
+   }
+
+   @Test
    void queuedAliasCancellationRespectsThePerTickCommandBudget() {
       BotActionRuntimeTest.ScriptedBackend var1 = new BotActionRuntimeTest.ScriptedBackend();
       BotActionRuntime var2 = new BotActionRuntime(var1, 16, 16, 1, 16, 16);
@@ -1523,6 +1718,7 @@ class BotActionRuntimeTest {
       private final Map<UUID, Integer> cleanups = new HashMap<>();
       private final Map<UUID, Long> startTicks = new HashMap<>();
       private final Set<UUID> cleanupFailures = new HashSet<>();
+      private final Map<UUID, Runnable> validationHooks = new HashMap<>();
       private final Map<UUID, Runnable> startHooks = new HashMap<>();
       private final Map<UUID, Runnable> cleanupHooks = new HashMap<>();
       private BotActionRuntimeTest.IdentityMode validationIdentityMode = BotActionRuntimeTest.IdentityMode.CORRECT;
@@ -1531,6 +1727,10 @@ class BotActionRuntimeTest {
 
       @Override
       public ActionBackend.BackendResult validate(ActionEnvelope var1, long var2) {
+         Runnable validationHook = this.validationHooks.remove(var1.actionId());
+         if (validationHook != null) {
+            validationHook.run();
+         }
          return switch (this.validationIdentityMode) {
             case CORRECT -> ActionBackend.BackendResult.accepted(var1);
             case WRONG_GENERATION -> new ActionBackend.BackendResult(
@@ -1600,6 +1800,10 @@ class BotActionRuntimeTest {
 
       private void onStart(UUID var1, Runnable var2) {
          this.startHooks.put(var1, var2);
+      }
+
+      private void onValidate(UUID var1, Runnable var2) {
+         this.validationHooks.put(var1, var2);
       }
 
       private void onCleanup(UUID var1, Runnable var2) {

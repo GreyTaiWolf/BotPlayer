@@ -16,4 +16,10 @@ public record AiMessage(AiMessageRole role, String content) {
                 MAX_CONTENT_LENGTH,
                 false);
     }
+
+    /** 消息正文属于模型上下文，异常和日志只能看到角色及长度。 */
+    @Override
+    public String toString() {
+        return "AiMessage[role=" + role + ", contentLength=" + content.length() + "]";
+    }
 }

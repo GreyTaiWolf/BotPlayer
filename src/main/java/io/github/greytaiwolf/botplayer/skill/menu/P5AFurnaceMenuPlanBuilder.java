@@ -3,6 +3,7 @@ package io.github.greytaiwolf.botplayer.skill.menu;
 import io.github.greytaiwolf.botplayer.action.interaction.InventoryContentsSnapshot;
 import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.FurnaceKind;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.P5ARecipe;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -28,11 +29,14 @@ public final class P5AFurnaceMenuPlanBuilder {
     public static Optional<Deposit> deposit(
             MenuSnapshot opened,
             P5ARecipe recipe,
-            Map<ResourceId, ItemStackFingerprint> vanillaPrototypes) {
+            Map<ResourceId, ItemStackFingerprint> vanillaPrototypes,
+            FurnaceKind observedKind) {
         Objects.requireNonNull(opened, "opened");
         Objects.requireNonNull(recipe, "recipe");
         Objects.requireNonNull(vanillaPrototypes, "vanillaPrototypes");
+        Objects.requireNonNull(observedKind, "observedKind");
         if (!recipe.isFurnace()
+                || recipe.furnaceKind() != observedKind
                 || opened.family() != MenuFamily.FURNACE
                 || !opened.carried().isEmpty()
                 || !opened.itemAt(0).isEmpty()
@@ -79,6 +83,7 @@ public final class P5AFurnaceMenuPlanBuilder {
                     plan,
                     new FurnaceExpectation(
                             recipe,
+                            observedKind,
                             current.slots(),
                             outputTarget,
                             prototypes)));
@@ -91,10 +96,14 @@ public final class P5AFurnaceMenuPlanBuilder {
      * 仅在重新打开的炉子已完整产出本合同的 result 后构造取结果计划。
      */
     public static Optional<MenuTransactionPlan> collect(
-            MenuSnapshot opened, FurnaceExpectation expectation) {
+            MenuSnapshot opened,
+            FurnaceExpectation expectation,
+            FurnaceKind observedKind) {
         Objects.requireNonNull(opened, "opened");
         Objects.requireNonNull(expectation, "expectation");
-        if (!expectation.readyToCollect(opened)) {
+        Objects.requireNonNull(observedKind, "observedKind");
+        if (expectation.furnaceKind() != observedKind
+                || !expectation.readyToCollect(opened, observedKind)) {
             return Optional.empty();
         }
         try {
@@ -366,6 +375,7 @@ public final class P5AFurnaceMenuPlanBuilder {
      */
     public record FurnaceExpectation(
             P5ARecipe recipe,
+            FurnaceKind furnaceKind,
             List<ItemStackFingerprint> playerLayoutAfterDeposit,
             int outputTargetSlot,
             Map<ResourceId, ItemStackFingerprint> vanillaPrototypes) {
@@ -374,6 +384,11 @@ public final class P5AFurnaceMenuPlanBuilder {
             if (!recipe.isFurnace()) {
                 throw new IllegalArgumentException(
                         "furnace expectation requires a furnace recipe");
+            }
+            Objects.requireNonNull(furnaceKind, "furnaceKind");
+            if (recipe.furnaceKind() != furnaceKind) {
+                throw new IllegalArgumentException(
+                        "furnace expectation kind does not match recipe contract");
             }
             Objects.requireNonNull(playerLayoutAfterDeposit,
                     "playerLayoutAfterDeposit");
@@ -416,8 +431,15 @@ public final class P5AFurnaceMenuPlanBuilder {
             }
         }
 
-        public boolean pollingSnapshotAllowed(MenuSnapshot snapshot) {
+        /**
+         * 轮询快照必须连同 Minecraft 适配器刚验证过的精确炉型传入。{@link MenuSnapshot} 只
+         * 表示 39 槽布局，不能自行证明它来自哪一种原版 menu。
+         */
+        public boolean pollingSnapshotAllowed(
+                MenuSnapshot snapshot, FurnaceKind observedKind) {
+            Objects.requireNonNull(observedKind, "observedKind");
             if (snapshot == null
+                    || furnaceKind != observedKind
                     || snapshot.family() != MenuFamily.FURNACE
                     || !snapshot.carried().isEmpty()
                     || !samePlayerLayout(snapshot)) {
@@ -435,8 +457,9 @@ public final class P5AFurnaceMenuPlanBuilder {
                     && snapshot.itemAt(outputTargetSlot).isEmpty();
         }
 
-        public boolean readyToCollect(MenuSnapshot snapshot) {
-            return pollingSnapshotAllowed(snapshot)
+        public boolean readyToCollect(
+                MenuSnapshot snapshot, FurnaceKind observedKind) {
+            return pollingSnapshotAllowed(snapshot, observedKind)
                     && snapshot.itemAt(0).isEmpty()
                     && snapshot.itemAt(1).isEmpty()
                     && snapshot.itemAt(2).equals(outputPrototype());

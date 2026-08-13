@@ -299,6 +299,42 @@ public final class SkillRuntime implements AutoCloseable {
         return CancelStatus.PREEMPTED;
     }
 
+    /**
+     * 由 L0 Safety 发起的可恢复暂停。
+     *
+     * <p>这与 {@link #preempt(UUID, long, String)} 的终止语义刻意不同：普通
+     * DAG 仍保留其 run identity、deadline 和计划，但当前节点先取消自己拥有的受控
+     * action/navigation/menu 工作，释放短期 reservation，并令所有旧 revision 的回执
+     * 在恢复后失效。调用方必须在风险解除且原版控制面已静止后显式 {@link #resume(UUID,
+     * long)}；恢复会从同一节点重新进入 {@code begin()}，以重新观察当前世界，而不会
+     * 复活旧 action、menu 或 lease。</p>
+     */
+    public PauseStatus pauseForSafety(
+            UUID runId, long currentTick, String safeReason) {
+        requireOwnerThread();
+        Objects.requireNonNull(runId, "runId");
+        observeTick(currentTick);
+        ActiveRun run = activeByRun.get(runId);
+        if (run == null) {
+            return PauseStatus.NOT_ACTIVE;
+        }
+        if (run.state == SkillRunState.PAUSED) {
+            return PauseStatus.ALREADY_PAUSED;
+        }
+        if (run.state == SkillRunState.PAUSING) {
+            return PauseStatus.PAUSING;
+        }
+        if (!run.state.canTransitionTo(SkillRunState.PAUSING)) {
+            return PauseStatus.NOT_PAUSABLE;
+        }
+        transition(run, SkillRunState.PAUSING, currentTick, safeReason);
+        notifyCancelled(run, safeReason, currentTick);
+        releaseReservations(run);
+        transition(run, SkillRunState.PAUSED, currentTick,
+                "L0 安全暂停清理完成，等待重新观察后恢复");
+        return PauseStatus.PAUSED;
+    }
+
     public ResumeStatus resume(UUID runId, long currentTick) {
         requireOwnerThread();
         Objects.requireNonNull(runId, "runId");
@@ -957,5 +993,14 @@ public final class SkillRuntime implements AutoCloseable {
         RESUMING,
         NOT_ACTIVE,
         NOT_PAUSED
+    }
+
+    /** L0 Safety 暂停请求的同步结果；非暂停类终止仍使用 {@link CancelStatus}。 */
+    public enum PauseStatus {
+        PAUSED,
+        ALREADY_PAUSED,
+        PAUSING,
+        NOT_ACTIVE,
+        NOT_PAUSABLE
     }
 }

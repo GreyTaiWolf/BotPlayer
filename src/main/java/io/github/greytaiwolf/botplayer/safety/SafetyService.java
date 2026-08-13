@@ -131,6 +131,7 @@ public final class SafetyService {
                     primary.orElseThrow(),
                     currentTick);
         } else {
+            preemptUnsafeClearFrame(state, frame, currentTick);
             observeClear(state, currentTick);
         }
         state.previousVital =
@@ -217,7 +218,7 @@ public final class SafetyService {
             state.recentDamage = null;
         }
         Vec3 velocity = player.getDeltaMovement();
-        return new SafetyFrame(
+        SafetyFrame frame = new SafetyFrame(
                 player.getUUID(),
                 generation,
                 currentTick,
@@ -255,8 +256,10 @@ public final class SafetyService {
                 effectsTruncated,
                 threats.threats(),
                 threats.incomplete(),
+                Optional.empty(),
                 Optional.ofNullable(recent),
                 loss);
+        return frame.withSafeRetreat(confirmedRetreat(player, frame));
     }
 
     private ThreatRead readThreats(BotServerPlayer player) {
@@ -402,7 +405,9 @@ public final class SafetyService {
         } else {
             if (incident.hazard.type() != hazard.type()
                     || incident.hazard.severity()
-                            != hazard.severity()) {
+                            != hazard.severity()
+                    || !incident.hazard.sourceEntityId().equals(
+                            hazard.sourceEntityId())) {
                 incident.hazard = hazard;
                 incident.aligned = false;
                 incident.escapeTarget = null;
@@ -417,6 +422,14 @@ public final class SafetyService {
                     player.getUUID(), state.generation);
             incident.inventoryClosed = true;
         }
+        SafetyHandoffRequest handoff = new SafetyHandoffRequest(
+                incident.incidentId,
+                state.botId,
+                state.generation,
+                currentTick,
+                incident.hazard,
+                frame);
+        preemptUnsafeHandoff(handoff);
         if (incident.activeActionId != null) {
             return;
         }
@@ -432,7 +445,7 @@ public final class SafetyService {
                     5);
             return;
         }
-        if (offerSkillHandoff(state, incident, frame, currentTick)) {
+        if (offerSkillHandoff(state, incident, handoff)) {
             return;
         }
         if (incident.interventions
@@ -464,8 +477,7 @@ public final class SafetyService {
     private boolean offerSkillHandoff(
             BotSafetyState state,
             SafetyIncident incident,
-            SafetyFrame frame,
-            long currentTick) {
+            SafetyHandoffRequest handoff) {
         HazardType type = incident.hazard.type();
         boolean recoveryOnly = type == HazardType.FOOD_CRITICAL
                 || type == HazardType.HEALTH_CRITICAL
@@ -477,13 +489,7 @@ public final class SafetyService {
         SafetyHandoffDecision decision;
         try {
             decision = Objects.requireNonNull(
-                    safetyHandoff.request(new SafetyHandoffRequest(
-                            incident.incidentId,
-                            state.botId,
-                            state.generation,
-                            currentTick,
-                            incident.hazard,
-                            frame)),
+                    safetyHandoff.request(handoff),
                     "safetyHandoff result");
         } catch (RuntimeException exception) {
             decision = SafetyHandoffDecision.FALLBACK;
@@ -501,6 +507,36 @@ public final class SafetyService {
             return true;
         }
         return false;
+    }
+
+    /** L0 的新帧先撤销已不满足边界的交接；回调失败时仍继续本地安全干预。 */
+    private void preemptUnsafeHandoff(SafetyHandoffRequest handoff) {
+        try {
+            safetyHandoff.preempt(handoff);
+        } catch (RuntimeException ignored) {
+            // 交接端口不可信；L0 不能因撤销失败而放弃本地恢复。
+        }
+    }
+
+    /**
+     * 即使本 Tick 没有评出 primary hazard，也要把完整性丢失交给已有的有限自卫会话处理。
+     * 没有这一跳，攻击动作可能在空的或截断的威胁帧上继续执行。
+     */
+    private void preemptUnsafeClearFrame(
+            BotSafetyState state,
+            SafetyFrame frame,
+            long currentTick) {
+        SafetyIncident incident = state.incident;
+        if (incident == null) {
+            return;
+        }
+        preemptUnsafeHandoff(new SafetyHandoffRequest(
+                incident.incidentId,
+                state.botId,
+                state.generation,
+                currentTick,
+                incident.hazard,
+                frame));
     }
 
     private ActionPlan chooseIntervention(
@@ -574,21 +610,6 @@ public final class SafetyService {
     private GridPoint safestNeighbor(
             BotServerPlayer player, SafetyFrame frame) {
         GridPoint origin = frame.position();
-        ThreatSummary source = frame.threats().stream()
-                .filter(value ->
-                        frame.recentDamage()
-                                        .flatMap(
-                                                DamageCandidate
-                                                        ::causingEntityId)
-                                        .filter(
-                                                value.entityId()
-                                                        ::equals)
-                                        .isPresent()
-                                || stateSourceMatches(
-                                        frame,
-                                        value.entityId()))
-                .findFirst()
-                .orElse(null);
         List<GridPoint> candidates = new ArrayList<>();
         for (Direction direction :
                 List.of(
@@ -607,24 +628,81 @@ public final class SafetyService {
         if (candidates.isEmpty()) {
             return null;
         }
-        GridPoint sourcePosition =
-                source == null ? origin : source.position();
+        List<ThreatSummary> relevantThreats = frame.threats().stream()
+                .filter(SafetyService::isRelevantRetreatThreat)
+                .toList();
         candidates.sort(
                 Comparator.comparingLong(
                                 (GridPoint point) ->
-                                        point.horizontalDistanceSquared(
-                                                sourcePosition))
+                                        minimumThreatDistanceSquared(
+                                                point, relevantThreats))
                         .reversed()
                         .thenComparingInt(GridPoint::x)
                         .thenComparingInt(GridPoint::z));
         return candidates.getFirst();
     }
 
-    private static boolean stateSourceMatches(
-            SafetyFrame frame, UUID entityId) {
-        return frame.threats().stream()
-                .filter(ThreatSummary::targetingBot)
-                .anyMatch(value -> value.entityId().equals(entityId));
+    /** 仅把会直接增加当前撤退风险的观察对象用于安全邻格评分。 */
+    private static boolean isRelevantRetreatThreat(ThreatSummary threat) {
+        return threat.kind() == ThreatSummary.Kind.EXPLOSIVE
+                || threat.kind() == ThreatSummary.Kind.HOSTILE
+                || (threat.kind() == ThreatSummary.Kind.PROJECTILE
+                        && threat.approachScore() > 0.0D);
+    }
+
+    private static long minimumThreatDistanceSquared(
+            GridPoint point, List<ThreatSummary> threats) {
+        return threats.stream()
+                .mapToLong(threat -> point.horizontalDistanceSquared(
+                        threat.position()))
+                .min()
+                .orElse(0L);
+    }
+
+    /**
+     * 只从完整威胁观测和 {@link #safeCell(ServerLevel, GridPoint)} 已验证的相邻格生成短输入。
+     */
+    private Optional<SafetyRetreat> confirmedRetreat(
+            BotServerPlayer player, SafetyFrame frame) {
+        if (frame.threatCoverageIncomplete()
+                || frame.threats().stream().noneMatch(threat ->
+                        threat.kind() == ThreatSummary.Kind.HOSTILE
+                                && threat.targetingBot())) {
+            return Optional.empty();
+        }
+        GridPoint target = safestNeighbor(player, frame);
+        if (target == null) {
+            return Optional.empty();
+        }
+        double deltaX = target.x() + 0.5D - player.getX();
+        double deltaZ = target.z() + 0.5D - player.getZ();
+        double horizontalLength = Math.hypot(deltaX, deltaZ);
+        if (!Double.isFinite(horizontalLength)
+                || horizontalLength <= 1.0E-6D) {
+            return Optional.empty();
+        }
+        double yaw = Math.toRadians(player.getYRot());
+        if (!Double.isFinite(yaw)) {
+            return Optional.empty();
+        }
+        double sine = Math.sin(yaw);
+        double cosine = Math.cos(yaw);
+        float strafe = boundedInput(
+                (deltaX * cosine + deltaZ * sine) / horizontalLength);
+        float forward = boundedInput(
+                (-deltaX * sine + deltaZ * cosine) / horizontalLength);
+        if (forward == 0.0F && strafe == 0.0F) {
+            return Optional.empty();
+        }
+        return Optional.of(new SafetyRetreat(
+                target,
+                forward,
+                strafe,
+                settings.retreatInputTicks()));
+    }
+
+    private static float boundedInput(double value) {
+        return (float) Math.max(-1.0D, Math.min(1.0D, value));
     }
 
     private boolean safeCell(

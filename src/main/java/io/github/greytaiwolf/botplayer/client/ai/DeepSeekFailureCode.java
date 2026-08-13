@@ -1,0 +1,20 @@
+package io.github.greytaiwolf.botplayer.client.ai;
+
+/** 客户端 DeepSeek 传输可安全暴露的稳定失败码；不含响应正文、URL 参数或凭据。 */
+public enum DeepSeekFailureCode {
+    CREDENTIAL_UNAVAILABLE,
+    REQUEST_CANCELLED,
+    REQUEST_INVALID,
+    MODEL_NOT_ALLOWED,
+    CAPABILITY_UNAVAILABLE,
+    TOOL_CATALOG_UNAVAILABLE,
+    INVALID_PROVIDER_RESPONSE,
+    RESPONSE_TOO_LARGE,
+    AUTHENTICATION_FAILED,
+    QUOTA_EXHAUSTED,
+    RATE_LIMITED,
+    REMOTE_UNAVAILABLE,
+    REMOTE_REJECTED,
+    NETWORK_FAILURE,
+    REQUEST_TIMEOUT
+}

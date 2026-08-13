@@ -23,9 +23,11 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 > 通用 equipment/offhand 槽仍返回 `UNSUPPORTED`，盔甲继续走独立专用路径，不能据此计入
 > P5A 退出门。新增死亡纵切会在原版实际消费背包前发布耐久 tombstone，只有主副本、备份
 > 与 successor 的精确交接全部提交后才激活新 generation；这优先防复制，但不承诺掉落
-> exactly-once。项目还没有完整生存技能、跨 menu 统一事务、通用世界
-> 容器、聊天、DeepSeek 或长期记忆。保存 Key 不代表 AI 已经接通，方块观察也不代表能读取
-> 箱子内容。
+> exactly-once。P5B 仅新增一个受限的原版容器技能运行时切片：严格白名单内的普通单箱/双箱、
+> 木桶和原版潜影盒可走真实 3×9/6×9 原版 menu 点击事务；本地 Java 21/NeoForge 实跑尚未完成，不能
+> 宣称已具备通用容器、工作站或完整生存能力。项目仍没有跨 menu 统一事务、聊天、通用
+> DeepSeek 或长期记忆。P6-R1 仅有默认关闭的固定本地只读审阅往返代码，Java 21/CI 尚待
+> 验证，且绝不进入世界动作。保存 Key 不代表 AI 已经接通，方块观察也不代表能读取箱子内容。
 > 请以
 > [当前实现状态](docs/IMPLEMENTATION_STATUS_CN.md) 为准，不要把路线图中的目标当成已完成。
 
@@ -78,6 +80,9 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - `/botplayer settings <name>` 打开客户端本地 API Key 设置界面；
 - 客户端可创建/替换凭据 profile、绑定/解绑 bot；每 bot 使用独立 agentId，profile 删除
   尚未实现；
+- P6-R1 owner 手动只读审阅往返已编码但 Java 21/CI 尚待验证：物理客户端只在本地
+  `reviewOnly.enabled=true` 后构造固定 `deepseek-chat` review Provider；默认关闭，回传仅为
+  零参数确认和安全数字摘要，绝不执行 Action、Skill 或世界变更；
 - `PlayerListMixin` 除登录 listener 与重生类型包装外，还为 P5 异常隔离提供一次性
   no-save `PlayerList.remove` 保存包装；事务期 fence 与已移除旧 body 的永久 no-save
   poison 分离，Build #163 已验证迟到旧 body 不能覆盖 successor；跨 menu `clicked()`
@@ -153,11 +158,12 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - 自动寻找/生产食物与完整补给闭环；主动进食、盔甲专用路径和通用
   `InventoryMenu SWAP_SEQUENCE` 已由 Build #137 运行验证；主动用药/解毒、正式反击/
   持盾、工具/副手仍未实现；
-- 箱子/木桶/潜影盒等通用世界容器、工作站与制作/熔炼流程；
+- 除受限 P5B 白名单切片外的通用世界容器、工作站与制作/熔炼流程；
 - 独立专用服与多 bot 性能验证；
 - 持久世界模型、长期来源化记忆和自然语言“刚才发生了什么”对话；
 - 战斗策略、建造和生存技能；
-- DeepSeek Provider/HTTP、聊天、工具防火墙和预算；
+- 通用 DeepSeek Provider/HTTP、聊天、工具防火墙和预算；P6-R1 的窄本地审阅代码不代表这些
+  能力已经完成或通过 Java 21/CI 验证；
 - 分层长期记忆、目标恢复和模组适配；
 - 多 bot 协作与正式发布级性能验证。
 
@@ -286,7 +292,7 @@ GUI 以完整原版玩家背包风格在上方展示 bot 的 41 格真实库存�
 自己的 36 格库存；原版 2×2 合成区域被隐藏且不可交互。画布为 `176×256`，窗口或显示高度
 在当前 GUI Scale 下不足 256 个逻辑 GUI 像素时，需要调低游戏的“界面尺寸”。用户已在
 真实客户端确认本轮视觉修复有效；多语言、资源包与全部 GUI Scale 组合仍未专项验证。
-它不代表已经支持箱子、工作站或模组容器自动化。
+它不代表已经支持查看者的世界容器、通用工作站或模组容器自动化。
 
 ## 文档导航
 
@@ -311,8 +317,10 @@ GUI 以完整原版玩家背包风格在上方展示 bot 的 41 格真实库存�
 
 ## AI 与安全边界
 
-DeepSeek 尚未接入。当前客户端可以本地保存和绑定 API Key，但没有 Provider 或 HTTP
-请求；bot 不会因此聊天、规划或行动。凭据边界是：
+通用 DeepSeek、聊天和规划尚未接入。P6-R1 只有已编码、默认关闭且尚待 Java 21/CI 验证的
+本地只读审阅往返：客户端必须显式启用自己的 `reviewOnly.enabled`，才能对固定
+`deepseek-chat` 发起受限请求；它只接受零参数审阅确认和安全摘要，绝不执行世界动作。保存或
+绑定 API Key 本身不会启用它，也不会让 bot 聊天、规划或行动。凭据边界是：
 
 - Key 只在 owner 客户端游戏目录的 `config/botplayer/credentials-v1.json` 保存（默认启动
   目录通常是 `.minecraft`）；
@@ -322,6 +330,8 @@ DeepSeek 尚未接入。当前客户端可以本地保存和绑定 API Key，但
 - Key 不进入聊天或命令参数、Minecraft payload、服务端、世界 NBT/SavedData、playerdata、
   普通日志、崩溃报告或 Git；
 - 一个本地 credential profile 可以绑定多个 bot，但每个 bot 使用独立 agentId 和状态；
+- `review-only-v1.json` 只保存 `reviewOnly.enabled`，不保存或同步 endpoint、模型、工具、
+  prompt、profile 或 Key；关闭或重载会取消本地 session 并清空 Provider factory；
 - 只有持久 owner 可以配置；未来 client-sponsored LLM 在 owner 离线时不可用；
 - 服务端 active agent binding 在 owner 退出、bot 卸载或停服时清除；客户端本地 binding
   保留，重新打开界面后可以再次绑定；

@@ -38,6 +38,7 @@ public final class P5ARestartPhaseOneGameTests {
             GameTestHelper helper) {
         P2GameTestSupport.prepareEmptyFloor(helper);
         placeLogTargets(helper);
+        placeDeferredSourceVein(helper);
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.persistentFixture(
                         helper,
@@ -161,5 +162,41 @@ public final class P5ARestartPhaseOneGameTests {
         helper.setBlock(new BlockPos(4, 1, 3), Blocks.OAK_LOG);
         helper.setBlock(new BlockPos(4, 1, 5), Blocks.OAK_LOG);
         helper.setBlock(new BlockPos(5, 1, 4), Blocks.OAK_LOG);
+    }
+
+    /**
+     * 后缀所需的非木头资源在首次提交前就已存在，但刻意放在 phase-two 空模板之外。
+     * 这样第二个 GameTest 进程重载自己的 9×5×9 模板时不会把持久世界中的真实资源
+     * 偷换为第二阶段直接赠送；所有位置仍处于 checkpoint 与生产 TaskSensor 的半径八内。
+     */
+    private static void placeDeferredSourceVein(GameTestHelper helper) {
+        java.util.List<SourceBlock> sources = java.util.List.of(
+                new SourceBlock(new BlockPos(9, 1, 2), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(10, 1, 2), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(11, 1, 2), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(9, 1, 3), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(10, 1, 3), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(11, 1, 3), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(9, 1, 4), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(10, 1, 4), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(11, 1, 4), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(9, 1, 5), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(10, 1, 5), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(12, 1, 2), Blocks.IRON_ORE),
+                new SourceBlock(new BlockPos(12, 1, 3), Blocks.IRON_ORE),
+                new SourceBlock(new BlockPos(12, 1, 4), Blocks.IRON_ORE),
+                new SourceBlock(new BlockPos(12, 1, 5), Blocks.COAL_ORE));
+        for (SourceBlock source : sources) {
+            helper.setBlock(source.position().below(), Blocks.STONE);
+            helper.setBlock(source.position(), source.block());
+        }
+    }
+
+    private record SourceBlock(BlockPos position,
+            net.minecraft.world.level.block.Block block) {
+        private SourceBlock {
+            position = java.util.Objects.requireNonNull(position, "position");
+            block = java.util.Objects.requireNonNull(block, "block");
+        }
     }
 }

@@ -278,8 +278,10 @@ Build #137 运行验证。主动用药、工具/副手选择、持盾和反击�
 超出屏幕，请在“选项 → 视频设置”中调低“界面尺寸”。用户已在真实客户端确认本轮
 视觉修复有效；目前仍不要据此宣称多语言、所有 GUI Scale 或资源包组合已经验证通过。
 
-这不是通用世界容器功能：箱子/木桶/潜影盒和工作站延期到 P5A/P5B，模组自定义 menu
-属于 P8。客户端 screen 和 GameTest 的最终验证状态见
+这不是查看者可操作的通用世界容器功能。P5B 已在内部技能运行时编码严格白名单的普通单箱/
+双箱、木桶和原版潜影盒真实菜单事务，但没有普通命令或 GUI 入口，且本地 Java 21/NeoForge
+GameTest 尚未实跑；工作站仍未实现，模组自定义 menu 属于 P8。客户端 screen 和 GameTest 的
+最终验证状态见
 [P2 完成报告](P2_COMPLETION_REPORT_CN.md)。
 
 ## 当前能观察到的行为
@@ -323,7 +325,8 @@ Build #137 的 25 个 GameTest batch 静态 Bot 预算均不超过默认 8；Bui
 - 自动寻找或生产食物；主动进食，以及热栏和主背包 2～3 步换甲路径已运行验证；主动
   使用药水/牛奶/模组解药、选择工具/副手或完成正式战斗仍不支持；
 - 执行砍树、采矿、制作、熔炼、完整战斗策略或建造技能；
-- 操作箱子、工作站或模组自定义 menu；
+- 通过普通命令、GUI 或 AI 操作任意箱子、工作站或模组自定义 menu；P5B 只有内部严格白名单
+  的容器转移切片，尚未完成实机验收；
 - 把 `InventoryMenu` 序列扩展为跨 menu 统一事务；当前还没有 `clicked()` 故障注入、
   生命周期 `PENDING` continuation、TaskSensor/Reservation 生产接线、Checkpoint 或
   craft/chest/furnace/DAG；
@@ -378,8 +381,10 @@ P2 提供可信身体，P3 提供有限运行时认知，P4 提供确定性导�
 
 ### 为什么保存 Key 后 bot 仍然不会聊天或工作
 
-当前只实现客户端本地 credential profile 和 bot binding。没有 DeepSeek Provider、HTTP、
-对话、规划、Tool Firewall 或动作身体。凭据基础不代表 P6 完成，也不能验证 Key 是否有效。
+保存或绑定 Key 不会自动开启任何模型请求。当前只有默认关闭的 P6-R1 owner 手动只读审阅
+往返可在本地明确同意后构造固定 Provider；它不提供通用聊天、规划、技能执行或世界动作，且
+Java 21/NeoForge CI 与真实客户端验证尚未完成。其余 P6 Provider、codec/firewall、上下文和
+故障边界属于已编码但未验收的基础设施，凭据基础不代表 P6 完成，也不能验证 Key 是否有效。
 原始 Key 不能通过 `/botplayer` 命令或聊天输入。
 
 ### 为什么无法打开凭据界面

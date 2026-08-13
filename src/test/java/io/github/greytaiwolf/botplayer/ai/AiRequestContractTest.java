@@ -93,6 +93,18 @@ class AiRequestContractTest {
                         "x".repeat(AiMessage.MAX_CONTENT_LENGTH + 1)));
         Assertions.assertThrows(
                 IllegalArgumentException.class,
+                () -> new AiMessage(
+                        AiMessageRole.USER, "bad" + (char) 0xd800));
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> new AiRequest(
+                        REQUEST_ID,
+                        "bad" + (char) 0xd800,
+                        List.of(new AiMessage(AiMessageRole.USER, "hello")),
+                        AiRequestOptions.defaults(),
+                        Optional.empty()));
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
                 () -> new AiRequestOptions(
                         0,
                         1L,

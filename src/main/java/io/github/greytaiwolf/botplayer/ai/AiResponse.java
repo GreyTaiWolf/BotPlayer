@@ -80,4 +80,19 @@ public record AiResponse(
                     "tool calls require TOOL_CALLS finish reason");
         }
     }
+
+    /** Provider 输出、推理链和工具参数均不属于可记录诊断数据。 */
+    @Override
+    public String toString() {
+        return "AiResponse[requestId=" + requestId
+                + ", providerId=" + providerId
+                + ", model=" + model
+                + ", finishReason=" + finishReason
+                + ", outputLength=" + outputText.length()
+                + ", reasoningLength=" + reasoningText.map(String::length).orElse(0)
+                + ", structuredOutputLength="
+                + structuredOutputJson.map(String::length).orElse(0)
+                + ", toolCallCount=" + toolCalls.size()
+                + ", usage=" + usage + "]";
+    }
 }

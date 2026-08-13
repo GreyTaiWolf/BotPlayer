@@ -1,10 +1,17 @@
 package io.github.greytaiwolf.botplayer.action.minecraft;
 
+import io.github.greytaiwolf.botplayer.action.ActionEvidence;
+import io.github.greytaiwolf.botplayer.action.ActionOutcome;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockCoordinates;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockTargetFingerprint;
+import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -13,22 +20,38 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.neoforged.neoforge.event.level.BlockDropsEvent;
 
 /**
- * Captures the exact vanilla item entity produced by one synchronous block-break packet.
+ * Captures the exact vanilla item entities produced by one synchronous block-break packet.
  *
- * <p>The capture is armed only around {@code STOP_DESTROY_BLOCK}; it never retains a live
- * player, level, or item entity after that packet returns. {@link BlockDropsEvent} supplies
- * the still-unspawned entity UUID, item id, and count, which can subsequently be carried as
- * immutable action evidence. Any missing, duplicate, or non-exact event leaves no receipt.
+ * <p>The capture is armed around the one dispatch packet that may complete the break
+ * ({@code START_DESTROY_BLOCK} for {@code instabreak()} blocks, otherwise
+ * {@code STOP_DESTROY_BLOCK}); it never retains a live player, level, or item entity after
+ * that packet returns. {@link BlockDropsEvent} supplies the still-unspawned entity UUID,
+ * item id, and count, which can subsequently be carried as immutable action evidence. Any
+ * missing, duplicate, or non-exact event leaves no receipt.
  */
 public final class BreakDropProvenanceCapture {
     private static final UUID ZERO_UUID = new UUID(0L, 0L);
+    /** One compact receipt is emitted for each multi-drop entity. */
+    public static final String COMPACT_RECEIPT_EVIDENCE_KEY =
+            "block.drop.receipt";
+    /* verifyBreak always emits position, post-state and inventory-change first. */
+    private static final int VERIFY_BREAK_BASE_EVIDENCE_ITEMS = 3;
+    /**
+     * A normal vanilla block may legitimately emit several independent item entities
+     * (mature wheat is the smallest example).  Keep the synchronous receipt bounded
+     * by the global ActionOutcome evidence ceiling: callers that need an unbounded
+     * loot-table expansion must not reuse this action-level provenance channel.
+     */
+    private static final int MAX_DROPPED_ITEM_ENTITIES =
+            ActionOutcome.MAX_EVIDENCE_ITEMS
+                    - VERIFY_BREAK_BASE_EVIDENCE_ITEMS;
     private static final ThreadLocal<ActiveCapture> ACTIVE = new ThreadLocal<>();
 
     private BreakDropProvenanceCapture() {
     }
 
     /**
-     * Arms a same-thread capture around one already-validated STOP_DESTROY_BLOCK packet.
+     * Arms a same-thread capture around one already-validated break packet.
      */
     static Scope arm(
             BotServerPlayer player,
@@ -67,12 +90,60 @@ public final class BreakDropProvenanceCapture {
     public record Provenance(UUID entityId, String itemId, int count) {
         public Provenance {
             Objects.requireNonNull(entityId, "entityId");
-            Objects.requireNonNull(itemId, "itemId");
+            new ResourceId(Objects.requireNonNull(itemId, "itemId"));
             if (ZERO_UUID.equals(entityId) || count < 1 || count > 64) {
                 throw new IllegalArgumentException(
                         "break-drop provenance is invalid");
             }
         }
+    }
+
+    /**
+     * Parses the compact multi-drop protocol exactly.  UUID and count must be
+     * canonical text, and ResourceId rejects separators or malformed syntax.
+     */
+    public static Optional<Provenance> parseCompactReceipt(String value) {
+        Objects.requireNonNull(value, "value");
+        if (value.length() > ActionEvidence.MAX_VALUE_LENGTH
+                || !value.equals(value.strip())
+                || value.codePoints().anyMatch(Character::isISOControl)) {
+            return Optional.empty();
+        }
+        String[] fields = value.split("\\|", -1);
+        if (fields.length != 3) {
+            return Optional.empty();
+        }
+        try {
+            UUID entityId = UUID.fromString(fields[0]);
+            ResourceId itemId = new ResourceId(fields[1]);
+            int count = Integer.parseInt(fields[2]);
+            if (!entityId.toString().equals(fields[0])
+                    || !Integer.toString(count).equals(fields[2])) {
+                return Optional.empty();
+            }
+            return Optional.of(new Provenance(entityId, itemId.value(),
+                    count));
+        } catch (IllegalArgumentException exception) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Encodes one multi-drop receipt only when its exact text fits the immutable
+     * ActionEvidence value contract.  Callers must reject the entire receipt set
+     * if any one member cannot be represented; never truncate individual drops.
+     */
+    static Optional<String> compactReceiptValue(Provenance provenance) {
+        Provenance required = Objects.requireNonNull(provenance,
+                "provenance");
+        String value = required.entityId()
+                + "|"
+                + required.itemId()
+                + "|"
+                + required.count();
+        return value.length() <= ActionEvidence.MAX_VALUE_LENGTH
+                ? Optional.of(value)
+                : Optional.empty();
     }
 
     /** Scope returned to the backend; it may expose a receipt only after being closed. */
@@ -101,7 +172,23 @@ public final class BreakDropProvenanceCapture {
                 throw new IllegalStateException(
                         "block-drop provenance receipt read before close");
             }
-            return capture.provenance();
+            List<Provenance> values = capture.provenances().orElse(null);
+            return values != null && values.size() == 1
+                    ? Optional.of(values.getFirst())
+                    : Optional.empty();
+        }
+
+        /**
+         * Returns every exact item entity emitted by the one captured vanilla break.
+         * The legacy {@link #provenance()} view deliberately remains singleton-only so
+         * existing callers cannot silently start accepting multi-drop loot tables.
+         */
+        Optional<List<Provenance>> provenances() {
+            if (!closed) {
+                throw new IllegalStateException(
+                        "block-drop provenance receipt read before close");
+            }
+            return capture.provenances();
         }
     }
 
@@ -111,7 +198,7 @@ public final class BreakDropProvenanceCapture {
         private final BlockTargetFingerprint target;
         private boolean matched;
         private boolean invalid;
-        private Provenance provenance;
+        private List<Provenance> provenances = List.of();
 
         private ActiveCapture(
                 BotServerPlayer player,
@@ -138,30 +225,39 @@ public final class BreakDropProvenanceCapture {
                 return;
             }
             matched = true;
-            if (event.getDrops().size() != 1) {
+            if (event.getDrops().isEmpty()
+                    || event.getDrops().size()
+                            > MAX_DROPPED_ITEM_ENTITIES) {
                 invalid = true;
                 return;
             }
-            ItemEntity item = event.getDrops().getFirst();
-            if (item == null || item.isRemoved() || item.getItem().isEmpty()
-                    || ZERO_UUID.equals(item.getUUID())) {
-                invalid = true;
-                return;
+            List<Provenance> receipts = new ArrayList<>(
+                    event.getDrops().size());
+            Set<UUID> entityIds = new HashSet<>(event.getDrops().size());
+            for (ItemEntity item : event.getDrops()) {
+                if (item == null || item.isRemoved()
+                        || item.getItem().isEmpty()
+                        || ZERO_UUID.equals(item.getUUID())
+                        || !entityIds.add(item.getUUID())) {
+                    invalid = true;
+                    return;
+                }
+                int count = item.getItem().getCount();
+                if (count < 1 || count > 64) {
+                    invalid = true;
+                    return;
+                }
+                receipts.add(new Provenance(item.getUUID(),
+                        BuiltInRegistries.ITEM.getKey(item.getItem()
+                                .getItem()).toString(), count));
             }
-            int count = item.getItem().getCount();
-            if (count < 1 || count > 64) {
-                invalid = true;
-                return;
-            }
-            provenance = new Provenance(item.getUUID(),
-                    BuiltInRegistries.ITEM.getKey(item.getItem().getItem())
-                            .toString(), count);
+            provenances = List.copyOf(receipts);
         }
 
-        private Optional<Provenance> provenance() {
-            return !matched || invalid || provenance == null
+        private Optional<List<Provenance>> provenances() {
+            return !matched || invalid || provenances.isEmpty()
                     ? Optional.empty()
-                    : Optional.of(provenance);
+                    : Optional.of(provenances);
         }
     }
 

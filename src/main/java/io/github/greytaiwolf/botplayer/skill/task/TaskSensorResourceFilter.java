@@ -15,7 +15,9 @@ public enum TaskSensorResourceFilter {
     IRON_ORE("minecraft:iron_ore"),
     COAL_ORE("minecraft:coal_ore"),
     CRAFTING_TABLE("minecraft:crafting_table"),
-    FURNACE("minecraft:furnace");
+    FURNACE("minecraft:furnace"),
+    BLAST_FURNACE("minecraft:blast_furnace"),
+    SMOKER("minecraft:smoker");
 
     private final String exactBlockId;
 

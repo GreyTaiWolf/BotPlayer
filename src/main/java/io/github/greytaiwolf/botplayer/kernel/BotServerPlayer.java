@@ -32,11 +32,8 @@ import org.jetbrains.annotations.Nullable;
 public final class BotServerPlayer extends ServerPlayer {
     private final BotRuntimeHandle runtimeHandle;
     private int lastClientlessConnectionTick = Integer.MIN_VALUE;
-    private boolean suppressNextPlayerDataSave;
-    private boolean suppressPlayerDataSaveUntilReleased;
-    private boolean suppressDisconnectPreSave;
-    private boolean suppressDeathRetirementSave;
-    private boolean suppressDeathAttemptSave;
+    private final PlayerDataSaveFence playerDataSaveFence =
+            new PlayerDataSaveFence();
     private final DeathDataSavePermit deathDataSavePermit =
             new DeathDataSavePermit();
     @Nullable
@@ -63,14 +60,13 @@ public final class BotServerPlayer extends ServerPlayer {
             BotServerPlayer oldPlayer) {
         BotServerPlayer replacement = new BotServerPlayer(
                 server, level, profile, clientInformation, oldPlayer.runtimeHandle);
-        if (oldPlayer.suppressPlayerDataSaveUntilReleased) {
+        if (oldPlayer.playerDataSaveFence.hasPersistentSaveFence()) {
             replacement.suppressPlayerDataSaveUntilReleased();
         }
-        if (oldPlayer.suppressDisconnectPreSave) {
+        if (oldPlayer.playerDataSaveFence.hasDisconnectPreSaveFence()) {
             replacement.armDisconnectPreSaveFence();
         }
-        if (oldPlayer.suppressDeathRetirementSave
-                || oldPlayer.suppressDeathAttemptSave) {
+        if (oldPlayer.playerDataSaveFence.hasDeathRetirementOrAttemptFence()) {
             replacement.armDeathRetirementSaveFence();
         }
         replacement.deathHandoffTicket =
@@ -88,7 +84,7 @@ public final class BotServerPlayer extends ServerPlayer {
      * layout.
      */
     public void suppressNextPlayerDataSave() {
-        suppressNextPlayerDataSave = true;
+        playerDataSaveFence.armNextRemovalSave();
     }
 
     /**
@@ -96,7 +92,7 @@ public final class BotServerPlayer extends ServerPlayer {
      * 这条 fence 不能被单次 save 消费；只有身份移除确认后才能显式释放。
      */
     public void suppressPlayerDataSaveUntilReleased() {
-        suppressPlayerDataSaveUntilReleased = true;
+        playerDataSaveFence.armPersistentSaveFence();
     }
 
     /**
@@ -104,44 +100,36 @@ public final class BotServerPlayer extends ServerPlayer {
      * 分账，安全完成时不能顺手释放另一条路径仍持有的保存禁令。
      */
     public void armDisconnectPreSaveFence() {
-        suppressDisconnectPreSave = true;
+        playerDataSaveFence.armDisconnectPreSaveFence();
     }
 
     public boolean hasDisconnectPreSaveFence() {
-        return suppressDisconnectPreSave;
+        return playerDataSaveFence.hasDisconnectPreSaveFence();
     }
 
     /**
      * 只释放 direct disconnect 的份额；返回 true 表示没有其他保存 fence。
      */
     public boolean releaseDisconnectPreSaveFence() {
-        suppressDisconnectPreSave = false;
-        return !suppressNextPlayerDataSave
-                && !suppressPlayerDataSaveUntilReleased
-                && !suppressDeathRetirementSave
-                && !suppressDeathAttemptSave;
+        return playerDataSaveFence.releaseDisconnectPreSaveFence();
     }
 
     /**
      * 死亡退役在旧 body 仍可被 saveAll 看见时独占的保存 fence。
      */
     public void armDeathRetirementSaveFence() {
-        suppressDeathRetirementSave = true;
+        playerDataSaveFence.armDeathRetirementSaveFence();
     }
 
     public boolean hasDeathRetirementSaveFence() {
-        return suppressDeathRetirementSave;
+        return playerDataSaveFence.hasDeathRetirementSaveFence();
     }
 
     /**
      * 只释放死亡退役自己的份额；返回 true 表示没有其他保存 fence。
      */
     public boolean releaseDeathRetirementSaveFence() {
-        suppressDeathRetirementSave = false;
-        return !suppressNextPlayerDataSave
-                && !suppressPlayerDataSaveUntilReleased
-                && !suppressDisconnectPreSave
-                && !suppressDeathAttemptSave;
+        return playerDataSaveFence.releaseDeathRetirementSaveFence();
     }
 
     /**
@@ -178,8 +166,7 @@ public final class BotServerPlayer extends ServerPlayer {
         if (attempt.dispositionCompleted) {
             return attempt.adoptedByRetirement;
         }
-        suppressDeathRetirementSave = true;
-        suppressDeathAttemptSave = false;
+        playerDataSaveFence.transferDeathAttemptToRetirement();
         attempt.adoptedByRetirement = true;
         attempt.dispositionCompleted = true;
         return true;
@@ -197,38 +184,40 @@ public final class BotServerPlayer extends ServerPlayer {
                 || attempt.adoptedByRetirement) {
             return false;
         }
-        suppressDeathAttemptSave = false;
+        playerDataSaveFence.releaseDeathAttemptSaveFence();
         attempt.dispositionCompleted = true;
         return true;
     }
 
-    public boolean consumePlayerDataSaveSuppression() {
+    /**
+     * 通用 {@code PlayerList.save} 入口只检查持久保存围栏和死亡精确保存许可，不能消费
+     * {@code remove} 专属的一次性门闩。
+     */
+    public boolean shouldSuppressOrdinaryPlayerDataSave() {
         if (deathDataSavePermit.armedOrSerializing()) {
-            return deathDataSavePermit.shouldSuppress(true);
+            return deathDataSavePermit.shouldSuppress(
+                    playerDataSaveFence.shouldSuppressOrdinarySave());
         }
-        if (suppressPlayerDataSaveUntilReleased
-                || suppressDisconnectPreSave
-                || suppressDeathRetirementSave
-                || suppressDeathAttemptSave) {
+        return playerDataSaveFence.shouldSuppressOrdinarySave();
+    }
+
+    /**
+     * 仅由 {@code PlayerList.remove} 内被精确包装的原版保存调用；这里才允许消费一次性门闩。
+     */
+    public boolean consumePlayerDataSaveSuppressionForRemoval() {
+        if (deathDataSavePermit.armedOrSerializing()) {
             return true;
         }
-        boolean suppressed =
-                suppressNextPlayerDataSave;
-        suppressNextPlayerDataSave = false;
-        return suppressed;
+        return playerDataSaveFence.consumeRemovalSaveSuppression();
     }
 
     public void clearPlayerDataSaveSuppression() {
         /* 单次 remove 的门闩可清理；跨调用 fence 只能由确认移除路径释放。 */
-        suppressNextPlayerDataSave = false;
+        playerDataSaveFence.clearRemovalSaveSuppression();
     }
 
     public void releasePlayerDataSaveSuppression() {
-        suppressNextPlayerDataSave = false;
-        suppressPlayerDataSaveUntilReleased = false;
-        suppressDisconnectPreSave = false;
-        suppressDeathRetirementSave = false;
-        suppressDeathAttemptSave = false;
+        playerDataSaveFence.releaseAll();
         deathSaveFenceAttempt = null;
     }
 
@@ -238,7 +227,7 @@ public final class BotServerPlayer extends ServerPlayer {
      * 其他事务各自持有的保存 fence 不受影响。
      */
     public void releaseInheritedPersistentSaveFence() {
-        suppressPlayerDataSaveUntilReleased = false;
+        playerDataSaveFence.releaseInheritedPersistentSaveFence();
     }
 
     /**
@@ -247,11 +236,7 @@ public final class BotServerPlayer extends ServerPlayer {
      * 位则永不释放，防止旧对象的迟到回调覆盖后继 body 已提交的玩家数据。
      */
     public void retainPersistentSavePoisonAfterRemoval() {
-        suppressNextPlayerDataSave = false;
-        suppressPlayerDataSaveUntilReleased = true;
-        suppressDisconnectPreSave = false;
-        suppressDeathRetirementSave = false;
-        suppressDeathAttemptSave = false;
+        playerDataSaveFence.retainPersistentPoisonAfterRemoval();
         deathSaveFenceAttempt = null;
     }
 
@@ -520,7 +505,7 @@ public final class BotServerPlayer extends ServerPlayer {
         if (deathInvocationDepth > 0) {
             if (deathSaveFenceAttempt == null) {
                 /* A corrupted reentrant owner must fail closed before callbacks. */
-                suppressDeathAttemptSave = true;
+                playerDataSaveFence.armDeathAttemptSaveFence();
                 throw new IllegalStateException(
                         "Nested BotPlayer death lost its save-fence owner");
             }
@@ -530,7 +515,7 @@ public final class BotServerPlayer extends ServerPlayer {
         DeathSaveFenceAttempt attempt =
                 new DeathSaveFenceAttempt();
         deathSaveFenceAttempt = attempt;
-        suppressDeathAttemptSave = true;
+        playerDataSaveFence.armDeathAttemptSaveFence();
 
         deathInvocationDepth++;
         boolean returnedNormally = false;
@@ -560,11 +545,11 @@ public final class BotServerPlayer extends ServerPlayer {
             if (returnedNormally
                     && !attempt.normalCompletionObserved) {
                 /* NeoForge canceled death through its early return. */
-                suppressDeathAttemptSave = false;
+                playerDataSaveFence.releaseDeathAttemptSaveFence();
                 deathSaveFenceAttempt = null;
             } else if (attempt.dispositionCompleted) {
                 /* A lifecycle owner adopted or explicitly dismissed this attempt. */
-                suppressDeathAttemptSave = false;
+                playerDataSaveFence.releaseDeathAttemptSaveFence();
                 deathSaveFenceAttempt = null;
             }
             /* Throws and an observed-but-unadopted TAIL deliberately retain the fence. */

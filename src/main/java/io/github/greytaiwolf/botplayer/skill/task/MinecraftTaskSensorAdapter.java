@@ -1,6 +1,7 @@
 package io.github.greytaiwolf.botplayer.skill.task;
 
 import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.FurnaceKind;
 import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftActionSnapshot;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.safety.SafetyFrame;
@@ -21,10 +22,12 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.inventory.AbstractContainerMenu;
-import net.minecraft.world.inventory.AbstractFurnaceMenu;
 import net.minecraft.world.inventory.ChestMenu;
 import net.minecraft.world.inventory.CraftingMenu;
+import net.minecraft.world.inventory.BlastFurnaceMenu;
+import net.minecraft.world.inventory.FurnaceMenu;
 import net.minecraft.world.inventory.InventoryMenu;
+import net.minecraft.world.inventory.SmokerMenu;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.entity.EntityTypeTest;
 import net.minecraft.world.level.block.state.BlockState;
@@ -512,7 +515,8 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
         if (menu instanceof CraftingMenu && menu.slots.size() == 46) {
             return "crafting_3x3";
         }
-        if (menu instanceof AbstractFurnaceMenu && menu.slots.size() == 39) {
+        if (exactVanillaFurnaceKind(menu.getClass()).isPresent()
+                && menu.slots.size() == 39) {
             return "furnace";
         }
         if (menu instanceof ChestMenu chest
@@ -522,6 +526,25 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
             return "chest_3x9";
         }
         return null;
+    }
+
+    /**
+     * OPEN_MENU 也不能把模组 {@code AbstractFurnaceMenu} 子类作为原版工作站证据。三种已审核
+     * 炉型仍共享布局 family；真实 recipe action 另以 frozen FurnaceKind 严格绑定方块和菜单。
+     */
+    static Optional<FurnaceKind> exactVanillaFurnaceKind(
+            Class<?> menuClass) {
+        Objects.requireNonNull(menuClass, "menuClass");
+        if (menuClass == FurnaceMenu.class) {
+            return Optional.of(FurnaceKind.FURNACE);
+        }
+        if (menuClass == BlastFurnaceMenu.class) {
+            return Optional.of(FurnaceKind.BLAST_FURNACE);
+        }
+        if (menuClass == SmokerMenu.class) {
+            return Optional.of(FurnaceKind.SMOKER);
+        }
+        return Optional.empty();
     }
 
     private static boolean onServerThread(BotServerPlayer player) {

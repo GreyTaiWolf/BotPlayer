@@ -1,8 +1,13 @@
 package io.github.greytaiwolf.botplayer.navigation;
 
+import io.github.greytaiwolf.botplayer.action.ActionEvidence;
+import io.github.greytaiwolf.botplayer.action.ActionFailureCode;
+import io.github.greytaiwolf.botplayer.action.ActionOutcome;
 import io.github.greytaiwolf.botplayer.action.ActionOrigin;
+import io.github.greytaiwolf.botplayer.action.ActionState;
 import io.github.greytaiwolf.botplayer.action.ControllerKind;
 import io.github.greytaiwolf.botplayer.navigation.path.TraversalKind;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -203,5 +208,47 @@ class NavigationContractTest {
                         NavigationService
                                 .unstablePlanningStartRetryBudgetExhausted(
                                         2, 2, policy)));
+    }
+
+    @Test
+    void onlyConfirmedPhysicalCollisionStartsForcedStuckRecovery() {
+        ActionOutcome collisionStall = new ActionOutcome(
+                new UUID(7L, 1L),
+                ActionState.FAILED,
+                ActionFailureCode.PRECONDITION_FAILED,
+                10L,
+                13L,
+                List.of(new ActionEvidence(
+                        "move.horizontal_collision", "true")),
+                "Movement is stuck");
+        ActionOutcome ordinaryPreconditionFailure = new ActionOutcome(
+                new UUID(7L, 2L),
+                ActionState.FAILED,
+                ActionFailureCode.PRECONDITION_FAILED,
+                10L,
+                13L,
+                List.of(new ActionEvidence(
+                        "move.horizontal_collision", "false")),
+                "Movement validation failed");
+        ActionOutcome unrelatedFailure = new ActionOutcome(
+                new UUID(7L, 3L),
+                ActionState.FAILED,
+                ActionFailureCode.INTERNAL_ERROR,
+                10L,
+                13L,
+                List.of(new ActionEvidence(
+                        "move.horizontal_collision", "true")),
+                "Movement backend failed");
+
+        Assertions.assertAll(
+                () -> Assertions.assertTrue(
+                        NavigationService.requiresForcedStuckRecovery(
+                                collisionStall)),
+                () -> Assertions.assertFalse(
+                        NavigationService.requiresForcedStuckRecovery(
+                                ordinaryPreconditionFailure)),
+                () -> Assertions.assertFalse(
+                        NavigationService.requiresForcedStuckRecovery(
+                                unrelatedFailure)));
     }
 }

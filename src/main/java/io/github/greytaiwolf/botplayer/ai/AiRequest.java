@@ -62,4 +62,20 @@ public record AiRequest(
                     "responseSchemaJson is only valid for JSON_SCHEMA requests");
         }
     }
+
+    /** 不把 prompt 或 schema 正文写入日志、崩溃报告或异常消息。 */
+    @Override
+    public String toString() {
+        int messageCharacters = messages.stream()
+                .mapToInt(message -> message.content().length())
+                .sum();
+        return "AiRequest[requestId=" + requestId
+                + ", model=" + model
+                + ", messageCount=" + messages.size()
+                + ", messageCharacters=" + messageCharacters
+                + ", options=" + options
+                + ", responseSchemaPresent=" + responseSchemaJson.isPresent()
+                + ", responseSchemaLength="
+                + responseSchemaJson.map(String::length).orElse(0) + "]";
+    }
 }

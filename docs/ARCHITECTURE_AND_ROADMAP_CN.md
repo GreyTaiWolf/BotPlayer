@@ -425,7 +425,7 @@ challenge 的原版 handler。连续在线、独立专用服和多 bot soak 尚�
 - 防止 keepalive、断开和客户端缺席造成异常；
 - 提供版本适配点，不把具体映射泄露到核心包。
 
-### 4.6 两个 PlayerList 构造注入点与一个死亡完成观察点
+### 4.6 两个 PlayerList 构造注入点、一个死亡观察点与严格消耗品围栏
 
 第一版允许两个针对 1.21.1 的窄 `PlayerList` 构造注入点。另有一个
 `ConnectionAccessor` 只负责给虚拟连接设置私有 `channel` 字段，不改变方法行为，不计入这
@@ -435,6 +435,14 @@ challenge 的原版 handler。连续在线、独立专用服和多 bot soak 尚�
 `BotServerPlayer`。NeoForge 的死亡取消发生在早退路径，不会到达该 `TAIL`；这避免
 `LivingDeathEvent` 同优先级监听器顺序造成“死亡已取消但 bot 被标记 DEAD”的竞态。该
 Mixin 不修改死亡结果，只在原版死亡完整结束后通知生命周期管理器。
+
+严格消耗品使用另有第四个窄行为围栏，详见 ADR-0018：`LivingEntity.updateUsingItem(ItemStack)`
+的精确 1.21.1 `HEAD` 注入只服务活动 `BotServerPlayer` 的严格 `UseItem`。普通 Post tick 和
+`PlayerTickEvent.Pre` 都无法保证位于所有第三方 effect 修改之后、原版牛奶等消耗之前；因此
+围栏在内层原版消费入口复核 hand、物品、原生 inventory menu/cursor/41 槽快照和批准效果。
+漂移只走既有原版 release/stop 并取消本次消费，终态仍由 Action runtime 证据处理；真人和
+旧版非严格 `UseItem` 保持原版路径。该注入固定方法 descriptor 且 `require = 1`，需要目标
+NeoForge 版本的干净 GameTest 验证。
 
 若后续确实需要新的行为注入点，必须新增 ADR，说明无法通过事件、子类或访问转换解决的原因。
 
@@ -470,10 +478,11 @@ Mixin 不修改死亡结果，只在原版死亡完整结束后通知生命周�
 mixin/ConnectionAccessor.java
 mixin/PlayerListMixin.java
 mixin/ServerPlayerDeathMixin.java
+mixin/LivingEntityUseItemMixin.java
 ```
 
 `PlayerListMixin` 内含两个精确构造包装；`ServerPlayerDeathMixin` 只观察成功完成的
-`die` TAIL；`ConnectionAccessor` 只写入连接 channel。以后迁移到
+`die` TAIL；`LivingEntityUseItemMixin` 仅围栏严格 Bot 消耗；`ConnectionAccessor` 只写入连接 channel。以后迁移到
 `platform/neoforge/mixin/` 可以单独重构，但禁止业务系统直接依赖 Mixin 类。
 
 ### 4.7 死亡与重生
@@ -1520,9 +1529,11 @@ interface AiProvider {
 }
 ```
 
-模型名和能力必须配置化。不能把某个模型别名永久写死进业务代码；P6 建立授权客户端会话后
+通用模型名和能力必须配置化。不能把某个模型别名永久写死进业务代码；P6 建立授权客户端会话后
 由客户端探测 Provider 能力，只把不含 secret 的 thinking、工具调用、JSON 输出和上下文
-上限返回服务端策略层。当前凭据基础设施没有 `AiProvider`、capability probe 或 HTTP。
+上限返回服务端策略层。当前代码已有有界 P6 Provider/codec/firewall/context 与客户端传输基础；
+例外的 P6-R1 是默认关闭、固定策略的 owner 只读审阅 smoke 路径，不是通用模型策略、聊天或
+世界执行，且所有新增路径仍待 Java 21/CI 验收。
 
 ### 11.2 DeepSeek 的职责
 
@@ -1587,6 +1598,12 @@ P6 首次接入时，记忆接口使用有界内存对话窗口和可选的空 `
 8. `PlanValidator` 做权限、风险与能力校验；
 9. 过期、重放或 owner 已离线的结果标记 `STALE`/拒绝；
 10. 只把合法 `ProposedPlan` 交给计划系统。
+
+客户端赞助的通用请求必须先由服务器 gate 生成唯一 `requestId + nonce`，再以同一不可变绑定
+同时构造客户端 dispatch、Scheduler `AiRequest` 与精确取消 payload；请求模板的 ID 不得进入
+关联。完整关联、gate terminal receipt、Scheduler 清理和后续实时世界复核缺一不可。该绑定只
+解决身份与取消，不授权 Tool、Skill、Action 或世界执行，详见
+[ADR-0021](adr/0021-client-sponsored-request-correlation.md)。
 
 任何客户端或异步回调都不得直接调用 `ServerPlayer`。当前阶段尚未实现上述网络请求流。
 
@@ -2113,7 +2130,7 @@ docs/
 | brain | `PlanValidator` | 模型计划验证 |
 | ai | `RequestScheduler` | AI 并发、预算、取消 |
 | ai | `ToolFirewall` | 模型工具安全边界 |
-| client ai deepseek | `DeepSeekProvider` | P6 客户端 HTTP/SSE 实现；当前未实现 |
+| client ai deepseek | `DeepSeekProvider` | P6 客户端固定端点 HTTP/SSE 传输与受限本地凭据生命周期已编码；通用聊天、模型策略和 Java 21/NeoForge 验收仍待完成 |
 | memory | `MemoryService` | 分层记忆门面 |
 | memory sqlite | `SqliteMemoryStore` | 数据库生命周期 |
 | memory migration | `MigrationRunner` | schema 迁移 |
@@ -2721,6 +2738,10 @@ P5A-0 的冻结合同、Safety handoff、统一 menu 事务、checkpoint schema�
 
 #### P5C：运输、探索、进程与高级战斗
 
+当前只有一个未验收的窄实现切片：已有有限自卫已经授权的一次 `MELEE_ATTACK` 可经
+不可变 `AttackEntity` 绑定进入单 child Technique，并在 owner-thread 回收 Action 结果。
+它不含目标选择、移动、装备、重试、连击或泛化战斗路由，不能关闭本节任一任务或退出门。
+
 任务与验收：
 
 - [ ] 船、矿车、坐骑和鞘翅；
@@ -2751,7 +2772,8 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 
 **目标**：中文自然语言委托能安全转成已注册技能计划，API 故障不影响服务器 Tick。
 
-任务清单：
+任务清单（以下复选框是发布退出门，而非“仓库中完全没有对应代码”的断言；当前已编码模块仍须
+Java 21/NeoForge CI 和端到端安全验证）：
 
 - [ ] `AiProvider` 与 capability probe；
 - [ ] DeepSeek Java 21 async HTTP/SSE；
@@ -2765,7 +2787,7 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 - [ ] snapshot/revision 迟到复核；
 - [ ] 401/429/5xx/超时/非法 JSON 故障策略；
 - [ ] 熔断、退避、可选模型降级；
-- [x] 建立 ADR-0012 客户端本地凭据与每 bot 独立 agent binding 基础；无 Provider/HTTP；
+- [x] 建立 ADR-0012 客户端本地凭据与每 bot 独立 agent binding 基础；受限 Provider/HTTP 传输与默认关闭的 R1 审阅路径已编码，通用 Provider/chat/执行仍待 P6 退出门；
 - [ ] 把 client-sponsored credential 接入客户端 Provider 请求生命周期；
 - [ ] 全链路日志脱敏；
 - [ ] `ScriptedAiProvider`；

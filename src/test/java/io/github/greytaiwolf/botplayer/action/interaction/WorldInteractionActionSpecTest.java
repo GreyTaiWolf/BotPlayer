@@ -3,6 +3,9 @@ package io.github.greytaiwolf.botplayer.action.interaction;
 import io.github.greytaiwolf.botplayer.action.ActionChannel;
 import io.github.greytaiwolf.botplayer.action.ActionKind;
 import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSnapshot;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -91,6 +94,61 @@ class WorldInteractionActionSpecTest {
    }
 
    @Test
+   void strictUseItemPreconditionsAreOptionalBoundedAndCanonical() {
+      ActiveEffectFingerprint poison = new ActiveEffectFingerprint(
+         new ResourceId("minecraft:poison"), 0, 80, false, true
+      );
+      ActiveEffectFingerprint speed = new ActiveEffectFingerprint(
+         new ResourceId("minecraft:speed"), 1, 0, false, true
+      );
+      UseItemPreconditions strict = new UseItemPreconditions(
+         nativeInventorySnapshot(), List.of(speed, poison)
+      );
+      WorldInteractionActionSpec.UseItem strictUse = new WorldInteractionActionSpec.UseItem(
+         WorldInteractionActionSpec.Hand.MAIN_HAND,
+         STICK,
+         WorldInteractionActionSpec.ItemUseMode.FINISH_NATURALLY,
+         0,
+         strict
+      );
+      WorldInteractionActionSpec.UseItem legacy = new WorldInteractionActionSpec.UseItem(
+         WorldInteractionActionSpec.Hand.MAIN_HAND,
+         STICK,
+         WorldInteractionActionSpec.ItemUseMode.FINISH_NATURALLY,
+         0
+      );
+      WorldInteractionActionSpec.UseItem strictOffHand = new WorldInteractionActionSpec.UseItem(
+         WorldInteractionActionSpec.Hand.OFF_HAND,
+         STICK,
+         WorldInteractionActionSpec.ItemUseMode.FINISH_NATURALLY,
+         0,
+         strict
+      );
+
+      Assertions.assertEquals(List.of(poison, speed), strict.activeEffects());
+      Assertions.assertEquals(strict, strictUse.strictPreconditions().orElseThrow());
+      Assertions.assertTrue(legacy.strictPreconditions().isEmpty());
+      Assertions.assertEquals(
+         Set.of(ActionChannel.MAIN_HAND, ActionChannel.INTERACT, ActionChannel.INVENTORY),
+         strictUse.channels()
+      );
+      Assertions.assertEquals(
+         Set.of(ActionChannel.MAIN_HAND, ActionChannel.INTERACT),
+         legacy.channels()
+      );
+      Assertions.assertEquals(
+         Set.of(ActionChannel.OFF_HAND, ActionChannel.INTERACT, ActionChannel.INVENTORY),
+         strictOffHand.channels()
+      );
+      Assertions.assertThrows(IllegalArgumentException.class, () -> new UseItemPreconditions(
+         nativeInventorySnapshot(), List.of(poison, poison)
+      ));
+      Assertions.assertThrows(IllegalArgumentException.class, () -> new ActiveEffectFingerprint(
+         new ResourceId("minecraft:poison"), 0, -1, false, true
+      ));
+   }
+
+   @Test
    void releaseDropAndPickupRejectAmbiguousEmptyOrUnboundedRequests() {
       Assertions.assertEquals(
          WorldInteractionActionSpec.Kind.RELEASE_USE, new WorldInteractionActionSpec.ReleaseUse(WorldInteractionActionSpec.Hand.MAIN_HAND, STICK).kind()
@@ -101,6 +159,17 @@ class WorldInteractionActionSpecTest {
       Assertions.assertEquals(Set.of(ActionChannel.INVENTORY), var1.channels());
       Assertions.assertThrows(IllegalArgumentException.class, () -> new WorldInteractionActionSpec.PickupWait(0, Optional.empty()));
       Assertions.assertThrows(IllegalArgumentException.class, () -> new WorldInteractionActionSpec.PickupWait(1, Optional.of(new UUID(0L, 0L))));
+   }
+
+   private static InventoryMenuSnapshot nativeInventorySnapshot() {
+      List<ItemStackFingerprint> slots = new ArrayList<>();
+      for (int index = 0; index < 41; index++) {
+         slots.add(ItemStackFingerprint.empty());
+      }
+      slots.set(0, STICK);
+      return new InventoryMenuSnapshot(
+         0, 0, 0, ItemStackFingerprint.empty(), slots
+      );
    }
 
    @Test
@@ -117,10 +186,23 @@ class WorldInteractionActionSpecTest {
       BlockHitTarget var1 = blockTarget();
       WorldInteractionActionSpec.UseOnBlock var2 = new WorldInteractionActionSpec.UseOnBlock(WorldInteractionActionSpec.Hand.OFF_HAND, var1, STICK);
       WorldInteractionActionSpec.BreakBlock var3 = new WorldInteractionActionSpec.BreakBlock(var1, STICK);
+      BlockTargetFingerprint below = blockTargetAt(0, 63, 0, "minecraft:sugar_cane");
+      BlockTargetFingerprint above = blockTargetAt(0, 65, 0, "minecraft:air");
+      WorldInteractionActionSpec.BreakBlock guarded = new WorldInteractionActionSpec.BreakBlock(
+         var1, STICK, List.of(below, above)
+      );
       Assertions.assertEquals(WorldInteractionActionSpec.Kind.USE_ON_BLOCK, var2.kind());
       Assertions.assertEquals(Set.of(ActionChannel.OFF_HAND, ActionChannel.INTERACT), var2.channels());
       Assertions.assertEquals(WorldInteractionActionSpec.Kind.BREAK_BLOCK, var3.kind());
       Assertions.assertEquals(Set.of(ActionChannel.MAIN_HAND, ActionChannel.INTERACT), var3.channels());
+      Assertions.assertTrue(var3.neighborPreconditions().isEmpty());
+      Assertions.assertEquals(List.of(below, above), guarded.neighborPreconditions());
+      Assertions.assertThrows(IllegalArgumentException.class, () -> new WorldInteractionActionSpec.BreakBlock(
+         var1, STICK, List.of(blockTargetAt(1, 65, 0, "minecraft:air"))
+      ));
+      Assertions.assertThrows(IllegalArgumentException.class, () -> new WorldInteractionActionSpec.BreakBlock(
+         var1, STICK, List.of(below, below)
+      ));
    }
 
    @Test
@@ -199,9 +281,20 @@ class WorldInteractionActionSpecTest {
       WorldInteractionActionSpec.InteractEntity var3 = new WorldInteractionActionSpec.InteractEntity(
          WorldInteractionActionSpec.Hand.MAIN_HAND, var1, Optional.of(new EntityLocalHit(0.0, 1.0, 0.0))
       );
+      WorldInteractionActionSpec.InteractEntity var4 = new WorldInteractionActionSpec.InteractEntity(
+         WorldInteractionActionSpec.Hand.MAIN_HAND, var1, Optional.empty(), STICK
+      );
       Assertions.assertFalse(var2.usesSpecificInteraction());
       Assertions.assertTrue(var3.usesSpecificInteraction());
       Assertions.assertEquals(WorldInteractionActionSpec.Kind.INTERACT_ENTITY, var3.kind());
+      Assertions.assertTrue(var2.expectedHeldItem().isEmpty());
+      Assertions.assertEquals(Optional.of(STICK), var4.expectedHeldItem());
+      Assertions.assertThrows(
+         NullPointerException.class,
+         () -> new WorldInteractionActionSpec.InteractEntity(
+               WorldInteractionActionSpec.Hand.MAIN_HAND, var1, Optional.empty(), (ItemStackFingerprint)null
+            )
+      );
    }
 
    private static BlockHitTarget blockTarget() {

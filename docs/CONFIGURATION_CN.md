@@ -1,9 +1,11 @@
 # BotPlayer 配置说明
 
-本文描述当前 server 配置和客户端本地凭据存储。P2 提供动作运行时容量与 bot 自身背包
-查看距离；P3 实现新增有限感知的范围、读取预算、事件/事实容量和 MSPT 降级阈值。
+本文描述当前 server 配置、客户端本地凭据存储和 P6-R1 的本地只读审阅 opt-in。P2 提供
+动作运行时容量与 bot 自身背包查看距离；P3 实现新增有限感知的范围、读取预算、事件/事实
+容量和 MSPT 降级阈值。
 P4 新增导航快照/A*、安全反射和默认关闭的 Terrain Assist 配置。P3、P4 配置分别通过
-Build #28、Build #97 自动化门；AI Provider、模型调用、技能和记忆配置仍不可用。实时
+Build #28、Build #97 自动化门；通用 AI Provider、模型调用、技能和记忆配置仍不可用。P6-R1
+只有已编码、Java 21/CI 待验证的默认关闭固定审阅往返，不代表 P6 完成。实时
 状态见 [当前实现状态](IMPLEMENTATION_STATUS_CN.md)，P4 边界见
 [P4 完成验收报告](P4_COMPLETION_REPORT_CN.md)。
 
@@ -377,7 +379,7 @@ Terrain Assist 的两个 `allow*` 默认必须保持 `false`。即使服务端�
 
 下列内容只在架构路线图中设计，当前 server TOML 中不存在：
 
-- DeepSeek provider、模型、API URL、超时和预算；
+- 除 P6-R1 固定本地审阅外的 DeepSeek provider、模型、API URL、超时和预算；
 - owner、trusted、observer 和动作 ACL；
 - 面向普通玩家的逐请求挖掘/搭桥授权、PVP 和高风险确认；
 - 自定义导航代价 profile、跨维度路线和多 Bot 动态 MSPT 导航降级；
@@ -402,12 +404,49 @@ API Key 不属于 NeoForge `SERVER` 配置，也不写进普通 `CLIENT` TOML。
 <client-game-dir>/config/botplayer/
   credentials-v1.json   # 明文 Key；不要分享
   bindings-v1.json      # server/owner/bot/profile/agent ID；不含 Key
+  review-only-v1.json   # 只有 P6-R1 本地 enabled 位；默认 false，不含 Key
 ```
 
 同一个 credential profile 可以绑定给 owner 的多个 bot，Key 只保存一次。在相同 profile
 ID 下输入新 Key 会替换共享 Key，并影响所有引用该 profile 的本地 bot binding；Key 输入留空
 会继续使用已有 profile。当前支持创建/替换 profile 和绑定/解绑 bot，不支持删除 credential
 profile；解绑不会删除共享 Key。
+
+### P6-R1 本地只读审阅开关
+
+`review-only-v1.json` 不是 NeoForge `SERVER`/`CLIENT` TOML，不会被服务器读取、覆盖或同步。
+以下行为仅为已编码、Java 21/CI 待验证的 P6-R1 窄路径，不代表通用 AI 功能已可用。
+首次物理客户端启动会原子创建并加载以下唯一 schema；若文件缺失，行为等同于 `false`：
+
+```json
+{
+  "schemaVersion": 1,
+  "reviewOnly": {
+    "enabled": false
+  }
+}
+```
+
+本地用户把 `reviewOnly.enabled` 改为 `true`，并重新启动客户端或调用本地设置重载，才会安装
+R1 Provider；后续仍只有服务器持久 owner 能通过 owner/binding gate 发起审阅。它固定为
+`deepseek-chat`、`CHAT|TOOL_CALLS` 和至少 256 output tokens；唯一工具是零参数
+`botplayer_review_snapshot`。文件不接受、也不能扩展 endpoint、model、provider、key、credential
+profile、tool catalog 或 prompt。未知字段、错误类型、错误 schema 或超过 1 KiB 的文件会失败关闭，
+不会被自动覆盖。
+
+每次审阅只使用同一 bot generation 的已完成感知快照：命令 Tick 本身或紧邻前一 Tick（年龄
+只能为 `0` 或 `1`）；未来快照和早于两 Tick 的快照都会拒绝。它保留快照原有的 ID/Tick，
+不会为命令额外读取世界以“刷新”输入。
+
+关闭开关或每次重载都会推进客户端连接 epoch、取消正在运行的本地 Provider session、清空
+session controller 与 factory；这不会发送 C2S 取消包。保存 Key、替换 profile 或绑定 bot 只会
+取消受影响的已有 session，绝不会把本开关由 `false` 改为 `true`。当前没有把此开关塞进凭据
+Screen，以免保存 Key 隐式变成付费 Provider opt-in。
+
+保存、替换或解绑某个 bot binding 会先推进该 bot 独立的本地 binding epoch，再取消其
+session；因此已经交给 Minecraft 线程队列的旧回传，即使重新保存后仍使用相同的 agentId/profile，
+也不会发送 C2S proposal。后续新的有效请求会取得新 epoch；此类普通 binding 变化不会推进或
+影响其他 bot 的 connection epoch。
 
 本地文件当前是明文存储。实现优先使用原子替换，文件系统不支持时退化为同目录覆盖，并
 尽力收紧文件权限；它不是加密、操作系统 keychain 或防本机恶意软件的安全区。在支持
@@ -422,15 +461,16 @@ POSIX 权限的文件系统上，目录尽力设为仅 owner 可读/写/进入�
 |---|---|
 | profile ID | 1–64 位；首位字母或数字，后续可用字母、数字、`.`、`_`、`-` |
 | API Key | 8–512 位，不允许空白或控制字符 |
-| provider | 当前固定为 `deepseek`；这不代表 Provider 已接入 |
+| provider | credential profile 固定为 `deepseek`；只有另行开启 P6-R1 本地开关时才可用于固定审阅，不代表通用 Provider 已接入 |
 | profile 数量 | 每个客户端本地 store 最多 64 个 |
 | binding 数量 | 每个客户端本地 store 最多 2048 个 |
 | 文件大小 | credential 文件最多 128 KiB；binding 文件最多 1 MiB |
 
 ## API Key 传输规则
 
-当前没有 DeepSeek Provider 或 HTTP 请求。Key 只能从客户端本地 Screen 进入本地凭据
-存储；原始值和可还原值不会发送给服务端。
+除 P6-R1 显式本地开启后的固定 review-only HTTPS 请求外，当前没有通用 DeepSeek Provider
+或 HTTP 请求。Key 只能从客户端本地 Screen 进入本地凭据存储；原始值和可还原值不会发送给
+服务端。
 
 禁止把 Key 放入：
 
@@ -459,8 +499,9 @@ active agent binding，但客户端 `bindings-v1.json` 保留。
 4. `CHANGELOG.md`；
 5. 配置加载、边界值和迁移测试。
 
-改变客户端凭据格式时还必须同步更新 schema 版本、原子迁移/回滚、权限处理、删除语义、
-`SECURITY.md` 和 ADR-0012；不得把“能保存 Key”写成“已经能调用 DeepSeek”。
+改变客户端凭据或 `review-only-v1.json` 格式时还必须同步更新 schema 版本、原子迁移/回滚、
+权限处理、删除语义、ADR-0012/ADR-0019 与本地配置测试；不得把“能保存 Key”写成“已经能
+调用通用 DeepSeek”。
 
 配置文件位置与 `SERVER` 类型规则可参考
 [NeoForge 1.21.1 Configuration 文档](https://docs.neoforged.net/docs/1.21.1/misc/config)。

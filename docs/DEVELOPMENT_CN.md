@@ -75,6 +75,7 @@ src/main/java/io/github/greytaiwolf/botplayer/
   navigation/                    P4 请求/session、运动快照、A*、follower 与 Terrain Assist
   safety/                        P4 每 Tick SafetyFrame、incident FSM、威胁探针与抢占
   skill/                         P5 有界 Skill 契约、DAG、资源预留与当前生存纵切
+  technique/                     短生命周期玩家 Technique；当前仅有限自卫单次近战 bridge
   worldmodel/                    scoped revision、短期事实与确定性活动推断
   gametest/                      P2–P5 NeoForge GameTest
   network/                       界面打开与 agentId 绑定 payload；永不传 Key
@@ -84,7 +85,7 @@ src/main/java/io/github/greytaiwolf/botplayer/
     PhysicalClientPayloadHandler.java 真实客户端 Screen/payload 处理
     credential/                  profile、binding、严格 JSON 与原子保存
     screen/                      Key GUI 与 bot 自身背包 screen
-  mixin/                         三个最小版本接入类
+  mixin/                         四个最小版本接入类
 
 src/main/resources/
   assets/botplayer/lang/         客户端文本
@@ -166,13 +167,14 @@ src/main/templates/
   或 Key 派生信息；
 - owner 退出、bot 卸载和停服清除服务端运行时 agent binding。
 
-## 当前三个 Mixin
+## 当前四个 Mixin
 
 | 类 | 目的 | 修改行为 |
 |---|---|---|
 | `ConnectionAccessor` | 为本地连接设置私有 channel | 只暴露字段写入 |
-| `PlayerListMixin` | 登录时换 listener；重生时保持 bot 类型；按精确 fence/permit 拦截不安全保存 | 两处 `NEW` 包装、`save` HEAD 可取消注入和 `remove` 内 `save` 包装 |
+| `PlayerListMixin` | 登录时换 listener；重生时保持 bot 类型；按精确 fence/permit 拦截不安全保存 | 两处 `NEW` 包装；`save` HEAD 只检查持久 fence/死亡精确许可，`remove` 内的 `save` 包装才消费一次性门闩 |
 | `ServerPlayerDeathMixin` | 标记正常死亡 TAIL 并通知 manager | 取消死亡的早退路径不进入；业务收口留在 BotPlayer/生命周期层 |
+| `LivingEntityUseItemMixin` | 严格消耗品在原版消费前复核快照 | 只在 `BotServerPlayer` 的精确 `updateUsingItem(ItemStack)` HEAD 围栏；漂移时 release/stop 并取消该次消费 |
 
 修改 Mixin 时必须：
 
@@ -322,6 +324,10 @@ P5 当前源码建立有界 Skill 核心、确定性 DAG 校验、TTL 资源预�
 `InventoryMenu SWAP_SEQUENCE`。Build #163 已验证 1～16 次点击、最多 8 个槽位、逐 Tick
 一击、跨 Tick `PENDING`、固定端点、双 ticket 阻塞和精确 revision；真实五步场景直接
 覆盖该合同。单条纵切不能据此计入 P5A 退出门。
+另有一个未验收的 P5C 窄接线：仅把已有有限自卫会话已经授权的一个
+`MELEE_ATTACK`，以不可变 `AttackEntity`/target/generation/ticket 绑定交给单 child
+Technique，再在服务器主线程取回精确 Action 终态。它不选择目标、不移动、不换装备、不
+重试或连击，也不提供任何通用 Technique→Action 路由。
 管理入口为：
 
 ```text
@@ -381,8 +387,9 @@ P5 当前源码建立有界 Skill 核心、确定性 DAG 校验、TTL 资源预�
   2～3 步路径保持独立，不得借通用序列绕过装备限制；
 - 每件盔甲仍是独立 `InventoryMenu` 事务；动作完成信号进入技能 FSM 后必须再次读取权威
   41 槽布局，外部修改以 `WORLD_CHANGED` 失败，不能用冻结计划自证成功；
-- 敌对目标继续走 P4 安全回退，直到有限自卫具备武器、单一威胁、撤退路线、逐击重观察
-  和脱战后置条件；
+- 敌对目标继续走 P4 安全回退；当前唯一例外是已有有限自卫已完成授权的单一
+  `MELEE_ATTACK` 可以走受限单击 bridge。它不补足武器选择、目标选择、撤退路线、逐击
+  重观察或脱战后置条件，不能据此宣称有限自卫或高级战斗已完成；
 - 当前只完成 `InventoryMenu` 内的通用 SWAP 序列和独立盔甲路径，不表示跨 menu 统一事务
   已完成。`clicked()` 故障注入、生命周期 `PENDING` continuation、TaskSensor/Reservation
   生产接线、Checkpoint、工具/副手、有限自卫、craft/chest/furnace/DAG 和生产链仍未实现。

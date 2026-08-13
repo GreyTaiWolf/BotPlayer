@@ -48,6 +48,7 @@ public enum SkillRunState {
         return switch (this) {
             case CREATED ->
                     next == PREPARING
+                            || next == PAUSING
                             || next == CANCELLED
                             || next == FAILED
                             || next == PREEMPTED;
@@ -84,6 +85,7 @@ public enum SkillRunState {
                     next == PREPARING
                             || next == RUNNING
                             || next == RECOVERING
+                            || next == PAUSING
                             || isTerminalFailure(next);
             case RECOVERING ->
                     next == PREPARING
@@ -93,6 +95,7 @@ public enum SkillRunState {
             case VERIFYING ->
                     next == PREPARING
                             || isWaiting(next)
+                            || next == PAUSING
                             || next == SUCCEEDED
                             || next == RECOVERING
                             || next == FAILED

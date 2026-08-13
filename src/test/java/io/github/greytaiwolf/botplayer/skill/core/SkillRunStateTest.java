@@ -25,6 +25,9 @@ class SkillRunStateTest {
     @Test
     void acceptsPauseResumeAndRecoveryPaths() {
         Assertions.assertTrue(
+                SkillRunState.CREATED.canTransitionTo(
+                        SkillRunState.PAUSING));
+        Assertions.assertTrue(
                 SkillRunState.WAITING_NAVIGATION.canTransitionTo(
                         SkillRunState.PAUSING));
         Assertions.assertTrue(
@@ -42,6 +45,12 @@ class SkillRunStateTest {
         Assertions.assertTrue(
                 SkillRunState.VERIFYING.canTransitionTo(
                         SkillRunState.RECOVERING));
+        Assertions.assertTrue(
+                SkillRunState.VERIFYING.canTransitionTo(
+                        SkillRunState.PAUSING));
+        Assertions.assertTrue(
+                SkillRunState.RESUMING.canTransitionTo(
+                        SkillRunState.PAUSING));
     }
 
     @Test

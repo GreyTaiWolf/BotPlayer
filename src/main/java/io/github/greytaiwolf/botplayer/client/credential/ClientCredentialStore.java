@@ -105,10 +105,90 @@ public final class ClientCredentialStore implements AutoCloseable {
                 new CredentialBindingKey(serverInstanceId, ownerUuid, botId)));
     }
 
+    /**
+     * 在同一把 store 锁内完成 binding、profile 与 secret 副本解析。
+     *
+     * <p>客户端 Provider 只能使用返回的调用方自有副本。这样 {@link #close()} 或 profile
+     * 替换不会在两次查询之间留下半清零的 key；任何零字符都按失效副本拒绝。</p>
+     */
+    public synchronized Optional<char[]> copyBoundSecret(
+            UUID serverInstanceId,
+            UUID ownerUuid,
+            UUID botId,
+            String expectedProvider) {
+        return copyBoundSecret(
+                serverInstanceId,
+                ownerUuid,
+                botId,
+                Optional.empty(),
+                expectedProvider);
+    }
+
+    /**
+     * Resolves a secret only while the exact local binding still has {@code expectedAgentId}.
+     *
+     * <p>The check and secret copy share this store's monitor. A client-sponsored request can
+     * therefore bind its provider to the agent it already verified instead of racing a later local
+     * rebind between an authorization check and the HTTP Authorization header construction.
+     */
+    public synchronized Optional<char[]> copyBoundSecretForAgent(
+            UUID serverInstanceId,
+            UUID ownerUuid,
+            UUID botId,
+            UUID expectedAgentId,
+            String expectedProvider) {
+        Objects.requireNonNull(expectedAgentId, "expectedAgentId");
+        return copyBoundSecret(
+                serverInstanceId,
+                ownerUuid,
+                botId,
+                Optional.of(expectedAgentId),
+                expectedProvider);
+    }
+
+    private Optional<char[]> copyBoundSecret(
+            UUID serverInstanceId,
+            UUID ownerUuid,
+            UUID botId,
+            Optional<UUID> expectedAgentId,
+            String expectedProvider) {
+        Objects.requireNonNull(serverInstanceId, "serverInstanceId");
+        Objects.requireNonNull(ownerUuid, "ownerUuid");
+        Objects.requireNonNull(botId, "botId");
+        Objects.requireNonNull(expectedAgentId, "expectedAgentId");
+        Objects.requireNonNull(expectedProvider, "expectedProvider");
+        BotCredentialBinding binding = bindings.get(new CredentialBindingKey(
+                serverInstanceId, ownerUuid, botId));
+        if (binding == null
+                || (expectedAgentId.isPresent()
+                        && !expectedAgentId.orElseThrow().equals(binding.agentId()))) {
+            return Optional.empty();
+        }
+        CredentialProfile profile = profiles.get(binding.profileId());
+        if (profile == null || !expectedProvider.equals(profile.provider())) {
+            return Optional.empty();
+        }
+        char[] secret = profile.copySecret();
+        if (secret.length == 0 || containsClearedCharacter(secret)) {
+            Arrays.fill(secret, '\0');
+            return Optional.empty();
+        }
+        return Optional.of(secret);
+    }
+
     public synchronized int bindingCount(String profileId) {
         return (int) bindings.values().stream()
                 .filter(binding -> binding.profileId().equals(profileId))
                 .count();
+    }
+
+    private static boolean containsClearedCharacter(char[] secret) {
+        for (char value : secret) {
+            if (value == '\0') {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

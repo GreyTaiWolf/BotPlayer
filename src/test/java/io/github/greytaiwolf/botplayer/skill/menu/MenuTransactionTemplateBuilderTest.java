@@ -51,6 +51,91 @@ class MenuTransactionTemplateBuilderTest {
     }
 
     @Test
+    void movesRequestedAmountWithStrictRightClickPrefixes() {
+        MenuSnapshot snapshot = snapshot(7, 18, 10, item("stone", 16, DIGEST_A),
+                ItemStackFingerprint.empty());
+
+        MenuTransactionTemplate template = MenuTransactionTemplateBuilder
+                .moveExactAmount(snapshot, 10, 11, 5)
+                .orElseThrow();
+
+        assertEquals(7, template.orderedSteps().size());
+        assertEquals(0, template.orderedSteps().get(0).click().button());
+        assertEquals(item("stone", 16, DIGEST_A),
+                template.orderedSteps().get(0).expectedAfter().carried());
+        for (int index = 1; index <= 5; index++) {
+            MenuTemplateStep step = template.orderedSteps().get(index);
+            assertEquals(MenuClickType.PICKUP, step.click().type());
+            assertEquals(1, step.click().button());
+            assertEquals(item("stone", index, DIGEST_A),
+                    step.expectedAfter().slots().get(11));
+            assertEquals(item("stone", 16 - index, DIGEST_A),
+                    step.expectedAfter().carried());
+        }
+        MenuTemplateStep settle = template.orderedSteps().get(6);
+        assertEquals(0, settle.click().button());
+        assertEquals(item("stone", 11, DIGEST_A),
+                template.finalLayout().slots().get(10));
+        assertEquals(item("stone", 5, DIGEST_A),
+                template.finalLayout().slots().get(11));
+        assertTrue(template.finalLayout().carried().isEmpty());
+    }
+
+    @Test
+    void exactAmountRejectsAFullTargetAndInsufficientSource() {
+        MenuSnapshot base = snapshot(7, 18, 10, item("stone", 4, DIGEST_A),
+                ItemStackFingerprint.empty());
+
+        assertFalse(MenuTransactionTemplateBuilder.moveExactAmount(
+                base, 10, 11, 5).isPresent());
+        assertFalse(MenuTransactionTemplateBuilder.moveExactAmount(
+                snapshot(7, 18, 10, item("stone", 4, DIGEST_A),
+                        item("dirt", 1, DIGEST_B)),
+                10, 11, 1).isPresent());
+        assertFalse(MenuTransactionTemplateBuilder.moveExactAmount(
+                base, 10, 11, 0).isPresent());
+    }
+
+    @Test
+    void exactAmountUsesWholeStackPathWhenAmountMatchesSource() {
+        MenuSnapshot snapshot = snapshot(7, 18, 10, item("stone", 4, DIGEST_A),
+                ItemStackFingerprint.empty());
+
+        MenuTransactionTemplate template = MenuTransactionTemplateBuilder
+                .moveExactAmount(snapshot, 10, 11, 4)
+                .orElseThrow();
+
+        assertEquals(2, template.orderedSteps().size());
+        assertTrue(template.finalLayout().slots().get(10).isEmpty());
+        assertEquals(item("stone", 4, DIGEST_A),
+                template.finalLayout().slots().get(11));
+    }
+
+    @Test
+    void bindsDoubleChestBoundarySlotsToTheSameStrictTemplate() {
+        MenuSnapshot snapshot = snapshot(
+                MenuFamily.CHEST_6X9,
+                7,
+                18,
+                53,
+                54,
+                item("stone", 16, DIGEST_A),
+                ItemStackFingerprint.empty());
+
+        MenuTransactionTemplate template = MenuTransactionTemplateBuilder
+                .moveExactAmount(snapshot, 53, 54, 5)
+                .orElseThrow();
+
+        assertEquals(MenuFamily.CHEST_6X9, template.family());
+        assertEquals(7, template.orderedSteps().size());
+        assertEquals(item("stone", 11, DIGEST_A),
+                template.finalLayout().slots().get(53));
+        assertEquals(item("stone", 5, DIGEST_A),
+                template.finalLayout().slots().get(54));
+        assertTrue(template.finalLayout().carried().isEmpty());
+    }
+
+    @Test
     void rejectsNonEmptyCursorEmptySourceAndIdenticalSlots() {
         MenuSnapshot base = snapshot(7, 18, 10, item("stone", 4, DIGEST_A),
                 ItemStackFingerprint.empty());
@@ -72,14 +157,31 @@ class MenuTransactionTemplateBuilderTest {
             int source,
             ItemStackFingerprint sourceItem,
             ItemStackFingerprint targetItem) {
+        return snapshot(
+                MenuFamily.INVENTORY_2X2,
+                containerId,
+                stateId,
+                source,
+                source + 1,
+                sourceItem,
+                targetItem);
+    }
+
+    private static MenuSnapshot snapshot(
+            MenuFamily family,
+            int containerId,
+            int stateId,
+            int source,
+            int target,
+            ItemStackFingerprint sourceItem,
+            ItemStackFingerprint targetItem) {
         List<ItemStackFingerprint> slots = new ArrayList<>();
-        for (int index = 0; index < MenuFamily.INVENTORY_2X2.slotCount();
-                index++) {
+        for (int index = 0; index < family.slotCount(); index++) {
             slots.add(ItemStackFingerprint.empty());
         }
         slots.set(source, sourceItem);
-        slots.set(source + 1, targetItem);
-        return new MenuSnapshot(MenuFamily.INVENTORY_2X2,
+        slots.set(target, targetItem);
+        return new MenuSnapshot(family,
                 containerId, stateId, ItemStackFingerprint.empty(), slots);
     }
 

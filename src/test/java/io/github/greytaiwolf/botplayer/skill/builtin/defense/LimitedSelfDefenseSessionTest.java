@@ -1,6 +1,9 @@
 package io.github.greytaiwolf.botplayer.skill.builtin.defense;
 
+import io.github.greytaiwolf.botplayer.navigation.GridPoint;
+import io.github.greytaiwolf.botplayer.safety.SafetyRetreat;
 import java.util.EnumSet;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -12,6 +15,8 @@ class LimitedSelfDefenseSessionTest {
             "22222222-2222-2222-2222-222222222222");
     private static final DefensePolicy POLICY = new DefensePolicy(
             0.35D, 9.0D, 2, 1);
+    private static final SafetyRetreat RETREAT = new SafetyRetreat(
+            new GridPoint(-1, 64, 0), -1.0F, 0.0F, 3);
 
     @Test
     void onlyExplicitHostileCanEnterTheSession() {
@@ -60,8 +65,8 @@ class LimitedSelfDefenseSessionTest {
     @Test
     void lowHealthAndOutOfRangeNeverSpendAnAttackBudget() {
         LimitedSelfDefenseSession lowHealth = session(hostile(true, 4.0D));
-        DefenseDecision retreatForHealth = lowHealth.next(new DefenseObservation(
-                3.5D, 10.0D, hostile(true, 4.0D)));
+        DefenseDecision retreatForHealth = lowHealth.next(observation(
+                3.5D, hostile(true, 4.0D), false, 1, Optional.of(RETREAT)));
         Assertions.assertEquals(DefenseActionKind.RETREAT,
                 retreatForHealth.action().orElseThrow().kind());
         Assertions.assertEquals(2,
@@ -147,6 +152,89 @@ class LimitedSelfDefenseSessionTest {
         Assertions.assertTrue(session.decision().action().isEmpty());
     }
 
+    @Test
+    void incompleteOrMultipleThreatsNeverIssueMelee() {
+        LimitedSelfDefenseSession incomplete = session(hostile(true, 4.0D));
+        DefenseDecision incompleteDecision = incomplete.next(observation(
+                10.0D, hostile(true, 4.0D), true, 1, Optional.empty()));
+        Assertions.assertEquals(DefenseState.EXHAUSTED,
+                incompleteDecision.state());
+        Assertions.assertEquals(
+                DefenseReason.RETREAT_THREAT_COVERAGE_INCOMPLETE,
+                incompleteDecision.reason());
+        Assertions.assertTrue(incompleteDecision.action().isEmpty());
+
+        LimitedSelfDefenseSession multiple = session(hostile(true, 4.0D));
+        DefenseDecision multipleDecision = multiple.next(observation(
+                10.0D, hostile(true, 4.0D), false, 2, Optional.of(RETREAT)));
+        Assertions.assertEquals(DefenseState.RETREAT_IN_FLIGHT,
+                multipleDecision.state());
+        Assertions.assertEquals(DefenseReason.RETREAT_MULTIPLE_THREATS,
+                multipleDecision.reason());
+        Assertions.assertEquals(DefenseActionKind.RETREAT,
+                multipleDecision.action().orElseThrow().kind());
+        Assertions.assertEquals(RETREAT,
+                multipleDecision.action().orElseThrow()
+                        .safeRetreat().orElseThrow());
+
+        LimitedSelfDefenseSession noPath = session(hostile(true, 4.0D));
+        DefenseDecision noPathDecision = noPath.next(observation(
+                10.0D, hostile(true, 4.0D), false, 1, Optional.empty()));
+        Assertions.assertEquals(DefenseState.EXHAUSTED,
+                noPathDecision.state());
+        Assertions.assertEquals(DefenseReason.RETREAT_PATH_UNAVAILABLE,
+                noPathDecision.reason());
+        Assertions.assertTrue(noPathDecision.action().isEmpty());
+    }
+
+    @Test
+    void retreatAckRequiresFreshSafeObservationBeforeCompletion() {
+        LimitedSelfDefenseSession stillThreatened = session(hostile(true, 4.0D));
+        DefenseActionRequest firstRetreat = stillThreatened.next(observation(
+                3.5D, hostile(true, 4.0D), false, 1, Optional.of(RETREAT)))
+                .action().orElseThrow();
+        acknowledge(stillThreatened, firstRetreat, DefenseActionOutcome.SUCCEEDED);
+        Assertions.assertEquals(DefenseState.READY,
+                stillThreatened.decision().state());
+        Assertions.assertEquals(DefenseReason.RETREAT_COMPLETED,
+                stillThreatened.decision().reason());
+
+        DefenseDecision unresolved = stillThreatened.next(healthy(
+                hostile(true, 4.0D)));
+        Assertions.assertEquals(DefenseState.EXHAUSTED, unresolved.state());
+        Assertions.assertEquals(DefenseReason.RETREAT_BUDGET_EXHAUSTED,
+                unresolved.reason());
+        Assertions.assertTrue(unresolved.action().isEmpty());
+
+        LimitedSelfDefenseSession safelySeparated = session(hostile(true, 4.0D));
+        DefenseActionRequest safeRetreat = safelySeparated.next(observation(
+                3.5D, hostile(true, 4.0D), false, 1, Optional.of(RETREAT)))
+                .action().orElseThrow();
+        acknowledge(safelySeparated, safeRetreat, DefenseActionOutcome.SUCCEEDED);
+        DefenseDecision completed = safelySeparated.next(healthy(
+                hostile(true, 25.0D)));
+        Assertions.assertEquals(DefenseState.COMPLETED, completed.state());
+        Assertions.assertEquals(DefenseReason.SAFE_RETREAT_CONFIRMED,
+                completed.reason());
+
+        LimitedSelfDefenseSession noThreatRemains = session(hostile(true, 4.0D));
+        DefenseActionRequest clearedRetreat = noThreatRemains.next(observation(
+                3.5D, hostile(true, 4.0D), false, 1, Optional.of(RETREAT)))
+                .action().orElseThrow();
+        acknowledge(noThreatRemains, clearedRetreat,
+                DefenseActionOutcome.SUCCEEDED);
+        DefenseDecision cleared = noThreatRemains.next(observation(
+                10.0D,
+                new DefenseTarget(
+                        TARGET_ID, DefenseTargetClass.UNKNOWN, true, 4.0D),
+                false,
+                0,
+                Optional.empty()));
+        Assertions.assertEquals(DefenseState.COMPLETED, cleared.state());
+        Assertions.assertEquals(DefenseReason.THREAT_CLEARED,
+                cleared.reason());
+    }
+
     private static void assertRejected(
             DefenseTargetClass targetClass, DefenseReason expectedReason) {
         LimitedSelfDefenseSession session = session(new DefenseTarget(
@@ -163,7 +251,22 @@ class LimitedSelfDefenseSessionTest {
     }
 
     private static DefenseObservation healthy(DefenseTarget target) {
-        return new DefenseObservation(10.0D, 10.0D, target);
+        return observation(10.0D, target, false, 1, Optional.of(RETREAT));
+    }
+
+    private static DefenseObservation observation(
+            double health,
+            DefenseTarget target,
+            boolean coverageIncomplete,
+            int hostileThreatCount,
+            Optional<SafetyRetreat> safeRetreat) {
+        return new DefenseObservation(
+                health,
+                10.0D,
+                target,
+                coverageIncomplete,
+                hostileThreatCount,
+                safeRetreat);
     }
 
     private static DefenseTarget hostile(boolean alive, double distanceSquared) {

@@ -1,5 +1,6 @@
 package io.github.greytaiwolf.botplayer.skill.builtin.defense;
 
+import io.github.greytaiwolf.botplayer.safety.SafetyRetreat;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -17,6 +18,8 @@ public final class LimitedSelfDefenseSession {
     private DefenseReason reason;
     private int attacksIssued;
     private int retreatsIssued;
+    /** 一旦进入撤退路径，在新的安全确认前绝不重新进入近战。 */
+    private boolean retreatRequired;
     private long nextSequence = 1L;
     private DefenseActionRequest outstanding;
 
@@ -48,29 +51,74 @@ public final class LimitedSelfDefenseSession {
                     DefenseReason.TARGET_CHANGED);
             return decision();
         }
+        if (observation.target().targetClass()
+                == DefenseTargetClass.PLAYER
+                || observation.target().targetClass()
+                        == DefenseTargetClass.FRIENDLY) {
+            transitionTerminal(DefenseState.REJECTED,
+                    rejectionReason(observation.target().targetClass()));
+            return decision();
+        }
+        if (observation.threatCoverageIncomplete()) {
+            transitionTerminal(DefenseState.EXHAUSTED,
+                    DefenseReason.RETREAT_THREAT_COVERAGE_INCOMPLETE);
+            return decision();
+        }
+        if (observation.hostileThreatCount() == 0) {
+            transitionTerminal(DefenseState.COMPLETED,
+                    DefenseReason.THREAT_CLEARED);
+            return decision();
+        }
         if (!observation.target().targetClass().isExplicitHostile()) {
             transitionTerminal(DefenseState.REJECTED,
                     rejectionReason(observation.target().targetClass()));
             return decision();
         }
         if (!observation.target().alive()) {
+            if (retreatRequired) {
+                return issueRetreat(DefenseReason.RETREAT_THREAT_REMAINS,
+                        observation.safeRetreat());
+            }
             transitionTerminal(DefenseState.COMPLETED,
                     DefenseReason.TARGET_ELIMINATED);
             return decision();
         }
+        if (observation.hostileThreatCount() > 1) {
+            return issueRetreat(DefenseReason.RETREAT_MULTIPLE_THREATS,
+                    observation.safeRetreat());
+        }
+        if (observation.target().distanceSquared()
+                >= policy.confirmedSafeRetreatDistanceSquared()) {
+            transitionTerminal(DefenseState.COMPLETED,
+                    DefenseReason.SAFE_RETREAT_CONFIRMED);
+            return decision();
+        }
         if (observation.healthFraction() <= policy.retreatHealthFraction()) {
-            return issueRetreat(DefenseReason.RETREAT_LOW_HEALTH);
+            return issueRetreat(DefenseReason.RETREAT_LOW_HEALTH,
+                    observation.safeRetreat());
         }
         if (observation.target().distanceSquared()
                 > policy.maximumMeleeDistanceSquared()) {
-            return issueRetreat(DefenseReason.RETREAT_OUT_OF_MELEE_RANGE);
+            return issueRetreat(DefenseReason.RETREAT_OUT_OF_MELEE_RANGE,
+                    observation.safeRetreat());
+        }
+        if (retreatRequired) {
+            return issueRetreat(DefenseReason.RETREAT_THREAT_REMAINS,
+                    observation.safeRetreat());
+        }
+        if (observation.safeRetreat().isEmpty()) {
+            transitionTerminal(DefenseState.EXHAUSTED,
+                    DefenseReason.RETREAT_PATH_UNAVAILABLE);
+            return decision();
         }
         if (attacksIssued >= policy.maximumAttackAttempts()) {
             return issueRetreat(
-                    DefenseReason.RETREAT_ATTACK_BUDGET_EXHAUSTED);
+                    DefenseReason.RETREAT_ATTACK_BUDGET_EXHAUSTED,
+                    observation.safeRetreat());
         }
         attacksIssued++;
-        outstanding = newAction(DefenseActionKind.MELEE_ATTACK);
+        outstanding = newAction(
+                DefenseActionKind.MELEE_ATTACK, Optional.empty());
         state = DefenseState.ATTACK_IN_FLIGHT;
         reason = DefenseReason.ATTACK_ISSUED;
         return decision();
@@ -115,13 +163,11 @@ public final class LimitedSelfDefenseSession {
                     : DefenseReason.ATTACK_FAILED;
             return DefenseReceiptStatus.ACCEPTED;
         }
-        if (receipt.outcome() == DefenseActionOutcome.SUCCEEDED) {
-            transitionTerminal(DefenseState.COMPLETED,
-                    DefenseReason.RETREAT_COMPLETED);
-        } else {
-            state = DefenseState.READY;
-            reason = DefenseReason.RETREAT_FAILED;
-        }
+        /* 撤退动作的 ACK 只说明输入层结束；是否脱战必须由下一份安全帧确认。 */
+        state = DefenseState.READY;
+        reason = receipt.outcome() == DefenseActionOutcome.SUCCEEDED
+                ? DefenseReason.RETREAT_COMPLETED
+                : DefenseReason.RETREAT_FAILED;
         return DefenseReceiptStatus.ACCEPTED;
     }
 
@@ -149,20 +195,31 @@ public final class LimitedSelfDefenseSession {
                 policy.maximumRetreatAttempts() - retreatsIssued);
     }
 
-    private DefenseDecision issueRetreat(DefenseReason retreatReason) {
+    private DefenseDecision issueRetreat(
+            DefenseReason retreatReason,
+            Optional<SafetyRetreat> safeRetreat) {
+        retreatRequired = true;
+        if (safeRetreat.isEmpty()) {
+            transitionTerminal(DefenseState.EXHAUSTED,
+                    DefenseReason.RETREAT_PATH_UNAVAILABLE);
+            return decision();
+        }
         if (retreatsIssued >= policy.maximumRetreatAttempts()) {
             transitionTerminal(DefenseState.EXHAUSTED,
                     DefenseReason.RETREAT_BUDGET_EXHAUSTED);
             return decision();
         }
         retreatsIssued++;
-        outstanding = newAction(DefenseActionKind.RETREAT);
+        outstanding = newAction(
+                DefenseActionKind.RETREAT, safeRetreat);
         state = DefenseState.RETREAT_IN_FLIGHT;
         reason = retreatReason;
         return decision();
     }
 
-    private DefenseActionRequest newAction(DefenseActionKind kind) {
+    private DefenseActionRequest newAction(
+            DefenseActionKind kind,
+            Optional<SafetyRetreat> safeRetreat) {
         long sequence = nextSequence;
         try {
             nextSequence = Math.incrementExact(nextSequence);
@@ -172,7 +229,11 @@ public final class LimitedSelfDefenseSession {
                     exception);
         }
         return new DefenseActionRequest(
-                request.runId(), request.target().entityId(), sequence, kind);
+                request.runId(),
+                request.target().entityId(),
+                sequence,
+                kind,
+                safeRetreat);
     }
 
     private void transitionTerminal(

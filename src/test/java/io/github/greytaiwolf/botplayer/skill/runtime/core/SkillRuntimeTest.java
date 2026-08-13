@@ -146,6 +146,130 @@ class SkillRuntimeTest {
     }
 
     @Test
+    void safetyPauseCancelsCurrentWorkReleasesLeasesAndReobservesOnResume() {
+        TestHandler handler = new TestHandler();
+        handler.reserve = true;
+        SkillRuntime runtime = runtime(handler, 40);
+        UUID runId = runtime.submit(request(oneNodePlan(), 0L))
+                .runId().orElseThrow();
+
+        runtime.tick(0L);
+        SkillRunView waiting = runtime.inspectRun(runId).orElseThrow();
+        Assertions.assertEquals(SkillRunState.WAITING_ACTION, waiting.state());
+        Assertions.assertEquals(1, handler.reservations.activeLeaseCount(0L));
+
+        Assertions.assertEquals(SkillRuntime.PauseStatus.PAUSED,
+                runtime.pauseForSafety(runId, 1L, "L0 hostile safety handoff"));
+        SkillRunView paused = runtime.inspectRun(runId).orElseThrow();
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.PAUSED,
+                        paused.state()),
+                () -> Assertions.assertEquals(1, handler.cancelledCount),
+                () -> Assertions.assertEquals(0,
+                        handler.reservations.activeLeaseCount(1L)),
+                () -> Assertions.assertEquals(1, runtime.activeRunCount()),
+                () -> Assertions.assertEquals(
+                        SkillRuntime.PauseStatus.ALREADY_PAUSED,
+                        runtime.pauseForSafety(
+                                runId, 1L, "same safety incident")));
+
+        Assertions.assertEquals(
+                io.github.greytaiwolf.botplayer.skill.core.SkillSignalInbox
+                        .OfferStatus.ENQUEUED,
+                runtime.offerSignal(signal(
+                        runId, waiting.stateRevision(), 1L)));
+        runtime.tick(1L);
+        Assertions.assertEquals(SkillRunState.PAUSED,
+                runtime.inspectRun(runId).orElseThrow().state(),
+                "late pre-pause completion must not revive a paused run");
+
+        Assertions.assertEquals(SkillRuntime.ResumeStatus.RESUMING,
+                runtime.resume(runId, 2L));
+        runtime.tick(2L);
+        SkillRunView resumed = runtime.inspectRun(runId).orElseThrow();
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.WAITING_ACTION,
+                        resumed.state()),
+                () -> Assertions.assertEquals(2, handler.startedNodes.size(),
+                        "resume must re-enter begin() for a fresh observation"),
+                () -> Assertions.assertEquals(1,
+                        handler.reservations.activeLeaseCount(2L)),
+                () -> Assertions.assertTrue(
+                        resumed.stateRevision() > paused.stateRevision()));
+    }
+
+    @Test
+    void safetyPauseCanStopAnUndispatchedCreatedRunWithoutMakingItTerminal() {
+        TestHandler handler = new TestHandler();
+        SkillRuntime runtime = runtime(handler, 40);
+        UUID runId = runtime.submit(request(oneNodePlan(), 0L))
+                .runId().orElseThrow();
+
+        Assertions.assertEquals(SkillRuntime.PauseStatus.PAUSED,
+                runtime.pauseForSafety(runId, 0L, "L0 stopped undispatched run"));
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.PAUSED,
+                        runtime.inspectRun(runId).orElseThrow().state()),
+                () -> Assertions.assertEquals(0, handler.startedNodes.size()),
+                () -> Assertions.assertEquals(1, runtime.activeRunCount()));
+
+        Assertions.assertEquals(SkillRuntime.ResumeStatus.RESUMING,
+                runtime.resume(runId, 1L));
+        runtime.tick(1L);
+        Assertions.assertEquals(SkillRunState.WAITING_ACTION,
+                runtime.inspectRun(runId).orElseThrow().state());
+    }
+
+    @Test
+    void safetyPauseKeepsTheOriginalGenerationAndDeadlineBound() {
+        TestHandler handler = new TestHandler();
+        SkillRuntime runtime = runtime(handler, 3);
+        UUID runId = runtime.submit(request(oneNodePlan(), 0L))
+                .runId().orElseThrow();
+        runtime.tick(0L);
+        SkillRunView active = runtime.inspectRun(runId).orElseThrow();
+
+        Assertions.assertEquals(SkillRuntime.PauseStatus.PAUSED,
+                runtime.pauseForSafety(runId, 1L, "L0 hostile safety handoff"));
+        SkillRunView paused = runtime.inspectRun(runId).orElseThrow();
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(active.botId(), paused.botId()),
+                () -> Assertions.assertEquals(active.botGeneration(),
+                        paused.botGeneration()),
+                () -> Assertions.assertEquals(active.deadlineTick(),
+                        paused.deadlineTick()));
+
+        runtime.tick(active.deadlineTick());
+        SkillRunView timedOut = runtime.inspectRun(runId).orElseThrow();
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.FAILED,
+                        timedOut.state()),
+                () -> Assertions.assertEquals(SkillFailureCode.TIMEOUT,
+                        timedOut.failureCode().orElseThrow()),
+                () -> Assertions.assertEquals(0, runtime.activeRunCount()));
+    }
+
+    @Test
+    void explicitHigherPriorityPreemptionRemainsTerminal() {
+        TestHandler handler = new TestHandler();
+        SkillRuntime runtime = runtime(handler, 40);
+        UUID runId = runtime.submit(request(oneNodePlan(), 0L))
+                .runId().orElseThrow();
+        runtime.tick(0L);
+        Assertions.assertEquals(SkillRuntime.PauseStatus.PAUSED,
+                runtime.pauseForSafety(runId, 1L, "ordinary L0 pause"));
+
+        Assertions.assertEquals(SkillRuntime.CancelStatus.PREEMPTED,
+                runtime.preempt(runId, 2L, "higher priority replacement"));
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.PREEMPTED,
+                        runtime.inspectRun(runId).orElseThrow().state()),
+                () -> Assertions.assertEquals(0, runtime.activeRunCount()),
+                () -> Assertions.assertEquals(SkillRuntime.ResumeStatus.NOT_ACTIVE,
+                        runtime.resume(runId, 2L)));
+    }
+
+    @Test
     void rejectsInvalidPlansAndUnavailableHandlersWithoutBindingRuns() {
         SkillRuntime noHandler = runtime(null, 40);
         SkillRunSubmission unavailable = noHandler.submit(
@@ -299,6 +423,7 @@ class SkillRuntimeTest {
         private boolean reserve;
         private boolean pauseFirstBegin;
         private boolean paused;
+        private int cancelledCount;
 
         @Override
         public List<ReservationRequest> requiredReservations(
@@ -337,6 +462,11 @@ class SkillRuntimeTest {
             return context.nodeIndex() == 0
                     ? SkillNodeDirective.complete("测试节点已验证")
                     : SkillNodeDirective.complete("第二个测试节点已验证");
+        }
+
+        @Override
+        public void cancelled(SkillNodeContext context, String reason) {
+            cancelledCount++;
         }
     }
 }

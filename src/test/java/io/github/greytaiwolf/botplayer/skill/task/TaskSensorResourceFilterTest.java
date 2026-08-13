@@ -1,8 +1,14 @@
 package io.github.greytaiwolf.botplayer.skill.task;
 
+import io.github.greytaiwolf.botplayer.action.interaction.menu.FurnaceKind;
 import java.util.HashSet;
 import java.util.UUID;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.AbstractFurnaceMenu;
+import net.minecraft.world.inventory.BlastFurnaceMenu;
+import net.minecraft.world.inventory.FurnaceMenu;
+import net.minecraft.world.inventory.SmokerMenu;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -23,6 +29,26 @@ class TaskSensorResourceFilterTest {
                 () -> Assertions.assertFalse(filter.accepts("minecraft:stone")),
                 () -> Assertions.assertFalse(filter.accepts("minecraft:oak_wood")),
                 () -> Assertions.assertTrue(filter.accepts("minecraft:oak_log")));
+    }
+
+    @Test
+    void taskSensorDoesNotBroadenFurnaceEvidenceToAbstractMenuSubclasses() {
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(FurnaceKind.FURNACE,
+                        MinecraftTaskSensorAdapter.exactVanillaFurnaceKind(
+                                FurnaceMenu.class).orElseThrow()),
+                () -> Assertions.assertEquals(FurnaceKind.BLAST_FURNACE,
+                        MinecraftTaskSensorAdapter.exactVanillaFurnaceKind(
+                                BlastFurnaceMenu.class).orElseThrow()),
+                () -> Assertions.assertEquals(FurnaceKind.SMOKER,
+                        MinecraftTaskSensorAdapter.exactVanillaFurnaceKind(
+                                SmokerMenu.class).orElseThrow()),
+                () -> Assertions.assertTrue(MinecraftTaskSensorAdapter
+                        .exactVanillaFurnaceKind(
+                                AbstractContainerMenu.class).isEmpty()),
+                () -> Assertions.assertTrue(MinecraftTaskSensorAdapter
+                        .exactVanillaFurnaceKind(
+                                AbstractFurnaceMenu.class).isEmpty()));
     }
 
     @Test

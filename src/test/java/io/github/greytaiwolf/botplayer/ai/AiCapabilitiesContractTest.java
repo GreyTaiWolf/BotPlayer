@@ -77,7 +77,7 @@ class AiCapabilitiesContractTest {
                 ProviderHealthState.RATE_LIMITED,
                 OBSERVED_AT,
                 Optional.of(OBSERVED_AT.plusSeconds(30L)),
-                Optional.of("http_429"));
+                Optional.of(AiReasonCode.RATE_LIMITED.wireCode()));
         Assertions.assertFalse(limited.acceptingRequests());
 
         Assertions.assertThrows(
@@ -95,7 +95,7 @@ class AiCapabilitiesContractTest {
                         ProviderHealthState.RATE_LIMITED,
                         OBSERVED_AT,
                         Optional.of(OBSERVED_AT.minusSeconds(1L)),
-                        Optional.of("http_429")));
+                        Optional.of(AiReasonCode.RATE_LIMITED.wireCode())));
         Assertions.assertThrows(
                 IllegalArgumentException.class,
                 () -> new ProviderHealth(
@@ -103,7 +103,16 @@ class AiCapabilitiesContractTest {
                         ProviderHealthState.UNAVAILABLE,
                         OBSERVED_AT,
                         Optional.empty(),
-                        Optional.of("unsafe detail")));
+                        Optional.of("sk-live-unsafe-detail")));
+
+        ProviderHealth clientFailure = new ProviderHealth(
+                "deepseek",
+                ProviderHealthState.UNAVAILABLE,
+                OBSERVED_AT,
+                Optional.empty(),
+                Optional.of(AiReasonCode.NETWORK_FAILURE.wireCode()));
+        Assertions.assertEquals(AiReasonCode.NETWORK_FAILURE.wireCode(),
+                clientFailure.reasonCode().orElseThrow());
     }
 
     private static AiModelCapabilities model(
