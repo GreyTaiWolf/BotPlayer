@@ -53,7 +53,7 @@ public final class P5ARestartGameTestSupport {
     static final String BOT_NAME = "p5_r5tart1_boot";
     static final int PERSISTED_ITEM_SLOT = 35;
     static final Vec3 SOURCE_POSITION =
-            new Vec3(4.5D, 1.0D, 4.5D);
+            new Vec3(11.5D, 1.0D, 4.5D);
 
     private static final int COMPLETED_LOG_FRAGMENTS = 4;
     /* Mirrors the bounded radius observed by MinecraftSkillCheckpointScopeObserver. */
