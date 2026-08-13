@@ -636,7 +636,7 @@ public final class P5RecipeMenuGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "recipe_blast_target_mismatch");
-        TestBot bot = fixture.spawn("mismatch");
+        TestBot bot = fixture.spawn("mmism");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             bot.player().getInventory().clearContent();
@@ -715,7 +715,7 @@ public final class P5RecipeMenuGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "recipe_smoker_cancel_cursor");
-        TestBot bot = fixture.spawn("smoker_cancel");
+        TestBot bot = fixture.spawn("smcan");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             bot.player().getInventory().clearContent();
@@ -770,7 +770,7 @@ public final class P5RecipeMenuGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "recipe_blast_replacement_wait");
-        TestBot bot = fixture.spawn("blast_change");
+        TestBot bot = fixture.spawn("blchg");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             bot.player().getInventory().clearContent();
@@ -918,7 +918,7 @@ public final class P5RecipeMenuGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "single_chest_transfer_partial_withdraw");
-        TestBot bot = fixture.spawn("partial_withdraw");
+        TestBot bot = fixture.spawn("pwith");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             bot.player().getInventory().clearContent();
@@ -1003,7 +1003,7 @@ public final class P5RecipeMenuGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "single_chest_transfer_partial_deposit");
-        TestBot bot = fixture.spawn("partial_deposit");
+        TestBot bot = fixture.spawn("pdepo");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             bot.player().getInventory().clearContent();

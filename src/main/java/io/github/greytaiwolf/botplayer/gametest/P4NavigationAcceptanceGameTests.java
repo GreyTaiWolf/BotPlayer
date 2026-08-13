@@ -32,6 +32,8 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @PrefixGameTestTemplate(false)
 public final class P4NavigationAcceptanceGameTests {
     private static final String BATCH = "p4_navigation";
+    private static final String RECOVERY_BATCH =
+            "p4_navigation_recovery";
     private static final String TERRAIN_BREAK_BATCH =
             "p4_terrain_break";
     private static final String TERRAIN_PLACE_BATCH =
@@ -236,7 +238,7 @@ public final class P4NavigationAcceptanceGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = RECOVERY_BATCH,
             timeoutTicks = TIMEOUT_TICKS)
     public static void transientPassiveEntityWaitsBeforeContinuing(
             GameTestHelper helper) {
@@ -317,7 +319,7 @@ public final class P4NavigationAcceptanceGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = RECOVERY_BATCH,
             timeoutTicks = TIMEOUT_TICKS)
     public static void forcedStuckRecoveryStopsBeforeReplanning(
             GameTestHelper helper) {

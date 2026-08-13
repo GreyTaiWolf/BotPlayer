@@ -68,7 +68,7 @@ public final class P5WheatFarmingGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "wheat_harvest_replant_success");
-        TestBot bot = fixture.spawn("farmer");
+        TestBot bot = fixture.spawn("farmr");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             prepareSeeds(bot, 2);
@@ -142,7 +142,7 @@ public final class P5WheatFarmingGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "wheat_target_mutation");
-        TestBot bot = fixture.spawn("farmer");
+        TestBot bot = fixture.spawn("farmr");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             prepareSeeds(bot, 2);
@@ -203,7 +203,7 @@ public final class P5WheatFarmingGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "wheat_insufficient_storage");
-        TestBot bot = fixture.spawn("farmer");
+        TestBot bot = fixture.spawn("farmr");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             prepareSeeds(bot, 2);
@@ -269,7 +269,7 @@ public final class P5WheatFarmingGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "wheat_post_harvest_target_mutation");
-        TestBot bot = fixture.spawn("farmer");
+        TestBot bot = fixture.spawn("farmr");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             prepareSeeds(bot, 2);
@@ -348,7 +348,7 @@ public final class P5WheatFarmingGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "wheat_cancel_queued_harvest");
-        TestBot bot = fixture.spawn("farmer");
+        TestBot bot = fixture.spawn("farmr");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             prepareSeeds(bot, 2);

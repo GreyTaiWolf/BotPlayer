@@ -74,7 +74,7 @@ public final class P5VillagerTradeGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "villager_trade_success");
-        TestBot bot = fixture.spawn("trader");
+        TestBot bot = fixture.spawn("trade");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         Villager villager = spawnVillager(helper, cleanup);
         MerchantOffer offer = offer(villager);
@@ -150,7 +150,7 @@ public final class P5VillagerTradeGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "villager_trade_price_drift");
-        TestBot bot = fixture.spawn("trader");
+        TestBot bot = fixture.spawn("trade");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         Villager villager = spawnVillager(helper, cleanup);
         MerchantOffer offer = offer(villager);
@@ -206,7 +206,7 @@ public final class P5VillagerTradeGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "villager_trade_level_boundary");
-        TestBot bot = fixture.spawn("trader");
+        TestBot bot = fixture.spawn("trade");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         Villager villager = spawnVillager(helper, cleanup);
         MerchantOffer offer = offer(villager);
@@ -264,7 +264,7 @@ public final class P5VillagerTradeGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "villager_trade_cancel");
-        TestBot bot = fixture.spawn("trader");
+        TestBot bot = fixture.spawn("trade");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         Villager villager = spawnVillager(helper, cleanup);
         MerchantOffer offer = offer(villager);

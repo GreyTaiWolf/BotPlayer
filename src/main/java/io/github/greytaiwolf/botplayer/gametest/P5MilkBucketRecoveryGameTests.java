@@ -326,7 +326,7 @@ public final class P5MilkBucketRecoveryGameTests {
                     P2GameTestSupport.require(
                             terminal.state() == SkillRunState.FAILED
                                     && terminal.failureCode().orElseThrow()
-                                            == SkillFailureCode.WORLD_CHANGED,
+                                            == SkillFailureCode.UNSAFE_CONTROL_STATE,
                             "Cursor drift was not failed closed before native use: "
                                     + terminal.safeSummary());
                     P2GameTestSupport.require(

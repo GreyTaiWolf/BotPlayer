@@ -74,7 +74,7 @@ public final class P5AnimalBreedingGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "vanilla_cow_breeding_success");
-        TestBot bot = fixture.spawn("breeder");
+        TestBot bot = fixture.spawn("breed");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             Cow first = adultCow(helper, FIRST_COW_POSITION);
@@ -143,7 +143,7 @@ public final class P5AnimalBreedingGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "vanilla_cow_breeding_cancel");
-        TestBot bot = fixture.spawn("breeder");
+        TestBot bot = fixture.spawn("breed");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             Cow first = adultCow(helper, FIRST_COW_POSITION);
@@ -202,7 +202,7 @@ public final class P5AnimalBreedingGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "vanilla_cow_breeding_partner_drift");
-        TestBot bot = fixture.spawn("breeder");
+        TestBot bot = fixture.spawn("breed");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             Cow first = adultCow(helper, FIRST_COW_POSITION);
@@ -267,7 +267,7 @@ public final class P5AnimalBreedingGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "vanilla_cow_breeding_skill_held_count_drift");
-        TestBot bot = fixture.spawn("breeder");
+        TestBot bot = fixture.spawn("breed");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             Cow first = adultCow(helper, FIRST_COW_POSITION);
@@ -329,7 +329,7 @@ public final class P5AnimalBreedingGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "vanilla_cow_breeding_held_item_drift");
-        TestBot bot = fixture.spawn("breeder");
+        TestBot bot = fixture.spawn("breed");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             Cow target = adultCow(helper, FIRST_COW_POSITION);

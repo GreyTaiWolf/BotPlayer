@@ -70,7 +70,7 @@ public final class P5SugarCaneFarmingGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "sugar_cane_harvest_success");
-        TestBot bot = fixture.spawn("farmer");
+        TestBot bot = fixture.spawn("farmr");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             prepareEmptyInventory(bot);
@@ -137,7 +137,7 @@ public final class P5SugarCaneFarmingGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "sugar_cane_cancel_queued");
-        TestBot bot = fixture.spawn("farmer");
+        TestBot bot = fixture.spawn("farmr");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             prepareEmptyInventory(bot);
@@ -183,7 +183,7 @@ public final class P5SugarCaneFarmingGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "sugar_cane_base_mutation");
-        TestBot bot = fixture.spawn("farmer");
+        TestBot bot = fixture.spawn("farmr");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             prepareEmptyInventory(bot);
@@ -249,7 +249,7 @@ public final class P5SugarCaneFarmingGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "sugar_cane_insufficient_storage");
-        TestBot bot = fixture.spawn("farmer");
+        TestBot bot = fixture.spawn("farmr");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             fillStorage(bot);
@@ -306,7 +306,7 @@ public final class P5SugarCaneFarmingGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "sugar_cane_third_segment_race");
-        TestBot bot = fixture.spawn("farmer");
+        TestBot bot = fixture.spawn("farmr");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             prepareEmptyInventory(bot);
@@ -374,7 +374,7 @@ public final class P5SugarCaneFarmingGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "sugar_cane_post_break_base_drift");
-        TestBot bot = fixture.spawn("farmer");
+        TestBot bot = fixture.spawn("farmr");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             prepareEmptyInventory(bot);

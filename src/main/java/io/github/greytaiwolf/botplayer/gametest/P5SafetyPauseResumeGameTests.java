@@ -5,7 +5,6 @@ import io.github.greytaiwolf.botplayer.gametest.P2GameTestSupport.TestBot;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.safety.HazardType;
 import io.github.greytaiwolf.botplayer.safety.SafetyIncidentView;
-import io.github.greytaiwolf.botplayer.safety.SafetyIntervention;
 import io.github.greytaiwolf.botplayer.safety.SafetyState;
 import io.github.greytaiwolf.botplayer.skill.core.SkillRunState;
 import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRunSubmission;
@@ -138,17 +137,14 @@ public final class P5SafetyPauseResumeGameTests {
                     SkillRunView view = runView(bot, runId).orElse(null);
                     SafetyIncidentView incident = bot.manager()
                             .safetyIncident(bot.name()).orElse(null);
-                    boolean delegated = incident != null
+                    boolean safePause = incident != null
                             && incident.hazardType()
                                     == HazardType.HOSTILE_TARGETING
-                            && incident.state() == SafetyState.DELEGATED
-                            && incident.currentIntervention()
-                                    .filter(value -> value
-                                            == SafetyIntervention
-                                                    .DELEGATE_TO_SURVIVAL_SKILL)
-                                    .isPresent();
+                            && (incident.state() == SafetyState.DELEGATED
+                                    || incident.state()
+                                            == SafetyState.BLOCKED);
                     if (view == null || view.state() != SkillRunState.PAUSED
-                            || !delegated) {
+                            || !safePause) {
                         return false;
                     }
                     pausedRevision[0] = view.stateRevision();

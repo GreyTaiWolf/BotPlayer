@@ -26,6 +26,7 @@ import net.minecraft.world.level.block.ChestBlock;
 import net.minecraft.world.level.block.entity.BarrelBlockEntity;
 import net.minecraft.world.level.block.entity.ChestBlockEntity;
 import net.minecraft.world.level.block.entity.ShulkerBoxBlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.ChestType;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
@@ -67,7 +68,7 @@ public final class P5VanillaContainerGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "double_chest_partial_withdraw");
-        TestBot bot = fixture.spawn("partial_withdraw");
+        TestBot bot = fixture.spawn("pwith");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             clearBotInventory(bot);
@@ -106,7 +107,7 @@ public final class P5VanillaContainerGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "double_chest_whole_deposit");
-        TestBot bot = fixture.spawn("whole_deposit");
+        TestBot bot = fixture.spawn("wdepo");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             givePlayerMainInventory(bot, STACK_SIZE);
@@ -148,7 +149,7 @@ public final class P5VanillaContainerGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "barrel_whole_withdraw");
-        TestBot bot = fixture.spawn("whole_withdraw");
+        TestBot bot = fixture.spawn("wwith");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             clearBotInventory(bot);
@@ -187,7 +188,7 @@ public final class P5VanillaContainerGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "barrel_partial_deposit");
-        TestBot bot = fixture.spawn("partial_deposit");
+        TestBot bot = fixture.spawn("pdepo");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             givePlayerMainInventory(bot, STACK_SIZE);
@@ -228,7 +229,7 @@ public final class P5VanillaContainerGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "shulker_partial_withdraw");
-        TestBot bot = fixture.spawn("partial_withdraw");
+        TestBot bot = fixture.spawn("pwith");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             clearBotInventory(bot);
@@ -268,7 +269,7 @@ public final class P5VanillaContainerGameTests {
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.isolatedFixture(helper,
                         "shulker_whole_deposit");
-        TestBot bot = fixture.spawn("whole_deposit");
+        TestBot bot = fixture.spawn("wdepo");
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         try {
             givePlayerMainInventory(bot, STACK_SIZE);
@@ -357,8 +358,9 @@ public final class P5VanillaContainerGameTests {
             GameTestHelper helper, BlockPos relativeFirst) {
         BlockPos first = helper.absolutePos(relativeFirst);
         BlockPos second = first.east();
-        helper.setBlock(relativeFirst, Blocks.CHEST);
-        helper.setBlock(relativeFirst.east(), Blocks.CHEST);
+        /* GameTest setBlock bypasses vanilla placement, so encode both linked chest halves explicitly. */
+        helper.setBlock(relativeFirst, doubleChestState(ChestType.LEFT));
+        helper.setBlock(relativeFirst.east(), doubleChestState(ChestType.RIGHT));
         ChestType firstType = helper.getLevel().getBlockState(first)
                 .getValue(ChestBlock.TYPE);
         ChestType secondType = helper.getLevel().getBlockState(second)
@@ -370,6 +372,13 @@ public final class P5VanillaContainerGameTests {
                 "Double-chest fixture did not form two complementary chest halves");
         return new DoubleChestFixture(
                 first, chestEntity(helper, first), chestEntity(helper, second));
+    }
+
+    private static BlockState doubleChestState(ChestType type) {
+        return Blocks.CHEST.defaultBlockState()
+                .setValue(ChestBlock.FACING, Direction.NORTH)
+                .setValue(ChestBlock.TYPE, type)
+                .setValue(ChestBlock.WATERLOGGED, false);
     }
 
     private static void clearBotInventory(TestBot bot) {
