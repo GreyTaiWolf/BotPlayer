@@ -13,6 +13,11 @@ import org.jetbrains.annotations.Nullable;
  * reads only make diagnostics safe and do not authorize off-thread world access.
  */
 public final class BotRuntimeHandle {
+    /*
+     * 恢复 floor 后生命周期至少还需要一次 attach 与一次 detach；允许把 detached
+     * handle 停在 Long.MAX_VALUE，但绝不允许下一次 ++ 悄悄翻成负数。
+     */
+    private static final long MAXIMUM_REBASE_FLOOR = Long.MAX_VALUE - 2L;
     private final UUID botId;
     private final String name;
     @Nullable
@@ -46,6 +51,29 @@ public final class BotRuntimeHandle {
         return generation;
     }
 
+    /**
+     * 在进程重启后的首次 attach 前，把内存 generation 下限重新锚定到耐久协议已经
+     * 见过的代际。随后 {@link #attach(BotServerPlayer)} 仍会递增一次，因此新 body
+     * 必定严格晚于 checkpoint/tombstone 中的旧 body。
+     *
+     * <p>这不是一般性的 generation 跳转入口：已有 body 时拒绝调用，且绝不降低当前
+     * 内存代际。生命周期只能从经过完整性校验的持久记录传入 floor。
+     */
+    public void rebaseGenerationFloorBeforeAttach(long durableFloor) {
+        if (durableFloor < 0L
+                || durableFloor > MAXIMUM_REBASE_FLOOR) {
+            throw new IllegalArgumentException(
+                    "durable generation floor must allow one attach and detach");
+        }
+        if (player != null) {
+            throw new IllegalStateException(
+                    "Cannot rebase generation while a player is attached");
+        }
+        if (generation < durableFloor) {
+            generation = durableFloor;
+        }
+    }
+
     public void attach(BotServerPlayer newPlayer) {
         Objects.requireNonNull(newPlayer, "newPlayer");
         if (!newPlayer.getUUID().equals(botId)) {
@@ -58,14 +86,14 @@ public final class BotRuntimeHandle {
         if (player == newPlayer) {
             return;
         }
-        generation++;
+        generation = nextGeneration("attach");
         player = newPlayer;
     }
 
     public void detach(BotServerPlayer expectedPlayer) {
         Objects.requireNonNull(expectedPlayer, "expectedPlayer");
         if (player == expectedPlayer) {
-            generation++;
+            generation = nextGeneration("detach");
             player = null;
         }
     }
@@ -79,6 +107,20 @@ public final class BotRuntimeHandle {
             throw new IllegalStateException(
                     "Cannot rotate a generation for a non-authoritative player");
         }
-        generation++;
+        generation = nextGeneration("rotate");
+    }
+
+    private long nextGeneration(String operation) {
+        if (generation == Long.MAX_VALUE) {
+            throw new IllegalStateException(
+                    "Bot runtime generation is exhausted during " + operation);
+        }
+        try {
+            return Math.incrementExact(generation);
+        } catch (ArithmeticException exception) {
+            throw new IllegalStateException(
+                    "Bot runtime generation overflow during " + operation,
+                    exception);
+        }
     }
 }

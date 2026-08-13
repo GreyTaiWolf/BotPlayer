@@ -48,6 +48,8 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @PrefixGameTestTemplate(false)
 public final class P4SafetyAcceptanceGameTests {
     private static final String BATCH = "p4_safety";
+    private static final String AGGRO_NAVIGATION_BATCH =
+            "p4_aggro_navigation";
     private static final String AGGRO_DAMAGE_BATCH =
             "p4_aggro_damage";
     private static final String STARVATION_BATCH =
@@ -69,7 +71,7 @@ public final class P4SafetyAcceptanceGameTests {
                             BotPlayer.MOD_ID,
                             "compatibility_probe"));
     private static final int TIMEOUT_TICKS = 300;
-    private static final int HOSTILE_FALLBACK_STABLE_TICKS = 8;
+    private static final int HOSTILE_DELEGATION_STABLE_TICKS = 8;
 
     private P4SafetyAcceptanceGameTests() {}
 
@@ -466,9 +468,9 @@ public final class P4SafetyAcceptanceGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
-            batch = BATCH,
+            batch = AGGRO_NAVIGATION_BATCH,
             timeoutTicks = TIMEOUT_TICKS)
-    public static void zombieTargetingPreemptsOrdinaryNavigation(
+    public static void zombieTargetingDelegatesAfterPreemptingNavigation(
             GameTestHelper helper) {
         P2GameTestSupport.prepareEmptyFloor(helper);
         Difficulty previousDifficulty =
@@ -476,24 +478,25 @@ public final class P4SafetyAcceptanceGameTests {
                         .getServer()
                         .getWorldData()
                         .getDifficulty();
-        helper.getLevel()
-                .getServer()
-                .setDifficulty(Difficulty.NORMAL, true);
-        TestBot bot = P2GameTestSupport.spawnBot(
-                helper,
-                null,
-                "P4Aggro",
-                new Vec3(4.5D, 1.0D, 4.5D),
-                0.0F);
-        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
-        Zombie zombie = Objects.requireNonNull(
-                EntityType.ZOMBIE.create(helper.getLevel()),
-                "GameTest zombie");
-        cleanup.add(() -> zombie.discard());
+        P2GameTestSupport.Cleanup cleanup = cleanup();
         cleanup.add(() -> helper.getLevel()
                 .getServer()
                 .setDifficulty(previousDifficulty, true));
         try {
+            helper.getLevel()
+                    .getServer()
+                    .setDifficulty(Difficulty.NORMAL, true);
+            TestBot bot = P2GameTestSupport.spawnBot(
+                    helper,
+                    null,
+                    "P4Aggro",
+                    new Vec3(4.5D, 1.0D, 4.5D),
+                    0.0F);
+            trackBot(cleanup, bot);
+            Zombie zombie = Objects.requireNonNull(
+                    EntityType.ZOMBIE.create(helper.getLevel()),
+                    "GameTest zombie");
+            cleanup.add(zombie::discard);
             Vec3 zombiePosition = helper.absoluteVec(
                     new Vec3(4.5D, 1.0D, 3.0D));
             zombie.moveTo(
@@ -518,12 +521,11 @@ public final class P4SafetyAcceptanceGameTests {
             P2GameTestSupport.require(
                     navigation.status()
                             == NavigationSubmission.Status.ENQUEUED,
-                    "Navigation setup was rejected before hostile preemption");
+                    "Navigation setup was rejected before hostile delegation");
             boolean[] observedSuspended = {false};
-            boolean[] observedRetreat = {false};
-            boolean[] everDelegated = {false};
-            boolean[] everStartedSurvivalSkill = {false};
-            int[] stableFallbackTicks = {0};
+            boolean[] observedDelegated = {false};
+            boolean[] observedSelfDefense = {false};
+            int[] stableDelegationTicks = {0};
 
             P2GameTestSupport.awaitCondition(
                     helper,
@@ -550,26 +552,21 @@ public final class P4SafetyAcceptanceGameTests {
                                                                 == SafetyIntervention
                                                                         .DELEGATE_TO_SURVIVAL_SKILL)
                                                 .isPresent());
-                        everDelegated[0] |= delegatedThisTick;
+                        observedDelegated[0] |= delegatedThisTick;
                         boolean hostileIncidentActive = incident != null
                                 && incident.hazardType()
                                         == HazardType
                                                 .HOSTILE_TARGETING;
-                        boolean retreatThisTick =
-                                hostileIncidentActive
-                                        && incident
-                                                .currentIntervention()
-                                                .filter(value ->
-                                                        value
-                                                                == SafetyIntervention
-                                                                        .RETREAT_FROM_HOSTILE)
-                                                .isPresent();
-                        observedRetreat[0] |= retreatThisTick;
-                        boolean survivalSkillActive = bot.manager()
-                                .survivalSkillRun(bot.name())
+                        boolean selfDefenseThisTick = bot.manager()
+                                .selfDefenseRun(bot.player().getUUID())
+                                .filter(view -> view.generation()
+                                                == bot.player()
+                                                        .runtimeHandle()
+                                                        .generation()
+                                        && view.targetId().equals(
+                                                zombie.getUUID()))
                                 .isPresent();
-                        everStartedSurvivalSkill[0] |=
-                                survivalSkillActive;
+                        observedSelfDefense[0] |= selfDefenseThisTick;
                         boolean targetingThreat = bot.manager()
                                         .latestSafetyFrame(bot.name())
                                         .stream()
@@ -582,36 +579,40 @@ public final class P4SafetyAcceptanceGameTests {
                                                                                 .getUUID())
                                                         && threat
                                                                 .targetingBot());
-                        boolean stableFallback = observedRetreat[0]
+                        boolean stableDelegation = delegatedThisTick
                                 && navigationSuspended
                                 && hostileIncidentActive
-                                && !delegatedThisTick
-                                && !survivalSkillActive
+                                && selfDefenseThisTick
                                 && targetingThreat
                                 && zombie.getTarget()
                                         == bot.player();
-                        if (stableFallback) {
-                            stableFallbackTicks[0]++;
-                        } else if (observedRetreat[0]) {
-                            stableFallbackTicks[0] = 0;
+                        if (stableDelegation) {
+                            stableDelegationTicks[0]++;
+                        } else if (observedDelegated[0]) {
+                            stableDelegationTicks[0] = 0;
                         }
                         return observedSuspended[0]
-                                && observedRetreat[0]
-                                && stableFallbackTicks[0]
-                                        >= HOSTILE_FALLBACK_STABLE_TICKS;
+                                && observedDelegated[0]
+                                && observedSelfDefense[0]
+                                && stableDelegationTicks[0]
+                                        >= HOSTILE_DELEGATION_STABLE_TICKS;
                     },
-                    "P4 did not sustain hostile retreat authority after suspending navigation",
+                    "P5A self-defense did not sustain hostile delegation after suspending navigation",
                     cleanup,
                     () -> {
                         P2GameTestSupport.require(
-                                observedRetreat[0]
-                                        && stableFallbackTicks[0]
-                                                >= HOSTILE_FALLBACK_STABLE_TICKS,
-                                "P4 did not reach a stable RETREAT_FROM_HOSTILE window");
+                                observedDelegated[0]
+                                        && observedSelfDefense[0]
+                                        && stableDelegationTicks[0]
+                                                >= HOSTILE_DELEGATION_STABLE_TICKS,
+                                "P5A self-defense did not reach a stable delegated window");
                         P2GameTestSupport.require(
-                                !everDelegated[0]
-                                        && !everStartedSurvivalSkill[0],
-                                "Incomplete P5 self-defense intercepted the P4 hostile fallback");
+                                bot.manager()
+                                        .selfDefenseRun(bot.player().getUUID())
+                                        .filter(view -> view.targetId().equals(
+                                                zombie.getUUID()))
+                                        .isPresent(),
+                                "P5A self-defense did not retain the hostile run view");
                         P2GameTestSupport.require(
                                 zombie.getTarget() == bot.player(),
                                 "Zombie no longer targeted the real bot body");
@@ -623,19 +624,14 @@ public final class P4SafetyAcceptanceGameTests {
                                                                 == HazardType
                                                                         .HOSTILE_TARGETING
                                                         && incident
-                                                                .currentIntervention()
-                                                                .filter(value ->
-                                                                        value
-                                                                                == SafetyIntervention
-                                                                                        .DELEGATE_TO_SURVIVAL_SKILL)
-                                                                .isEmpty())
+                                                .currentIntervention()
+                                                .filter(value ->
+                                                        value
+                                                                == SafetyIntervention
+                                                                        .DELEGATE_TO_SURVIVAL_SKILL)
+                                                                .isPresent())
                                         .isPresent(),
-                                "Hostile preemption bypassed the P4 fallback");
-                        P2GameTestSupport.require(
-                                bot.manager()
-                                        .survivalSkillRun(bot.name())
-                                        .isEmpty(),
-                                "Incomplete P5 self-defense intercepted the P4 hostile fallback");
+                                "Hostile preemption did not retain P5A delegation");
                         cleanup.run();
                         helper.succeed();
                     });
@@ -673,24 +669,25 @@ public final class P4SafetyAcceptanceGameTests {
                         .getServer()
                         .getWorldData()
                         .getDifficulty();
-        helper.getLevel()
-                .getServer()
-                .setDifficulty(Difficulty.NORMAL, true);
-        TestBot bot = P2GameTestSupport.spawnBot(
-                helper,
-                null,
-                "P4MobHit",
-                new Vec3(4.5D, 1.0D, 4.2D),
-                0.0F);
-        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
-        Zombie zombie = Objects.requireNonNull(
-                EntityType.ZOMBIE.create(helper.getLevel()),
-                "GameTest attacking zombie");
-        cleanup.add(zombie::discard);
+        P2GameTestSupport.Cleanup cleanup = cleanup();
         cleanup.add(() -> helper.getLevel()
                 .getServer()
                 .setDifficulty(previousDifficulty, true));
         try {
+            helper.getLevel()
+                    .getServer()
+                    .setDifficulty(Difficulty.NORMAL, true);
+            TestBot bot = P2GameTestSupport.spawnBot(
+                    helper,
+                    null,
+                    "P4MobHit",
+                    new Vec3(4.5D, 1.0D, 4.2D),
+                    0.0F);
+            trackBot(cleanup, bot);
+            Zombie zombie = Objects.requireNonNull(
+                    EntityType.ZOMBIE.create(helper.getLevel()),
+                    "GameTest attacking zombie");
+            cleanup.add(zombie::discard);
             zombie.setItemSlot(
                     EquipmentSlot.HEAD,
                     new ItemStack(Items.DIAMOND_HELMET));
@@ -757,20 +754,21 @@ public final class P4SafetyAcceptanceGameTests {
                         .getServer()
                         .getWorldData()
                         .getDifficulty();
-        helper.getLevel()
-                .getServer()
-                .setDifficulty(Difficulty.HARD, true);
-        TestBot bot = P2GameTestSupport.spawnBot(
-                helper,
-                null,
-                "P4Starve",
-                new Vec3(4.5D, 1.0D, 4.5D),
-                0.0F);
-        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        P2GameTestSupport.Cleanup cleanup = cleanup();
         cleanup.add(() -> helper.getLevel()
                 .getServer()
                 .setDifficulty(previousDifficulty, true));
         try {
+            helper.getLevel()
+                    .getServer()
+                    .setDifficulty(Difficulty.HARD, true);
+            TestBot bot = P2GameTestSupport.spawnBot(
+                    helper,
+                    null,
+                    "P4Starve",
+                    new Vec3(4.5D, 1.0D, 4.5D),
+                    0.0F);
+            trackBot(cleanup, bot);
             bot.player().getFoodData().setFoodLevel(0);
             bot.player().getFoodData().setSaturation(0.0F);
             bot.player().getFoodData().setExhaustion(6.0F);
@@ -1290,10 +1288,19 @@ public final class P4SafetyAcceptanceGameTests {
 
     private static P2GameTestSupport.Cleanup cleanup(
             TestBot bot) {
-        P2GameTestSupport.Cleanup cleanup =
-                new P2GameTestSupport.Cleanup();
+        P2GameTestSupport.Cleanup cleanup = cleanup();
+        trackBot(cleanup, bot);
+        return cleanup;
+    }
+
+    private static P2GameTestSupport.Cleanup cleanup() {
+        return new P2GameTestSupport.Cleanup();
+    }
+
+    private static void trackBot(
+            P2GameTestSupport.Cleanup cleanup,
+            TestBot bot) {
         cleanup.add(() -> P2GameTestSupport.removeBot(
                 bot, "P4 safety GameTest completed"));
-        return cleanup;
     }
 }

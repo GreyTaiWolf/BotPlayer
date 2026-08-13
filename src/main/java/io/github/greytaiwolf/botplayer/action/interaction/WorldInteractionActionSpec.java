@@ -2,6 +2,11 @@ package io.github.greytaiwolf.botplayer.action.interaction;
 
 import io.github.greytaiwolf.botplayer.action.ActionChannel;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSwapPlan;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.P5ARecipe;
+import io.github.greytaiwolf.botplayer.skill.menu.MenuFamily;
+import io.github.greytaiwolf.botplayer.skill.menu.MenuSlotRole;
+import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionLimits;
+import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionTemplate;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -11,9 +16,13 @@ public sealed interface WorldInteractionActionSpec
    permits WorldInteractionActionSpec.SelectHotbar,
    WorldInteractionActionSpec.SwapInventoryHotbar,
    WorldInteractionActionSpec.InventoryMenuSwap,
+   WorldInteractionActionSpec.WorldMenuTransaction,
+   WorldInteractionActionSpec.WorldMenuTransfer,
+   WorldInteractionActionSpec.WorldMenuRecipe,
    WorldInteractionActionSpec.UseItem,
    WorldInteractionActionSpec.ReleaseUse,
    WorldInteractionActionSpec.UseOnBlock,
+   WorldInteractionActionSpec.PlaceBlock,
    WorldInteractionActionSpec.BreakBlock,
    WorldInteractionActionSpec.AttackEntity,
    WorldInteractionActionSpec.InteractEntity,
@@ -142,9 +151,13 @@ public sealed interface WorldInteractionActionSpec
       SELECT_HOTBAR,
       SWAP_INVENTORY_HOTBAR,
       INVENTORY_MENU_SWAP,
+      WORLD_MENU_TRANSACTION,
+      WORLD_MENU_TRANSFER,
+      WORLD_MENU_RECIPE,
       USE_ITEM,
       RELEASE_USE,
       USE_ON_BLOCK,
+      PLACE_BLOCK,
       BREAK_BLOCK,
       ATTACK_ENTITY,
       INTERACT_ENTITY,
@@ -179,6 +192,210 @@ public sealed interface WorldInteractionActionSpec
       }
    }
 
+   /**
+    * 在同一动作内以原版右键打开（或复用 native 2×2 背包菜单）、严格核验并关闭
+    * 一个 P5A 白名单 menu。模板不含 window id，实际会话身份只在打开后绑定。
+    */
+   public static record WorldMenuTransaction(
+      WorldInteractionActionSpec.Hand hand,
+      Optional<BlockHitTarget> opener,
+      ItemStackFingerprint expectedHeldItem,
+      MenuTransactionTemplate template,
+      MenuTransactionLimits limits
+   ) implements WorldInteractionActionSpec {
+      private static final Set<ActionChannel> CHANNELS = Set.of(
+         ActionChannel.INVENTORY,
+         ActionChannel.MAIN_HAND,
+         ActionChannel.OFF_HAND,
+         ActionChannel.INTERACT
+      );
+
+      public WorldMenuTransaction(
+         WorldInteractionActionSpec.Hand hand,
+         Optional<BlockHitTarget> opener,
+         ItemStackFingerprint expectedHeldItem,
+         MenuTransactionTemplate template,
+         MenuTransactionLimits limits
+      ) {
+         Objects.requireNonNull(hand, "hand");
+         Objects.requireNonNull(opener, "opener");
+         Objects.requireNonNull(expectedHeldItem, "expectedHeldItem");
+         Objects.requireNonNull(template, "template");
+         Objects.requireNonNull(limits, "limits");
+         boolean nativeInventory = template.family()
+            == MenuFamily.INVENTORY_2X2;
+         if (nativeInventory != opener.isEmpty()) {
+            throw new IllegalArgumentException(
+               "inventory menu must omit opener and world menus must require one"
+            );
+         }
+         this.hand = hand;
+         this.opener = opener;
+         this.expectedHeldItem = expectedHeldItem;
+         this.template = template;
+         this.limits = limits;
+      }
+
+      @Override
+      public WorldInteractionActionSpec.Kind kind() {
+         return WorldInteractionActionSpec.Kind.WORLD_MENU_TRANSACTION;
+      }
+
+      @Override
+      public Set<ActionChannel> channels() {
+         return CHANNELS;
+      }
+   }
+
+   /**
+    * 在同一动作中打开一个白名单世界菜单、从刚打开的权威完整快照构造一次完整堆叠
+    * transfer，并在验证后关闭。与 {@link WorldMenuTransaction} 的区别是模板不能在
+    * 打开前预知容器内容；只允许 move-or-swap 这一条严格守恒原语。
+    */
+   public static record WorldMenuTransfer(
+      WorldInteractionActionSpec.Hand hand,
+      BlockHitTarget opener,
+      ItemStackFingerprint expectedHeldItem,
+      MenuFamily family,
+      int sourceSlot,
+      int targetSlot,
+      MenuTransactionLimits limits
+   ) implements WorldInteractionActionSpec {
+      private static final Set<ActionChannel> CHANNELS = Set.of(
+         ActionChannel.INVENTORY,
+         ActionChannel.MAIN_HAND,
+         ActionChannel.OFF_HAND,
+         ActionChannel.INTERACT
+      );
+
+      public WorldMenuTransfer(
+         WorldInteractionActionSpec.Hand hand,
+         BlockHitTarget opener,
+         ItemStackFingerprint expectedHeldItem,
+         MenuFamily family,
+         int sourceSlot,
+         int targetSlot,
+         MenuTransactionLimits limits
+      ) {
+         Objects.requireNonNull(hand, "hand");
+         Objects.requireNonNull(opener, "opener");
+         Objects.requireNonNull(expectedHeldItem, "expectedHeldItem");
+         Objects.requireNonNull(family, "family");
+         Objects.requireNonNull(limits, "limits");
+         if (family == MenuFamily.INVENTORY_2X2) {
+            throw new IllegalArgumentException(
+               "world menu transfer cannot target native inventory"
+            );
+         }
+         family.requireSlot(sourceSlot);
+         family.requireSlot(targetSlot);
+         if (sourceSlot == targetSlot) {
+            throw new IllegalArgumentException(
+               "world menu transfer source and target must differ"
+            );
+         }
+         if (!transferRoleAllowed(family.roleAt(sourceSlot))
+               || !transferRoleAllowed(family.roleAt(targetSlot))) {
+            throw new IllegalArgumentException(
+               "world menu transfer cannot touch recipe results or crafting inputs"
+            );
+         }
+         this.hand = hand;
+         this.opener = opener;
+         this.expectedHeldItem = expectedHeldItem;
+         this.family = family;
+         this.sourceSlot = sourceSlot;
+         this.targetSlot = targetSlot;
+         this.limits = limits;
+      }
+
+      @Override
+      public WorldInteractionActionSpec.Kind kind() {
+         return WorldInteractionActionSpec.Kind.WORLD_MENU_TRANSFER;
+      }
+
+      @Override
+      public Set<ActionChannel> channels() {
+         return CHANNELS;
+      }
+
+      private static boolean transferRoleAllowed(MenuSlotRole role) {
+         return role != MenuSlotRole.RESULT
+            && role != MenuSlotRole.CRAFTING_INPUT;
+      }
+   }
+
+   /**
+    * 在同一动作中执行一份封闭 P5A 配方合同。所有 source、配方 preview、结果领取和关闭
+    * 都经过原版 {@code clicked()}；熔炼会在严格投入后关闭窗口、定期重新右键观察并只在
+    * 预期结果完整出现后领取。
+    */
+   public static record WorldMenuRecipe(
+      WorldInteractionActionSpec.Hand hand,
+      Optional<BlockHitTarget> opener,
+      ItemStackFingerprint expectedHeldItem,
+      P5ARecipe recipe,
+      int batches,
+      MenuTransactionLimits limits
+   ) implements WorldInteractionActionSpec {
+      private static final long MINIMUM_FURNACE_TICKS = 700L;
+      private static final Set<ActionChannel> CHANNELS = Set.of(
+         ActionChannel.INVENTORY,
+         ActionChannel.MAIN_HAND,
+         ActionChannel.OFF_HAND,
+         ActionChannel.INTERACT
+      );
+
+      public WorldMenuRecipe(
+         WorldInteractionActionSpec.Hand hand,
+         Optional<BlockHitTarget> opener,
+         ItemStackFingerprint expectedHeldItem,
+         P5ARecipe recipe,
+         int batches,
+         MenuTransactionLimits limits
+      ) {
+         Objects.requireNonNull(hand, "hand");
+         Objects.requireNonNull(opener, "opener");
+         Objects.requireNonNull(expectedHeldItem, "expectedHeldItem");
+         Objects.requireNonNull(recipe, "recipe");
+         Objects.requireNonNull(limits, "limits");
+         if (batches < 1 || batches > recipe.maximumBatches()) {
+            throw new IllegalArgumentException(
+               "recipe batches exceed the reviewed P5A action bound"
+            );
+         }
+         boolean nativeInventory = recipe.family()
+            == MenuFamily.INVENTORY_2X2;
+         if (nativeInventory != opener.isEmpty()) {
+            throw new IllegalArgumentException(
+               "inventory recipe must omit opener and world recipes must require one"
+            );
+         }
+         if (recipe.isFurnace()
+               && limits.maxTicks() < MINIMUM_FURNACE_TICKS) {
+            throw new IllegalArgumentException(
+               "furnace recipe requires at least 700 transaction ticks"
+            );
+         }
+         this.hand = hand;
+         this.opener = opener;
+         this.expectedHeldItem = expectedHeldItem;
+         this.recipe = recipe;
+         this.batches = batches;
+         this.limits = limits;
+      }
+
+      @Override
+      public WorldInteractionActionSpec.Kind kind() {
+         return WorldInteractionActionSpec.Kind.WORLD_MENU_RECIPE;
+      }
+
+      @Override
+      public Set<ActionChannel> channels() {
+         return CHANNELS;
+      }
+   }
+
    public static record PickupWait(int ticks, Optional<UUID> expectedItemEntityId) implements WorldInteractionActionSpec {
       private static final Set<ActionChannel> CHANNELS = Set.of(ActionChannel.INVENTORY);
 
@@ -201,6 +418,83 @@ public sealed interface WorldInteractionActionSpec
       @Override
       public Set<ActionChannel> channels() {
          return CHANNELS;
+      }
+   }
+
+   /**
+    * 用主手在精确锚点面放置方块，并要求相邻目标落入完整的预期状态。
+    */
+   public static record PlaceBlock(
+      BlockHitTarget anchor, BlockTargetFingerprint expectedPlaced, ItemStackFingerprint expectedHeldItem
+   ) implements WorldInteractionActionSpec {
+      /*
+       * Some vanilla blocks (notably furnaces) derive their complete placed
+       * state from the player's facing.  Holding LOOK together with the hand
+       * and interaction lease prevents a competing Bot action from changing
+       * that placement context after the exact state was frozen.
+       */
+      private static final Set<ActionChannel> CHANNELS = Set.of(
+         ActionChannel.MAIN_HAND,
+         ActionChannel.INTERACT,
+         ActionChannel.LOOK
+      );
+
+      public PlaceBlock(BlockHitTarget anchor, BlockTargetFingerprint expectedPlaced, ItemStackFingerprint expectedHeldItem) {
+         Objects.requireNonNull(anchor, "anchor");
+         Objects.requireNonNull(expectedPlaced, "expectedPlaced");
+         Objects.requireNonNull(expectedHeldItem, "expectedHeldItem");
+         if (expectedHeldItem.isEmpty()) {
+            throw new IllegalArgumentException("block placement requires a non-empty main-hand item");
+         }
+         if (!anchor.target().dimension().equals(expectedPlaced.dimension())) {
+            throw new IllegalArgumentException("placed block must remain in the anchor dimension");
+         }
+         if (!isPlacedOnAnchorFace(anchor, expectedPlaced)) {
+            throw new IllegalArgumentException("placed block must be adjacent to the anchor face");
+         }
+         this.anchor = anchor;
+         this.expectedPlaced = expectedPlaced;
+         this.expectedHeldItem = expectedHeldItem;
+      }
+
+      @Override
+      public WorldInteractionActionSpec.Kind kind() {
+         return WorldInteractionActionSpec.Kind.PLACE_BLOCK;
+      }
+
+      @Override
+      public Set<ActionChannel> channels() {
+         return CHANNELS;
+      }
+
+      private static boolean isPlacedOnAnchorFace(BlockHitTarget anchor, BlockTargetFingerprint expectedPlaced) {
+         BlockCoordinates anchorPosition = anchor.target().position();
+         long expectedX = anchorPosition.x();
+         long expectedY = anchorPosition.y();
+         long expectedZ = anchorPosition.z();
+         switch (anchor.face()) {
+            case DOWN:
+               expectedY--;
+               break;
+            case UP:
+               expectedY++;
+               break;
+            case NORTH:
+               expectedZ--;
+               break;
+            case SOUTH:
+               expectedZ++;
+               break;
+            case WEST:
+               expectedX--;
+               break;
+            case EAST:
+               expectedX++;
+         }
+         BlockCoordinates placedPosition = expectedPlaced.position();
+         return placedPosition.x() == expectedX
+            && placedPosition.y() == expectedY
+            && placedPosition.z() == expectedZ;
       }
    }
 

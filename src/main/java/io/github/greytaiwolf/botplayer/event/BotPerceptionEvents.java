@@ -1,6 +1,7 @@
 package io.github.greytaiwolf.botplayer.event;
 
 import io.github.greytaiwolf.botplayer.BotPlayer;
+import io.github.greytaiwolf.botplayer.action.minecraft.BreakDropProvenanceCapture;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.lifecycle.BotPlayerManagers;
 import io.github.greytaiwolf.botplayer.perception.AuthorityEventCollector;
@@ -17,6 +18,7 @@ import net.neoforged.neoforge.event.entity.item.ItemTossEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDamageEvent;
 import net.neoforged.neoforge.event.entity.player.ItemEntityPickupEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
+import net.neoforged.neoforge.event.level.BlockDropsEvent;
 
 /**
  * 在逻辑服务端把平台事件立即压缩为不可变候选，成功语义由 Tick 末世界状态复核。
@@ -43,6 +45,25 @@ public final class BotPerceptionEvents {
                     event.getPos(),
                     event.getState(),
                     event.getPlayer()));
+        });
+    }
+
+    /**
+     * Keeps a synchronous, action-scoped receipt for a native block's exact item drop. This
+     * does not enter the asynchronous perception queue: the action backend arms the capture
+     * only around its STOP_DESTROY_BLOCK packet and consumes the immutable receipt immediately
+     * afterwards.
+     */
+    @SubscribeEvent(
+            priority = EventPriority.LOWEST,
+            receiveCanceled = false)
+    public static void onBlockDrops(BlockDropsEvent event) {
+        guard("方块掉落", () -> {
+            if (!(event.getLevel() instanceof ServerLevel level)
+                    || !level.getServer().isSameThread()) {
+                return;
+            }
+            BreakDropProvenanceCapture.record(event);
         });
     }
 

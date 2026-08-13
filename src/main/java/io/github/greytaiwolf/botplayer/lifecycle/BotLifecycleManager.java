@@ -5,15 +5,25 @@ import io.github.greytaiwolf.botplayer.BotPlayer;
 import io.github.greytaiwolf.botplayer.action.ActionCancellationReason;
 import io.github.greytaiwolf.botplayer.action.ActionEnvelope;
 import io.github.greytaiwolf.botplayer.action.ActionMailbox;
+import io.github.greytaiwolf.botplayer.action.ActionOrigin;
+import io.github.greytaiwolf.botplayer.action.ActionOutcome;
 import io.github.greytaiwolf.botplayer.action.ActionPriority;
+import io.github.greytaiwolf.botplayer.action.ActionRequest;
 import io.github.greytaiwolf.botplayer.action.ActionTransition;
 import io.github.greytaiwolf.botplayer.action.BotActionRuntime;
+import io.github.greytaiwolf.botplayer.action.ControllerKind;
 import io.github.greytaiwolf.botplayer.action.GenerationDrainStatus;
+import io.github.greytaiwolf.botplayer.action.MoveInputAction;
+import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
 import io.github.greytaiwolf.botplayer.action.input.PlayerInputController;
 import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanupLease;
 import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanupRequest;
 import io.github.greytaiwolf.botplayer.action.interaction.InventoryLayoutCleanupResult;
+import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
+import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.PlayerInventoryMenuLayout;
 import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftActionBackend;
+import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftActionSnapshot;
 import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftPlayerInputAdapter;
 import io.github.greytaiwolf.botplayer.config.BotPlayerConfig;
 import io.github.greytaiwolf.botplayer.inventory.BotInventoryMenu;
@@ -52,6 +62,31 @@ import io.github.greytaiwolf.botplayer.navigation.NavigationSettings;
 import io.github.greytaiwolf.botplayer.navigation.NavigationSubmission;
 import io.github.greytaiwolf.botplayer.navigation.TerrainAssistSettings;
 import io.github.greytaiwolf.botplayer.persistence.BotRosterSavedData;
+import io.github.greytaiwolf.botplayer.skill.builtin.P5ABuiltinSkillIds;
+import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionSkillPlanCompiler;
+import io.github.greytaiwolf.botplayer.skill.builtin.survival.ArmorUpgradeSelection;
+import io.github.greytaiwolf.botplayer.skill.builtin.survival.MinecraftBasicArmorPlanner;
+import io.github.greytaiwolf.botplayer.skill.builtin.survival.MinecraftBasicEquipmentPlanner;
+import io.github.greytaiwolf.botplayer.skill.builtin.survival.MinecraftBasicEquipmentPlanner.ExactMainHandItem;
+import io.github.greytaiwolf.botplayer.skill.builtin.survival.ToolKind;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpoint;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointBridge;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.MinecraftSavedDataCheckpointDurability;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.MinecraftSkillCheckpointScopeObserver;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointDurability;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointDurableCommitter;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointLoadStatus;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointPlan;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointRecoveryCoordination;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointRecoveryCoordinator;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointRecoveryCoordinationRequest;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointRecoveryRejection;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointRecoverySafety;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointRecoverySource;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointReobservation;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointRestartPlan;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointSavedData;
+import io.github.greytaiwolf.botplayer.skill.checkpoint.SkillCheckpointScope;
 import io.github.greytaiwolf.botplayer.perception.AuthorityEventCollector;
 import io.github.greytaiwolf.botplayer.perception.ObservationSnapshot;
 import io.github.greytaiwolf.botplayer.perception.PerceptionService;
@@ -60,17 +95,77 @@ import io.github.greytaiwolf.botplayer.perception.SoundObservationCandidate;
 import io.github.greytaiwolf.botplayer.profile.BotProfile;
 import io.github.greytaiwolf.botplayer.safety.DamageCandidate;
 import io.github.greytaiwolf.botplayer.safety.SafetyFrame;
+import io.github.greytaiwolf.botplayer.safety.SafetyHandoffDecision;
+import io.github.greytaiwolf.botplayer.safety.SafetyHandoffRequest;
 import io.github.greytaiwolf.botplayer.safety.SafetyIncidentView;
 import io.github.greytaiwolf.botplayer.safety.SafetyService;
 import io.github.greytaiwolf.botplayer.safety.SafetySettings;
 import io.github.greytaiwolf.botplayer.skill.core.SkillRegistry;
+import io.github.greytaiwolf.botplayer.skill.core.SkillCategory;
+import io.github.greytaiwolf.botplayer.skill.core.SkillDescriptor;
+import io.github.greytaiwolf.botplayer.skill.core.SkillFailureCode;
+import io.github.greytaiwolf.botplayer.skill.core.SkillId;
+import io.github.greytaiwolf.botplayer.skill.core.SkillParameterRule;
+import io.github.greytaiwolf.botplayer.skill.core.SkillParameterSchema;
+import io.github.greytaiwolf.botplayer.skill.core.SkillRiskLevel;
+import io.github.greytaiwolf.botplayer.skill.core.SkillRunState;
+import io.github.greytaiwolf.botplayer.skill.core.SkillVersion;
+import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseActionKind;
+import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseActionRequest;
+import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseObservation;
+import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseTarget;
+import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseTargetClass;
+import io.github.greytaiwolf.botplayer.skill.menu.MenuFamily;
+import io.github.greytaiwolf.botplayer.skill.menu.MenuSnapshot;
+import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionLimits;
+import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionTemplate;
+import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionTemplateBuilder;
+import io.github.greytaiwolf.botplayer.skill.pack.SkillPackApprovalService;
+import io.github.greytaiwolf.botplayer.skill.pack.SkillPackApprovalLedgerSavedData;
+import io.github.greytaiwolf.botplayer.skill.pack.SkillPackDescriptorReference;
+import io.github.greytaiwolf.botplayer.skill.pack.SkillPackFileLoader;
+import io.github.greytaiwolf.botplayer.skill.pack.SkillPackId;
+import io.github.greytaiwolf.botplayer.skill.pack.SkillPackJsonParser;
+import io.github.greytaiwolf.botplayer.skill.pack.SkillPackLimits;
+import io.github.greytaiwolf.botplayer.skill.pack.SkillPackManager;
+import io.github.greytaiwolf.botplayer.skill.pack.SkillPackPolicy;
+import io.github.greytaiwolf.botplayer.skill.pack.SkillPackRecord;
+import io.github.greytaiwolf.botplayer.skill.pack.SkillPackRevision;
+import io.github.greytaiwolf.botplayer.skill.pack.SkillPackState;
+import io.github.greytaiwolf.botplayer.skill.pack.SkillPackTransition;
+import io.github.greytaiwolf.botplayer.skill.pack.SkillPackValidator;
+import io.github.greytaiwolf.botplayer.skill.plan.SkillPlan;
+import io.github.greytaiwolf.botplayer.skill.plan.SkillPlanLimits;
+import io.github.greytaiwolf.botplayer.skill.plan.SkillPlanValidator;
+import io.github.greytaiwolf.botplayer.skill.reservation.ResourceReservationService;
 import io.github.greytaiwolf.botplayer.skill.runtime.SurvivalSkillRunView;
 import io.github.greytaiwolf.botplayer.skill.runtime.SurvivalSkillService;
 import io.github.greytaiwolf.botplayer.skill.runtime.SurvivalSkillSubmission;
+import io.github.greytaiwolf.botplayer.skill.runtime.SelfDefenseSkillService;
+import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftEquipmentSkillNodeHandler;
+import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftProductionNavigationSkillNodeHandler;
+import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftProductionSkillNodeHandler;
+import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftProductionSkillPorts;
+import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftSingleChestTransferSkillNodeHandler;
+import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRunRequest;
+import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRunSubmission;
+import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRunView;
+import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRuntimeCheckpoint;
+import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRuntime;
+import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRuntimeBudget;
+import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRuntimeDispatchFence;
+import io.github.greytaiwolf.botplayer.skill.runtime.core.ActionBackedSkillNodeHandler;
+import io.github.greytaiwolf.botplayer.skill.task.MinecraftTaskSensorAdapter;
+import io.github.greytaiwolf.botplayer.skill.task.TaskSensorLimits;
+import io.github.greytaiwolf.botplayer.skill.task.TaskSensorQuery;
+import io.github.greytaiwolf.botplayer.skill.task.TaskSensorResponse;
+import io.github.greytaiwolf.botplayer.skill.task.TaskSensorRunIdentity;
+import io.github.greytaiwolf.botplayer.skill.task.TaskSensorService;
 import io.github.greytaiwolf.botplayer.worldmodel.WorldFact;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -87,6 +182,7 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletionStage;
 import java.util.regex.Pattern;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.network.Connection;
@@ -101,7 +197,11 @@ import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.inventory.InventoryMenu;
+import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.level.storage.LevelResource;
 import net.minecraft.world.phys.Vec2;
 import net.minecraft.world.phys.Vec3;
@@ -127,13 +227,30 @@ public final class BotLifecycleManager {
 
     private final MinecraftServer server;
     private final BotRosterSavedData roster;
+    private final SkillCheckpointSavedData skillCheckpoints;
+    /**
+     * {@code SavedData#setDirty()} 不是恢复授权。所有 P5A checkpoint 改动必须经此同步
+     * commit 边界；一旦该边界失败，本进程宁可放弃恢复，也不会把旧内存记录当作已落盘。
+     */
+    private final SkillCheckpointDurableCommitter skillCheckpointCommitter;
+    private final MinecraftSkillCheckpointScopeObserver
+            skillCheckpointScopeObserver;
+    private final SkillPackApprovalLedgerSavedData skillPackApprovalLedger;
     private final BotInventorySessionManager inventorySessions;
     private final PlayerInputController inputController;
     private final PerceptionService perceptionService;
     private final BotActionRuntime actionRuntime;
     private final NavigationService navigationService;
     private final SkillRegistry skillRegistry;
+    private final ResourceReservationService skillReservations;
+    private final SkillRuntime skillRuntime;
+    private final TaskSensorService taskSensorService;
+    private final MinecraftTaskSensorAdapter taskSensorAdapter;
+    /** 单一 production 端口同时承载观察、采集与菜单动作，避免三套 binding 分裂。 */
+    private final MinecraftProductionSkillPorts productionSkillPorts;
+    private final SkillPackManager skillPackManager;
     private final SurvivalSkillService survivalSkillService;
+    private final SelfDefenseSkillService selfDefenseSkillService;
     private final SafetyService safetyService;
     private final VanillaDeathTombstoneStore deathTombstones;
     private final VanillaDeathPlayerDataCommitter
@@ -142,9 +259,19 @@ public final class BotLifecycleManager {
     private final Map<UUID, BotRuntimeHandle> handlesByBot = new LinkedHashMap<>();
     private final Map<UUID, UUID> activeAgentByBot = new LinkedHashMap<>();
     private final Map<UUID, UUID> botByActiveAgent = new LinkedHashMap<>();
+    private final Map<UUID, Long> skillCheckpointRevisions =
+            new LinkedHashMap<>();
+    /** 新 generation 的后缀 run 仍须把安全点写回其完整批准计划谱系。 */
+    private final Map<UUID, RecoveredSkillCheckpointLineage>
+            recoveredSkillCheckpointLineagesByRun = new LinkedHashMap<>();
     private final Deque<BotLifecycleTransition> lifecycleHistory =
             new ArrayDeque<>(LIFECYCLE_HISTORY_CAPACITY);
     private long serverTickStartedNanos = -1L;
+    /**
+     * 内建 bootstrap 计划不来自外部 Pack，但仍必须拥有正、单调的计划 revision，
+     * 这样 checkpoint 恢复可精确重建同一已审核 DAG，而不会把一次新提交误认成旧运行。
+     */
+    private long nextBuiltinSkillPlanRevision = 1L;
     private boolean stopping;
 
     BotLifecycleManager(MinecraftServer server) {
@@ -155,6 +282,13 @@ public final class BotLifecycleManager {
         this.deathPlayerDataCommitter =
                 new VanillaDeathPlayerDataCommitter(server);
         this.roster = BotRosterSavedData.get(server);
+        this.skillCheckpoints = SkillCheckpointSavedData.get(
+                server, roster.serverInstanceId());
+        this.skillCheckpointCommitter = createSkillCheckpointCommitter();
+        this.skillCheckpointScopeObserver =
+                new MinecraftSkillCheckpointScopeObserver();
+        this.skillPackApprovalLedger = SkillPackApprovalLedgerSavedData.get(
+                server, roster.serverInstanceId());
         this.inventorySessions = new BotInventorySessionManager(
                 this::canWriteBotInventory,
                 this::validateInventoryDistance,
@@ -270,6 +404,60 @@ public final class BotLifecycleManager {
                                         generation,
                                         currentTick)
                                 .containmentConfirmed());
+        this.skillReservations = new ResourceReservationService(
+                2_048, 1_200);
+        this.skillRuntime = new SkillRuntime(
+                skillRegistry,
+                new SkillPlanValidator(
+                        skillRegistry, SkillPlanLimits.defaults()),
+                skillReservations,
+                SkillRuntimeBudget.defaults(),
+                this::fenceSkillNodeDispatch);
+        this.taskSensorAdapter = new MinecraftTaskSensorAdapter(
+                this::resolveActive,
+                this::latestSafetyFrameForTaskSensor);
+        this.taskSensorService = new TaskSensorService(
+                (botId, runId) -> skillRuntime.inspectRun(runId)
+                        .filter(view -> view.botId().equals(botId)
+                                && !view.state().isTerminal())
+                        .map(view -> new TaskSensorRunIdentity(
+                                view.botId(),
+                                view.botGeneration(),
+                                view.runId(),
+                        view.stateRevision())),
+                TaskSensorLimits.defaults());
+        this.productionSkillPorts = new MinecraftProductionSkillPorts(
+                this::resolveActive,
+                taskSensorService,
+                taskSensorAdapter);
+        registerP5ABuiltinSkillDescriptors();
+        registerP5ANodeHandlers();
+        this.skillPackManager = createSkillPackManager();
+        // 重启后先以严格 parse/stage + 精确 revision 审批账本恢复可用 pack；不执行任何计划。
+        reloadSkillPacks();
+        this.selfDefenseSkillService = new SelfDefenseSkillService(
+                new SelfDefenseSkillService.TargetResolver() {
+                    @Override
+                    public Optional<DefenseTarget> resolveTarget(
+                            SafetyHandoffRequest request) {
+                        return resolveSelfDefenseTarget(request);
+                    }
+
+                    @Override
+                    public Optional<DefenseObservation> observe(
+                            UUID botId,
+                            long generation,
+                            DefenseTarget target) {
+                        return observeSelfDefenseTarget(
+                                botId, generation, target);
+                    }
+                },
+                this::createSelfDefenseAction,
+                this::submitSelfDefenseAction,
+                dispatch -> cancelAction(
+                        dispatch.botId(),
+                        dispatch.actionId(),
+                        ActionCancellationReason.REQUESTED));
         this.safetyService = new SafetyService(
                 SafetySettings.fromConfig(),
                 navigationService,
@@ -279,7 +467,477 @@ public final class BotLifecycleManager {
                                 botId,
                                 generation,
                                 InventoryCloseReason.DANGER),
-                survivalSkillService);
+                this::handoffSafetySkill);
+    }
+
+    /**
+     * P5A checkpoint 不能因为一套映射/API 在某个 NeoForge 版本不可用就拖垮整个
+     * BotPlayer 生命周期；但该能力不可用时必须从一开始关闭恢复和 checkpoint 保留。
+     */
+    private SkillCheckpointDurableCommitter createSkillCheckpointCommitter() {
+        SkillCheckpointDurability durability;
+        try {
+            durability = new MinecraftSavedDataCheckpointDurability(
+                    server.overworld().getDataStorage());
+        } catch (RuntimeException exception) {
+            BotPlayer.LOGGER.error(
+                    "P5A checkpoint synchronous durability is unavailable; "
+                            + "checkpoint recovery is disabled for this server",
+                    exception);
+            durability = SkillCheckpointDurability.unavailable();
+        }
+        return new SkillCheckpointDurableCommitter(
+                skillCheckpoints, durability);
+    }
+
+    /**
+     * P5A 外部 Pack 只能引用真正已有的、同样已经绑定 node handler 的 descriptor。
+     * 启动阶段的冲突表示内建契约被不兼容代码替换，不能带着混合版本继续运行。
+     */
+    private void registerP5ABuiltinSkillDescriptors() {
+        registerBuiltinDescriptor(new SkillDescriptor(
+                P5ABuiltinSkillIds.EQUIP_BASIC_TOOL,
+                P5ABuiltinSkillIds.VERSION,
+                SkillCategory.SURVIVAL,
+                new SkillParameterSchema(Map.of(
+                        "tool.kind", new SkillParameterRule.StringRule(
+                                true,
+                                3,
+                                7,
+                                Set.of(
+                                        "axe",
+                                        "hoe",
+                                        "pickaxe",
+                                        "shovel",
+                                        "weapon")))),
+                SkillRiskLevel.LOW,
+                Set.of(),
+                240,
+                0,
+                false));
+        /*
+         * 这个节点只接受 P5A 生产编译器已知的五项精确原版物品；handler 还会把标量
+         * 重新映射到相同的封闭 enum，并冻结完整 ItemStackFingerprint。它不是任意
+         * item-id 的主手选择器。checkpoint 只在原版菜单关闭且动作排空时保存，所以它可
+         * 从未开始的精确交换节点安全重放。
+         */
+        registerBuiltinDescriptor(new SkillDescriptor(
+                P5ABuiltinSkillIds.EQUIP_EXACT_MAIN_HAND,
+                P5ABuiltinSkillIds.VERSION,
+                SkillCategory.SURVIVAL,
+                new SkillParameterSchema(Map.of(
+                        P5ABuiltinSkillIds
+                                .EXACT_MAIN_HAND_ITEM_ID_PARAMETER,
+                        new SkillParameterRule.StringRule(
+                                true,
+                                17,
+                                24,
+                                Set.of(
+                                        ExactMainHandItem.WOODEN_PICKAXE
+                                                .itemId().value(),
+                                        ExactMainHandItem.STONE_PICKAXE
+                                                .itemId().value(),
+                                        ExactMainHandItem.IRON_PICKAXE
+                                                .itemId().value(),
+                                        ExactMainHandItem.CRAFTING_TABLE
+                                                .itemId().value(),
+                                        ExactMainHandItem.FURNACE
+                                                .itemId().value())))),
+                SkillRiskLevel.LOW,
+                Set.of(),
+                240,
+                0,
+                true));
+        registerBuiltinDescriptor(new SkillDescriptor(
+                P5ABuiltinSkillIds.EQUIP_REQUESTED_OFFHAND,
+                P5ABuiltinSkillIds.VERSION,
+                SkillCategory.SURVIVAL,
+                new SkillParameterSchema(Map.of(
+                        "source.slot", new SkillParameterRule.IntegerRule(
+                                true, 0, 35))),
+                SkillRiskLevel.LOW,
+                Set.of(),
+                240,
+                0,
+                false));
+        /*
+         * 箱子坐标只是一份受 schema 限定的标量请求；真正的 block/menu identity
+         * 必须由 handler 在服务器线程重新观察并冻结，不能由 Pack 伪造。
+         */
+        registerBuiltinDescriptor(new SkillDescriptor(
+                P5ABuiltinSkillIds.STORE_ITEMS,
+                P5ABuiltinSkillIds.VERSION,
+                SkillCategory.RESOURCE,
+                new SkillParameterSchema(Map.of(
+                        MinecraftSingleChestTransferSkillNodeHandler
+                                .TARGET_X_PARAMETER,
+                        new SkillParameterRule.IntegerRule(
+                                true, -30_000_000, 30_000_000),
+                        MinecraftSingleChestTransferSkillNodeHandler
+                                .TARGET_Y_PARAMETER,
+                        new SkillParameterRule.IntegerRule(
+                                true, Integer.MIN_VALUE,
+                                Integer.MAX_VALUE),
+                        MinecraftSingleChestTransferSkillNodeHandler
+                                .TARGET_Z_PARAMETER,
+                        new SkillParameterRule.IntegerRule(
+                                true, -30_000_000, 30_000_000),
+                        MinecraftSingleChestTransferSkillNodeHandler
+                                .SOURCE_SLOT_PARAMETER,
+                        new SkillParameterRule.IntegerRule(true, 0, 62),
+                        MinecraftSingleChestTransferSkillNodeHandler
+                                .TARGET_SLOT_PARAMETER,
+                        new SkillParameterRule.IntegerRule(true, 0, 62),
+                        MinecraftSingleChestTransferSkillNodeHandler
+                                .DIRECTION_PARAMETER,
+                        new SkillParameterRule.StringRule(
+                                true,
+                                15,
+                                15,
+                                Set.of("chest_to_player",
+                                        "player_to_chest")))),
+                SkillRiskLevel.MODERATE,
+                Set.of(),
+                240,
+                0,
+                false));
+        /*
+         * 生产 descriptor 的 operation.id 白名单、最大点击/重试与 resumable 合同都由
+         * compiler 固定导出。这里只注册同一实例，不能手写一个更宽 schema 让外部参数
+         * 绕过 canonical 生产 fragment lowering。
+         */
+        registerBuiltinDescriptor(ProductionSkillPlanCompiler
+                .handlerDescriptor());
+        registerBuiltinDescriptor(ProductionSkillPlanCompiler
+                .resourceNavigationHandlerDescriptor());
+    }
+
+    private void registerBuiltinDescriptor(SkillDescriptor descriptor) {
+        SkillRegistry.RegisterStatus status = skillRegistry.register(
+                Objects.requireNonNull(descriptor, "descriptor"));
+        if (status != SkillRegistry.RegisterStatus.REGISTERED
+                && status != SkillRegistry.RegisterStatus.ALREADY_REGISTERED) {
+            throw new IllegalStateException(
+                    "Cannot register P5A built-in descriptor "
+                            + descriptor.id() + ": " + status);
+        }
+    }
+
+    /**
+     * 运行时 handler 是 server-start 固定代码。pack 的 JSON 只能引用 descriptor，
+     * 不会携带 Class、动作或回调对象。
+     */
+    private void registerP5ANodeHandlers() {
+        ActionBackedSkillNodeHandler.ActionGateway actions =
+                new ActionBackedSkillNodeHandler.ActionGateway() {
+                    @Override
+                    public ActionMailbox.Submission submit(
+                            ActionEnvelope envelope,
+                            ActionPriority priority) {
+                        return submitAction(envelope, priority);
+                    }
+
+                    @Override
+                    public void cancel(
+                            UUID botId,
+                            UUID actionId,
+                            ActionCancellationReason reason) {
+                        cancelAction(botId, actionId, reason);
+                    }
+                };
+        registerP5ANodeHandler(
+                SurvivalSkillService.EQUIP_BASIC_ARMOR,
+                P5ABuiltinSkillIds.VERSION,
+                new MinecraftEquipmentSkillNodeHandler(
+                        MinecraftEquipmentSkillNodeHandler.Kind.BASIC_ARMOR,
+                        this::resolveActive,
+                        actions,
+                        skillRuntime::offerSignal));
+        registerP5ANodeHandler(
+                P5ABuiltinSkillIds.EQUIP_BASIC_TOOL,
+                P5ABuiltinSkillIds.VERSION,
+                new MinecraftEquipmentSkillNodeHandler(
+                        MinecraftEquipmentSkillNodeHandler.Kind.REQUESTED_TOOL,
+                        this::resolveActive,
+                        actions,
+                        skillRuntime::offerSignal));
+        registerP5ANodeHandler(
+                P5ABuiltinSkillIds.EQUIP_EXACT_MAIN_HAND,
+                P5ABuiltinSkillIds.VERSION,
+                new MinecraftEquipmentSkillNodeHandler(
+                        MinecraftEquipmentSkillNodeHandler.Kind
+                                .REQUESTED_EXACT_MAIN_HAND,
+                        this::resolveActive,
+                        actions,
+                        skillRuntime::offerSignal));
+        registerP5ANodeHandler(
+                P5ABuiltinSkillIds.EQUIP_REQUESTED_OFFHAND,
+                P5ABuiltinSkillIds.VERSION,
+                new MinecraftEquipmentSkillNodeHandler(
+                        MinecraftEquipmentSkillNodeHandler.Kind
+                                .REQUESTED_OFFHAND,
+                        this::resolveActive,
+                        actions,
+                        skillRuntime::offerSignal));
+        registerP5ANodeHandler(
+                P5ABuiltinSkillIds.STORE_ITEMS,
+                P5ABuiltinSkillIds.VERSION,
+                new MinecraftSingleChestTransferSkillNodeHandler(
+                        this::resolveActive,
+                        actions,
+                        skillRuntime::offerSignal));
+        registerP5ANodeHandler(
+                P5ABuiltinSkillIds.NAVIGATE_TO_RESOURCE,
+                P5ABuiltinSkillIds.VERSION,
+                new MinecraftProductionNavigationSkillNodeHandler(
+                        this::resolveActive,
+                        navigationService,
+                        taskSensorService,
+                        taskSensorAdapter,
+                        skillRuntime::offerSignal));
+        registerP5ANodeHandler(
+                P5ABuiltinSkillIds.BOOTSTRAP_IRON,
+                P5ABuiltinSkillIds.VERSION,
+                new MinecraftProductionSkillNodeHandler(
+                        (botId, generation) -> resolveActive(
+                                botId, generation).map(ignored ->
+                                new MinecraftProductionSkillNodeHandler
+                                        .ActiveBot(botId, generation)),
+                        productionSkillPorts,
+                        taskSensorService,
+                        productionSkillPorts,
+                        productionSkillPorts,
+                        navigationService,
+                        actions,
+                        skillRuntime::offerSignal));
+    }
+
+    private void registerP5ANodeHandler(
+            io.github.greytaiwolf.botplayer.skill.core.SkillId id,
+            SkillVersion version,
+            io.github.greytaiwolf.botplayer.skill.runtime.core
+                    .SkillNodeHandler handler) {
+        SkillRuntime.HandlerRegistrationStatus status =
+                skillRuntime.registerHandler(id, version, handler);
+        if (status != SkillRuntime.HandlerRegistrationStatus.REGISTERED
+                && status
+                        != SkillRuntime.HandlerRegistrationStatus
+                                .ALREADY_REGISTERED) {
+            throw new IllegalStateException(
+                    "Cannot register P5A node handler " + id + ": " + status);
+        }
+    }
+
+    private SkillPackManager createSkillPackManager() {
+        Path playerData = server.getWorldPath(
+                LevelResource.PLAYER_DATA_DIR);
+        Path worldRoot = playerData.getParent();
+        if (worldRoot == null) {
+            throw new IllegalStateException(
+                    "Minecraft world root is unavailable for skill packs");
+        }
+        SkillPackLimits limits = SkillPackLimits.defaults();
+        SkillPackPolicy policy = new SkillPackPolicy(
+                limits,
+                Set.of(1),
+                Set.of(
+                        new SkillPackDescriptorReference(
+                                SurvivalSkillService.EQUIP_BASIC_ARMOR,
+                                P5ABuiltinSkillIds.VERSION),
+                        new SkillPackDescriptorReference(
+                                P5ABuiltinSkillIds.EQUIP_BASIC_TOOL,
+                                P5ABuiltinSkillIds.VERSION),
+                        new SkillPackDescriptorReference(
+                                P5ABuiltinSkillIds.EQUIP_EXACT_MAIN_HAND,
+                                P5ABuiltinSkillIds.VERSION),
+                        new SkillPackDescriptorReference(
+                                P5ABuiltinSkillIds
+                                        .EQUIP_REQUESTED_OFFHAND,
+                                P5ABuiltinSkillIds.VERSION),
+                        new SkillPackDescriptorReference(
+                                P5ABuiltinSkillIds.STORE_ITEMS,
+                                P5ABuiltinSkillIds.VERSION)));
+        return new SkillPackManager(
+                new SkillPackFileLoader(),
+                new SkillPackJsonParser(),
+                new SkillPackApprovalService(
+                        new SkillPackValidator(skillRegistry, policy),
+                        limits.maximumTrackedPacks()),
+                worldRoot);
+    }
+
+    private Optional<SafetyFrame> latestSafetyFrameForTaskSensor(
+            UUID botId) {
+        return safetyService.latestFrame(
+                Objects.requireNonNull(botId, "botId"));
+    }
+
+    /**
+     * L0 在 hostile 交接前先终止普通 DAG 的等待/菜单所有权，避免自卫与低优先级计划
+     * 共同占用动作通道。非 hostile 的恢复仍交给既有进食服务。
+     */
+    private SafetyHandoffDecision handoffSafetySkill(
+            SafetyHandoffRequest request) {
+        Objects.requireNonNull(request, "request");
+        if (request.hazard().type()
+                == io.github.greytaiwolf.botplayer.safety
+                        .HazardType.HOSTILE_TARGETING) {
+            skillRuntime.inspect(request.botId())
+                    .filter(view -> view.botGeneration()
+                            == request.botGeneration()
+                            && !view.state().isTerminal())
+                    .ifPresent(view -> skillRuntime.preempt(
+                            view.runId(),
+                            request.currentTick(),
+                            "L0 hostile safety handoff preempted the plan"));
+            return selfDefenseSkillService.request(request);
+        }
+        return survivalSkillService.request(request);
+    }
+
+    private Optional<DefenseTarget> resolveSelfDefenseTarget(
+            SafetyHandoffRequest request) {
+        BotServerPlayer player = resolveActive(
+                request.botId(), request.botGeneration()).orElse(null);
+        UUID source = request.hazard().sourceEntityId().orElse(null);
+        if (player == null || source == null
+                || !frameMarksExplicitHostile(request, source)) {
+            return Optional.empty();
+        }
+        Entity entity = player.serverLevel().getEntity(source);
+        if (!(entity instanceof Mob mob)
+                || !(entity instanceof Enemy)
+                || entity.isRemoved()
+                || !entity.isAlive()
+                || mob.getTarget() != player) {
+            return Optional.empty();
+        }
+        return Optional.of(new DefenseTarget(
+                source,
+                DefenseTargetClass.EXPLICIT_HOSTILE,
+                true,
+                player.distanceToSqr(entity)));
+    }
+
+    private Optional<DefenseObservation> observeSelfDefenseTarget(
+            UUID botId, long generation, DefenseTarget target) {
+        BotServerPlayer player = resolveActive(botId, generation)
+                .orElse(null);
+        if (player == null) {
+            return Optional.empty();
+        }
+        Entity entity = player.serverLevel().getEntity(target.entityId());
+        if (entity == null || entity.isRemoved()) {
+            return Optional.empty();
+        }
+        DefenseTargetClass classification = entity instanceof Player
+                ? DefenseTargetClass.PLAYER
+                : entity instanceof Enemy && entity instanceof Mob mob
+                        && mob.getTarget() == player
+                        ? DefenseTargetClass.EXPLICIT_HOSTILE
+                        : DefenseTargetClass.UNKNOWN;
+        double health = Math.max(0.0D, player.getHealth());
+        double maximum = Math.max(1.0D, player.getMaxHealth());
+        return Optional.of(new DefenseObservation(
+                Math.min(health, maximum),
+                maximum,
+                new DefenseTarget(
+                        target.entityId(),
+                        classification,
+                        entity.isAlive(),
+                        player.distanceToSqr(entity))));
+    }
+
+    private Optional<ActionRequest> createSelfDefenseAction(
+            DefenseActionRequest instruction,
+            DefenseObservation observation) {
+        Objects.requireNonNull(instruction, "instruction");
+        Objects.requireNonNull(observation, "observation");
+        if (!instruction.targetId().equals(
+                observation.target().entityId())) {
+            return Optional.empty();
+        }
+        return switch (instruction.kind()) {
+            case RETREAT -> Optional.of(new MoveInputAction(
+                    -1.0F, 0.0F, false, true, false, 6, 6));
+            case MELEE_ATTACK -> uniqueDefensePlayer(
+                    instruction.targetId()).map(player -> {
+                        Entity target = player.serverLevel().getEntity(
+                                instruction.targetId());
+                        if (!(target instanceof Enemy)
+                                || target instanceof Player
+                                || target.isRemoved()
+                                || !target.isAlive()) {
+                            return null;
+                        }
+                        try {
+                            return (ActionRequest) new WorldInteractionAction(
+                                    new WorldInteractionActionSpec.AttackEntity(
+                                            MinecraftActionSnapshot.entity(
+                                                    player, target)));
+                        } catch (RuntimeException exception) {
+                            return null;
+                        }
+                    }).filter(Objects::nonNull);
+        };
+    }
+
+    private CompletionStage<ActionOutcome> submitSelfDefenseAction(
+            SelfDefenseSkillService.ActionDispatch dispatch) {
+        Objects.requireNonNull(dispatch, "dispatch");
+        ActionMailbox.Submission submission = submitAction(
+                new ActionEnvelope(
+                        dispatch.actionId(),
+                        dispatch.botId(),
+                        dispatch.botGeneration(),
+                        dispatch.idempotencyKey(),
+                        dispatch.deadlineTick(),
+                        dispatch.maximumTicks(),
+                        dispatch.action(),
+                        ActionOrigin.fromController(
+                                ControllerKind.SAFETY,
+                                dispatch.selfDefenseRunId())),
+                ActionPriority.EMERGENCY);
+        return submission.completion().orElseThrow(() ->
+                new IllegalStateException(
+                        "self-defense action was rejected: "
+                                + submission.status()));
+    }
+
+    private Optional<BotServerPlayer> uniqueDefensePlayer(UUID targetId) {
+        BotServerPlayer candidate = null;
+        for (RuntimeEntry runtime : runtimes.values()) {
+            if (runtime.state != BotLifecycleState.ACTIVE) {
+                continue;
+            }
+            BotServerPlayer player = runtime.handle.player().orElse(null);
+            if (player == null) {
+                continue;
+            }
+            Entity target = player.serverLevel().getEntity(targetId);
+            if (!(target instanceof Mob mob)
+                    || !(target instanceof Enemy)
+                    || target.isRemoved()
+                    || !target.isAlive()
+                    || mob.getTarget() != player) {
+                continue;
+            }
+            if (candidate != null) {
+                return Optional.empty();
+            }
+            candidate = player;
+        }
+        return Optional.ofNullable(candidate);
+    }
+
+    private static boolean frameMarksExplicitHostile(
+            SafetyHandoffRequest request, UUID source) {
+        return request.frame().threats().stream().anyMatch(threat ->
+                threat.entityId().equals(source)
+                        && threat.kind()
+                                == io.github.greytaiwolf.botplayer.safety
+                                        .ThreatSummary.Kind.HOSTILE
+                        && threat.targetingBot());
     }
 
     /**
@@ -728,6 +1386,29 @@ public final class BotLifecycleManager {
             throw new IllegalStateException(
                     "The retained runtime handle is still attached to a player");
         }
+        /*
+         * 进程重启会重建内存 handle；先把 generation 锚定到已通过 schema/integrity
+         * 校验且身份精确匹配的耐久记录，再 attach 新 body。任何不匹配 checkpoint
+         * 都不会被用作 floor，更不会获得恢复资格。
+         */
+        SkillCheckpointRecoverySource pendingSkillCheckpointSource =
+                skillCheckpoints.recoverySource(botId);
+        SkillCheckpoint pendingSkillCheckpoint = pendingSkillCheckpointSource
+                .checkpoint()
+                .filter(checkpoint -> checkpoint.botId().equals(botId)
+                        && checkpoint.playerId().equals(botId)
+                        && checkpoint.serverInstanceId().equals(
+                                roster.serverInstanceId()))
+                .orElse(null);
+        long durableGenerationFloor = tombstoneRecoveryTicket == null
+                ? 0L
+                : tombstoneRecoveryTicket.generation();
+        if (pendingSkillCheckpoint != null) {
+            durableGenerationFloor = Math.max(
+                    durableGenerationFloor,
+                    pendingSkillCheckpoint.generation());
+        }
+        handle.rebaseGenerationFloorBeforeAttach(durableGenerationFloor);
         RuntimeEntry runtime = new RuntimeEntry(handle, BotLifecycleState.SPAWNING);
         runtimes.put(botId, runtime);
 
@@ -783,6 +1464,28 @@ public final class BotLifecycleManager {
                 transition(runtime, BotLifecycleState.ACTIVE);
                 perceptionService.activate(
                         botId, handle.generation());
+                if (tombstoneRecoveryTicket == null
+                        && pendingSkillCheckpoint != null
+                        && !pendingSkillCheckpoint.continuationState()
+                                .isTerminal()) {
+                    runtime.pendingSkillCheckpointRecovery =
+                            pendingSkillCheckpointSource;
+                } else if (tombstoneRecoveryTicket == null
+                        && pendingSkillCheckpointSource.loadStatus()
+                                != SkillCheckpointLoadStatus.MISSING) {
+                    /*
+                     * 损坏、未知 schema 与 terminal fence 都不会静默变成“没有记录”。
+                     * 但它们也绝不能在新 body 上反复排队一个不可能安全恢复的 suffix。
+                     */
+                    BotPlayer.LOGGER.warn(
+                            "P5A checkpoint recovery is unavailable for BotPlayer {} ({}): {}",
+                            canonicalName,
+                            botId,
+                            pendingSkillCheckpoint == null
+                                    ? pendingSkillCheckpointSource.loadStatus()
+                                            .name()
+                                    : "terminal");
+                }
             }
             BotPlayer.LOGGER.info(
                     "Spawned BotPlayer {} ({}) in {}",
@@ -923,6 +1626,189 @@ public final class BotLifecycleManager {
         return survivalSkillService.inspect(botId);
     }
 
+    /**
+     * 读取通用 P5A DAG 的最近运行视图；body 已经退役时仍可用于诊断。
+     */
+    public Optional<SkillRunView> skillRun(UUID botId) {
+        requireServerThread();
+        Objects.requireNonNull(botId, "botId");
+        return skillRuntime.inspect(botId);
+    }
+
+    /** P5A 有限自卫的只读运行视图。 */
+    public Optional<SelfDefenseSkillService.RunView> selfDefenseRun(
+            UUID botId) {
+        requireServerThread();
+        return selfDefenseSkillService.latestView(
+                Objects.requireNonNull(botId, "botId"));
+    }
+
+    /**
+     * 通过 generation/revision 绑定的 TaskSensor 查询世界；调用方不能跳过服务额度或
+     * 直接持有 Minecraft 活对象。
+     */
+    public TaskSensorResponse queryTaskSensor(TaskSensorQuery query) {
+        requireServerThread();
+        Objects.requireNonNull(query, "query");
+        long currentTick = server.getTickCount();
+        taskSensorService.beginTick(currentTick);
+        return taskSensorService.query(
+                query, currentTick, taskSensorAdapter);
+    }
+
+    /**
+     * 重载只会解析、静态校验并暂存外部 JSON；仅当持久账本中存在同一 revision 的实际审核者
+     * 时才恢复批准，绝不会自动批准新 hash/version 或执行计划。
+     */
+    public SkillPackManager.ReloadResult reloadSkillPacks() {
+        requireServerThread();
+        long currentTick = server.getTickCount();
+        SkillPackManager.ReloadResult result = skillPackManager.reload(
+                currentTick);
+        skillPackApprovalLedger.retainOnly(
+                skillPackManager.records().stream()
+                        .filter(record -> record.validation().valid())
+                        .map(SkillPackRecord::revision)
+                        .collect(java.util.stream.Collectors.toUnmodifiableSet()));
+        for (SkillPackTransition transition : result.transitions()) {
+            SkillPackRecord record = transition.record().orElse(null);
+            if (record == null) {
+                continue;
+            }
+            UUID reviewerId = skillPackApprovalLedger
+                    .reviewer(record.revision())
+                    .orElse(null);
+            if (reviewerId != null) {
+                skillPackManager.restoreApproved(
+                        record.revision(), reviewerId, currentTick);
+            }
+        }
+        return result;
+    }
+
+    public SkillPackTransition approveSkillPack(
+            SkillPackRevision revision, UUID administratorId) {
+        requireServerThread();
+        SkillPackRevision exactRevision = Objects.requireNonNull(
+                revision, "revision");
+        UUID exactAdministratorId = Objects.requireNonNull(
+                administratorId, "administratorId");
+        if (!skillPackApprovalLedger.canRecord(exactRevision)
+                && skillPackManager.approved(exactRevision).isEmpty()) {
+            return new SkillPackTransition(
+                    SkillPackTransition.Status.CAPACITY_EXCEEDED,
+                    skillPackManager.find(exactRevision.id()));
+        }
+        SkillPackTransition transition = skillPackManager.approve(
+                exactRevision, exactAdministratorId, server.getTickCount());
+        if (transition.status() == SkillPackTransition.Status.APPROVED) {
+            skillPackApprovalLedger.approve(
+                    exactRevision, exactAdministratorId);
+        } else if (transition.status()
+                == SkillPackTransition.Status.ALREADY_APPROVED) {
+            transition.record()
+                    .flatMap(SkillPackRecord::reviewedBy)
+                    .filter(exactAdministratorId::equals)
+                    .ifPresent(reviewerId -> skillPackApprovalLedger.approve(
+                            exactRevision, reviewerId));
+        }
+        return transition;
+    }
+
+    public SkillPackTransition rejectSkillPack(
+            SkillPackRevision revision, UUID administratorId) {
+        requireServerThread();
+        SkillPackRevision exactRevision = Objects.requireNonNull(
+                revision, "revision");
+        SkillPackTransition transition = skillPackManager.reject(
+                exactRevision,
+                Objects.requireNonNull(administratorId, "administratorId"),
+                server.getTickCount());
+        if (transition.status() == SkillPackTransition.Status.REJECTED
+                || transition.status()
+                        == SkillPackTransition.Status.ALREADY_REJECTED) {
+            skillPackApprovalLedger.revoke(exactRevision);
+        }
+        return transition;
+    }
+
+    public Optional<SkillPackRecord> skillPack(SkillPackId id) {
+        requireServerThread();
+        return skillPackManager.find(Objects.requireNonNull(id, "id"));
+    }
+
+    /** 供管理员诊断使用的稳定、只读技能包审核快照。 */
+    public List<SkillPackRecord> skillPacks() {
+        requireServerThread();
+        return skillPackManager.records();
+    }
+
+    /**
+     * 仅运行精确 revision 已获管理员批准的声明式计划；revision、descriptor、计划
+     * bot identity 会在审批与提交两层再次核验。
+     */
+    public SkillRunSubmission submitApprovedSkillPack(
+            String name, SkillPackRevision revision) {
+        requireServerThread();
+        SkillPackRecord approved = skillPackManager.approved(
+                Objects.requireNonNull(revision, "revision")).orElse(null);
+        if (approved == null) {
+            return SkillRunSubmission.rejected(
+                    SkillRunSubmission.Status.PACK_NOT_APPROVED,
+                    "技能包尚未以精确版本获管理员批准");
+        }
+        return submitSkillPlan(name,
+                approved.candidate().definition().plan());
+    }
+
+    /**
+     * 仅接受当前活动 generation 的已审核计划。计划的 node handler 由服务器启动时固定
+     * 注册，外部技能包不能把可执行对象注入到这里。
+     */
+    public SkillRunSubmission submitSkillPlan(
+            String name, SkillPlan plan) {
+        requireServerThread();
+        Objects.requireNonNull(plan, "plan");
+        RuntimeEntry runtime = findByName(name);
+        if (runtime == null
+                || runtime.state != BotLifecycleState.ACTIVE
+                || runtime.handle.player().orElse(null) == null) {
+            return SkillRunSubmission.rejected(
+                    SkillRunSubmission.Status.BOT_NOT_ACTIVE,
+                    "没有活动 BotPlayer 可执行技能计划");
+        }
+        if (!runtime.handle.botId().equals(plan.botId())) {
+            return SkillRunSubmission.rejected(
+                    SkillRunSubmission.Status.PLAN_BOT_MISMATCH,
+                    "技能计划 Bot 身份与活动实例不一致");
+        }
+        if (requiresProductionCheckpointScope(plan)
+                && !isCanonicalBootstrapPlan(plan)) {
+            return SkillRunSubmission.rejected(
+                    SkillRunSubmission.Status.INVALID_BUILTIN_PLAN,
+                    "bootstrap iron 只能使用服务器编译的完整固定计划");
+        }
+        if (runtime.pendingSkillCheckpointRecovery != null) {
+            return SkillRunSubmission.rejected(
+                    SkillRunSubmission.Status.BOT_BUSY,
+                    "耐久技能检查点正在恢复；恢复完成前拒绝新的 P5 计划");
+        }
+        if (survivalSkillService.inspect(runtime.handle.botId())
+                .filter(view -> view.botGeneration()
+                        == runtime.handle.generation()
+                        && !view.state().isTerminal())
+                .isPresent()) {
+            return SkillRunSubmission.rejected(
+                    SkillRunSubmission.Status.BOT_BUSY,
+                    "原有生存技能仍持有该 Bot 的背包动作权限");
+        }
+        return skillRuntime.submit(new SkillRunRequest(
+                runtime.handle.botId(),
+                runtime.handle.generation(),
+                plan,
+                server.getTickCount()));
+    }
+
     public SurvivalSkillSubmission startBasicArmor(
             String name) {
         requireServerThread();
@@ -944,8 +1830,81 @@ public final class BotLifecycleManager {
                     SurvivalSkillSubmission.Status.BOT_NOT_ACTIVE,
                     "BotPlayer 活动代际尚未就绪");
         }
+        if (runtime.pendingSkillCheckpointRecovery != null) {
+            return SurvivalSkillSubmission.rejected(
+                    SurvivalSkillSubmission.Status.BOT_BUSY,
+                    "耐久技能检查点正在恢复；恢复完成前拒绝新的 P5 技能");
+        }
+        if (skillRuntime.inspect(runtime.handle.botId())
+                .filter(view -> view.botGeneration()
+                        == runtime.handle.generation()
+                        && !view.state().isTerminal())
+                .isPresent()) {
+            return SurvivalSkillSubmission.rejected(
+                    SurvivalSkillSubmission.Status.BOT_BUSY,
+                    "通用 P5A 技能仍持有该 Bot 的背包动作权限");
+        }
         return survivalSkillService.startBasicArmor(
                 player, server.getTickCount());
+    }
+
+    /**
+     * 启动编译进服务器二进制的木头到铁镐 P5A 纵切片。
+     *
+     * <p>它不是外部 JSON 的快捷执行入口：计划由
+     * {@link ProductionSkillPlanCompiler#compileWoodToIronPick(UUID, long)} 每次从固定模板
+     * 重新编译，随后仍完整经过 {@link #submitSkillPlan(String, SkillPlan)} 的活动 body、
+     * generation、恢复 pending 与既有生存技能互斥检查。</p>
+     */
+    public SkillRunSubmission startBootstrapIron(String name) {
+        requireServerThread();
+        RuntimeEntry runtime = findByName(name);
+        if (runtime == null
+                || runtime.state != BotLifecycleState.ACTIVE
+                || runtime.handle.player().orElse(null) == null) {
+            return SkillRunSubmission.rejected(
+                    SkillRunSubmission.Status.BOT_NOT_ACTIVE,
+                    "没有活动 BotPlayer 可执行 bootstrap iron 生产计划");
+        }
+        final long revision;
+        try {
+            revision = nextBuiltinSkillPlanRevision();
+        } catch (IllegalStateException exception) {
+            return SkillRunSubmission.rejected(
+                    SkillRunSubmission.Status.PLAN_REVISION_UNAVAILABLE,
+                    "内建生产计划 revision 已耗尽；拒绝重用旧 checkpoint 身份");
+        }
+        final SkillPlan plan;
+        try {
+            plan = ProductionSkillPlanCompiler.p5aDefault()
+                    .compileWoodToIronPick(runtime.handle.botId(), revision);
+        } catch (RuntimeException exception) {
+            BotPlayer.LOGGER.error(
+                    "Cannot compile the built-in P5A bootstrap iron plan",
+                    exception);
+            return SkillRunSubmission.rejected(
+                    SkillRunSubmission.Status.INVALID_BUILTIN_PLAN,
+                    "内建 bootstrap iron 计划未通过固定模板校验");
+        }
+        return submitSkillPlan(name, plan);
+    }
+
+    private long nextBuiltinSkillPlanRevision() {
+        if (nextBuiltinSkillPlanRevision < 1L) {
+            throw new IllegalStateException(
+                    "built-in plan revision counter is invalid");
+        }
+        long revision = nextBuiltinSkillPlanRevision;
+        try {
+            nextBuiltinSkillPlanRevision = Math.incrementExact(revision);
+        } catch (ArithmeticException exception) {
+            /*
+             * revision 不能回绕到负值或一：这会使同一进程里的新 run 与旧 checkpoint
+             * 在审计面上不可区分，因此宁可拒绝后续内建提交。
+             */
+            nextBuiltinSkillPlanRevision = -1L;
+        }
+        return revision;
     }
 
     public Optional<ObservationSnapshot> latestPerception(
@@ -1500,6 +2459,8 @@ public final class BotLifecycleManager {
                             "Death was observed on a non-authoritative BotPlayer body"));
             return;
         }
+        revokePendingSkillCheckpointRecovery(
+                runtime, "authoritative_death");
         if (runtime.state == BotLifecycleState.DEAD) {
             PendingDeathRetirement pending =
                     runtime.deathRetirement;
@@ -2301,6 +3262,7 @@ public final class BotLifecycleManager {
         long tickStartedNanos = serverTickStartedNanos;
         serverTickStartedNanos = -1L;
         int currentTick = server.getTickCount();
+        taskSensorService.beginTick(currentTick);
         for (RuntimeEntry runtime : List.copyOf(runtimes.values())) {
             if (hasRequestedListenerDisconnect(
                     runtime)) {
@@ -2388,6 +3350,10 @@ public final class BotLifecycleManager {
                         currentTick);
             }
         }
+        selfDefenseSkillService.tick(currentTick);
+        advanceSkillCheckpointRecoveries(currentTick);
+        skillRuntime.tick(currentTick);
+        persistSafeSkillCheckpoints(currentTick);
         survivalSkillService.tick(currentTick);
         navigationService.tick(currentTick);
         actionRuntime.tick(currentTick);
@@ -2402,6 +3368,631 @@ public final class BotLifecycleManager {
         }
     }
 
+    /**
+     * 只在没有未确认动作/菜单的中央安全状态写 checkpoint。写入失败时立即取消该 run，
+     * 不让“看似可恢复、实际没有耐久证据”的计划继续改变世界。
+     */
+    private void advanceSkillCheckpointRecoveries(long currentTick) {
+        for (RuntimeEntry runtime : List.copyOf(runtimes.values())) {
+            SkillCheckpointRecoverySource source =
+                    runtime.pendingSkillCheckpointRecovery;
+            if (source == null
+                    || runtime.state != BotLifecycleState.ACTIVE
+                    || currentTick < runtime.nextSkillCheckpointRecoveryAttemptTick) {
+                continue;
+            }
+            if (!checkpointStoreWritable()) {
+                /*
+                 * 不能把“下次可能会保存”的 SavedData 当成恢复证据。同步 durability
+                 * 已失效时立即撤销 pending source，而不是在每 Tick 重试一个永远不会
+                 * 入队的 suffix。
+                 */
+                revokePendingSkillCheckpointRecovery(
+                        runtime, "checkpoint_store_not_durable");
+                reportSkillCheckpointRecovery(
+                        runtime, "checkpoint_store_not_durable");
+                continue;
+            }
+            UUID botId = runtime.handle.botId();
+            BotServerPlayer player = runtime.handle.player().orElse(null);
+            if (player == null || !isListenerAuthority(player)) {
+                deferSkillCheckpointRecovery(
+                        runtime, currentTick, "listener_not_ready", false);
+                continue;
+            }
+            String currentOwnershipBlocker =
+                    pendingSkillCheckpointRecoveryBlocker(
+                            runtime, player);
+            if (currentOwnershipBlocker != null) {
+                deferSkillCheckpointRecovery(
+                        runtime,
+                        currentTick,
+                        currentOwnershipBlocker,
+                        false);
+                continue;
+            }
+
+            SkillCheckpoint checkpoint = source.checkpoint().orElse(null);
+            if (checkpoint != null
+                    && (checkpoint.attemptCount()
+                                    >= SkillCheckpoint.MAX_ATTEMPTS
+                            || checkpoint.recoveryCount()
+                                    >= SkillCheckpoint.MAX_RECOVERIES)) {
+                revokePendingSkillCheckpointRecovery(
+                        runtime, "recovery_budget_exhausted");
+                reportSkillCheckpointRecovery(
+                        runtime,
+                        "recovery_budget_exhausted");
+                continue;
+            }
+
+            Optional<SkillPlan> approvedPlan = checkpoint == null
+                    ? Optional.empty()
+                    : approvedSkillPlanForCheckpoint(checkpoint);
+            boolean currentQuiescent = hasDurableCheckpointQuiescence(
+                    player, botId, runtime.handle.generation());
+            boolean oldGenerationActionsQuiescent = checkpoint != null
+                    && actionRuntime.isGenerationSafe(
+                            botId, checkpoint.generation());
+            boolean oldGenerationTokensCleared = false;
+            if (currentQuiescent && oldGenerationActionsQuiescent) {
+                try {
+                    /*
+                     * 旧 run、信号和多资源 lease 都是瞬态的；只在动作 drain 已证明
+                     * 安全后关闭精确旧代际。新的 request 会另取 runId 与全部 lease。
+                     */
+                    skillRuntime.closeGeneration(
+                            botId,
+                            checkpoint.generation(),
+                            currentTick,
+                            "checkpoint recovery replaced the old generation");
+                    skillReservations.closeGeneration(
+                            botId, checkpoint.generation());
+                    oldGenerationTokensCleared = true;
+                } catch (RuntimeException exception) {
+                    reportSkillCheckpointRecovery(
+                            runtime, "old_generation_cleanup_failed");
+                }
+            }
+
+            SkillCheckpointReobservation reobservation = checkpoint == null
+                    || approvedPlan.isEmpty()
+                            ? new SkillCheckpointReobservation(
+                                    false,
+                                    Optional.empty(),
+                                    List.of())
+                            : skillCheckpointScopeObserver.reobserve(
+                                    player,
+                                    checkpoint,
+                                    approvedPlan.orElseThrow(),
+                                    currentTick);
+            SkillCheckpointRecoveryCoordination coordination;
+            try {
+                coordination = SkillCheckpointRecoveryCoordinator.coordinate(
+                        new SkillCheckpointRecoveryCoordinationRequest(
+                                source,
+                                roster.serverInstanceId(),
+                                botId,
+                                player.getUUID(),
+                                runtime.handle.generation(),
+                                approvedPlan,
+                                approvedPlan.map(
+                                                this::allSkillDescriptorsAvailable)
+                                        .orElse(false),
+                                new SkillCheckpointRecoverySafety(
+                                        player.containerMenu
+                                                == player.inventoryMenu,
+                                        actionRuntime.isGenerationSafe(
+                                                botId,
+                                                runtime.handle.generation()),
+                                        player.inventoryMenu
+                                                .getCarried().isEmpty(),
+                                        oldGenerationTokensCleared),
+                                reobservation,
+                                currentTick));
+            } catch (RuntimeException exception) {
+                deferSkillCheckpointRecovery(
+                        runtime, currentTick, "coordinator_internal_failure", true);
+                continue;
+            }
+            if (coordination.request().isEmpty()) {
+                Optional<SkillCheckpointRecoveryRejection> rejection =
+                        coordination.rejection();
+                if (rejection.orElse(null)
+                        == SkillCheckpointRecoveryRejection
+                                .CHECKPOINT_SCOPE_MISSING) {
+                    /*
+                     * 缺少 scope 的旧记录不可能在后续 Tick 获得重新观察材料；撤销
+                     * pending 引用，防止每 Tick 把同一条不可验证的恢复意图重新入队。
+                     */
+                    revokePendingSkillCheckpointRecovery(
+                            runtime, "checkpoint_scope_missing");
+                    reportSkillCheckpointRecovery(
+                            runtime, "checkpoint_scope_missing");
+                    continue;
+                }
+                String outcome = rejection
+                        .map(value -> "rejected_" + value.name().toLowerCase(Locale.ROOT))
+                        .orElse("restart_plan_unavailable");
+                deferSkillCheckpointRecovery(
+                        runtime, currentTick, outcome, true);
+                continue;
+            }
+
+            /*
+             * submit() 只会在内存中创建 run；若在这里与首个新的安全 checkpoint 之间
+             * 掉电，旧记录不能仍显示“从未恢复”。先以同 generation、更高 revision
+             * 写一次 handoff，持久消耗恰好一个恢复预算。它不声称已有新动作或新 body，
+             * 因此下一次重启仍能以严格更高的 body generation 安全重建 suffix。
+             */
+            SkillCheckpoint handoff;
+            try {
+                if (!checkpointStoreWritable()) {
+                    throw new IllegalStateException(
+                            "checkpoint store is not writable for recovery handoff");
+                }
+                handoff = SkillCheckpointBridge.recoveryHandoff(
+                        Objects.requireNonNull(
+                                checkpoint, "valid recovery checkpoint"),
+                        currentTick);
+                skillCheckpointCommitter.upsert(handoff);
+                runtime.pendingSkillCheckpointRecovery =
+                        SkillCheckpointRecoverySource.valid(handoff);
+            } catch (RuntimeException exception) {
+                deferSkillCheckpointRecovery(
+                        runtime, currentTick, "handoff_persist_failed", true);
+                continue;
+            }
+
+            SkillRunSubmission submission = skillRuntime.submit(
+                    coordination.request().orElseThrow());
+            if (submission.status() != SkillRunSubmission.Status.ACCEPTED) {
+                deferSkillCheckpointRecovery(
+                        runtime,
+                        currentTick,
+                        "runtime_" + submission.status().name().toLowerCase(Locale.ROOT),
+                        true);
+                continue;
+            }
+            UUID newRunId = submission.runId().orElseThrow();
+            recoveredSkillCheckpointLineagesByRun.put(
+                    newRunId,
+                    new RecoveredSkillCheckpointLineage(
+                            Objects.requireNonNull(
+                                    checkpoint, "valid recovery checkpoint"),
+                            coordination.restartPlan().orElseThrow()));
+            runtime.pendingSkillCheckpointRecovery = null;
+            runtime.nextSkillCheckpointRecoveryAttemptTick = 0L;
+            runtime.lastSkillCheckpointRecoveryOutcome = null;
+            skillCheckpointRevisions.remove(botId);
+            BotPlayer.LOGGER.info(
+                    "Recovered P5A checkpoint for BotPlayer {} ({}) into generation {}",
+                    runtime.handle.name(),
+                    botId,
+                    runtime.handle.generation());
+        }
+    }
+
+    /**
+     * 新 body 接管旧 checkpoint 前不得已有任何 P5 所有者。这里除了运行时状态机，
+     * 还把原版菜单/cursor 与动作代际一并当作布局所有权；否则恢复 suffix 会和一个
+     * 尚未落盘的点击或安全自卫并发，保守延后比猜测其结果安全。
+     */
+    @Nullable
+    private String pendingSkillCheckpointRecoveryBlocker(
+            RuntimeEntry runtime, BotServerPlayer player) {
+        UUID botId = runtime.handle.botId();
+        long generation = runtime.handle.generation();
+        if (skillRuntime.inspect(botId)
+                .filter(view -> view.botGeneration() == generation
+                        && !view.state().isTerminal())
+                .isPresent()) {
+            return "generic_p5_active";
+        }
+        if (survivalSkillService.inspect(botId)
+                .filter(view -> view.botGeneration() == generation
+                        && !view.state().isTerminal())
+                .isPresent()) {
+            return "legacy_p5_active";
+        }
+        if (selfDefenseSkillService.latestView(botId)
+                .filter(view -> view.generation() == generation
+                        && !view.status().terminal())
+                .isPresent()) {
+            return "self_defense_active";
+        }
+        if (player.containerMenu != player.inventoryMenu
+                || !player.inventoryMenu.getCarried().isEmpty()) {
+            return "menu_layout_active";
+        }
+        if (!actionRuntime.isGenerationSafe(botId, generation)) {
+            return "action_layout_active";
+        }
+        return null;
+    }
+
+    private Optional<SkillPlan> approvedSkillPlanForCheckpoint(
+            SkillCheckpoint checkpoint) {
+        /*
+         * bootstrap_iron 是服务器二进制内固定、按精确模板编译的内建计划；它不需要也不允许
+         * 外部 Pack 的审批来恢复。这里仍以 checkpoint 的 planId/revision/digest 三元组完整
+         * 比对，任何被篡改、未来变体或不同 Bot 的记录都会落回 empty 并由恢复协调器拒绝。
+         */
+        Optional<SkillPlan> builtInBootstrap = builtinBootstrapPlanForCheckpoint(
+                checkpoint);
+        if (builtInBootstrap.isPresent()) {
+            return builtInBootstrap;
+        }
+        List<SkillPlan> matches = skillPackManager.records().stream()
+                .filter(record -> record.state() == SkillPackState.APPROVED)
+                .map(record -> record.candidate().definition().plan())
+                .filter(plan -> plan.botId().equals(checkpoint.botId()))
+                .filter(plan -> new io.github.greytaiwolf.botplayer.skill.checkpoint
+                        .SkillCheckpointPlan(
+                                plan.planId(),
+                                plan.revision(),
+                                SkillCheckpointBridge.planDigest(plan))
+                        .equals(checkpoint.plan()))
+                .toList();
+        return matches.size() == 1
+                ? Optional.of(matches.get(0))
+                : Optional.empty();
+    }
+
+    private static Optional<SkillPlan> builtinBootstrapPlanForCheckpoint(
+            SkillCheckpoint checkpoint) {
+        Objects.requireNonNull(checkpoint, "checkpoint");
+        try {
+            SkillPlan plan = ProductionSkillPlanCompiler.p5aDefault()
+                    .compileWoodToIronPick(
+                            checkpoint.botId(), checkpoint.plan().revision());
+            io.github.greytaiwolf.botplayer.skill.checkpoint
+                    .SkillCheckpointPlan expected = new io.github.greytaiwolf.botplayer
+                            .skill.checkpoint.SkillCheckpointPlan(
+                                    plan.planId(),
+                                    plan.revision(),
+                                    SkillCheckpointBridge.planDigest(plan));
+            return expected.equals(checkpoint.plan())
+                    ? Optional.of(plan)
+                    : Optional.empty();
+        } catch (RuntimeException exception) {
+            /* 静态内建模板异常时绝不能猜测恢复内容。 */
+            return Optional.empty();
+        }
+    }
+
+    private boolean allSkillDescriptorsAvailable(SkillPlan plan) {
+        return plan.nodes().stream().allMatch(node -> skillRegistry.find(
+                node.skillId(), node.skillVersion()).isPresent());
+    }
+
+    private void deferSkillCheckpointRecovery(
+            RuntimeEntry runtime,
+            long currentTick,
+            String outcome,
+            boolean report) {
+        runtime.nextSkillCheckpointRecoveryAttemptTick = currentTick
+                >= Long.MAX_VALUE - 20L
+                        ? Long.MAX_VALUE
+                        : currentTick + 20L;
+        if (report) {
+            reportSkillCheckpointRecovery(runtime, outcome);
+        }
+    }
+
+    private void reportSkillCheckpointRecovery(
+            RuntimeEntry runtime, String outcome) {
+        if (outcome.equals(runtime.lastSkillCheckpointRecoveryOutcome)) {
+            return;
+        }
+        runtime.lastSkillCheckpointRecoveryOutcome = outcome;
+        BotPlayer.LOGGER.warn(
+                "P5A checkpoint recovery for BotPlayer {} ({}) is fail-closed: {}",
+                runtime.handle.name(), runtime.handle.botId(), outcome);
+    }
+
+    private void persistSafeSkillCheckpoints(long currentTick) {
+        for (RuntimeEntry runtime : List.copyOf(runtimes.values())) {
+            if (runtime.state != BotLifecycleState.ACTIVE) {
+                continue;
+            }
+            UUID botId = runtime.handle.botId();
+            long generation = runtime.handle.generation();
+            Optional<SkillRuntimeCheckpoint> checkpoint =
+                    skillRuntime.checkpoint(botId);
+            if (checkpoint.isEmpty()) {
+                skillRuntime.inspect(botId)
+                        .filter(view -> view.botGeneration() == generation
+                                && view.state().isTerminal())
+                        .ifPresent(view -> {
+                            terminalizeSkillCheckpointGeneration(
+                                    botId, generation, currentTick);
+                            skillCheckpointRevisions.remove(botId);
+                            recoveredSkillCheckpointLineagesByRun.remove(
+                                    view.runId());
+                        });
+                continue;
+            }
+            SkillRuntimeCheckpoint value = checkpoint.orElseThrow();
+            if (value.view().botGeneration() != generation
+                    || !safeCheckpointState(value.view().state())
+                    || skillCheckpointRevisions.getOrDefault(
+                            botId, -1L) >= value.view().stateRevision()) {
+                continue;
+            }
+            BotServerPlayer player = runtime.handle.player().orElse(null);
+            if (player == null
+                    || !hasDurableCheckpointQuiescence(
+                            player, botId, generation)) {
+                continue;
+            }
+            if (!requiresProductionCheckpointScope(value.plan())) {
+                /*
+                 * 外部 Pack 和非生产内建技能没有可审核的世界范围，不能把一份空 scope
+                 * 写成 restartable 记录。它们仍可正常执行；重启时只会丢失进度而不会
+                 * 重放任何原版副作用。
+                 */
+                terminalizeSkillCheckpointGeneration(
+                        botId, generation, currentTick);
+                skillCheckpointRevisions.remove(botId);
+                continue;
+            }
+            try {
+                RecoveredSkillCheckpointLineage lineage =
+                        recoveredSkillCheckpointLineagesByRun.get(
+                                value.view().runId());
+                SkillCheckpointPlan sourcePlan = lineage == null
+                        ? new SkillCheckpointPlan(
+                                value.plan().planId(),
+                                value.plan().revision(),
+                                SkillCheckpointBridge.planDigest(
+                                        value.plan()))
+                        : lineage.prior().plan();
+                MinecraftSkillCheckpointScopeObserver.CaptureResult captured =
+                        skillCheckpointScopeObserver.capture(
+                                player,
+                                value,
+                                sourcePlan,
+                                Optional.ofNullable(lineage).map(
+                                        RecoveredSkillCheckpointLineage
+                                                ::restartPlan),
+                                currentTick);
+                SkillCheckpointScope scope = captured.scope()
+                        .orElseThrow(() -> new IllegalStateException(
+                                "P5A checkpoint scope capture is unavailable: "
+                                        + captured.rejectionCode()));
+                SkillCheckpoint persisted = lineage == null
+                        ? SkillCheckpointBridge.checkpoint(
+                                roster.serverInstanceId(),
+                                player.getUUID(),
+                                value,
+                                scope)
+                        : SkillCheckpointBridge.recoveredCheckpoint(
+                                roster.serverInstanceId(),
+                                player.getUUID(),
+                                value,
+                                lineage.prior(),
+                                lineage.restartPlan(),
+                                scope);
+                skillCheckpointCommitter.upsert(persisted);
+                if (lineage != null) {
+                    recoveredSkillCheckpointLineagesByRun.put(
+                            value.view().runId(),
+                            new RecoveredSkillCheckpointLineage(
+                                    persisted, lineage.restartPlan()));
+                }
+                skillCheckpointRevisions.put(
+                        botId, value.view().stateRevision());
+            } catch (RuntimeException exception) {
+                RecoveredSkillCheckpointLineage lineage =
+                        recoveredSkillCheckpointLineagesByRun.get(
+                                value.view().runId());
+                if (lineage != null) {
+                    terminalizeSkillCheckpointGeneration(
+                            botId,
+                            lineage.prior().generation(),
+                            currentTick);
+                }
+                terminalizeSkillCheckpointGeneration(
+                        botId, generation, currentTick);
+                skillRuntime.cancel(
+                        value.view().runId(),
+                        currentTick,
+                        "技能检查点持久化失败，已安全取消计划");
+                BotPlayer.LOGGER.error(
+                        "Cancelled P5A skill run {} after checkpoint persistence failed",
+                        value.view().runId(),
+                        exception);
+            }
+        }
+    }
+
+    private static boolean safeCheckpointState(SkillRunState state) {
+        return state == SkillRunState.PREPARING
+                || state == SkillRunState.PAUSED;
+    }
+
+    private static boolean requiresProductionCheckpointScope(SkillPlan plan) {
+        return plan.nodes().stream().anyMatch(node -> node.skillId().equals(
+                P5ABuiltinSkillIds.BOOTSTRAP_IRON));
+    }
+
+    private static boolean isCanonicalBootstrapPlan(SkillPlan plan) {
+        try {
+            return plan.equals(ProductionSkillPlanCompiler.p5aDefault()
+                    .compileWoodToIronPick(
+                            plan.botId(), plan.revision()));
+        } catch (RuntimeException exception) {
+            return false;
+        }
+    }
+
+    /**
+     * Java 状态机显示“可保存”还不够：原版菜单、cursor 和动作运行时也必须处于
+     * 代际静止点。这样停服后的 checkpoint 从不声称能恢复半个点击或半开的世界容器。
+     */
+    private boolean hasDurableCheckpointQuiescence(
+            BotServerPlayer player, UUID botId, long generation) {
+        return player.containerMenu == player.inventoryMenu
+                && player.inventoryMenu.getCarried().isEmpty()
+                && actionRuntime.isGenerationSafe(botId, generation);
+    }
+
+    /**
+     * {@link SkillRuntime} 在调用 node handler 之前进入这里。只要磁盘上还留着一份
+     * restartable checkpoint，就必须先把它同步替换为 terminal dispatch fence；否则动作
+     * 已改变世界、进程却在下一个安全点之前掉电时，旧安全点会在新 JVM 中重放该动作。
+     */
+    private SkillRuntimeDispatchFence.Result fenceSkillNodeDispatch(
+            SkillRuntimeCheckpoint runtimeCheckpoint, long currentTick) {
+        Objects.requireNonNull(runtimeCheckpoint, "runtimeCheckpoint");
+        if (!checkpointStoreWritable()) {
+            return SkillRuntimeDispatchFence.Result.reject(
+                    "checkpoint 存储没有可用的同步耐久边界；拒绝派发原版动作");
+        }
+        SkillRunView view = runtimeCheckpoint.view();
+        RuntimeEntry runtime = runtimes.get(view.botId());
+        BotServerPlayer player = runtime == null
+                ? null
+                : runtime.handle.player().orElse(null);
+        if (runtime == null
+                || runtime.state != BotLifecycleState.ACTIVE
+                || runtime.handle.generation() != view.botGeneration()
+                || player == null
+                || !isListenerAuthority(player)) {
+            return SkillRuntimeDispatchFence.Result.reject(
+                    "派发前 BotPlayer 生命周期身份已变化");
+        }
+        SkillCheckpoint persisted = skillCheckpoints.load(view.botId())
+                .orElse(null);
+        if (persisted == null || persisted.continuationState().isTerminal()) {
+            /* 没有旧恢复点时，崩溃最多失去进度，绝不会重放一份旧动作。 */
+            return SkillRuntimeDispatchFence.Result.permit();
+        }
+        if (!persisted.serverInstanceId().equals(roster.serverInstanceId())
+                || !persisted.botId().equals(view.botId())
+                || !persisted.playerId().equals(player.getUUID())) {
+            return SkillRuntimeDispatchFence.Result.reject(
+                    "旧 checkpoint 身份不匹配；拒绝覆盖或派发动作");
+        }
+        try {
+            skillCheckpointCommitter.upsert(
+                    SkillCheckpointBridge.dispatchFence(
+                            persisted, currentTick));
+            /* 下一次真正到达安全点必须重新落盘，不可沿用已撤销 revision。 */
+            skillCheckpointRevisions.remove(view.botId());
+            return SkillRuntimeDispatchFence.Result.permit();
+        } catch (RuntimeException exception) {
+            BotPlayer.LOGGER.error(
+                    "Could not durably fence P5A dispatch for BotPlayer {} ({})",
+                    runtime.handle.name(), view.botId(), exception);
+            return SkillRuntimeDispatchFence.Result.reject(
+                    "checkpoint 派发围栏无法同步提交；拒绝原版动作");
+        }
+    }
+
+    /**
+     * 仅当耐久记录精确对应当前 run/revision、且这一刻仍是原版与动作层共同静止点时，
+     * 正常 shutdown 才可保留它。这里不写盘；失败或竞态只会使后续走删除 checkpoint 的
+     * 保守路径。
+     */
+    private Optional<Long> currentShutdownCheckpointGeneration(
+            RuntimeEntry runtime) {
+        Objects.requireNonNull(runtime, "runtime");
+        if (!checkpointStoreWritable()
+                || runtime.state != BotLifecycleState.ACTIVE) {
+            return Optional.empty();
+        }
+        BotServerPlayer player = runtime.handle.player().orElse(null);
+        long generation = runtime.handle.generation();
+        if (player == null
+                || generation <= 0L
+                || !isListenerAuthority(player)
+                || !hasDurableCheckpointQuiescence(
+                        player, runtime.handle.botId(), generation)) {
+            return Optional.empty();
+        }
+        SkillRuntimeCheckpoint runtimeCheckpoint = skillRuntime.checkpoint(
+                runtime.handle.botId()).orElse(null);
+        if (runtimeCheckpoint == null
+                || runtimeCheckpoint.view().botGeneration() != generation
+                || !safeCheckpointState(runtimeCheckpoint.view().state())
+                || skillCheckpointRevisions.getOrDefault(
+                        runtime.handle.botId(), -1L)
+                        != runtimeCheckpoint.view().stateRevision()) {
+            return Optional.empty();
+        }
+        SkillCheckpoint persisted = skillCheckpoints.load(
+                runtime.handle.botId()).orElse(null);
+        if (persisted == null
+                || !persisted.serverInstanceId().equals(
+                        roster.serverInstanceId())
+                || !persisted.botId().equals(runtime.handle.botId())
+                || !persisted.playerId().equals(player.getUUID())
+                || persisted.generation() != generation
+                || !persisted.runId().equals(
+                        runtimeCheckpoint.view().runId())
+                || !persisted.checkpointId().equals(
+                        runtimeCheckpoint.view().runId())
+                || persisted.stateRevision()
+                        != runtimeCheckpoint.view().stateRevision()
+                || persisted.continuationState().isTerminal()
+                || persisted.scope().isEmpty()) {
+            return Optional.empty();
+        }
+        RecoveredSkillCheckpointLineage lineage =
+                recoveredSkillCheckpointLineagesByRun.get(
+                        runtimeCheckpoint.view().runId());
+        io.github.greytaiwolf.botplayer.skill.checkpoint
+                .SkillCheckpointPlan expectedPlan = lineage == null
+                        ? new io.github.greytaiwolf.botplayer.skill.checkpoint
+                                .SkillCheckpointPlan(
+                                        runtimeCheckpoint.view().planId(),
+                                        runtimeCheckpoint.view().planRevision(),
+                                        SkillCheckpointBridge.planDigest(
+                                                runtimeCheckpoint.plan()))
+                        : lineage.prior().plan();
+        return persisted.plan().equals(expectedPlan)
+                ? Optional.of(generation)
+                : Optional.empty();
+    }
+
+    private boolean checkpointStoreWritable() {
+        return skillCheckpoints.loadStatus()
+                        == SkillCheckpointLoadStatus.VALID
+                && skillCheckpointCommitter.isReady();
+    }
+
+    /**
+     * 以 durable terminal tombstone 取代“内存删除后再保存”。在动作已经发生过的场景，
+     * 删除提交失败会让下一 JVM 重新读到旧的 restartable checkpoint；而 tombstone 一旦
+     * 成功落盘，即使后续真正删除永远失败也只会丢进度、不会重放副作用。
+     */
+    private boolean terminalizeSkillCheckpointGeneration(
+            UUID botId, long generation, long currentTick) {
+        Objects.requireNonNull(botId, "botId");
+        if (generation <= 0L || !checkpointStoreWritable()) {
+            return false;
+        }
+        SkillCheckpoint existing = skillCheckpoints.load(botId).orElse(null);
+        if (existing == null || existing.generation() != generation
+                || existing.continuationState().isTerminal()) {
+            return true;
+        }
+        try {
+            skillCheckpointCommitter.upsert(
+                    SkillCheckpointBridge.terminalTombstone(
+                            existing, currentTick));
+            skillCheckpointRevisions.remove(botId);
+            return true;
+        } catch (RuntimeException exception) {
+            BotPlayer.LOGGER.error(
+                    "Could not durably terminalize P5A checkpoint for BotPlayer {} generation {}",
+                    botId, generation, exception);
+            return false;
+        }
+    }
+
     public void shutdown() {
         requireServerThread();
         if (stopping) {
@@ -2412,6 +4003,22 @@ public final class BotLifecycleManager {
         List<RuntimeEntry> shutdownRuntimes =
                 new ArrayList<>(runtimes.values());
         RuntimeException preparationFailure = null;
+
+        /*
+         * 这份资格必须在关闭 runtime 之前冻结：若计划已经离开上一份安全点、发出了
+         * 动作或打开过菜单，旧 checkpoint 不能因为“正常停服”而幸存下来重做副作用。
+         * 后续任何 no-save/fallback 都会显式撤销该资格。
+         */
+        for (RuntimeEntry runtime : shutdownRuntimes) {
+            runtime.preserveSkillCheckpointGeneration =
+                    currentShutdownCheckpointGeneration(runtime)
+                            .orElse(-1L);
+            if (runtime.preserveSkillCheckpointGeneration < 0L) {
+                revokePendingSkillCheckpointRecovery(
+                        runtime,
+                        "shutdown_checkpoint_not_eligible");
+            }
+        }
 
         /*
          * 必须先于任何菜单/动作回调建立保存 fence。setter 本身不进入原版
@@ -2445,6 +4052,12 @@ public final class BotLifecycleManager {
                     preparationFailure, exception);
         }
         try {
+            selfDefenseSkillService.close();
+        } catch (RuntimeException exception) {
+            preparationFailure = appendFailure(
+                    preparationFailure, exception);
+        }
+        try {
             safetyService.shutdown();
         } catch (RuntimeException exception) {
             preparationFailure = appendFailure(
@@ -2452,6 +4065,12 @@ public final class BotLifecycleManager {
         }
         try {
             navigationService.close();
+        } catch (RuntimeException exception) {
+            preparationFailure = appendFailure(
+                    preparationFailure, exception);
+        }
+        try {
+            skillRuntime.close();
         } catch (RuntimeException exception) {
             preparationFailure = appendFailure(
                     preparationFailure, exception);
@@ -2590,6 +4209,11 @@ public final class BotLifecycleManager {
         }
 
         player.releasePlayerDataSaveSuppression();
+        /*
+         * 后续 listener disconnect 仍会走统一的退休状态机。此前在 shutdown 入口
+         * 冻结的精确代际标记会留到它完成；这里绝不能临时补发资格，否则一个已经
+         * 离开安全点的旧 checkpoint 会被错误保留。
+         */
         disconnect(
                 runtime,
                 Component.literal("Server stopping"));
@@ -2635,6 +4259,8 @@ public final class BotLifecycleManager {
     }
 
     private void disconnect(RuntimeEntry runtime, Component reason) {
+        revokePendingSkillCheckpointRecovery(
+                runtime, "disconnect_requested");
         if (runtime.disconnectingPlayer != null
                 || hasRequestedListenerDisconnect(
                         runtime)) {
@@ -3067,6 +4693,19 @@ public final class BotLifecycleManager {
             pending.failure = appendFailure(
                     pending.failure, exception);
         }
+        try {
+            closeGenericSkillGeneration(
+                    runtime.handle.botId(),
+                    pending.generation,
+                    server.getTickCount(),
+                    "Bot direct disconnect closed this generation",
+                    runtime.preserveSkillCheckpointGeneration
+                            == pending.generation);
+            runtime.preserveSkillCheckpointGeneration = -1L;
+        } catch (RuntimeException exception) {
+            pending.failure = appendFailure(
+                    pending.failure, exception);
+        }
         pending.failure = appendDirectAuthorityFailure(
                 runtime,
                 pending,
@@ -3419,6 +5058,16 @@ public final class BotLifecycleManager {
             pending.failure = appendFailure(
                     pending.failure, exception);
         }
+        try {
+            closeGenericSkillGeneration(
+                    runtime.handle.botId(),
+                    pending.generation,
+                    server.getTickCount(),
+                    "Bot death retirement closed this generation");
+        } catch (RuntimeException exception) {
+            pending.failure = appendFailure(
+                    pending.failure, exception);
+        }
         pending.failure = appendDeathAuthorityFailure(
                 runtime,
                 pending,
@@ -3687,6 +5336,8 @@ public final class BotLifecycleManager {
         }
         runtime.deathRetirementFailClosedInProgress = true;
         try {
+            revokePendingSkillCheckpointRecovery(
+                    runtime, "death_fail_closed");
             runtime.respawnAtTick = -1;
             runtime.respawnFinalizeDeadlineTick = -1;
             runtime.respawnCandidate = null;
@@ -3929,7 +5580,12 @@ public final class BotLifecycleManager {
         try {
             safelyClosed =
                     closeP4Generation(
-                            botId, generation);
+                            botId,
+                            generation,
+                            inventoryReason
+                                    == InventoryCloseReason.SERVER_STOPPING
+                                    && runtime.preserveSkillCheckpointGeneration
+                                            == generation);
         } catch (RuntimeException exception) {
             failure = appendFailure(
                     failure, exception);
@@ -3948,7 +5604,9 @@ public final class BotLifecycleManager {
                     == runtime) {
                 try {
                     closeP4Generation(
-                            botId, generation);
+                            botId,
+                            generation,
+                            false);
                 } catch (RuntimeException retryFailure) {
                     failure = appendFailure(
                             failure,
@@ -3994,9 +5652,27 @@ public final class BotLifecycleManager {
                 runtime.stagedCleanupPlayer;
         long generation =
                 runtime.handle.generation();
+        if (!canRetainShutdownCheckpointAtFinalTeardown(
+                runtime, generation, suppressPlayerDataSave)) {
+            revokePendingSkillCheckpointRecovery(
+                    runtime, "runtime_teardown");
+            if (generation > 0L) {
+                try {
+                    closeGenericSkillGeneration(
+                            botId,
+                            generation,
+                            server.getTickCount(),
+                            "runtime teardown did not retain a verified shutdown checkpoint",
+                            false);
+                } catch (RuntimeException exception) {
+                    failure = appendFailure(failure, exception);
+                }
+            }
+        }
         runtime.handoffAborted = true;
         runtime.replacementHandoffInProgress =
                 false;
+        runtime.preserveSkillCheckpointGeneration = -1L;
         runtime.disconnectingGeneration = -1L;
         runtime.disconnectingPlayer = null;
         runtime.disconnectingListener = null;
@@ -4074,6 +5750,8 @@ public final class BotLifecycleManager {
                     RuntimeEntry runtime,
                     @Nullable BotServerPlayer preferredPlayer,
                     @Nullable BotServerPlayer additionalPlayer) {
+        revokePendingSkillCheckpointRecovery(
+                runtime, "no_save_teardown");
         armImmediatelyKnownNoSaveBodies(
                 runtime,
                 preferredPlayer,
@@ -4091,6 +5769,25 @@ public final class BotLifecycleManager {
                 teardown.exactBodies;
         LinkedHashSet<ServerGamePacketListenerImpl> exactListeners =
                 teardown.exactListeners;
+        RuntimeException checkpointRevocationFailure = null;
+
+        /*
+         * 若 normal shutdown 的拓扑或 listener 证明后来失效，已保留的 checkpoint
+         * 不能随 no-save 隔离路径逃逸；它只对那条完整、正常的保存链有效。
+         */
+        runtime.preserveSkillCheckpointGeneration = -1L;
+        if (retiredGeneration > 0L) {
+            try {
+                closeGenericSkillGeneration(
+                        botId,
+                        retiredGeneration,
+                        server.getTickCount(),
+                        "no-save teardown revoked shutdown checkpoint preservation",
+                        false);
+            } catch (RuntimeException exception) {
+                checkpointRevocationFailure = exception;
+            }
+        }
 
         for (BotServerPlayer exactBody : exactBodies) {
             exactBody.suppressPlayerDataSaveUntilReleased();
@@ -4100,7 +5797,7 @@ public final class BotLifecycleManager {
          * 必须先撤销全部 listener 权威，再触发 PlayerList.remove。否则 remove/logout
          * 回调重入 disconnect 时仍可能走原版保存，把未验证的临时布局落盘。
          */
-        RuntimeException failure = null;
+        RuntimeException failure = checkpointRevocationFailure;
         for (ServerGamePacketListenerImpl exactListener :
                 exactListeners) {
             try {
@@ -4196,6 +5893,15 @@ public final class BotLifecycleManager {
             } catch (RuntimeException exception) {
                 failure = appendFailure(
                         failure, exception);
+            }
+            try {
+                closeGenericSkillGeneration(
+                        botId,
+                        retiredGeneration,
+                        server.getTickCount(),
+                        "No-save removal closed this generation");
+            } catch (RuntimeException exception) {
+                failure = appendFailure(failure, exception);
             }
         }
         if (failure == null) {
@@ -4542,7 +6248,8 @@ public final class BotLifecycleManager {
         perceptionService.closeBot(runtime.handle.botId());
         closeP4Generation(
                 runtime.handle.botId(),
-                runtime.handle.generation());
+                runtime.handle.generation(),
+                false);
         clearPlayerInput(runtime, true);
         runtime.handle.detach(player);
         runtimes.remove(runtime.handle.botId());
@@ -5068,7 +6775,9 @@ public final class BotLifecycleManager {
     }
 
     private boolean closeP4Generation(
-            UUID botId, long generation) {
+            UUID botId,
+            long generation,
+            boolean preserveSafeCheckpoint) {
         if (generation <= 0L) {
             return true;
         }
@@ -5085,6 +6794,24 @@ public final class BotLifecycleManager {
                                     .isGenerationSafe(
                                             botId,
                                             generation));
+        } catch (RuntimeException exception) {
+            failure = appendFailure(
+                    failure, exception);
+        }
+        try {
+            closeGenericSkillGeneration(
+                    botId,
+                    generation,
+                    currentTick,
+                    "Bot lifecycle closed this generation",
+                    preserveSafeCheckpoint);
+        } catch (RuntimeException exception) {
+            failure = appendFailure(
+                    failure, exception);
+        }
+        try {
+            selfDefenseSkillService.closeGeneration(
+                    botId, generation, currentTick);
         } catch (RuntimeException exception) {
             failure = appendFailure(
                     failure, exception);
@@ -5107,6 +6834,112 @@ public final class BotLifecycleManager {
             throw failure;
         }
         return safelyClosed;
+    }
+
+    private void closeGenericSkillGeneration(
+            UUID botId,
+            long generation,
+            long currentTick,
+            String reason) {
+        closeGenericSkillGeneration(
+                botId, generation, currentTick, reason, false);
+    }
+
+    /**
+     * 关闭瞬态运行时，同时只在经过正常停服路径时保留已经落盘的中央安全 checkpoint。
+     * 断线、死亡、异常回滚和 no-save 隔离绝不能带走任何可恢复声明。
+     */
+    private void closeGenericSkillGeneration(
+            UUID botId,
+            long generation,
+            long currentTick,
+            String reason,
+            boolean preserveSafeCheckpoint) {
+        skillRuntime.closeGeneration(
+                botId, generation, currentTick, reason);
+        if (!preserveSafeCheckpoint) {
+            if (!terminalizeSkillCheckpointGeneration(
+                    botId, generation, currentTick)
+                    && checkpointStoreWritable()) {
+                throw new IllegalStateException(
+                        "P5A checkpoint terminal tombstone could not be committed");
+            }
+            skillCheckpointRevisions.remove(botId);
+            recoveredSkillCheckpointLineagesByRun.entrySet().removeIf(entry ->
+                    entry.getValue().prior().botId().equals(botId)
+                            && entry.getValue().prior().generation()
+                                    <= generation);
+        }
+    }
+
+    /**
+     * pending source 是一次尚未接管完成的旧 body 恢复意图，不是当前 generation 的
+     * 运行权限。任何死亡、异常断线、no-save 或未获正常停服回执的路径都必须先清掉
+     * 它，并且只关闭 source 中记录的原 generation；不能用当前 generation 的上界
+     * 清理，以免迟到 predecessor 波及已经 ACTIVE 的 successor。
+     */
+    private void revokePendingSkillCheckpointRecovery(
+            RuntimeEntry runtime, String safeReason) {
+        Objects.requireNonNull(runtime, "runtime");
+        Objects.requireNonNull(safeReason, "safeReason");
+        SkillCheckpointRecoverySource source =
+                runtime.pendingSkillCheckpointRecovery;
+        runtime.pendingSkillCheckpointRecovery = null;
+        runtime.nextSkillCheckpointRecoveryAttemptTick = 0L;
+        runtime.lastSkillCheckpointRecoveryOutcome =
+                "revoked_" + safeReason;
+        if (source == null) {
+            return;
+        }
+        SkillCheckpoint checkpoint = source.checkpoint().orElse(null);
+        if (checkpoint == null
+                || !checkpoint.botId().equals(runtime.handle.botId())
+                || !checkpoint.playerId().equals(runtime.handle.botId())
+                || !checkpoint.serverInstanceId().equals(
+                        roster.serverInstanceId())
+                || checkpoint.generation() <= 0L) {
+            return;
+        }
+        try {
+            closeGenericSkillGeneration(
+                    checkpoint.botId(),
+                    checkpoint.generation(),
+                    server.getTickCount(),
+                    "pending checkpoint recovery revoked: " + safeReason,
+                    false);
+        } catch (RuntimeException exception) {
+            /*
+             * 上层 teardown 仍会继续 no-save 隔离；不能让撤销失败保留 pending 引用
+             * 并在稍后的 Tick 把同一恢复意图重新入队。
+             */
+            BotPlayer.LOGGER.error(
+                    "Could not revoke pending P5A checkpoint recovery for BotPlayer {} ({})",
+                    runtime.handle.name(),
+                    runtime.handle.botId(),
+                    exception);
+        }
+    }
+
+    /**
+     * 正常停服的 checkpoint 仅在 listener 已带着精确、成功的 pre-save receipt 返回
+     * 时才能穿过 final teardown。任何更早的重入 disconnect 都走 false 分支，删除
+     * 旧记录而不是把“曾经安全”的 snapshot 错当作本次保存已验证。
+     */
+    private boolean canRetainShutdownCheckpointAtFinalTeardown(
+            RuntimeEntry runtime,
+            long generation,
+            boolean suppressPlayerDataSave) {
+        return !suppressPlayerDataSave
+                && stopping
+                && generation > 0L
+                && runtime.preserveSkillCheckpointGeneration == generation
+                && runtime.disconnectingGeneration == generation
+                && runtime.disconnectingPlayer != null
+                && runtime.disconnectingListener != null
+                && runtime.disconnectingConnection != null
+                && runtime.disconnectPreparationComplete
+                && runtime.disconnectPreparationSafelyClosed
+                && runtime.disconnectPreparationFailure == null;
     }
 
     private void clearPlayerInput(
@@ -6233,6 +8066,23 @@ public final class BotLifecycleManager {
         }
     }
 
+    /**
+     * 新 generation 只执行 suffix，但每次后续安全落盘都必须恢复为原完整批准计划的
+     * provenance；这个小记录不含旧 run token，且只以当前新 runId 为 map key。
+     */
+    private record RecoveredSkillCheckpointLineage(
+            SkillCheckpoint prior,
+            SkillCheckpointRestartPlan restartPlan) {
+        private RecoveredSkillCheckpointLineage {
+            Objects.requireNonNull(prior, "prior");
+            Objects.requireNonNull(restartPlan, "restartPlan");
+            if (!prior.plan().equals(restartPlan.sourcePlan())) {
+                throw new IllegalArgumentException(
+                        "checkpoint lineage source plan must match prior record");
+            }
+        }
+    }
+
     private static final class RuntimeEntry {
         private final BotRuntimeHandle handle;
         private BotLifecycleState state;
@@ -6250,6 +8100,13 @@ public final class BotLifecycleManager {
                 -1L;
         private boolean rememberedRetirementSafelyClosed;
         private long stagedCleanupGeneration = -1L;
+        /** 仅 normal shutdown 的 exact listener 退休可保留已核验的 P5A checkpoint。 */
+        private long preserveSkillCheckpointGeneration = -1L;
+        @Nullable
+        private SkillCheckpointRecoverySource pendingSkillCheckpointRecovery;
+        private long nextSkillCheckpointRecoveryAttemptTick;
+        @Nullable
+        private String lastSkillCheckpointRecoveryOutcome;
         @Nullable
         private BotServerPlayer disconnectingPlayer;
         @Nullable

@@ -78,6 +78,29 @@ public record NavigationPolicy(
                 maximumRecoveryAttempts);
     }
 
+    /**
+     * Retains every traversal, safety, and recovery bound while changing only whether the
+     * follower may issue sprint input. Callers that must settle on a one-block-wide exact goal
+     * can opt into this narrower physical contract without weakening the general policy.
+     */
+    public NavigationPolicy withSprint(boolean sprintAllowed) {
+        return new NavigationPolicy(
+                sprintAllowed,
+                allowSwim,
+                allowClimb,
+                allowOpenWoodenDoor,
+                closeDoorAfterPass,
+                allowBreak,
+                maximumBlocksBroken,
+                allowPlace,
+                maximumBlocksPlaced,
+                maximumSafeDrop,
+                minimumFoodToContinue,
+                minimumHealthToContinue,
+                maximumReplans,
+                maximumRecoveryAttempts);
+    }
+
     private static void requireRange(
             int value, int minimum, int maximum, String name) {
         if (value < minimum || value > maximum) {

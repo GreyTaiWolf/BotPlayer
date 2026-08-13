@@ -226,4 +226,277 @@ class ResourceReservationServiceTest {
                         IllegalStateException.class,
                         failure.get()));
     }
+
+    @Test
+    void multiResourceAcquireUsesCanonicalOrderAndReportsEachToken() {
+        ResourceReservationService service =
+                new ResourceReservationService(6, 100);
+        ReservationKey block = new ReservationKey(
+                ReservationKey.Kind.BLOCK,
+                "minecraft:overworld",
+                "3,64,3");
+        ReservationKey workArea = new ReservationKey(
+                ReservationKey.Kind.WORK_AREA,
+                "minecraft:overworld",
+                "3,64,3:mine");
+
+        ResourceReservationService.AcquireAllResult result =
+                service.acquireAll(
+                        FIRST_BOT,
+                        1L,
+                        FIRST_RUN,
+                        List.of(
+                                new ReservationRequest(
+                                        workArea,
+                                        ReservationMode.EXCLUSIVE),
+                                new ReservationRequest(
+                                        CHEST,
+                                        ReservationMode.EXCLUSIVE),
+                                new ReservationRequest(
+                                        block,
+                                        ReservationMode.EXCLUSIVE)),
+                        10L,
+                        20);
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(
+                        ResourceReservationService.AcquireAllStatus
+                                .ACQUIRED,
+                        result.status()),
+                () -> Assertions.assertEquals(
+                        List.of(block, CHEST, workArea),
+                        result.entries().stream()
+                                .map(ResourceReservationService
+                                        .AcquireAllEntry::key)
+                                .toList()),
+                () -> Assertions.assertTrue(result.acquired()),
+                () -> Assertions.assertEquals(
+                        3, service.activeLeaseCount(10L)),
+                () -> Assertions.assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> result.entries().add(null)));
+    }
+
+    @Test
+    void duplicateKeysFailClosedWithoutCreatingAnyLease() {
+        ResourceReservationService service =
+                new ResourceReservationService(4, 100);
+        ReservationKey block = new ReservationKey(
+                ReservationKey.Kind.BLOCK,
+                "minecraft:overworld",
+                "8,64,8");
+        service.acquire(
+                FIRST_BOT,
+                1L,
+                FIRST_RUN,
+                CHEST,
+                ReservationMode.SHARED_READ,
+                10L,
+                20);
+
+        ResourceReservationService.AcquireAllResult result =
+                service.acquireAll(
+                        SECOND_BOT,
+                        1L,
+                        SECOND_RUN,
+                        List.of(
+                                new ReservationRequest(
+                                        block,
+                                        ReservationMode.EXCLUSIVE),
+                                new ReservationRequest(
+                                        block,
+                                        ReservationMode.EXCLUSIVE)),
+                        10L,
+                        20);
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(
+                        ResourceReservationService.AcquireAllStatus
+                                .DUPLICATE_KEY,
+                        result.status()),
+                () -> Assertions.assertTrue(result.entries().isEmpty()),
+                () -> Assertions.assertEquals(
+                        1, service.activeLeaseCount(10L)),
+                () -> Assertions.assertTrue(
+                        service.inspect(block, 10L).isEmpty()));
+    }
+
+    @Test
+    void atomicCapacityAndIdFailuresLeaveNoPartialLease() {
+        ReservationKey block = new ReservationKey(
+                ReservationKey.Kind.BLOCK,
+                "minecraft:overworld",
+                "6,64,6");
+        ReservationKey workArea = new ReservationKey(
+                ReservationKey.Kind.WORK_AREA,
+                "minecraft:overworld",
+                "6,64,6:mine");
+        ResourceReservationService limited =
+                new ResourceReservationService(2, 100);
+        limited.acquire(
+                FIRST_BOT,
+                1L,
+                FIRST_RUN,
+                CHEST,
+                ReservationMode.EXCLUSIVE,
+                5L,
+                20);
+
+        ResourceReservationService.AcquireAllResult capacity =
+                limited.acquireAll(
+                        SECOND_BOT,
+                        1L,
+                        SECOND_RUN,
+                        List.of(
+                                new ReservationRequest(
+                                        block,
+                                        ReservationMode.EXCLUSIVE),
+                                new ReservationRequest(
+                                        workArea,
+                                        ReservationMode.EXCLUSIVE)),
+                        5L,
+                        20);
+
+        UUID repeated = new UUID(0L, 710L);
+        ArrayDeque<UUID> ids = new ArrayDeque<>();
+        ids.add(repeated);
+        for (int index = 0; index < 8; index++) {
+            ids.add(repeated);
+        }
+        ResourceReservationService idsUnavailable =
+                new ResourceReservationService(
+                        4, 100, ids::removeFirst);
+        ResourceReservationService.AcquireAllResult idFailure =
+                idsUnavailable.acquireAll(
+                        FIRST_BOT,
+                        1L,
+                        FIRST_RUN,
+                        List.of(
+                                new ReservationRequest(
+                                        block,
+                                        ReservationMode.EXCLUSIVE),
+                                new ReservationRequest(
+                                        workArea,
+                                        ReservationMode.EXCLUSIVE)),
+                        5L,
+                        20);
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(
+                        ResourceReservationService.AcquireAllStatus
+                                .CAPACITY_EXHAUSTED,
+                        capacity.status()),
+                () -> Assertions.assertEquals(
+                        1, limited.activeLeaseCount(5L)),
+                () -> Assertions.assertTrue(
+                        limited.inspect(block, 5L).isEmpty()),
+                () -> Assertions.assertEquals(
+                        ResourceReservationService.AcquireAllStatus
+                                .ID_UNAVAILABLE,
+                        idFailure.status()),
+                () -> Assertions.assertEquals(
+                        0, idsUnavailable.activeLeaseCount(5L)),
+                () -> Assertions.assertTrue(
+                        idsUnavailable.inspect(block, 5L).isEmpty()));
+    }
+
+    @Test
+    void existingCompatibleLeaseIsReturnedWithoutBreakingAtomicity() {
+        ResourceReservationService service =
+                new ResourceReservationService(4, 100);
+        ReservationKey block = new ReservationKey(
+                ReservationKey.Kind.BLOCK,
+                "minecraft:overworld",
+                "13,64,8");
+        ReservationToken held = service.acquire(
+                        FIRST_BOT,
+                        2L,
+                        FIRST_RUN,
+                        CHEST,
+                        ReservationMode.SHARED_READ,
+                        10L,
+                        20)
+                .token()
+                .orElseThrow();
+
+        ResourceReservationService.AcquireAllResult result =
+                service.acquireAll(
+                        FIRST_BOT,
+                        2L,
+                        FIRST_RUN,
+                        List.of(
+                                new ReservationRequest(
+                                        block,
+                                        ReservationMode.EXCLUSIVE),
+                                new ReservationRequest(
+                                        CHEST,
+                                        ReservationMode.SHARED_READ)),
+                        10L,
+                        20);
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(
+                        ResourceReservationService.AcquireAllStatus
+                                .ACQUIRED,
+                        result.status()),
+                () -> Assertions.assertEquals(
+                        List.of(
+                                ResourceReservationService.AcquireStatus
+                                        .ACQUIRED,
+                                ResourceReservationService.AcquireStatus
+                                        .ALREADY_HELD),
+                        result.entries().stream()
+                                .map(ResourceReservationService
+                                        .AcquireAllEntry::status)
+                                .toList()),
+                () -> Assertions.assertEquals(
+                        held,
+                        result.entries().get(1).token()),
+                () -> Assertions.assertEquals(
+                        2, service.activeLeaseCount(10L)));
+    }
+
+    @Test
+    void modeMismatchOnAnExistingOwnerLeaseRejectsTheEntireBatch() {
+        ResourceReservationService service =
+                new ResourceReservationService(4, 100);
+        ReservationKey block = new ReservationKey(
+                ReservationKey.Kind.BLOCK,
+                "minecraft:overworld",
+                "14,64,8");
+        service.acquire(
+                FIRST_BOT,
+                2L,
+                FIRST_RUN,
+                CHEST,
+                ReservationMode.SHARED_READ,
+                10L,
+                20);
+
+        ResourceReservationService.AcquireAllResult result =
+                service.acquireAll(
+                        FIRST_BOT,
+                        2L,
+                        FIRST_RUN,
+                        List.of(
+                                new ReservationRequest(
+                                        block,
+                                        ReservationMode.EXCLUSIVE),
+                                new ReservationRequest(
+                                        CHEST,
+                                        ReservationMode.EXCLUSIVE)),
+                        10L,
+                        20);
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(
+                        ResourceReservationService.AcquireAllStatus
+                                .CONFLICT,
+                        result.status()),
+                () -> Assertions.assertTrue(result.entries().isEmpty()),
+                () -> Assertions.assertEquals(
+                        1, service.activeLeaseCount(10L)),
+                () -> Assertions.assertTrue(
+                        service.inspect(block, 10L).isEmpty()));
+    }
 }

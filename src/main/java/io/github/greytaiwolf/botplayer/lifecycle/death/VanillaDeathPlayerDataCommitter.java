@@ -2,12 +2,9 @@ package io.github.greytaiwolf.botplayer.lifecycle.death;
 
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.mixin.PlayerListAccessor;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.nio.channels.FileChannel;
-import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -30,10 +27,23 @@ public final class VanillaDeathPlayerDataCommitter {
             4L * 1024L * 1024L;
     private final MinecraftServer server;
     private final Path playerDataDirectory;
+    private final DurableFileOps fileOps;
 
     public VanillaDeathPlayerDataCommitter(
             MinecraftServer server) {
+        this(server, DurableFileOps.system());
+    }
+
+    /**
+     * 创建提交器。
+     *
+     * <p>文件操作只通过这个受控边界执行，因此启动恢复测试可以在刷盘和回读窗口注入确定性
+     * I/O 失败。生产调用继续使用单参数构造器。
+     */
+    public VanillaDeathPlayerDataCommitter(
+            MinecraftServer server, DurableFileOps fileOps) {
         this.server = Objects.requireNonNull(server, "server");
+        this.fileOps = Objects.requireNonNull(fileOps, "fileOps");
         this.playerDataDirectory = server
                 .getWorldPath(LevelResource.PLAYER_DATA_DIR)
                 .toAbsolutePath()
@@ -81,14 +91,13 @@ public final class VanillaDeathPlayerDataCommitter {
             playerDataDirectory.resolve(botId + ".dat_old")
         };
         for (Path candidate : candidates) {
-            if (!Files.exists(
-                    candidate, LinkOption.NOFOLLOW_LINKS)) {
+            if (!fileOps.existsNoFollow(candidate)) {
                 continue;
             }
             VanillaDeathTicket ticket;
             try {
                 ticket = VanillaDeathPlayerDataContract
-                        .readHandoff(readBounded(candidate))
+                        .readHandoff(readBounded(candidate, fileOps))
                         .orElse(null);
             } catch (IllegalArgumentException exception) {
                 throw new IOException(
@@ -140,14 +149,14 @@ public final class VanillaDeathPlayerDataCommitter {
                 ticket.botId() + ".dat");
         Path backup = playerDataDirectory.resolve(
                 ticket.botId() + ".dat_old");
-        forceRegularFile(primary);
-        forceRegularFile(backup);
-        forceDirectory(playerDataDirectory);
+        forceRegularFile(primary, fileOps);
+        forceRegularFile(backup, fileOps);
+        forceDirectory(playerDataDirectory, fileOps);
         if (!exactAuthority.getAsBoolean()) {
             return false;
         }
-        CompoundTag primaryData = readBounded(primary);
-        CompoundTag backupData = readBounded(backup);
+        CompoundTag primaryData = readBounded(primary, fileOps);
+        CompoundTag backupData = readBounded(backup, fileOps);
         return verifier.test(primaryData)
                 && verifier.test(backupData)
                 && exactAuthority.getAsBoolean();
@@ -177,45 +186,58 @@ public final class VanillaDeathPlayerDataCommitter {
         }
     }
 
-    private static CompoundTag readBounded(Path file)
+    static CompoundTag readBounded(
+            Path file, DurableFileOps fileOps)
             throws IOException {
-        if (!Files.isRegularFile(
-                        file, LinkOption.NOFOLLOW_LINKS)
-                || Files.size(file) <= 0L
-                || Files.size(file) > MAX_PLAYER_DATA_BYTES) {
+        Objects.requireNonNull(file, "file");
+        Objects.requireNonNull(fileOps, "fileOps");
+        if (!fileOps.isRegularFileNoFollow(file)) {
+            throw new IOException(
+                    "Playerdata file is missing, unsafe, or oversized: "
+                            + file.getFileName());
+        }
+        byte[] encoded;
+        try {
+            encoded = fileOps.readBoundedNoFollow(
+                    file, (int) MAX_PLAYER_DATA_BYTES);
+        } catch (IOException exception) {
+            throw new IOException(
+                    "Could not read bounded playerdata: "
+                            + file.getFileName(),
+                    exception);
+        }
+        if (encoded.length == 0) {
             throw new IOException(
                     "Playerdata file is missing, unsafe, or oversized: "
                             + file.getFileName());
         }
         return NbtIo.readCompressed(
-                file,
+                new ByteArrayInputStream(encoded),
                 NbtAccounter.create(MAX_PLAYER_DATA_BYTES));
     }
 
-    private static void forceRegularFile(Path file)
+    static void forceRegularFile(
+            Path file, DurableFileOps fileOps)
             throws IOException {
-        if (!Files.isRegularFile(
-                file, LinkOption.NOFOLLOW_LINKS)) {
+        Objects.requireNonNull(file, "file");
+        Objects.requireNonNull(fileOps, "fileOps");
+        if (!fileOps.isRegularFileNoFollow(file)) {
             throw new IOException(
                     "Playerdata durability target is not a regular file: "
                             + file.getFileName());
         }
-        try (FileChannel channel = FileChannel.open(
-                file, StandardOpenOption.WRITE)) {
-            channel.force(true);
-        }
+        fileOps.forceFile(file);
     }
 
-    private static void forceDirectory(Path directory)
+    static void forceDirectory(
+            Path directory, DurableFileOps fileOps)
             throws IOException {
-        if (!Files.isDirectory(
-                directory, LinkOption.NOFOLLOW_LINKS)) {
+        Objects.requireNonNull(directory, "directory");
+        Objects.requireNonNull(fileOps, "fileOps");
+        if (!fileOps.isDirectoryNoFollow(directory)) {
             throw new IOException(
                     "Playerdata durability directory is missing");
         }
-        try (FileChannel channel = FileChannel.open(
-                directory, StandardOpenOption.READ)) {
-            channel.force(true);
-        }
+        fileOps.forceDirectory(directory);
     }
 }
