@@ -353,7 +353,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             return failure(
                     envelope,
                     ActionFailureCode.PRECONDITION_FAILED,
-                    "Inventory menu transaction precondition changed before click");
+                    exception.safeSummary());
         }
         return requiresTicks(state.spec)
                 ? BackendResult.running(envelope)
@@ -2953,8 +2953,11 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         player.isSecondaryUseActive(),
                         InteractionHand.MAIN_HAND));
         if (player.containerMenu.getClass() != MerchantMenu.class
-                || !(player.containerMenu instanceof MerchantMenu merchantMenu)
-                || !merchantMenu.stillValid(player)
+                || !(player.containerMenu instanceof MerchantMenu merchantMenu)) {
+            throw merchantTradeStartRejected(
+                    MerchantTradeStartRejection.OPEN_DID_NOT_BIND_MERCHANT);
+        }
+        if (!merchantMenu.stillValid(player)
                 || villager.getTradingPlayer() != player
                 || merchantMenu.getTraderLevel()
                         != trade.expectedVillagerLevel()
@@ -2969,11 +2972,13 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 || !merchantOfferStaticState(player, offer)
                         .filter(offerState::equals)
                         .isPresent()) {
-            throw new MenuPreconditionChangedException();
+            throw merchantTradeStartRejected(
+                    MerchantTradeStartRejection.OPENED_MERCHANT_BINDING_DRIFT);
         }
         merchantMenu.setSelectionHint(trade.offerIndex());
         MenuSnapshot opened = snapshotMenu(player, MenuFamily.MERCHANT)
-                .orElseThrow(MenuPreconditionChangedException::new);
+                .orElseThrow(() -> merchantTradeStartRejected(
+                        MerchantTradeStartRejection.MERCHANT_SNAPSHOT_INVALID));
         state.merchantTradeSession = new MerchantTradeSession(
                 villager,
                 merchantMenu,
@@ -2994,14 +2999,22 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                 trade.sourceInventorySlot()),
                         merchantMenuSlotForInventorySlot(
                                 trade.outputInventorySlot()))
-                .orElseThrow(MenuPreconditionChangedException::new);
+                .orElseThrow(() -> merchantTradeStartRejected(
+                        MerchantTradeStartRejection.MERCHANT_PLAN_UNBINDABLE));
         MenuTransactionPlan plan = template.bind(opened)
-                .orElseThrow(MenuPreconditionChangedException::new);
+                .orElseThrow(() -> merchantTradeStartRejected(
+                        MerchantTradeStartRejection.MERCHANT_PLAN_UNBINDABLE));
         if (plan.orderedSteps().size() > trade.limits().maxClicks()) {
-            throw new MenuPreconditionChangedException();
+            throw merchantTradeStartRejected(
+                    MerchantTradeStartRejection.MERCHANT_PLAN_UNBINDABLE);
         }
-        installWorldMenuPlan(
-                state, MenuFamily.MERCHANT, trade.limits(), opened, plan);
+        try {
+            installWorldMenuPlan(
+                    state, MenuFamily.MERCHANT, trade.limits(), opened, plan);
+        } catch (MenuPreconditionChangedException exception) {
+            throw merchantTradeStartRejected(
+                    MerchantTradeStartRejection.MERCHANT_PLAN_UNBINDABLE);
+        }
     }
 
     /**
@@ -6296,9 +6309,40 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         }
     }
 
+    private enum MerchantTradeStartRejection {
+        OPEN_DID_NOT_BIND_MERCHANT,
+        OPENED_MERCHANT_BINDING_DRIFT,
+        MERCHANT_SNAPSHOT_INVALID,
+        MERCHANT_PLAN_UNBINDABLE
+    }
+
+    private static MenuPreconditionChangedException merchantTradeStartRejected(
+            MerchantTradeStartRejection rejection) {
+        return new MenuPreconditionChangedException(
+                "Villager trade start rejected: "
+                        + Objects.requireNonNull(rejection, "rejection").name());
+    }
+
     private static final class MenuPreconditionChangedException
             extends RuntimeException {
         private static final long serialVersionUID = 1L;
+        private static final String DEFAULT_SAFE_SUMMARY =
+                "Inventory menu transaction precondition changed before click";
+
+        private final String safeSummary;
+
+        private MenuPreconditionChangedException() {
+            this(DEFAULT_SAFE_SUMMARY);
+        }
+
+        private MenuPreconditionChangedException(String safeSummary) {
+            super(Objects.requireNonNull(safeSummary, "safeSummary"));
+            this.safeSummary = safeSummary;
+        }
+
+        private String safeSummary() {
+            return safeSummary;
+        }
     }
 
     private enum FurnaceStage {
