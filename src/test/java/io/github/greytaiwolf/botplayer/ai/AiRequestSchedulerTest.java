@@ -517,6 +517,8 @@ class AiRequestSchedulerTest {
             assertTrue(provider.secondEntered.await(2L, TimeUnit.SECONDS));
             assertFalse(provider.secondStartedBeforeFirstCancellation.get());
             provider.secondStage.complete(response(second));
+            assertTrue(await(() -> cleanup.command.get() != null, 2_000L));
+            cleanup.runCaptured();
             assertEquals(second.requestId(), secondResult.get(2L, TimeUnit.SECONDS).requestId());
             scheduler.close();
         } finally {
