@@ -108,6 +108,52 @@ class TaskSensorResourceFilterTest {
     }
 
     @Test
+    void exactFilteredScanPrioritizesTheTargetLayerBelowAResourceTop() {
+        MinecraftTaskSensorAdapter.ResourceScanPlan plan =
+                MinecraftTaskSensorAdapter
+                        .resourceScanPlanPrioritizingLayerBelow(
+                                SCOPE,
+                                RESOURCE_BUDGET.maximumBlocks(),
+                                TaskSensorResourceFilter.COBBLESTONE);
+        BlockPos center = new BlockPos(SCOPE.centerX(), SCOPE.centerY(),
+                SCOPE.centerZ());
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(256, plan.positions().size()),
+                () -> Assertions.assertEquals(plan.positions().size(),
+                        new HashSet<>(plan.positions()).size(),
+                        "a below-layer priority plan must not revisit a block"),
+                () -> Assertions.assertTrue(plan.positions().contains(
+                        center.offset(5, -1, 5)),
+                        "a Bot standing on the exact resource must still observe "
+                                + "the target layer through horizontal distance five"),
+                () -> Assertions.assertTrue(plan.positions().stream().allMatch(
+                        position -> Math.abs(position.getX() - center.getX())
+                                        <= SCOPE.radius()
+                                && Math.abs(position.getY() - center.getY())
+                                        <= SCOPE.radius()
+                                && Math.abs(position.getZ() - center.getZ())
+                                        <= SCOPE.radius()),
+                        "the lower-layer priority must remain inside the declared scope"),
+                () -> Assertions.assertTrue(MinecraftTaskSensorAdapter
+                        .shouldPrioritizeLayerBelow(
+                                TaskSensorResourceFilter.COBBLESTONE,
+                                "minecraft:cobblestone")),
+                () -> Assertions.assertFalse(MinecraftTaskSensorAdapter
+                        .shouldPrioritizeLayerBelow(
+                                TaskSensorResourceFilter.COBBLESTONE,
+                                "minecraft:iron_ore")),
+                () -> Assertions.assertFalse(MinecraftTaskSensorAdapter
+                        .shouldPrioritizeLayerBelow(
+                                TaskSensorResourceFilter.CRAFTING_TABLE,
+                                "minecraft:crafting_table")),
+                () -> Assertions.assertFalse(MinecraftTaskSensorAdapter
+                        .shouldPrioritizeLayerBelow(
+                                TaskSensorResourceFilter.UNFILTERED,
+                                "minecraft:cobblestone")));
+    }
+
+    @Test
     void unfilteredResourceScanRetainsTheHistoricalThreeDimensionalPrefix() {
         MinecraftTaskSensorAdapter.ResourceScanPlan plan =
                 MinecraftTaskSensorAdapter.resourceScanPlan(

@@ -202,11 +202,47 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
             return available(query, currentTick, true, List.of());
         }
         TaskSensorScope scope = query.scope();
+        BlockPos center = center(scope);
+        BlockPos below = center.below();
+        boolean inspectedBelow = false;
+        boolean prioritizeLayerBelow = false;
+        String belowBlockId = null;
+        if (supportsLayerBelowPriority(query.resourceFilter())
+                && maximumBlocks > 1
+                && scope.radius() >= 3
+                && player.serverLevel().isLoaded(below)) {
+            BlockState belowState = player.serverLevel().getBlockState(below);
+            belowBlockId = BuiltInRegistries.BLOCK.getKey(
+                    belowState.getBlock()).toString();
+            inspectedBelow = true;
+            prioritizeLayerBelow = shouldPrioritizeLayerBelow(
+                    query.resourceFilter(), belowBlockId);
+        }
         List<TaskSensorEvidence> evidence = new ArrayList<>(maximumCandidates);
-        ResourceScanPlan plan = resourceScanPlan(scope, maximumBlocks,
-                query.resourceFilter());
+        ResourceScanPlan plan = prioritizeLayerBelow
+                ? resourceScanPlanPrioritizingLayerBelow(
+                        scope, maximumBlocks, query.resourceFilter())
+                : resourceScanPlan(scope, maximumBlocks,
+                        query.resourceFilter());
         boolean truncated = plan.truncatedByBudget();
+        int remainingReads = maximumBlocks - (inspectedBelow ? 1 : 0);
+        if (prioritizeLayerBelow) {
+            evidence.add(resourceEvidence(below, Objects.requireNonNull(
+                    belowBlockId, "belowBlockId")));
+        }
         for (BlockPos position : plan.positions()) {
+            if (inspectedBelow && position.equals(below)) {
+                continue;
+            }
+            if (remainingReads <= 0) {
+                truncated = true;
+                break;
+            }
+            remainingReads--;
+            if (evidence.size() >= maximumCandidates) {
+                truncated = true;
+                break;
+            }
             if (!player.serverLevel().isLoaded(position)) {
                 truncated = true;
                 continue;
@@ -220,18 +256,25 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
             if (!query.resourceFilter().accepts(blockId)) {
                 continue;
             }
-            evidence.add(new TaskSensorEvidence("resource.candidate",
-                    new SkillParameters(Map.of(
-                            "x", position.getX(),
-                            "y", position.getY(),
-                            "z", position.getZ(),
-                            "block", blockId))));
+            evidence.add(resourceEvidence(position, blockId));
             if (evidence.size() >= maximumCandidates) {
                 truncated = true;
                 break;
             }
         }
         return available(query, currentTick, truncated, evidence);
+    }
+
+    private static TaskSensorEvidence resourceEvidence(
+            BlockPos position, String blockId) {
+        Objects.requireNonNull(position, "position");
+        Objects.requireNonNull(blockId, "blockId");
+        return new TaskSensorEvidence("resource.candidate",
+                new SkillParameters(Map.of(
+                        "x", position.getX(),
+                        "y", position.getY(),
+                        "z", position.getZ(),
+                        "block", blockId)));
     }
 
     /**
@@ -249,6 +292,55 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
             TaskSensorScope scope,
             int maximumBlocks,
             TaskSensorResourceFilter resourceFilter) {
+        return resourceScanPlan(scope, maximumBlocks, resourceFilter, false);
+    }
+
+    /**
+     * Returns the same bounded exact-filter plan with its mining plane one block below the
+     * current body. P5 resource navigation deliberately permits a grounded body to stop on top
+     * of its exact target; in that state the target's layer, not the body's layer, must retain the
+     * reviewed same-height priority beyond the nearby three-dimensional cube.
+     */
+    static ResourceScanPlan resourceScanPlanPrioritizingLayerBelow(
+            TaskSensorScope scope,
+            int maximumBlocks,
+            TaskSensorResourceFilter resourceFilter) {
+        if (Objects.requireNonNull(scope, "scope").radius() < 3) {
+            throw new IllegalArgumentException(
+                    "a below-layer resource plan requires scope radius at least three");
+        }
+        if (Objects.requireNonNull(resourceFilter, "resourceFilter")
+                .isUnfiltered()) {
+            throw new IllegalArgumentException(
+                    "an unfiltered resource plan cannot prioritize a lower layer");
+        }
+        return resourceScanPlan(scope, maximumBlocks, resourceFilter, true);
+    }
+
+    static boolean shouldPrioritizeLayerBelow(
+            TaskSensorResourceFilter resourceFilter, String belowBlockId) {
+        Objects.requireNonNull(resourceFilter, "resourceFilter");
+        Objects.requireNonNull(belowBlockId, "belowBlockId");
+        return supportsLayerBelowPriority(resourceFilter)
+                && resourceFilter.accepts(belowBlockId);
+    }
+
+    /** Only P5 resource-acquisition filters can use the top-of-resource arrival state. */
+    private static boolean supportsLayerBelowPriority(
+            TaskSensorResourceFilter resourceFilter) {
+        Objects.requireNonNull(resourceFilter, "resourceFilter");
+        return switch (resourceFilter) {
+            case OAK_LOG, COBBLESTONE, IRON_ORE, COAL_ORE -> true;
+            case UNFILTERED, CRAFTING_TABLE, FURNACE, BLAST_FURNACE, SMOKER ->
+                    false;
+        };
+    }
+
+    private static ResourceScanPlan resourceScanPlan(
+            TaskSensorScope scope,
+            int maximumBlocks,
+            TaskSensorResourceFilter resourceFilter,
+            boolean prioritizeLayerBelow) {
         Objects.requireNonNull(scope, "scope");
         Objects.requireNonNull(resourceFilter, "resourceFilter");
         if (maximumBlocks < 0) {
@@ -277,8 +369,9 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
             int nearRadius = Math.min(2, scope.radius());
             appendCubeShells(positions, center, 0, nearRadius,
                     maximumBlocks);
-            appendCurrentLayerRings(positions, center, nearRadius + 1,
-                    scope.radius(), maximumBlocks);
+            appendLayerRings(positions,
+                    prioritizeLayerBelow ? center.below() : center,
+                    nearRadius + 1, scope.radius(), maximumBlocks);
         }
         return new ResourceScanPlan(List.copyOf(positions),
                 positions.size() < totalScopePositions(scope.radius()));
@@ -314,7 +407,7 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
         }
     }
 
-    private static void appendCurrentLayerRings(
+    private static void appendLayerRings(
             List<BlockPos> positions,
             BlockPos center,
             int minimumDistance,
