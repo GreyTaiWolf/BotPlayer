@@ -63,13 +63,15 @@ public final class P5ResourceTaskSensorGameTests {
             helper.getLevel().setBlockAndUpdate(coal,
                     Blocks.COAL_ORE.defaultBlockState());
 
-            TaskSensorSnapshot snapshot = sampleCoal(bot, center);
+            TaskSensorSnapshot snapshot = sample(bot, center,
+                    TaskSensorResourceFilter.COAL_ORE);
             P2GameTestSupport.require(
                     snapshot.availability() == TaskSensorAvailability.AVAILABLE
                             && snapshot.truncated()
                             && snapshot.evidence().size() == 1,
                     "Cross-resource top scan did not preserve its bounded truncated result");
-            assertExactCoalEvidence(snapshot.evidence().getFirst(), coal);
+            assertExactEvidence(snapshot.evidence().getFirst(), coal,
+                    "minecraft:coal_ore");
         } catch (RuntimeException | AssertionError exception) {
             cleanup.run();
             throw exception;
@@ -78,7 +80,58 @@ public final class P5ResourceTaskSensorGameTests {
         helper.succeed();
     }
 
-    private static TaskSensorSnapshot sampleCoal(TestBot bot, BlockPos center) {
+    /**
+     * The same top-of-resource handoff may be followed by a world recipe instead of another
+     * mining fragment. Its exact workstation filter must therefore inspect the shared lower
+     * layer without accepting the supporting resource itself as a workstation candidate.
+     */
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = P2GameTestSupport.TIMEOUT_TICKS)
+    public static void craftingTableQueryFromResourceTopKeepsExactEvidence(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        P5GameTestSupport.IsolatedFixture fixture =
+                P5GameTestSupport.isolatedFixture(helper,
+                        "task_sensor_workstation_lower_layer");
+        TestBot bot = fixture.spawn("bench");
+        P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
+        try {
+            BlockPos formerBodyCell = bot.player().blockPosition();
+            P2GameTestSupport.placePlayer(bot.player(), helper.getLevel(),
+                    new Vec3(formerBodyCell.getX() + 0.5D,
+                            formerBodyCell.getY() + 1.0D,
+                            formerBodyCell.getZ() + 0.5D),
+                    0.0F);
+            helper.getLevel().setBlockAndUpdate(formerBodyCell,
+                    Blocks.COBBLESTONE.defaultBlockState());
+            BlockPos center = bot.player().blockPosition();
+            BlockPos table = center.offset(5, -1, 5);
+            helper.getLevel().setBlockAndUpdate(table,
+                    Blocks.CRAFTING_TABLE.defaultBlockState());
+
+            TaskSensorSnapshot snapshot = sample(bot, center,
+                    TaskSensorResourceFilter.CRAFTING_TABLE);
+            P2GameTestSupport.require(
+                    snapshot.availability() == TaskSensorAvailability.AVAILABLE
+                            && snapshot.truncated()
+                            && snapshot.evidence().size() == 1,
+                    "Resource-top workstation scan did not preserve its bounded truncated result");
+            assertExactEvidence(snapshot.evidence().getFirst(), table,
+                    "minecraft:crafting_table");
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+        cleanup.run();
+        helper.succeed();
+    }
+
+    private static TaskSensorSnapshot sample(
+            TestBot bot,
+            BlockPos center,
+            TaskSensorResourceFilter resourceFilter) {
         long generation = bot.player().runtimeHandle().generation();
         TaskSensorRunIdentity identity = new TaskSensorRunIdentity(
                 bot.player().getUUID(), generation, UUID.randomUUID(), 1L);
@@ -89,7 +142,7 @@ public final class P5ResourceTaskSensorGameTests {
                         .location().toString(), center.getX(), center.getY(),
                         center.getZ(), RADIUS, 1L),
                 new TaskSensorBudget(1, 0, MAXIMUM_BLOCKS, 0, 1, 0L),
-                TaskSensorResourceFilter.COAL_ORE);
+                resourceFilter);
         MinecraftTaskSensorAdapter adapter = new MinecraftTaskSensorAdapter(
                 (botId, requestedGeneration) -> botId.equals(
                                 bot.player().getUUID())
@@ -101,17 +154,19 @@ public final class P5ResourceTaskSensorGameTests {
                 .getTickCount());
     }
 
-    private static void assertExactCoalEvidence(
-            TaskSensorEvidence evidence, BlockPos coal) {
+    private static void assertExactEvidence(
+            TaskSensorEvidence evidence,
+            BlockPos expectedPosition,
+            String expectedBlockId) {
         Map<String, Object> fields = evidence.fields().values();
         P2GameTestSupport.require(
                 "resource.candidate".equals(evidence.kind())
                         && fields.keySet().equals(java.util.Set.of(
                                 "x", "y", "z", "block"))
-                        && "minecraft:coal_ore".equals(fields.get("block"))
-                        && coal.getX() == (Integer) fields.get("x")
-                        && coal.getY() == (Integer) fields.get("y")
-                        && coal.getZ() == (Integer) fields.get("z"),
-                "Cross-resource lower-layer scan emitted a non-exact coal candidate");
+                        && expectedBlockId.equals(fields.get("block"))
+                        && expectedPosition.getX() == (Integer) fields.get("x")
+                        && expectedPosition.getY() == (Integer) fields.get("y")
+                        && expectedPosition.getZ() == (Integer) fields.get("z"),
+                "Lower-layer scan emitted a non-exact filtered candidate");
     }
 }

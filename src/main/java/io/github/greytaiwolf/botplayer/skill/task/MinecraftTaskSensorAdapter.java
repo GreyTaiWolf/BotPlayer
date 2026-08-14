@@ -309,10 +309,10 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
             throw new IllegalArgumentException(
                     "a below-layer resource plan requires scope radius at least three");
         }
-        if (Objects.requireNonNull(resourceFilter, "resourceFilter")
-                .isUnfiltered()) {
+        if (!supportsLayerBelowPriority(Objects.requireNonNull(
+                resourceFilter, "resourceFilter"))) {
             throw new IllegalArgumentException(
-                    "an unfiltered resource plan cannot prioritize a lower layer");
+                    "only audited P5 filters can prioritize a lower layer");
         }
         return resourceScanPlan(scope, maximumBlocks, resourceFilter, true);
     }
@@ -325,14 +325,26 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
                 && isReviewedP5ResourceBlock(belowBlockId);
     }
 
-    /** Only P5 resource-acquisition filters can use the top-of-resource arrival state. */
+    /**
+     * Only audited P5A resource and workstation filters can use the top-of-resource arrival
+     * state. A resource navigation fragment may legally hand off while the body is standing on
+     * the mined resource. The immediately following recipe must still be able to rediscover its
+     * already-placed crafting table or furnace on that shared lower layer; this changes only the
+     * finite read priority, never the exact filter, scope, or evidence contract.
+     */
     private static boolean supportsLayerBelowPriority(
             TaskSensorResourceFilter resourceFilter) {
         Objects.requireNonNull(resourceFilter, "resourceFilter");
         return switch (resourceFilter) {
-            case OAK_LOG, COBBLESTONE, IRON_ORE, COAL_ORE -> true;
-            case UNFILTERED, CRAFTING_TABLE, FURNACE, BLAST_FURNACE, SMOKER ->
-                    false;
+            case OAK_LOG,
+                    COBBLESTONE,
+                    IRON_ORE,
+                    COAL_ORE,
+                    CRAFTING_TABLE,
+                    FURNACE,
+                    BLAST_FURNACE,
+                    SMOKER -> true;
+            case UNFILTERED -> false;
         };
     }
 

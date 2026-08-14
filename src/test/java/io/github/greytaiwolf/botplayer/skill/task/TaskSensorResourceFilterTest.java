@@ -155,6 +155,16 @@ class TaskSensorResourceFilterTest {
                         .shouldPrioritizeLayerBelow(
                                 TaskSensorResourceFilter.COBBLESTONE,
                                 "minecraft:stone")),
+                () -> Assertions.assertTrue(MinecraftTaskSensorAdapter
+                        .shouldPrioritizeLayerBelow(
+                                TaskSensorResourceFilter.CRAFTING_TABLE,
+                                "minecraft:cobblestone"),
+                        "a recipe immediately after a resource-top handoff must still "
+                                + "observe its workstation on the shared lower layer"),
+                () -> Assertions.assertTrue(MinecraftTaskSensorAdapter
+                        .shouldPrioritizeLayerBelow(
+                                TaskSensorResourceFilter.FURNACE,
+                                "minecraft:iron_ore")),
                 () -> Assertions.assertFalse(MinecraftTaskSensorAdapter
                         .shouldPrioritizeLayerBelow(
                                 TaskSensorResourceFilter.CRAFTING_TABLE,
