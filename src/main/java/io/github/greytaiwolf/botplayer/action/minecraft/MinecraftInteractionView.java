@@ -44,6 +44,8 @@ import net.minecraft.world.phys.Vec3;
  * <p>每个方法只消费服务器主线程上的短生命周期对象，并且只返回不可变值。
  */
 final class MinecraftInteractionView {
+    private static final double HIT_POINT_TOLERANCE_SQUARED = 1.0E-8D;
+
     private MinecraftInteractionView() {}
 
     static ResourceId dimension(BotServerPlayer player) {
@@ -227,6 +229,22 @@ final class MinecraftInteractionView {
 
     static BlockReachEvidence blockReachEvidence(
             BotServerPlayer player, BlockHitTarget target) {
+        return blockReachEvidence(player, target, false);
+    }
+
+    /**
+     * Strict ray evidence for the atomic aim-and-place contract only.
+     * Older block interactions intentionally keep their historical
+     * block-position-only visibility fence.
+     */
+    static BlockReachEvidence exactBlockReachEvidence(
+            BotServerPlayer player, BlockHitTarget target) {
+        return blockReachEvidence(player, target, true);
+    }
+
+    private static BlockReachEvidence blockReachEvidence(
+            BotServerPlayer player, BlockHitTarget target,
+            boolean requireExactHit) {
         BlockPos targetPosition =
                 position(target.target().position());
         boolean withinReach =
@@ -263,8 +281,8 @@ final class MinecraftInteractionView {
         boolean rayHitTarget =
                 result.getType() == HitResult.Type.BLOCK
                         && result instanceof BlockHitResult blockHit
-                        && blockHit.getBlockPos()
-                                .equals(targetPosition);
+                        && matchesBlockRayHit(
+                                target, blockHit, requireExactHit);
         String rayHitPosition =
                 result instanceof BlockHitResult blockHit
                         ? blockPosition(blockHit.getBlockPos())
@@ -277,6 +295,33 @@ final class MinecraftInteractionView {
                 vector(eye),
                 vector(expectedHit),
                 vector(rayEnd));
+    }
+
+    /**
+     * Compares a native clip hit with a frozen target. Strict atomic placement additionally fixes
+     * the face and hit point; legacy actions deliberately retain coordinate-only ray semantics.
+     */
+    static boolean matchesBlockRayHit(
+            BlockHitTarget target,
+            BlockHitResult blockHit,
+            boolean requireExactHit) {
+        BlockHitTarget requiredTarget = Objects.requireNonNull(
+                target, "target");
+        BlockHitResult requiredBlockHit = Objects.requireNonNull(
+                blockHit, "blockHit");
+        if (!requiredBlockHit.getBlockPos().equals(position(
+                requiredTarget.target().position()))) {
+            return false;
+        }
+        return !requireExactHit
+                || (requiredBlockHit.getDirection()
+                        == direction(requiredTarget.face())
+                        && requiredBlockHit.getLocation().distanceToSqr(
+                                new Vec3(
+                                        requiredTarget.worldX(),
+                                        requiredTarget.worldY(),
+                                        requiredTarget.worldZ()))
+                                <= HIT_POINT_TOLERANCE_SQUARED);
     }
 
     record BlockReachEvidence(

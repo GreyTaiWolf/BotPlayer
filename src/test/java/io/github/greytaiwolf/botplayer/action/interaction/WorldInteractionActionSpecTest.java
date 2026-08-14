@@ -296,6 +296,129 @@ class WorldInteractionActionSpecTest {
    }
 
    @Test
+   void aimAndPlaceBlockFreezesExactAirTargetAndOneAtomicLease() {
+      BlockHitTarget anchor = blockTarget();
+      BlockTargetFingerprint targetBefore = blockTargetAt(0, 65, 0, "minecraft:air");
+      BlockTargetFingerprint expectedPlaced = blockTargetAt(0, 65, 0, "minecraft:oak_planks");
+      WorldInteractionActionSpec.AimAndPlaceBlock action = new WorldInteractionActionSpec.AimAndPlaceBlock(
+         anchor, targetBefore, expectedPlaced, OAK_PLANKS
+      );
+
+      Assertions.assertAll(
+         () -> Assertions.assertEquals(2, WorldInteractionActionSpec.SCHEMA_VERSION),
+         () -> Assertions.assertEquals(1, WorldInteractionActionSpec.AimAndPlaceBlock.SCHEMA_VERSION),
+         () -> Assertions.assertEquals(WorldInteractionActionSpec.Kind.AIM_AND_PLACE_BLOCK, action.kind()),
+         () -> Assertions.assertEquals(ActionKind.AIM_AND_PLACE_BLOCK, new WorldInteractionAction(action).kind()),
+         () -> Assertions.assertEquals(
+            Set.of(ActionChannel.MAIN_HAND, ActionChannel.INTERACT, ActionChannel.LOOK),
+            action.channels()
+         ),
+         () -> Assertions.assertEquals(anchor, action.anchor()),
+         () -> Assertions.assertEquals(targetBefore, action.targetBefore()),
+         () -> Assertions.assertEquals(expectedPlaced, action.expectedPlaced()),
+         () -> Assertions.assertEquals(OAK_PLANKS, action.expectedHeldItem())
+      );
+      Assertions.assertThrows(UnsupportedOperationException.class, () -> action.channels().remove(ActionChannel.LOOK));
+   }
+
+   @Test
+   void aimAndPlaceBlockRequiresExactAirAndGeometricallyCoherentHit() {
+      BlockTargetFingerprint anchorTarget = blockTargetAt(0, 64, 0, "minecraft:stone");
+      for (BlockHitTarget.Face face : BlockHitTarget.Face.values()) {
+         BlockHitTarget anchor = blockHitOnFace(anchorTarget, face, false);
+         BlockCoordinates placedPosition = coordinateOnFace(anchorTarget.position(), face);
+         BlockTargetFingerprint targetBefore = blockTargetAt(
+            placedPosition.x(), placedPosition.y(), placedPosition.z(), "minecraft:air"
+         );
+         BlockTargetFingerprint expectedPlaced = blockTargetAt(
+            placedPosition.x(), placedPosition.y(), placedPosition.z(), "minecraft:oak_planks"
+         );
+         Assertions.assertDoesNotThrow(() -> new WorldInteractionActionSpec.AimAndPlaceBlock(
+            anchor, targetBefore, expectedPlaced, OAK_PLANKS
+         ));
+      }
+
+      BlockHitTarget anchor = blockTarget();
+      BlockTargetFingerprint targetBefore = blockTargetAt(0, 65, 0, "minecraft:air");
+      BlockTargetFingerprint expectedPlaced = blockTargetAt(0, 65, 0, "minecraft:oak_planks");
+      BlockTargetFingerprint airWithProperties = new BlockTargetFingerprint(
+         OVERWORLD,
+         targetBefore.position(),
+         new BlockStateFingerprint(new ResourceId("minecraft:air"), Map.of("unexpected", "true"))
+      );
+      BlockTargetFingerprint occupied = blockTargetAt(0, 65, 0, "minecraft:cave_air");
+      BlockTargetFingerprint wrongPosition = blockTargetAt(1, 65, 0, "minecraft:air");
+      BlockTargetFingerprint wrongDimension = new BlockTargetFingerprint(
+         new ResourceId("minecraft:the_nether"), targetBefore.position(), targetBefore.state()
+      );
+      BlockHitTarget insideAnchor = new BlockHitTarget(
+         anchor.target(), BlockHitTarget.Face.UP, 0.5, 1.0, 0.5, true
+      );
+      BlockHitTarget offFaceAnchor = new BlockHitTarget(
+         anchor.target(), BlockHitTarget.Face.UP, 0.5, 0.75, 0.5, false
+      );
+
+      Assertions.assertThrows(
+         IllegalArgumentException.class,
+         () -> new WorldInteractionActionSpec.AimAndPlaceBlock(anchor, occupied, expectedPlaced, OAK_PLANKS)
+      );
+      Assertions.assertThrows(
+         IllegalArgumentException.class,
+         () -> new WorldInteractionActionSpec.AimAndPlaceBlock(anchor, airWithProperties, expectedPlaced, OAK_PLANKS)
+      );
+      Assertions.assertThrows(
+         IllegalArgumentException.class,
+         () -> new WorldInteractionActionSpec.AimAndPlaceBlock(anchor, wrongPosition, expectedPlaced, OAK_PLANKS)
+      );
+      Assertions.assertThrows(
+         IllegalArgumentException.class,
+         () -> new WorldInteractionActionSpec.AimAndPlaceBlock(anchor, wrongDimension, expectedPlaced, OAK_PLANKS)
+      );
+      Assertions.assertThrows(
+         IllegalArgumentException.class,
+         () -> new WorldInteractionActionSpec.AimAndPlaceBlock(anchor, targetBefore, targetBefore, OAK_PLANKS)
+      );
+      for (String airBlockId : List.of("minecraft:air", "minecraft:cave_air", "minecraft:void_air")) {
+         BlockTargetFingerprint expectedAir = blockTargetAt(0, 65, 0, airBlockId);
+         Assertions.assertThrows(
+            IllegalArgumentException.class,
+            () -> new WorldInteractionActionSpec.AimAndPlaceBlock(
+               anchor, targetBefore, expectedAir, OAK_PLANKS
+            ),
+            "atomic placement must never report a vanilla air state as placed: " + airBlockId
+         );
+      }
+      Assertions.assertThrows(
+         IllegalArgumentException.class,
+         () -> new WorldInteractionActionSpec.AimAndPlaceBlock(insideAnchor, targetBefore, expectedPlaced, OAK_PLANKS)
+      );
+      Assertions.assertThrows(
+         IllegalArgumentException.class,
+         () -> new WorldInteractionActionSpec.AimAndPlaceBlock(offFaceAnchor, targetBefore, expectedPlaced, OAK_PLANKS)
+      );
+      Assertions.assertThrows(
+         IllegalArgumentException.class,
+         () -> new WorldInteractionActionSpec.AimAndPlaceBlock(anchor, targetBefore, expectedPlaced, EMPTY)
+      );
+      Assertions.assertThrows(
+         NullPointerException.class,
+         () -> new WorldInteractionActionSpec.AimAndPlaceBlock(null, targetBefore, expectedPlaced, OAK_PLANKS)
+      );
+      Assertions.assertThrows(
+         NullPointerException.class,
+         () -> new WorldInteractionActionSpec.AimAndPlaceBlock(anchor, null, expectedPlaced, OAK_PLANKS)
+      );
+      Assertions.assertThrows(
+         NullPointerException.class,
+         () -> new WorldInteractionActionSpec.AimAndPlaceBlock(anchor, targetBefore, null, OAK_PLANKS)
+      );
+      Assertions.assertThrows(
+         NullPointerException.class,
+         () -> new WorldInteractionActionSpec.AimAndPlaceBlock(anchor, targetBefore, expectedPlaced, null)
+      );
+   }
+
+   @Test
    void entityInteractionDistinguishesGenericAndSpecificPaths() {
       EntityTargetFingerprint var1 = entityTarget();
       WorldInteractionActionSpec.InteractEntity var2 = new WorldInteractionActionSpec.InteractEntity(
@@ -338,6 +461,19 @@ class WorldInteractionActionSpecTest {
          case SOUTH -> new BlockCoordinates(anchor.x(), anchor.y(), anchor.z() + 1);
          case WEST -> new BlockCoordinates(anchor.x() - 1, anchor.y(), anchor.z());
          case EAST -> new BlockCoordinates(anchor.x() + 1, anchor.y(), anchor.z());
+      };
+   }
+
+   private static BlockHitTarget blockHitOnFace(
+      BlockTargetFingerprint target, BlockHitTarget.Face face, boolean inside
+   ) {
+      return switch (face) {
+         case DOWN -> new BlockHitTarget(target, face, 0.5, 0.0, 0.5, inside);
+         case UP -> new BlockHitTarget(target, face, 0.5, 1.0, 0.5, inside);
+         case NORTH -> new BlockHitTarget(target, face, 0.5, 0.5, 0.0, inside);
+         case SOUTH -> new BlockHitTarget(target, face, 0.5, 0.5, 1.0, inside);
+         case WEST -> new BlockHitTarget(target, face, 0.0, 0.5, 0.5, inside);
+         case EAST -> new BlockHitTarget(target, face, 1.0, 0.5, 0.5, inside);
       };
    }
 

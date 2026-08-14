@@ -29,6 +29,7 @@ public record WorldInteractionAction(WorldInteractionActionSpec spec) implements
          case INTERACT_ENTITY -> ActionKind.INTERACT_ENTITY;
          case DROP_SELECTED -> ActionKind.DROP_SELECTED;
          case PICKUP_WAIT -> ActionKind.PICKUP_WAIT;
+         case AIM_AND_PLACE_BLOCK -> ActionKind.AIM_AND_PLACE_BLOCK;
       };
    }
 

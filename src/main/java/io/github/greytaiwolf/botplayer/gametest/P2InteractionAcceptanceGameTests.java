@@ -44,8 +44,8 @@ public final class P2InteractionAcceptanceGameTests {
     private static final String BATCH = "p2_interaction";
     /*
      * The ordinary interaction batch already uses the configured eight-bot
-     * capacity.  Strict placement has its own two-test batch so adding its
-     * negative path cannot turn unrelated pickup coverage into a capacity
+     * capacity. Strict placement has its own five-fixture batch so its
+     * negative paths cannot turn unrelated pickup coverage into a capacity
      * failure before either action is dispatched.
      */
     private static final String STRICT_PLACEMENT_BATCH = "p2_strict_placement";
@@ -297,6 +297,286 @@ public final class P2InteractionAcceptanceGameTests {
                                                     .getSelected().getCount()
                                                     == 2,
                                     "Rejected placement mutated its occupied destination or held stack");
+                        } finally {
+                            cleanup.run();
+                        }
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    /**
+     * A directional furnace proves that the same action, rather than a separate LookAt action,
+     * turns to the frozen hit point immediately before the native placement packet.
+     */
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = STRICT_PLACEMENT_BATCH,
+            timeoutTicks = P2GameTestSupport.TIMEOUT_TICKS)
+    public static void aimAndPlaceBlockAtomicallyTurnsAndPlacesExactFurnace(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P2AimPlace",
+                new Vec3(4.5D, 1.0D, 3.5D),
+                90.0F);
+        P2GameTestSupport.Cleanup cleanup =
+                cleanupBot(bot, "P2 atomic aim-and-place GameTest completed");
+        try {
+            BlockPos relativeSupport = new BlockPos(4, 0, 5);
+            BlockPos support = helper.absolutePos(relativeSupport);
+            BlockPos relativePlaced = relativeSupport.above();
+            BlockPos placed = helper.absolutePos(relativePlaced);
+            BlockTargetFingerprint targetBefore = MinecraftActionSnapshot.block(
+                    bot.player(), placed);
+            BlockTargetFingerprint expectedPlaced = expectedPlacedBlock(
+                    helper, bot, relativePlaced, Blocks.FURNACE);
+            P2GameTestSupport.require(
+                    expectedPlaced.state().properties().equals(
+                            java.util.Map.of("facing", "north", "lit", "false")),
+                    "Atomic aim-and-place fixture did not freeze a north-facing furnace");
+            bot.player().getInventory().selected = 0;
+            bot.player().getInventory().setItem(
+                    0, new ItemStack(Items.FURNACE, 2));
+            BlockHitTarget anchor = MinecraftActionSnapshot.blockHit(
+                    bot.player(),
+                    new BlockHitResult(
+                            new Vec3(
+                                    support.getX() + 0.5D,
+                                    support.getY() + 1.0D,
+                                    support.getZ() + 0.5D),
+                            Direction.UP,
+                            support,
+                            false));
+
+            CompletionStage<ActionOutcome> completion =
+                    P2GameTestSupport.submit(
+                            bot,
+                            new WorldInteractionAction(
+                                    new WorldInteractionActionSpec
+                                            .AimAndPlaceBlock(
+                                            anchor,
+                                            targetBefore,
+                                            expectedPlaced,
+                                            MinecraftActionSnapshot.selectedItem(
+                                                    bot.player()))),
+                            40);
+            P2GameTestSupport.awaitOutcome(
+                    helper,
+                    completion,
+                    120,
+                    cleanup,
+                    outcome -> {
+                        try {
+                            requireState(
+                                    outcome,
+                                    ActionState.SUCCEEDED,
+                                    ActionFailureCode.NONE);
+                            P2GameTestSupport.require(
+                                    MinecraftActionSnapshot.block(
+                                                    bot.player(), placed)
+                                            .equals(expectedPlaced),
+                                    "Atomic aim-and-place did not produce the exact frozen furnace state");
+                            P2GameTestSupport.require(
+                                    bot.player().getDirection() == Direction.SOUTH
+                                            && bot.player().containerMenu
+                                                    == bot.player().inventoryMenu
+                                            && bot.player().inventoryMenu
+                                                    .getCarried().isEmpty()
+                                            && bot.player().getInventory()
+                                                    .getSelected().is(Items.FURNACE)
+                                            && bot.player().getInventory()
+                                                    .getSelected().getCount() == 1,
+                                    "Atomic aim-and-place did not retain the aimed view, native menu, and exact debit");
+                            double before = Double.parseDouble(evidence(
+                                    outcome, "aim.before_error_deg"));
+                            double after = Double.parseDouble(evidence(
+                                    outcome, "aim.after_error_deg"));
+                            double verified = Double.parseDouble(evidence(
+                                    outcome, "aim.verify_error_deg"));
+                            P2GameTestSupport.require(
+                                    before > 0.5D
+                                            && after <= 0.5D
+                                            && verified <= 0.5D,
+                                    "Atomic aim-and-place omitted its bounded aim evidence");
+                        } finally {
+                            cleanup.run();
+                        }
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    /** A cave-air drift is still air to vanilla, but not this action's frozen air fingerprint. */
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = STRICT_PLACEMENT_BATCH,
+            timeoutTicks = P2GameTestSupport.TIMEOUT_TICKS)
+    public static void aimAndPlaceBlockRejectsExactAirFingerprintDriftBeforeDispatch(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P2AimAirDrift",
+                new Vec3(4.5D, 1.0D, 3.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup =
+                cleanupBot(bot, "P2 atomic target-before GameTest completed");
+        try {
+            BlockPos relativeSupport = new BlockPos(4, 0, 5);
+            BlockPos support = helper.absolutePos(relativeSupport);
+            BlockPos relativePlaced = relativeSupport.above();
+            BlockPos placed = helper.absolutePos(relativePlaced);
+            BlockTargetFingerprint targetBefore = MinecraftActionSnapshot.block(
+                    bot.player(), placed);
+            BlockTargetFingerprint expectedPlaced = expectedPlacedBlock(
+                    helper, bot, relativePlaced, Blocks.COBBLESTONE);
+            helper.setBlock(relativePlaced, Blocks.CAVE_AIR);
+            P2GameTestSupport.require(
+                    MinecraftActionSnapshot.block(bot.player(), placed)
+                            .state().blockId().toString()
+                            .equals("minecraft:cave_air"),
+                    "Exact-air drift fixture did not retain cave_air");
+            bot.player().getInventory().selected = 0;
+            bot.player().getInventory().setItem(
+                    0, new ItemStack(Items.COBBLESTONE, 2));
+            BlockHitTarget anchor = MinecraftActionSnapshot.blockHit(
+                    bot.player(),
+                    new BlockHitResult(
+                            new Vec3(
+                                    support.getX() + 0.5D,
+                                    support.getY() + 1.0D,
+                                    support.getZ() + 0.5D),
+                            Direction.UP,
+                            support,
+                            false));
+
+            CompletionStage<ActionOutcome> completion =
+                    P2GameTestSupport.submit(
+                            bot,
+                            new WorldInteractionAction(
+                                    new WorldInteractionActionSpec
+                                            .AimAndPlaceBlock(
+                                            anchor,
+                                            targetBefore,
+                                            expectedPlaced,
+                                            MinecraftActionSnapshot.selectedItem(
+                                                    bot.player()))),
+                            40);
+            P2GameTestSupport.awaitOutcome(
+                    helper,
+                    completion,
+                    80,
+                    cleanup,
+                    outcome -> {
+                        try {
+                            requireState(
+                                    outcome,
+                                    ActionState.FAILED,
+                                    ActionFailureCode.PRECONDITION_FAILED);
+                            P2GameTestSupport.require(
+                                    bot.player().serverLevel().getBlockState(
+                                                    placed).is(Blocks.CAVE_AIR)
+                                            && bot.player().getInventory()
+                                                    .getSelected().is(Items.COBBLESTONE)
+                                            && bot.player().getInventory()
+                                                    .getSelected().getCount() == 2,
+                                    "Exact target-before rejection sent a placement packet or consumed the held block");
+                        } finally {
+                            cleanup.run();
+                        }
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    /** A coordinate match alone cannot authorize a hidden opposite face for the native packet. */
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = STRICT_PLACEMENT_BATCH,
+            timeoutTicks = P2GameTestSupport.TIMEOUT_TICKS)
+    public static void aimAndPlaceBlockRejectsHiddenOppositeFaceBeforeDispatch(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P2AimHiddenFace",
+                new Vec3(2.5D, 1.0D, 5.5D),
+                90.0F);
+        P2GameTestSupport.Cleanup cleanup =
+                cleanupBot(bot, "P2 atomic hidden-face GameTest completed");
+        try {
+            BlockPos relativeSupport = new BlockPos(4, 1, 5);
+            helper.setBlock(relativeSupport, Blocks.STONE);
+            BlockPos support = helper.absolutePos(relativeSupport);
+            BlockPos relativePlaced = relativeSupport.east();
+            BlockPos placed = helper.absolutePos(relativePlaced);
+            BlockTargetFingerprint targetBefore = MinecraftActionSnapshot.block(
+                    bot.player(), placed);
+            BlockTargetFingerprint expectedPlaced = expectedPlacedBlock(
+                    helper, bot, relativePlaced, Blocks.COBBLESTONE);
+            bot.player().getInventory().selected = 0;
+            bot.player().getInventory().setItem(
+                    0, new ItemStack(Items.COBBLESTONE, 2));
+            BlockHitTarget forgedEastAnchor = MinecraftActionSnapshot.blockHit(
+                    bot.player(),
+                    new BlockHitResult(
+                            new Vec3(
+                                    support.getX() + 1.0D,
+                                    support.getY() + 0.5D,
+                                    support.getZ() + 0.5D),
+                            Direction.EAST,
+                            support,
+                            false));
+
+            CompletionStage<ActionOutcome> completion =
+                    P2GameTestSupport.submit(
+                            bot,
+                            new WorldInteractionAction(
+                                    new WorldInteractionActionSpec
+                                            .AimAndPlaceBlock(
+                                            forgedEastAnchor,
+                                            targetBefore,
+                                            expectedPlaced,
+                                            MinecraftActionSnapshot.selectedItem(
+                                                    bot.player()))),
+                            40);
+            P2GameTestSupport.awaitOutcome(
+                    helper,
+                    completion,
+                    80,
+                    cleanup,
+                    outcome -> {
+                        try {
+                            requireState(
+                                    outcome,
+                                    ActionState.FAILED,
+                                    ActionFailureCode.PRECONDITION_FAILED);
+                            P2GameTestSupport.require(
+                                    bot.player().serverLevel().getBlockState(
+                                                    placed).isAir()
+                                            && bot.player().getInventory()
+                                                    .getSelected().is(Items.COBBLESTONE)
+                                            && bot.player().getInventory()
+                                                    .getSelected().getCount() == 2
+                                            && evidence(
+                                                            outcome,
+                                                            "block.ray_hit_target")
+                                                    .equals("false"),
+                                    "Hidden opposite hit face sent a placement packet or consumed the held block");
                         } finally {
                             cleanup.run();
                         }

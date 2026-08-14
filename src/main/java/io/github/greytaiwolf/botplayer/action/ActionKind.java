@@ -22,5 +22,7 @@ public enum ActionKind {
    INTERACT_ENTITY,
    DROP_SELECTED,
    PICKUP_WAIT,
-   STOP;
+   STOP,
+   /** Strict v2 atomic placement: aim, revalidate, packet, and exact verify. */
+   AIM_AND_PLACE_BLOCK;
 }

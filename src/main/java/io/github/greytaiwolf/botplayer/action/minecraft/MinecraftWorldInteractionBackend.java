@@ -68,6 +68,10 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.DoubleConsumer;
+import java.util.function.DoubleSupplier;
+import java.util.function.Supplier;
+import net.minecraft.commands.arguments.EntityAnchorArgument;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -76,6 +80,7 @@ import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
 import net.minecraft.network.protocol.game.ServerboundUseItemOnPacket;
 import net.minecraft.network.protocol.game.ServerboundUseItemPacket;
+import net.minecraft.util.Mth;
 import net.minecraft.world.Container;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
@@ -121,6 +126,8 @@ import net.minecraft.world.phys.Vec3;
 final class MinecraftWorldInteractionBackend implements ActionBackend {
     private static final int MAX_COMPLETED_MENU_CLEANUPS = 256;
     private static final int VERIFY_BREAK_BASE_EVIDENCE_ITEMS = 3;
+    private static final double MIN_AIM_VECTOR_LENGTH_SQUARED = 1.0E-12D;
+    private static final double AIM_AND_PLACE_LOOK_TOLERANCE_DEGREES = 0.5D;
     private static final long FURNACE_POLL_INTERVAL_TICKS = 20L;
     private static final Set<String> VANILLA_DIRECTION_NAMES = Set.of(
             "down", "up", "north", "south", "west", "east");
@@ -284,6 +291,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 || action.spec()
                         instanceof WorldInteractionActionSpec.PlaceBlock
                 || action.spec()
+                        instanceof WorldInteractionActionSpec.AimAndPlaceBlock
+                || action.spec()
                         instanceof WorldInteractionActionSpec.BreakBlock
                 || action.spec()
                         instanceof WorldInteractionActionSpec.AttackEntity
@@ -349,7 +358,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                             instanceof WorldInteractionActionSpec
                                     .WorldMenuRecipe
                     || state.spec
-                            instanceof WorldInteractionActionSpec.PlaceBlock) {
+                            instanceof WorldInteractionActionSpec.PlaceBlock
+                    || state.spec
+                            instanceof WorldInteractionActionSpec.AimAndPlaceBlock) {
                 closeWorldMenuDuringCleanup(player, state);
             } else {
                 state.sideEffectDispatched = false;
@@ -475,6 +486,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     verifyUseOn(envelope, player, state, useOnBlock);
             case WorldInteractionActionSpec.PlaceBlock placeBlock ->
                     verifyPlaceBlock(envelope, player, state, placeBlock);
+            case WorldInteractionActionSpec.AimAndPlaceBlock aimAndPlace ->
+                    verifyAimAndPlaceBlock(
+                            envelope, player, state, aimAndPlace);
             case WorldInteractionActionSpec.BreakBlock breakBlock ->
                     verifyBreak(envelope, player, state, breakBlock);
             case WorldInteractionActionSpec.AttackEntity attackEntity ->
@@ -1496,6 +1510,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                             useOnBlock.expectedHeldItem());
             case WorldInteractionActionSpec.PlaceBlock placeBlock ->
                     validatePlaceBlock(envelope, player, placeBlock);
+            case WorldInteractionActionSpec.AimAndPlaceBlock aimAndPlace ->
+                    validateAimAndPlaceBlock(
+                            envelope, player, aimAndPlace);
             case WorldInteractionActionSpec.BreakBlock breakBlock ->
                     validateBreakBlock(envelope, player, breakBlock);
             case WorldInteractionActionSpec.AttackEntity attackEntity ->
@@ -2526,6 +2543,84 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         return BackendResult.accepted(envelope);
     }
 
+    /**
+     * Atomic aim-and-place never inherits {@link WorldInteractionActionSpec.PlaceBlock}'s broad
+     * {@code isAir()} destination test. The whole frozen {@code targetBefore} fingerprint is
+     * checked by validate, start revalidation, and the post-look packet fence.
+     */
+    private BackendResult validateAimAndPlaceBlock(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            WorldInteractionActionSpec.AimAndPlaceBlock aimAndPlace) {
+        if (player.containerMenu != player.inventoryMenu
+                || !player.inventoryMenu.stillValid(player)
+                || !player.inventoryMenu.getCarried().isEmpty()) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Atomic placement requires the native inventory menu with an empty cursor");
+        }
+        BackendResult anchor = validateBlockInteraction(
+                envelope,
+                player,
+                aimAndPlace.anchor(),
+                InteractionHand.MAIN_HAND,
+                aimAndPlace.expectedHeldItem());
+        if (anchor.step() != BackendStep.ACCEPTED) {
+            return anchor;
+        }
+        MinecraftInteractionView.BlockReachEvidence exactReach =
+                MinecraftInteractionView.exactBlockReachEvidence(
+                        player, aimAndPlace.anchor());
+        if (!exactReach.withinReach() || !exactReach.rayHitTarget()) {
+            return BackendResult.failed(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    blockReachEvidence(exactReach),
+                    !exactReach.withinReach()
+                            ? "Atomic placement anchor is out of reach"
+                            : "Atomic placement anchor does not exactly match the frozen face and hit");
+        }
+        BlockPos destination = MinecraftInteractionView.position(
+                aimAndPlace.targetBefore().position());
+        if (!player.serverLevel().isLoaded(destination)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.TARGET_UNAVAILABLE,
+                    "Atomic placement destination chunk is not loaded");
+        }
+        if (!MinecraftInteractionView.blockFingerprint(player, destination)
+                .equals(aimAndPlace.targetBefore())) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Atomic placement exact targetBefore fingerprint changed");
+        }
+        if (!player.canInteractWithBlock(destination, 0.0D)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Atomic placement destination is out of reach");
+        }
+        ItemStack held = player.getMainHandItem();
+        if (!(held.getItem() instanceof BlockItem blockItem)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.INVALID_REQUEST,
+                    "Atomic placement held item is not a block item");
+        }
+        ResourceId heldBlockId = new ResourceId(BuiltInRegistries.BLOCK
+                .getKey(blockItem.getBlock()).toString());
+        if (!heldBlockId.equals(aimAndPlace.expectedPlaced().state()
+                .blockId())) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.INVALID_REQUEST,
+                    "Atomic placement expected state does not match the held block item");
+        }
+        return BackendResult.accepted(envelope);
+    }
+
     private BackendResult validateEntity(
             ActionEnvelope envelope,
             BotServerPlayer player,
@@ -2626,6 +2721,11 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             return dispatchBreakStartWithDropProvenance(envelope, player,
                     state, breakBlock);
         }
+        if (state.spec instanceof WorldInteractionActionSpec
+                .AimAndPlaceBlock aimAndPlace) {
+            return dispatchAimAndPlaceBlock(
+                    envelope, player, state, aimAndPlace);
+        }
         // Mark the operation as possibly applied before calling a packet/menu
         // entry point: handlers may mutate state and then throw.
         state.sideEffectDispatched = true;
@@ -2672,6 +2772,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                     MinecraftInteractionView.hit(
                                             placeBlock.anchor()),
                                     nextSequence()));
+            case WorldInteractionActionSpec.AimAndPlaceBlock ignored ->
+                    throw new IllegalStateException(
+                            "Atomic aim-and-place bypassed the final packet fence");
             case WorldInteractionActionSpec.BreakBlock ignored ->
                     throw new IllegalStateException(
                             "Break start escaped drop-provenance capture");
@@ -2737,6 +2840,64 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                         player, player.getUseItem())
                                 .equals(useItem.expectedHeldItem());
         return BackendResult.accepted(envelope);
+    }
+
+    /**
+     * The action already owns LOOK, MAIN_HAND, and INTERACT. Revalidate once after capture and
+     * once after {@code lookAt}; only then mark and send the native packet.
+     */
+    private BackendResult dispatchAimAndPlaceBlock(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            InteractionState state,
+            WorldInteractionActionSpec.AimAndPlaceBlock aimAndPlace) {
+        BackendResult capturedFence = validateAimAndPlaceBlock(
+                envelope, player, aimAndPlace);
+        if (capturedFence.step() != BackendStep.ACCEPTED) {
+            return capturedFence;
+        }
+
+        BlockHitTarget anchor = aimAndPlace.anchor();
+        state.aimAndPlaceBeforeAimError = viewAngleDegrees(
+                player,
+                anchor.worldX(),
+                anchor.worldY(),
+                anchor.worldZ());
+        AimAndPlaceFinalFenceResult finalFence =
+                executeAimAndPlaceFinalFence(
+                        () -> player.lookAt(
+                                EntityAnchorArgument.Anchor.EYES,
+                                new Vec3(
+                                        anchor.worldX(),
+                                        anchor.worldY(),
+                                        anchor.worldZ())),
+                        () -> validateAimAndPlaceBlock(
+                                envelope, player, aimAndPlace),
+                        () -> viewAngleDegrees(
+                                player,
+                                anchor.worldX(),
+                                anchor.worldY(),
+                                anchor.worldZ()),
+                        AIM_AND_PLACE_LOOK_TOLERANCE_DEGREES,
+                        finalAimError -> {
+                            state.aimAndPlaceFinalFencePassed = true;
+                            state.aimAndPlaceDispatchAimError = finalAimError;
+                            // Native packet handling may synchronously mutate the world.
+                            state.sideEffectDispatched = true;
+                            player.connection.handleUseItemOn(
+                                    new ServerboundUseItemOnPacket(
+                                            InteractionHand.MAIN_HAND,
+                                            MinecraftInteractionView.hit(anchor),
+                                            nextSequence()));
+                        });
+        return switch (finalFence.status()) {
+            case REVALIDATION_REJECTED -> finalFence.revalidation();
+            case AIM_REJECTED -> failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Atomic placement view does not precisely target the frozen hit");
+            case PACKET_DISPATCHED -> BackendResult.accepted(envelope);
+        };
     }
 
     /**
@@ -5263,8 +5424,70 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             BotServerPlayer player,
             InteractionState state,
             WorldInteractionActionSpec.PlaceBlock placeBlock) {
+        return verifyExactBlockPlacement(
+                envelope,
+                player,
+                state,
+                placeBlock.anchor(),
+                placeBlock.expectedPlaced(),
+                List.of(),
+                "Verified exact block placement");
+    }
+
+    private BackendResult verifyAimAndPlaceBlock(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            InteractionState state,
+            WorldInteractionActionSpec.AimAndPlaceBlock aimAndPlace) {
+        if (!state.aimAndPlaceFinalFencePassed
+                || !Double.isFinite(state.aimAndPlaceBeforeAimError)
+                || !Double.isFinite(state.aimAndPlaceDispatchAimError)) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.UNSAFE_CONTROL_STATE,
+                    "Atomic aim-and-place did not pass its final packet fence");
+        }
+        BlockHitTarget anchor = aimAndPlace.anchor();
+        double verifyAimError = viewAngleDegrees(
+                player, anchor.worldX(), anchor.worldY(), anchor.worldZ());
+        List<ActionEvidence> aimEvidence = List.of(
+                evidence(
+                        "aim.before_error_deg",
+                        Double.toString(
+                                state.aimAndPlaceBeforeAimError)),
+                evidence(
+                        "aim.after_error_deg",
+                        Double.toString(
+                                state.aimAndPlaceDispatchAimError)),
+                evidence("aim.verify_error_deg", Double.toString(verifyAimError)));
+        if (!Double.isFinite(verifyAimError)
+                || verifyAimError > AIM_AND_PLACE_LOOK_TOLERANCE_DEGREES) {
+            return BackendResult.failed(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    aimEvidence,
+                    "Atomic placement view no longer targets the frozen hit");
+        }
+        return verifyExactBlockPlacement(
+                envelope,
+                player,
+                state,
+                anchor,
+                aimAndPlace.expectedPlaced(),
+                aimEvidence,
+                "Verified atomic aim-and-place exact block state");
+    }
+
+    private BackendResult verifyExactBlockPlacement(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            InteractionState state,
+            BlockHitTarget anchor,
+            BlockTargetFingerprint expectedPlaced,
+            List<ActionEvidence> additionalEvidence,
+            String successSummary) {
         BlockPos destination = MinecraftInteractionView.position(
-                placeBlock.expectedPlaced().position());
+                expectedPlaced.position());
         if (!player.serverLevel().isLoaded(destination)) {
             return failure(
                     envelope,
@@ -5281,16 +5504,16 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         }
         BlockTargetFingerprint actual = MinecraftInteractionView.blockFingerprint(
                 player, destination);
-        if (!actual.equals(placeBlock.expectedPlaced())) {
+        if (!actual.equals(expectedPlaced)) {
             return failure(
                     envelope,
                     ActionFailureCode.PRECONDITION_FAILED,
                     "Block placement did not produce the exact expected block state");
         }
         BlockPos anchorPosition = MinecraftInteractionView.position(
-                placeBlock.anchor().target().position());
+                anchor.target().position());
         if (!MinecraftInteractionView.blockFingerprint(player, anchorPosition)
-                .equals(placeBlock.anchor().target())) {
+                .equals(anchor.target())) {
             return failure(
                     envelope,
                     ActionFailureCode.PRECONDITION_FAILED,
@@ -5308,24 +5531,24 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     ActionFailureCode.UNSAFE_CONTROL_STATE,
                     "Block placement did not consume exactly one held block");
         }
-        return success(
-                envelope,
-                List.of(
-                        evidence(
-                                "block.position",
-                                destination.getX()
-                                        + ","
-                                        + destination.getY()
-                                        + ","
-                                        + destination.getZ()),
-                        evidence("block.matches_expected", "true"),
-                        evidence(
-                                "item.before_count",
-                                Integer.toString(state.heldBefore.count())),
-                        evidence(
-                                "item.after_count",
-                                Integer.toString(heldAfter.count()))),
-                "Verified exact block placement");
+        List<ActionEvidence> placementEvidence = new ArrayList<>(
+                4 + additionalEvidence.size());
+        placementEvidence.add(evidence(
+                "block.position",
+                destination.getX()
+                        + ","
+                        + destination.getY()
+                        + ","
+                        + destination.getZ()));
+        placementEvidence.add(evidence("block.matches_expected", "true"));
+        placementEvidence.add(evidence(
+                "item.before_count",
+                Integer.toString(state.heldBefore.count())));
+        placementEvidence.add(evidence(
+                "item.after_count",
+                Integer.toString(heldAfter.count())));
+        placementEvidence.addAll(additionalEvidence);
+        return success(envelope, List.copyOf(placementEvidence), successSummary);
     }
 
     private BackendResult verifyBreak(
@@ -5674,7 +5897,10 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                             trade) {
                 closeVillagerTradeDuringCleanup(player, state, trade);
             } else if (state.spec
-                    instanceof WorldInteractionActionSpec.PlaceBlock) {
+                    instanceof WorldInteractionActionSpec.PlaceBlock
+                    || state.spec
+                            instanceof WorldInteractionActionSpec
+                                    .AimAndPlaceBlock) {
                 closeWorldMenuDuringCleanup(player, state);
             } else if (state.spec
                     instanceof WorldInteractionActionSpec
@@ -6318,6 +6544,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         instanceof WorldInteractionActionSpec.PlaceBlock
                 || state.spec
                         instanceof WorldInteractionActionSpec
+                                .AimAndPlaceBlock
+                || state.spec
+                        instanceof WorldInteractionActionSpec
                                 .SelectHotbar
                 || state.spec
                         instanceof WorldInteractionActionSpec
@@ -6379,6 +6608,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 || spec instanceof WorldInteractionActionSpec
                         .WorldVillagerTrade
                 || spec instanceof WorldInteractionActionSpec.PlaceBlock
+                || spec instanceof WorldInteractionActionSpec.AimAndPlaceBlock
                 || spec instanceof WorldInteractionActionSpec.BreakBlock
                 || spec instanceof WorldInteractionActionSpec.PickupWait
                 || spec instanceof WorldInteractionActionSpec.AttackEntity
@@ -6409,6 +6639,113 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                     .INSTANT;
             default -> false;
         };
+    }
+
+    /**
+     * Performs the non-bypassable post-look fence and invokes the packet callback only after the
+     * complete action revalidation and view-angle check have both passed. This package-private
+     * seam deliberately retains no live Minecraft object, so ordering failures are unit-testable.
+     */
+    static AimAndPlaceFinalFenceResult executeAimAndPlaceFinalFence(
+            Runnable lookAt,
+            Supplier<BackendResult> finalRevalidation,
+            DoubleSupplier finalAimErrorDegrees,
+            double toleranceDegrees,
+            DoubleConsumer packetDispatch) {
+        Objects.requireNonNull(lookAt, "lookAt");
+        Objects.requireNonNull(finalRevalidation, "finalRevalidation");
+        Objects.requireNonNull(finalAimErrorDegrees, "finalAimErrorDegrees");
+        Objects.requireNonNull(packetDispatch, "packetDispatch");
+        if (!Double.isFinite(toleranceDegrees) || toleranceDegrees < 0.0D) {
+            throw new IllegalArgumentException(
+                    "toleranceDegrees must be finite and non-negative");
+        }
+
+        lookAt.run();
+        BackendResult revalidation = Objects.requireNonNull(
+                finalRevalidation.get(), "finalRevalidation result");
+        if (revalidation.step() != BackendStep.ACCEPTED) {
+            return new AimAndPlaceFinalFenceResult(
+                    AimAndPlaceFinalFenceStatus.REVALIDATION_REJECTED,
+                    revalidation,
+                    Double.NaN);
+        }
+
+        double finalAimError = finalAimErrorDegrees.getAsDouble();
+        if (!Double.isFinite(finalAimError)
+                || finalAimError > toleranceDegrees) {
+            return new AimAndPlaceFinalFenceResult(
+                    AimAndPlaceFinalFenceStatus.AIM_REJECTED,
+                    revalidation,
+                    finalAimError);
+        }
+
+        packetDispatch.accept(finalAimError);
+        return new AimAndPlaceFinalFenceResult(
+                AimAndPlaceFinalFenceStatus.PACKET_DISPATCHED,
+                revalidation,
+                finalAimError);
+    }
+
+    enum AimAndPlaceFinalFenceStatus {
+        REVALIDATION_REJECTED,
+        AIM_REJECTED,
+        PACKET_DISPATCHED
+    }
+
+    record AimAndPlaceFinalFenceResult(
+            AimAndPlaceFinalFenceStatus status,
+            BackendResult revalidation,
+            double finalAimErrorDegrees) {
+        AimAndPlaceFinalFenceResult {
+            Objects.requireNonNull(status, "status");
+            Objects.requireNonNull(revalidation, "revalidation");
+            boolean revalidationAccepted =
+                    revalidation.step() == BackendStep.ACCEPTED;
+            if (status == AimAndPlaceFinalFenceStatus.REVALIDATION_REJECTED
+                    && revalidationAccepted) {
+                throw new IllegalArgumentException(
+                        "revalidation rejection requires a rejected result");
+            }
+            if (status != AimAndPlaceFinalFenceStatus.REVALIDATION_REJECTED
+                    && !revalidationAccepted) {
+                throw new IllegalArgumentException(
+                        "aim or packet result requires accepted revalidation");
+            }
+            if (status == AimAndPlaceFinalFenceStatus.PACKET_DISPATCHED
+                    && !Double.isFinite(finalAimErrorDegrees)) {
+                throw new IllegalArgumentException(
+                        "packet dispatch requires finite aim error");
+            }
+        }
+    }
+
+    /** Returns the angle between the current eye view vector and a frozen hit point. */
+    private static double viewAngleDegrees(
+            BotServerPlayer player,
+            double targetX,
+            double targetY,
+            double targetZ) {
+        Vec3 eye = player.getEyePosition();
+        double deltaX = targetX - eye.x;
+        double deltaY = targetY - eye.y;
+        double deltaZ = targetZ - eye.z;
+        double targetLengthSquared = deltaX * deltaX
+                + deltaY * deltaY
+                + deltaZ * deltaZ;
+        if (!Double.isFinite(targetLengthSquared)
+                || targetLengthSquared <= MIN_AIM_VECTOR_LENGTH_SQUARED) {
+            return Double.NaN;
+        }
+        Vec3 view = player.getViewVector(1.0F);
+        double viewLengthSquared = view.lengthSqr();
+        if (!Double.isFinite(viewLengthSquared)
+                || viewLengthSquared <= MIN_AIM_VECTOR_LENGTH_SQUARED) {
+            return Double.NaN;
+        }
+        double dot = (view.x * deltaX + view.y * deltaY + view.z * deltaZ)
+                / Math.sqrt(viewLengthSquared * targetLengthSquared);
+        return Math.toDegrees(Math.acos(Mth.clamp(dot, -1.0D, 1.0D)));
     }
 
     private static BackendResult requireFingerprint(
@@ -6757,6 +7094,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         private boolean releaseSent;
         private boolean strictUsePreflightRejected;
         private boolean breakStopSent;
+        private boolean aimAndPlaceFinalFencePassed;
+        private double aimAndPlaceBeforeAimError = Double.NaN;
+        private double aimAndPlaceDispatchAimError = Double.NaN;
         private Optional<List<BreakDropProvenanceCapture.Provenance>>
                 breakDropProvenances = Optional.empty();
         private InventoryMenuTransaction menuTransaction;
@@ -6848,6 +7188,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         MinecraftInteractionView.hand(useOnBlock.hand());
                 case WorldInteractionActionSpec.PlaceBlock ignored ->
                         InteractionHand.MAIN_HAND;
+                case WorldInteractionActionSpec.AimAndPlaceBlock ignored ->
+                        InteractionHand.MAIN_HAND;
                 case WorldInteractionActionSpec.WorldMenuTransaction menu ->
                         MinecraftInteractionView.hand(menu.hand());
                 case WorldInteractionActionSpec.WorldMenuTransfer menu ->
@@ -6878,6 +7220,12 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                 player,
                                 MinecraftInteractionView.position(
                                         placeBlock.expectedPlaced()
+                                                .position()));
+                case WorldInteractionActionSpec.AimAndPlaceBlock aimAndPlace ->
+                        MinecraftInteractionView.blockFingerprint(
+                                player,
+                                MinecraftInteractionView.position(
+                                        aimAndPlace.targetBefore()
                                                 .position()));
                 case WorldInteractionActionSpec.BreakBlock breakBlock ->
                         MinecraftInteractionView.blockFingerprint(
@@ -6976,6 +7324,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                                     || spec
                                             instanceof WorldInteractionActionSpec
                                                     .PlaceBlock
+                                    || spec
+                                            instanceof WorldInteractionActionSpec
+                                                    .AimAndPlaceBlock
                             ? MinecraftInteractionView
                                     .inventoryMultisetDigest(player)
                             : null,

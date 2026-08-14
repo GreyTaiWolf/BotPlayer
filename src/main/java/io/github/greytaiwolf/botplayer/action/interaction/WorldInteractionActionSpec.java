@@ -9,6 +9,7 @@ import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionLimits;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionTemplate;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -30,8 +31,10 @@ public sealed interface WorldInteractionActionSpec
    WorldInteractionActionSpec.AttackEntity,
    WorldInteractionActionSpec.InteractEntity,
    WorldInteractionActionSpec.DropSelected,
-   WorldInteractionActionSpec.PickupWait {
-   int SCHEMA_VERSION = 1;
+   WorldInteractionActionSpec.PickupWait,
+   WorldInteractionActionSpec.AimAndPlaceBlock {
+   /** Schema v2 adds an independent strict atomic aim-and-place action. */
+   int SCHEMA_VERSION = 2;
    int MAX_HOLD_TICKS = 6000;
    int MAX_PICKUP_WAIT_TICKS = 6000;
    /** A bounded multi-receipt pickup fits the terminal ActionOutcome evidence budget. */
@@ -274,7 +277,8 @@ public sealed interface WorldInteractionActionSpec
       ATTACK_ENTITY,
       INTERACT_ENTITY,
       DROP_SELECTED,
-      PICKUP_WAIT;
+      PICKUP_WAIT,
+      AIM_AND_PLACE_BLOCK;
    }
 
    /**
@@ -816,7 +820,7 @@ public sealed interface WorldInteractionActionSpec
          if (!anchor.target().dimension().equals(expectedPlaced.dimension())) {
             throw new IllegalArgumentException("placed block must remain in the anchor dimension");
          }
-         if (!isPlacedOnAnchorFace(anchor, expectedPlaced)) {
+         if (!WorldInteractionActionSpec.isPlacedOnAnchorFace(anchor, expectedPlaced)) {
             throw new IllegalArgumentException("placed block must be adjacent to the anchor face");
          }
          this.anchor = anchor;
@@ -834,34 +838,90 @@ public sealed interface WorldInteractionActionSpec
          return CHANNELS;
       }
 
-      private static boolean isPlacedOnAnchorFace(BlockHitTarget anchor, BlockTargetFingerprint expectedPlaced) {
-         BlockCoordinates anchorPosition = anchor.target().position();
-         long expectedX = anchorPosition.x();
-         long expectedY = anchorPosition.y();
-         long expectedZ = anchorPosition.z();
-         switch (anchor.face()) {
-            case DOWN:
-               expectedY--;
-               break;
-            case UP:
-               expectedY++;
-               break;
-            case NORTH:
-               expectedZ--;
-               break;
-            case SOUTH:
-               expectedZ++;
-               break;
-            case WEST:
-               expectedX--;
-               break;
-            case EAST:
-               expectedX++;
+   }
+
+   /**
+    * A single main-hand placement whose look, final revalidation, native packet, and exact
+    * verification share one {@code LOOK} lease. This does not change the older {@link PlaceBlock}
+    * contract used by P5A workstation placement.
+    */
+   public static record AimAndPlaceBlock(
+      BlockHitTarget anchor,
+      BlockTargetFingerprint targetBefore,
+      BlockTargetFingerprint expectedPlaced,
+      ItemStackFingerprint expectedHeldItem
+   ) implements WorldInteractionActionSpec {
+      public static final int SCHEMA_VERSION = 1;
+      private static final ResourceId AIR = new ResourceId("minecraft:air");
+      private static final BlockStateFingerprint AIR_STATE = new BlockStateFingerprint(AIR, Map.of());
+      private static final Set<ResourceId> VANILLA_AIR_BLOCK_IDS = Set.of(
+         AIR,
+         new ResourceId("minecraft:cave_air"),
+         new ResourceId("minecraft:void_air")
+      );
+      private static final Set<ActionChannel> CHANNELS = Set.of(
+         ActionChannel.MAIN_HAND,
+         ActionChannel.INTERACT,
+         ActionChannel.LOOK
+      );
+
+      public AimAndPlaceBlock(
+         BlockHitTarget anchor,
+         BlockTargetFingerprint targetBefore,
+         BlockTargetFingerprint expectedPlaced,
+         ItemStackFingerprint expectedHeldItem
+      ) {
+         Objects.requireNonNull(anchor, "anchor");
+         Objects.requireNonNull(targetBefore, "targetBefore");
+         Objects.requireNonNull(expectedPlaced, "expectedPlaced");
+         Objects.requireNonNull(expectedHeldItem, "expectedHeldItem");
+         if (expectedHeldItem.isEmpty()) {
+            throw new IllegalArgumentException("atomic block placement requires a non-empty main-hand item");
          }
-         BlockCoordinates placedPosition = expectedPlaced.position();
-         return placedPosition.x() == expectedX
-            && placedPosition.y() == expectedY
-            && placedPosition.z() == expectedZ;
+         if (!AIR_STATE.equals(targetBefore.state())) {
+            throw new IllegalArgumentException("atomic block placement targetBefore must be exact minecraft:air{}");
+         }
+         if (VANILLA_AIR_BLOCK_IDS.contains(expectedPlaced.state().blockId())) {
+            throw new IllegalArgumentException("atomic block placement expected state must not be vanilla air");
+         }
+         if (!anchor.target().dimension().equals(targetBefore.dimension())
+               || !targetBefore.dimension().equals(expectedPlaced.dimension())) {
+            throw new IllegalArgumentException("atomic block placement facts must share the anchor dimension");
+         }
+         if (!targetBefore.position().equals(expectedPlaced.position())) {
+            throw new IllegalArgumentException("atomic block placement targetBefore and expected position must match");
+         }
+         if (!WorldInteractionActionSpec.isPlacedOnAnchorFace(anchor, expectedPlaced)) {
+            throw new IllegalArgumentException("atomic block placement must target the declared anchor face");
+         }
+         if (anchor.inside() || !isHitOnDeclaredFace(anchor)) {
+            throw new IllegalArgumentException("atomic block placement hit must lie exactly on the declared anchor face");
+         }
+         this.anchor = anchor;
+         this.targetBefore = targetBefore;
+         this.expectedPlaced = expectedPlaced;
+         this.expectedHeldItem = expectedHeldItem;
+      }
+
+      @Override
+      public WorldInteractionActionSpec.Kind kind() {
+         return WorldInteractionActionSpec.Kind.AIM_AND_PLACE_BLOCK;
+      }
+
+      @Override
+      public Set<ActionChannel> channels() {
+         return CHANNELS;
+      }
+
+      private static boolean isHitOnDeclaredFace(BlockHitTarget anchor) {
+         return switch (anchor.face()) {
+            case DOWN -> anchor.localY() == 0.0D;
+            case UP -> anchor.localY() == 1.0D;
+            case NORTH -> anchor.localZ() == 0.0D;
+            case SOUTH -> anchor.localZ() == 1.0D;
+            case WEST -> anchor.localX() == 0.0D;
+            case EAST -> anchor.localX() == 1.0D;
+         };
       }
    }
 
@@ -1065,5 +1125,26 @@ public sealed interface WorldInteractionActionSpec
       public Set<ActionChannel> channels() {
          return this.hand.interactionChannels();
       }
+   }
+
+   private static boolean isPlacedOnAnchorFace(
+      BlockHitTarget anchor, BlockTargetFingerprint expectedPlaced
+   ) {
+      BlockCoordinates anchorPosition = anchor.target().position();
+      long expectedX = anchorPosition.x();
+      long expectedY = anchorPosition.y();
+      long expectedZ = anchorPosition.z();
+      switch (anchor.face()) {
+         case DOWN -> expectedY--;
+         case UP -> expectedY++;
+         case NORTH -> expectedZ--;
+         case SOUTH -> expectedZ++;
+         case WEST -> expectedX--;
+         case EAST -> expectedX++;
+      }
+      BlockCoordinates placedPosition = expectedPlaced.position();
+      return placedPosition.x() == expectedX
+         && placedPosition.y() == expectedY
+         && placedPosition.z() == expectedZ;
    }
 }
