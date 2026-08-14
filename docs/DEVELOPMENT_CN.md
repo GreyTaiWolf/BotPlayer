@@ -43,9 +43,9 @@ gradlew.bat --no-daemon clean build
 
 P2 已加入生命周期、移动、交互和库存 GameTest；P3 加入有限感知与世界事实场景；P4
 加入导航、安全、玩家规则兼容与 Terrain Assist 场景。当前 P5/P6 集成验收载体为
-[Draft PR #11](https://github.com/GreyTaiWolf/BotPlayer/pull/11)；
-[Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) 已通过 Java 21
-`clean build`、Gradle `test`、156 项常规 GameTest 和 phase-one/phase-two 重启
+[`agent/p5-p6-next`](https://github.com/GreyTaiWolf/BotPlayer/tree/agent/p5-p6-next)；
+[Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) 已通过 Java 21
+`clean build`、Gradle `test`、161 项常规 GameTest 和 phase-one/phase-two 重启
 GameTest（各 1 项）。P5 总退出门和 P6 总退出门仍未关闭；真实客户端、专用服和多 bot soak
 不由此替代。涉及
 Minecraft 行为的提交必须运行：
@@ -321,8 +321,8 @@ P4 主线程/异步边界是：
 
 P5 当前源码建立有界 Skill 核心、确定性 DAG 校验、TTL 资源预留、Safety handoff、
 主动进食、扫描 carried inventory `0..35` 的基础盔甲升级、受限资源—制作—存放 DAG、
-白名单容器/工作站和有限自卫。Build #354 已自动覆盖这些窄纵切；它们不能据此计入 P5
-总退出门。
+白名单容器/工作站（含 Bot 私有末影箱）和有限自卫。Build #362 已自动覆盖这些窄纵切；
+它们不能据此计入 P5 总退出门。
 P5C 的窄接线仅把已有有限自卫会话已经授权的一个
 `MELEE_ATTACK`，以不可变 `AttackEntity`/target/generation/ticket 绑定交给单 child
 Technique，再在服务器主线程取回精确 Action 终态。它不选择目标、不移动、不换装备、不
@@ -433,8 +433,8 @@ build 与 JAR upload，日志明确 `All 55 required tests passed`，其中 P4 �
 客户端组合、独立专用服、保护模组矩阵和多 Bot soak 仍需专项验证。
 
 当前 P5/P6 远端证据为
-[Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111)：Java 21
-`clean build`、Gradle `test`、156 项常规 GameTest 和 phase-one/phase-two 重启 GameTest
+[Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094)：Java 21
+`clean build`、Gradle `test`、161 项常规 GameTest 和 phase-one/phase-two 重启 GameTest
 均通过。真实进程崩溃/断电、死亡 handoff 的跨进程边界、Windows 或其他文件系统的目录刷盘、
 模组化 XP/掉落事件矩阵、独立专用服和多 Bot soak 仍需专项验证。
 

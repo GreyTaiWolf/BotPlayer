@@ -1,6 +1,6 @@
 # BotPlayer P5A 暂停期间并行开发规划
 
-> 状态：开发流程历史基线 v0.1；当前 P5/P6 进度以实施状态页和 PR #11 为准
+> 状态：开发流程历史基线 v0.1；当前 P5/P6 进度以实施状态页和连续集成分支为准
 >
 > 更新日期：2026-08-07
 >
@@ -10,7 +10,7 @@
 
 > 本文的“当前事实基线”固定在 2026-08-07，用于说明当时的并行策略。它已被
 > [当前实现状态](IMPLEMENTATION_STATUS_CN.md) 与
-> [PR #11](https://github.com/GreyTaiWolf/BotPlayer/pull/11) 取代；不要将其中“P6 尚未实现”
+> [`agent/p5-p6-next`](https://github.com/GreyTaiWolf/BotPlayer/tree/agent/p5-p6-next) 取代；不要将其中“P6 尚未实现”
 > 或 P5 接线缺口当作当前仓库状态。
 
 本文不是新的 P0–P10 阶段，也不改变阶段退出门。它只定义**开发顺序、并行边界、分支策略、共享接口规则和暂停/恢复交接格式**。

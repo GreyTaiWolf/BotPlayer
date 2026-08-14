@@ -20,6 +20,13 @@
   3×9/6×9 原版 menu 点击事务，支持双向全量/指定数量转移，并以完整快照、物品守恒、关闭/空 cursor
   与方块变化失败关闭约束；未知或模组 menu 仍拒绝。新增 Unit 与 NeoForge GameTest 矩阵；
   Build #354 已完成自动基线，真实客户端/专用服验证仍待完成；
+- 新增 P5B 受限末影箱纵切：仅接受精确原版 `minecraft:ender_chest` 状态和 opener 类型，真正的
+  27 槽账本必须是当前 Bot 自己打开的 `ChestMenu` 容器；每次点击前后和关闭前都重验同一原生
+  menu 实例与私有账本身份，重入替换或状态漂移在点击前失败关闭。支持单次全量/指定数量转移；
+  取消只承诺原版关闭后的空 cursor 与 Bot 自己 player+末影账本总量守恒，不承诺逐槽回滚。
+  同一物理方块上的不同 Bot 在顺序操作中保持账本隔离；当前 skill 租约仍保守地按坐标串行。
+  [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) 已通过 Java 21
+  自动基线、161 项常规 GameTest 和两阶段重启；真实客户端、独立专用服与多 Bot soak 仍待验证；
 - 新增 schema v1 持久 bot roster，保存规范名字、稳定 bot/player UUID、owner 和
   `serverInstanceId`；
 - 新增 `/botplayer settings <name>`：只有 roster 中精确 owner 可以打开本地界面，OP

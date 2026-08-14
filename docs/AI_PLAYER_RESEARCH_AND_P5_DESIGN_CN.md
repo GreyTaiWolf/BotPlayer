@@ -9,8 +9,9 @@
 > 决策记录：[ADR-0015](adr/0015-bounded-skill-runtime-and-menu-transactions.md)
 
 > 当前实现与验证状态以
-> [IMPLEMENTATION_STATUS_CN.md](IMPLEMENTATION_STATUS_CN.md) 为准：PR #11 的
-> [Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) 已自动验证当前
+> [IMPLEMENTATION_STATUS_CN.md](IMPLEMENTATION_STATUS_CN.md) 为准：
+> [`agent/p5-p6-next`](https://github.com/GreyTaiWolf/BotPlayer/tree/agent/p5-p6-next) 的
+> [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) 已自动验证当前
 > 受限 P5 纵切与两阶段重启。本文随后出现的“尚未接线/尚未验证”列表不得覆盖该当前事实；
 > 它仍不表示 P5 总退出门、真实客户端、独立专用服或多 bot soak 已完成。
 

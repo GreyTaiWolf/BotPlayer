@@ -3,13 +3,13 @@
 > 更新日期：2026-08-14
 >
 > 当前 P5/P6 集成验收载体：
-> [Draft PR #11](https://github.com/GreyTaiWolf/BotPlayer/pull/11)
+> [`agent/p5-p6-next`](https://github.com/GreyTaiWolf/BotPlayer/tree/agent/p5-p6-next)
 >
-> [Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) 已在 Java 21
-> 完成 `clean build`、Gradle `test`、156 项常规 NeoForge GameTest 与两阶段重启
+> [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) 已在 Java 21
+> 完成 `clean build`、Gradle `test`、161 项常规 NeoForge GameTest 与两阶段重启
 > GameTest（各 1 项）。
 >
-> 当前阶段：P2-A～P2-E、P3 与 P4 自动化退出门已通过；PR #11 的 P5 窄纵切与 P6-R1
+> 当前阶段：P2-A～P2-E、P3 与 P4 自动化退出门已通过；当前分支的 P5 窄纵切与 P6-R1
 > 已通过自动验证，但 P5 的通用生存能力和 P6 的通用 client-sponsored bridge 均未完成。
 >
 > 发布状态：尚未发布，不建议用于重要存档
@@ -29,9 +29,9 @@ P2 最终验证结果见 [P2_COMPLETION_REPORT_CN.md](P2_COMPLETION_REPORT_CN.md
 ## P5 当前开发切片
 
 当前 P5/P6 集成候选为
-[PR #11](https://github.com/GreyTaiWolf/BotPlayer/pull/11)。该候选的
-[Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) 已通过 Java 21
-`clean build`、Gradle `test`、156 项常规 GameTest，以及在同一持久世界身份上分两次
+[`agent/p5-p6-next`](https://github.com/GreyTaiWolf/BotPlayer/tree/agent/p5-p6-next)。该候选的
+[Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) 已通过 Java 21
+`clean build`、Gradle `test`、161 项常规 GameTest，以及在同一持久世界身份上分两次
 JVM 启动的 phase-one/phase-two 重启验证。它证明当前窄纵切的自动化门，不替代真实客户端、
 独立专用服或长时间多 bot 验收。下文的 Build #163 是早期 P5A 基线记录，不是当前候选的
 完整验证计数。
@@ -43,8 +43,9 @@ JVM 启动的 phase-one/phase-two 重启验证。它证明当前窄纵切的自�
 `UNSUPPORTED`；盔甲热栏单击及主背包 2～3 步路径保持独立。无法证明安全时 fail-closed，
 这不是无条件回滚，也不表示跨 menu 统一事务完成。
 
-Build #354 已自动覆盖当前 P5A/P5B/P5C 的受限生产 DAG、白名单容器/工作站、作物/交易/牛奶、
-有限自卫、保存围栏和两阶段重启路径；这仍不是 P5 的总退出门。跨 menu 通用事务、任意配方/
+Build #362 已自动覆盖当前 P5A/P5B/P5C 的受限生产 DAG、白名单容器/工作站（含 Bot 私有
+末影箱）、作物/交易/牛奶、有限自卫、保存围栏和两阶段重启路径；这仍不是 P5 的总退出门。
+末影箱只隔离每个 Bot 的私有账本，同一物理方块仍按坐标串行；跨 menu 通用事务、任意配方/
 作物/交易、工具/副手、广泛战斗、独立专用服和多 Bot soak 仍未完成或未验证。
 
 主动进食当前只接受无剩余容器、无声明有害效果且无自定义完成逻辑的原版基础 `Item`
@@ -100,20 +101,20 @@ soak 必须分别报告。
 |---|---|---|
 | Minecraft 1.21.1 / NeoForge 21.1.244 / Java 21 | 已编码 | `gradle.properties`、Java toolchain |
 | ModDevGradle 2.0.142 / Gradle 9.2.1 | 已编码 | `build.gradle`、Wrapper |
-| 开发版本 `0.2.0-alpha.1` | 自动化构建已验证 | 尚未正式发布；Build #354 已验证当前 P5/P6 集成候选 |
+| 开发版本 `0.2.0-alpha.1` | 自动化构建已验证 | 尚未正式发布；Build #362 已验证当前 P5/P6 集成候选 |
 | 模组元数据和 Mixin 配置 | 已编码 | `neoforge.mods.toml` 模板、`botplayer.mixins.json` |
 | P2 严格 Java 编译 | 本地与远端已验证 | `compileJava` / `compileTestJava` 在 `-Xlint:all -Werror` 下通过 |
 | P2 纯 Java 单元测试 | 本地与远端已验证 | 140/140 通过，0 failed、0 skipped |
 | P2 NeoForge GameTest | 本地与远端已验证 | 同一持久世界连续两次 19/19 通过；Build #18 通过 |
-| GitHub Actions | 远端已验证 | P2 Build #18、P3 Build #28、P4 Build #97、P5 Build #163 与当前 P5/P6 Build #354 均已完成对应自动化门 |
+| GitHub Actions | 远端已验证 | P2 Build #18、P3 Build #28、P4 Build #97、P5 Build #163 与当前 P5/P6 Build #362 均已完成对应自动化门 |
 | P3 严格编译与单元测试 | 远端已验证 | Build #28 的 Temurin Java 21.0.11 编译与 Gradle `test` 通过；P3 43、全仓 183 是源码静态 `@Test` 计数 |
 | P3 NeoForge GameTest | 远端已验证 | Build #28 日志明确 `All 27 required tests passed`、P3 batch 8；`P3SoundTarget/Other` 与 `P3FactStale` 成功 |
 | P3 clean build / JAR | 远端已验证 | `BUILD SUCCESSFUL in 50s`，JAR upload 通过；artifact `botplayer-neoforge-1.21.1`，ID `8702261459`，`653364` bytes，SHA-256 `90ddf753c58a3f81a4a5d407a6beafd30c08c208345b01dea51fd241156224ac` |
 | P4 严格编译与单元测试 | 远端已验证 | Build #97 使用 Temurin Java 21.0.11；源码静态计数为全仓 200 个 JUnit `@Test` 方法 |
 | P4 NeoForge GameTest | 远端已验证 | Build #97 日志明确 `All 55 required tests passed`；P4 直接场景 28 个 |
 | P4 clean build / JAR | 远端已验证 | `BUILD SUCCESSFUL in 50s`；artifact ID `8721162398`，`838883` bytes，SHA-256 `b36a69f607e4f0e028e2afff15946a03bddd64004638c2d64d479c704706ddcd` |
-| P5/P6 当前自动化门 | 远端已验证 | Build #354：Java 21 `clean build`、Gradle `test`、156 项常规 GameTest 与 phase-one/phase-two 重启 GameTest 均通过；不等于实机客户端或专用服验收 |
-| GameTest batch Bot 预算 | 远端已验证当前布局 | 当前 Build #354 的 156 项常规 GameTest 在默认 `maxBots=8` 配置下完成；历史超配通过拆批修复，未提高上限 |
+| P5/P6 当前自动化门 | 远端已验证 | Build #362：Java 21 `clean build`、Gradle `test`、161 项常规 GameTest 与 phase-one/phase-two 重启 GameTest 均通过；不等于实机客户端或专用服验收 |
+| GameTest batch Bot 预算 | 远端已验证当前布局 | 当前 Build #362 的 161 项常规 GameTest 在默认 `maxBots=8` 配置下完成；历史超配通过拆批修复，未提高上限 |
 | 客户端 screen 手工测试 | 基础场景已验证 | 用户已在真实客户端确认 `176×256` 原版玩家风格视觉修复有效；多语言、资源包与全部 GUI Scale 组合仍未专项验证 |
 | 独立专用服务器 | 未验证 | 当前不宣称纯服务端或版本不一致兼容 |
 | 多 bot soak / 性能 | 未实现 | 没有长时间 MSPT、内存、队列与区块残留证据 |
@@ -163,9 +164,9 @@ P3 的生产路径已编码并通过 Build #28 自动化退出门；这表示提
 | 不可变运动快照 | 已编码；Build #97 编译/测试通过 | 主线程分时读取已加载世界；未知区块不当成空气、不主动加 ticket |
 | 有界分段 A* | 已编码；Build #97 编译/测试通过 | 节点扩展、并发、队列、结果 inbox 和最大目标距离均有硬上限 |
 | 真实玩家 follower | 已验证基础场景 | 只经 P2 look/move/jump/swim/climb/use 动作；终点复核真实脚位，禁止传送 |
-| 动态重算 | 部分验证 | 动态墙使旧路线失效并绕行；有界前方实体覆盖层与“短等后重算”路径已通过 Build #354 全仓自动基线，专项实机验证仍待运行 |
+| 动态重算 | 部分验证 | 动态墙使旧路线失效并绕行；有界前方实体覆盖层与“短等后重算”路径已通过 Build #362 全仓自动基线，专项实机验证仍待运行 |
 | 特殊移动 | 部分完成 | 一格跳跃、木门、浅水、梯子有直接 GameTest；脚手架、藤蔓、复杂水流、载具和鞘翅未完成 |
-| stuck 恢复 | 部分验证 | 停止、重新对齐、重采样和重算次数有界；真实碰撞后的 `STOP` 确认与强制卡住 GameTest 已通过 Build #354 自动基线，专项实机验证仍待完成 |
+| stuck 恢复 | 部分验证 | 停止、重新对齐、重采样和重算次数有界；真实碰撞后的 `STOP` 确认与强制卡住 GameTest 已通过 Build #362 自动基线，专项实机验证仍待完成 |
 | 资源门槛 | 已验证 | 低生命/食物拒绝普通远行，低食物停止 sprint，真实 sprint 触发原版 exhaustion |
 | L0 `SafetyFrame` | 已编码；Build #97 编译/测试通过 | 每 Tick 有界读取真实生命/吸收/护甲/食物/空气/环境/效果/伤害/威胁 |
 | 安全抢占 | 已验证基础场景 | 悬崖、燃烧、溺水、箭、TNT、敌对目标会挂起导航并抢占普通输入 |
@@ -178,7 +179,7 @@ P3 的生产路径已编码并通过 Build #28 自动化退出门；这表示提
 | P4 管理命令 | 已编码 | `navigation go/stop/inspect` 与 `safety inspect` 固定要求权限等级 2 |
 | P4 GameTest | 28/28 通过 | 全仓 55/55；完整清单见 P4 完成报告 |
 | 长距离/性能发布门 | 部分完成 | 滚动局部 frontier 已编码；平地 200 格直接 GameTest、多 Bot MSPT/内存 soak 尚未完成 |
-| 自主生存/战斗 | 受限纵切已自动验证；总退出门未计数 | Build #354 已覆盖受限生产 DAG、保存围栏、白名单工作站与有限自卫。跨 menu 通用事务、故障注入、通用 lifecycle continuation、工具/副手、广泛战斗与完整生存能力仍未完成或未验证 |
+| 自主生存/战斗 | 受限纵切已自动验证；总退出门未计数 | Build #362 已覆盖受限生产 DAG、保存围栏、白名单工作站（含 Bot 私有末影箱）与有限自卫。跨 menu 通用事务、故障注入、通用 lifecycle continuation、工具/副手、广泛战斗与完整生存能力仍未完成或未验证 |
 
 P4 自动化门证明了“受控导航、安全反射和真实玩家规则底座”，不证明所有原版移动组合、
 所有伤害/效果或所有模组兼容，更不等于完整生存 AI。具体边界见
@@ -260,7 +261,7 @@ P4 自动化门证明了“受控导航、安全反射和真实玩家规则底�
 | 交互前置条件 | 已编码 | generation、维度、区块/目标、指纹、距离、LOS、冷却和手持物 |
 | 世界交互 GameTest | 本地已验证 | 放置、破坏、保护拒绝、攻击、丢弃、指定 UUID 拾取连续两轮通过 |
 | 保护模组兼容 | 部分完成 | 使用普通玩家路径可接收取消；具体领地/PVP/反作弊矩阵未验证 |
-| 通用世界容器 | 部分完成 | Build #354 已自动验证普通单箱/双箱、木桶和原版潜影盒的严格白名单转移与受限工作站纵切；通用工作站、模组 menu 与实机验收仍未完成 |
+| 通用世界容器 | 部分完成 | Build #362 已自动验证普通单箱/双箱、木桶、原版潜影盒以及 Bot 私有末影箱的严格白名单转移与受限工作站纵切；末影箱不读取方块实体账本、同方块跨 Bot 保守串行；通用工作站、模组 menu 与实机验收仍未完成 |
 | 模组/自定义 menu | 未实现 | C1/C3 适配在 P8 |
 
 ## P2-D：bot 自身背包 GUI
@@ -302,9 +303,9 @@ P4 自动化门证明了“受控导航、安全反射和真实玩家规则底�
 | 空主手、主手右键 bot | 已编码，待客户端验收 | owner 或 OP 在范围内打开 bot 自身背包；不是世界容器自动化 |
 | 客户端 API Key 管理 | 已编码 | 创建/替换 profile、绑定/解绑；profile 删除未实现 |
 | 服务端 agent binding | 部分完成 | 只保存 botId↔agentId 运行时关系；owner 离线/卸载/停服时清除 |
-| `/botplayer ai review <name>` | 已编码；Build #354 自动验证通过 | 仅真实持久 owner、活动 bot 和 active binding；owner 本地显式开启 R1 后发送固定只读快照，结果只作安全摘要并丢弃，不进入 Skill、Action 或世界 |
+| `/botplayer ai review <name>` | 已编码；Build #362 自动验证通过 | 仅真实持久 owner、活动 bot 和 active binding；owner 本地显式开启 R1 后发送固定只读快照，结果只作安全摘要并丢弃，不进入 Skill、Action 或世界 |
 | 通过管理命令导航 | 已编码 | P4 提供 OP 诊断入口；不是普通玩家任务系统、技能或 AI 调用入口 |
-| 聊天与 DeepSeek | 部分编码 | Provider/codec/firewall/context、客户端 DeepSeek 传输和默认关闭的 owner R1 只读审阅链已通过 Build #354 自动验证；没有通用聊天、自动计划或世界执行，R1 的真实客户端/Provider E2E 仍待验证 |
+| 聊天与 DeepSeek | 部分编码 | Provider/codec/firewall/context、客户端 DeepSeek 传输和默认关闭的 owner R1 只读审阅链已通过 Build #362 自动验证；没有通用聊天、自动计划或世界执行，R1 的真实客户端/Provider E2E 仍待验证 |
 
 ## 当前 server 配置
 
@@ -345,11 +346,11 @@ screen、独立专用服和长时间 soak 是明确保留的专项验证，不�
 |---|---|---|
 | P3 | 感知、语义事件、世界模型、玩家活动理解 | 自动化退出门已通过；客户端、独立专用服与 soak 未验证 |
 | P4 | 导航、安全反射、动态重规划、玩家规则兼容 | 自动化退出门已通过；复杂移动、专用服、保护模组与 soak 未验证 |
-| P5A | 技能 FSM、首条生存闭环、最小原版世界容器驱动 | Build #354 已自动验证受限资源—制作—存放 DAG、保存围栏和两阶段重启；跨 menu 通用事务、工具/副手与独立专用服仍未完成或未验证 |
-| P5B | 广泛原版容器/工作站、制作、生产和日常生活 | Build #354 已自动验证严格白名单容器、工作站边界、受限 wheat/甘蔗收获、牛繁殖、单笔村民交易和牛奶解毒纵切；这不等于通用容器、任意配方/作物/交易或自动药物策略，真实客户端与专用服仍待验证 |
-| P5C | 运输、游戏进程和高级战斗 | Build #354 已自动验证已有有限自卫会话授权的单次 `MELEE_ATTACK` 窄 bridge；目标选择、移动、装备、重试、连击、泛化 Technique 路由和其余 P5C 能力仍未实现 |
+| P5A | 技能 FSM、首条生存闭环、最小原版世界容器驱动 | Build #362 已自动验证受限资源—制作—存放 DAG、保存围栏和两阶段重启；跨 menu 通用事务、工具/副手与独立专用服仍未完成或未验证 |
+| P5B | 广泛原版容器/工作站、制作、生产和日常生活 | Build #362 已自动验证严格白名单容器、工作站边界、Bot 私有末影箱、受限 wheat/甘蔗收获、牛繁殖、单笔村民交易和牛奶解毒纵切；末影箱只承诺账本隔离与守恒取消，不承诺逐槽回滚或同方块跨 Bot 并行。这不等于通用容器、任意配方/作物/交易或自动药物策略，真实客户端与专用服仍待验证 |
+| P5C | 运输、游戏进程和高级战斗 | Build #362 已自动验证已有有限自卫会话授权的单次 `MELEE_ATTACK` 窄 bridge；目标选择、移动、装备、重试、连击、泛化 Technique 路由和其余 P5C 能力仍未实现 |
 | P5D | 建筑与红石 | 未实现 |
-| P6 | DeepSeek、聊天、Tool Firewall、预算 | 部分编码：Provider/故障边界、codec/firewall、上下文、session 修复与 R1 固定只读审阅往返已由 Build #354 自动验证；R1 绝不执行世界动作。ADR-0022 的 server-thread 通用 binding 账本已编码，但 Lifecycle、Network、Client 与 Scheduler 均未接线；通用 client-sponsored bridge、聊天/模型策略与 AI→技能计划/世界执行仍未实现，真实客户端/Provider E2E 仍待验证 |
+| P6 | DeepSeek、聊天、Tool Firewall、预算 | 部分编码：Provider/故障边界、codec/firewall、上下文、session 修复与 R1 固定只读审阅往返已由 Build #362 自动验证；R1 绝不执行世界动作。ADR-0022 的 server-thread 通用 binding 账本已编码，但 Lifecycle、Network、Client 与 Scheduler 均未接线；通用 client-sponsored bridge、聊天/模型策略与 AI→技能计划/世界执行仍未实现，真实客户端/Provider E2E 仍待验证 |
 | P7 | 长期记忆、目标、承诺和恢复 | 未实现 |
 | P8 | 模组 C0–C3、标准容器与自定义 menu 适配 | 未实现 |
 | P9 | 多 bot 协作 | 未实现 |
@@ -363,7 +364,7 @@ screen、独立专用服和长时间 soak 是明确保留的专项验证，不�
 4. 完成 P5/P6 的真实客户端、独立专用服与多 Bot soak 专项验证；
 5. 不把 P4 通用避险宣传成完整吃饭、用药或战斗能力；主动药物仍固定在 P5B；
 6. 不把 P3 方块观察宣传成容器内容读取；
-7. 不把客户端凭据或默认关闭的 R1 固定审阅往返宣传成通用 DeepSeek、聊天、规划或 AI 世界执行；Build #354 已完成 Java 21 自动基线，P6 通用 bridge 与真实客户端/Provider 验证仍待完成。
+7. 不把客户端凭据或默认关闭的 R1 固定审阅往返宣传成通用 DeepSeek、聊天、规划或 AI 世界执行；Build #362 已完成 Java 21 自动基线，P6 通用 bridge 与真实客户端/Provider 验证仍待完成。
 
 ## 验证命令
 

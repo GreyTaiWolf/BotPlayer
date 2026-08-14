@@ -5,19 +5,21 @@
 BotPlayer 是面向 Minecraft Java 的真实服务端玩家 AI 框架。项目首先支持
 Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 
-> **当前状态：P2、P3 与 P4 自动化退出门已通过；PR #11 的受限 P5 纵切与 P6-R1 已通过
-> 自动验证；仍不是正式版本，P5/P6 总退出门均未关闭。**
+> **当前状态：P2、P3 与 P4 自动化退出门已通过；当前连续集成分支上的受限 P5 纵切与
+> P6-R1 已通过自动验证；仍不是正式版本，P5/P6 总退出门均未关闭。**
 >
 > 当前代码已建立真实 `BotServerPlayer`、generation 隔离、确定性动作运行时、短程输入、
 > 基础世界交互和 bot 自身背包 GUI。P3 提供有限感知和短期世界事实；P4 提供有界导航与 L0
 > 安全反射。当前 P5/P6 候选为
-> [Draft PR #11](https://github.com/GreyTaiWolf/BotPlayer/pull/11)；
-> [Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) 已通过 Java 21
-> `clean build`、Gradle `test`、156 项常规 NeoForge GameTest 与 phase-one/phase-two
+> [`agent/p5-p6-next`](https://github.com/GreyTaiWolf/BotPlayer/tree/agent/p5-p6-next)；
+> [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) 已通过 Java 21
+> `clean build`、Gradle `test`、161 项常规 NeoForge GameTest 与 phase-one/phase-two
 > 重启 GameTest（各 1 项）。这不替代真实客户端、独立专用服或多 bot soak 验收。
 >
-> 当前候选自动覆盖受限 P5 资源—制作—存放、白名单容器/工作站、作物/交易/牛奶、有限自卫、
-> 保存围栏和两阶段重启路径；仍不代表通用容器、任意配方/作物/交易、广泛战斗或完整生存能力。
+> 当前候选自动覆盖受限 P5 资源—制作—存放、白名单容器/工作站（含 Bot 私有末影箱）、
+> 作物/交易/牛奶、有限自卫、保存围栏和两阶段重启路径；仍不代表通用容器、任意配方/作物/
+> 交易、广泛战斗或完整生存能力。末影箱只使用 Bot 自己的私有账本，不读取方块实体物品；
+> 同一物理方块跨 Bot 目前保守串行。
 > P6-R1 是默认关闭的固定本地只读审阅往返，只有真实 owner 本地 `reviewOnly.enabled=true`
 > 时才会尝试发起固定 Provider HTTPS；回传只形成安全摘要并丢弃，绝不进入 Skill、Action 或
 > 世界动作。通用 DeepSeek/chat、通用 client-sponsored bridge 与 AI→世界执行尚未实现；R1
@@ -75,7 +77,7 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - `/botplayer settings <name>` 打开客户端本地 API Key 设置界面；
 - 客户端可创建/替换凭据 profile、绑定/解绑 bot；每 bot 使用独立 agentId，profile 删除
   尚未实现；
-- P6-R1 owner 手动只读审阅往返已通过 Build #354 的 Java 21 自动验证：物理客户端只在本地
+- P6-R1 owner 手动只读审阅往返已通过 Build #362 的 Java 21 自动验证：物理客户端只在本地
   `reviewOnly.enabled=true` 后构造固定 `deepseek-chat` review Provider；默认关闭，回传仅为
   零参数确认和安全数字摘要，绝不执行 Action、Skill 或世界变更；真实客户端/Provider E2E
   仍待验证；
@@ -152,7 +154,7 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - 背包 screen 的多语言、资源包与 GUI Scale 组合专项验收、独立专用服和多 bot 长时间 soak；
 - 跨未加载区块/维度的长期路线、船/矿车/坐骑/鞘翅、复杂水流、脚手架和藤蔓；
 - 自动寻找/生产食物与完整补给闭环；主动进食、受限生产链、盔甲专用路径和通用
-  `InventoryMenu SWAP_SEQUENCE` 已由 Build #354 自动验证；主动用药/解毒、正式反击/
+  `InventoryMenu SWAP_SEQUENCE` 已由 Build #362 自动验证；主动用药/解毒、正式反击/
   持盾、工具/副手仍未实现；
 - 除受限 P5B 白名单切片外的通用世界容器、工作站与制作/熔炼流程；
 - 独立专用服与多 bot 性能验证；
@@ -319,7 +321,7 @@ GUI 以完整原版玩家背包风格在上方展示 bot 的 41 格真实库存�
 ## AI 与安全边界
 
 通用 DeepSeek、聊天和规划尚未接入。P6-R1 是已通过
-[Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) Java 21 自动
+[Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) Java 21 自动
 验证、默认关闭的本地只读审阅往返：客户端必须显式启用自己的 `reviewOnly.enabled`，才能对
 固定 `deepseek-chat` 尝试发起受限请求；它只接受零参数审阅确认和安全摘要，绝不执行世界
 动作。真实客户端/Provider E2E 仍待验证。保存或绑定 API Key 本身不会启用它，也不会让 bot
@@ -361,8 +363,8 @@ P0 工程基线
 → P10 硬化与发布
 ```
 
-P2、P3 与 P4 自动化退出门均已关闭。当前 P5/P6 候选已由 Build #354 完成 Java 21
-`clean build`、Gradle `test`、156 项常规 GameTest 与 phase-one/phase-two 重启验证。
+P2、P3 与 P4 自动化退出门均已关闭。当前 P5/P6 候选已由 Build #362 完成 Java 21
+`clean build`、Gradle `test`、161 项常规 GameTest 与 phase-one/phase-two 重启验证。
 P5 仍缺跨 menu 通用事务、任意配方/作物/交易、工具/副手、广泛战斗、独立专用服和多 bot
 soak；P6 仍缺通用 client-sponsored bridge、聊天、模型策略和 AI→世界执行。模组自定义 menu
 和专用语义属于 P8。

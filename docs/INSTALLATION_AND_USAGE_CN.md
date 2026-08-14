@@ -9,9 +9,9 @@
 > Java：`21`
 
 当前没有正式 Release。P5/P6 集成候选
-[Draft PR #11](https://github.com/GreyTaiWolf/BotPlayer/pull/11) 的
-[Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) 已通过 Java 21
-`clean build`、Gradle `test`、156 项常规 GameTest 与两阶段重启 GameTest（各 1 项）。
+[`agent/p5-p6-next`](https://github.com/GreyTaiWolf/BotPlayer/tree/agent/p5-p6-next) 的
+[Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) 已通过 Java 21
+`clean build`、Gradle `test`、161 项常规 GameTest 与两阶段重启 GameTest（各 1 项）。
 真实客户端、独立专用服和多 bot soak 仍未验证；本文用于开发测试，不建议在重要世界中安装。
 
 ## 当前安装拓扑
@@ -135,7 +135,7 @@ name [spawning|active|dead|respawning|despawning]
 profile 不会自动删除。
 P5 的异常隔离 teardown 另有 `PlayerListMixin` 一次性 no-save 包装，只在布局无法安全
 落盘的隔离路径抑制那一次 `PlayerList.remove` 内部保存；正常 `/botplayer remove` 和
-真人玩家不走该门闩。该异常路径已由 Build #354 自动基线覆盖；真实客户端/专用服保存时序
+真人玩家不走该门闩。该异常路径已由 Build #362 自动基线覆盖；真实客户端/专用服保存时序
 仍待验证。
 
 ### 配置客户端凭据
@@ -186,7 +186,7 @@ P5 的异常隔离 teardown 另有 `PlayerListMixin` 一次性 no-save 包装，
 已完成快照。服务端只向该 owner 客户端发送固定只读快照；只有该客户端本地
 `reviewOnly.enabled=true`、binding 指向的 `deepseek` profile 含可读 Key 时，才会启动固定
 Provider。它不接受 prompt 或动作请求，回传只形成
-安全数字摘要后丢弃，绝不执行世界动作；[Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111)
+安全数字摘要后丢弃，绝不执行世界动作；[Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094)
 已完成自动验证，真实客户端/Provider E2E 仍待验证。
 
 ### 检查 P3 感知
@@ -294,9 +294,10 @@ Build #137 运行验证。主动用药、工具/副手选择、持盾和反击�
 视觉修复有效；目前仍不要据此宣称多语言、所有 GUI Scale 或资源包组合已经验证通过。
 
 这不是查看者可操作的通用世界容器功能。P5B 已在内部技能运行时自动验证严格白名单的普通单箱/
-双箱、木桶和原版潜影盒真实菜单事务，以及受限工作站纵切；没有普通命令或 GUI 入口，通用
-工作站和模组自定义 menu 仍未实现，真实客户端/专用服仍待验证。客户端 screen 和 GameTest 的
-历史验证状态见
+双箱、木桶、原版潜影盒和 Bot 私有末影箱真实菜单事务，以及受限工作站纵切；末影箱账本只来自
+当前 Bot 打开的原版 `ChestMenu`，不是方块实体物品，同一物理方块跨 Bot 仍保守串行。没有普通
+命令或 GUI 入口，通用工作站和模组自定义 menu 仍未实现，真实客户端/专用服仍待验证。客户端
+screen 和 GameTest 的历史验证状态见
 [P2 完成报告](P2_COMPLETION_REPORT_CN.md)。
 
 ## 当前能观察到的行为
@@ -317,7 +318,7 @@ Build #137 运行验证。主动用药、工具/副手选择、持盾和反击�
 - 原版护甲、伤害、饥饿和状态效果，以及标准动态 `DamageType`/玩家 Tick 扩展，都会
   作用在真实 `BotServerPlayer` 身体上；
 - P5 有界 Skill 底座、受限生产链、独立基础盔甲路径和通用 `InventoryMenu SWAP_SEQUENCE`
-  已由 PR #11 的 Build #354 通过 Java 21 `clean build`、Gradle `test`、156 项常规
+  已由当前分支的 Build #362 通过 Java 21 `clean build`、Gradle `test`、161 项常规
   GameTest 与两阶段重启 GameTest；
 - owner 客户端可以在本地 GUI 创建/替换 credential profile，并为自己的多个 bot
   绑定/解绑；每个 bot 使用独立 agentId。
@@ -328,7 +329,7 @@ Build #137 运行验证。主动用药、工具/副手选择、持盾和反击�
 完整矩阵和多 Bot soak 尚无保证。请不要据此假定保护模组、所有维度或大型模组包已经兼容。
 
 Build #137 的 batch 预算记录是早期基线；Build #133/#135 暴露的超配已通过拆批修复，没有提高
-`server_player.maxBots`。Build #354 已验证两阶段服务器重启；独立专用服或多 Bot soak 仍待。
+`server_player.maxBots`。Build #362 已验证两阶段服务器重启；独立专用服或多 Bot soak 仍待。
 
 ## 当前不能做
 
@@ -341,7 +342,8 @@ Build #137 的 batch 预算记录是早期基线；Build #133/#135 暴露的超�
 - 执行泛化的砍树、采矿、制作、熔炼、完整战斗策略或建造技能；当前只有固定、有限的
   P5 生产 DAG，不能把它当作自主生存能力；
 - 通过普通命令、GUI 或 AI 操作任意箱子、工作站或模组自定义 menu；P5B 只覆盖内部严格
-  白名单的容器/工作站纵切，真实客户端与专用服仍未验收；
+  白名单的容器/工作站纵切（含 Bot 私有末影箱），末影箱没有逐槽取消回滚或同方块跨 Bot 并行
+  承诺，真实客户端与专用服仍未验收；
 - 把 `InventoryMenu` 序列扩展为跨 menu 统一事务；当前还没有 `clicked()` 故障注入、
   通用生命周期 continuation 或通用 TaskSensor/Reservation/Checkpoint/生产计划；
 - 聊天、通用 DeepSeek 或通用模型 HTTP 请求；P6-R1 的固定本地 opt-in 只读 HTTPS 审阅是
@@ -400,7 +402,7 @@ P2 提供可信身体，P3 提供有限运行时认知，P4 提供确定性导�
 
 保存或绑定 Key 不会自动开启任何模型请求。当前只有默认关闭的 P6-R1 owner 手动只读审阅
 往返可在本地明确同意后构造固定 Provider；它不提供通用聊天、规划、技能执行或世界动作，且
-[Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) 已完成 Java 21
+[Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) 已完成 Java 21
 自动验证，真实客户端/Provider E2E 仍未完成。其余 P6 Provider、codec/firewall、上下文和
 故障边界只是基础设施，不等于通用 bridge；凭据基础不代表 P6 完成，也不能验证通用 Key 能力。
 原始 Key 不能通过 `/botplayer` 命令或聊天输入。

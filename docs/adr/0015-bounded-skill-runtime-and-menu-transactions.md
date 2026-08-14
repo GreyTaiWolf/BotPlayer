@@ -6,9 +6,10 @@
 - 关联：ADR-0006、ADR-0013、ADR-0014
 
 > 当前实现说明：受限 P5 纵切（有界 Skill/DAG、TaskSensor/Reservation、Checkpoint、
-> 资源—制作—存放、白名单容器/工作站、作物/交易/牛奶、有限自卫、保存围栏）已由
-> [Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) 完成 Java 21
-> 自动基线、156 项常规 GameTest 和 phase-one/phase-two 重启验证。通用
+> 资源—制作—存放、白名单容器/工作站（含 Bot 私有末影箱）、作物/交易/牛奶、有限自卫、
+> 保存围栏）已由
+> [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) 完成 Java 21
+> 自动基线、161 项常规 GameTest 和 phase-one/phase-two 重启验证。通用
 > `InventoryMenu SWAP_SEQUENCE` 仍只覆盖 `InventoryMenu` 内的受限序列，generic
 > equipment/offhand 仍 `UNSUPPORTED`。这不表示本 ADR 冻结的跨 menu 通用事务或 P5 总
 > 退出门已经完成；`clicked()` 故障注入、通用 lifecycle continuation、工具/副手、任意
@@ -120,6 +121,13 @@ ACKNOWLEDGING → VERIFYING → CLOSING → TERMINAL
 P5A 必需白名单为 `InventoryMenu`、`CraftingMenu`、`FurnaceMenu` 和一个 3×9 单箱
 `ChestMenu`。双箱/其他行数及其他广泛原版 menu 在 P5B，自定义 menu 在 P8。未知 menu
 默认返回 `MENU_UNSUPPORTED`。
+
+P5B 的受限末影箱切片仍使用这套事务内核，但账本只能是当前 Bot 自己打开的精确 3×9
+`ChestMenu`：方块实体仅用于确认原版 opener 类型，绝不读取或写入其物品/NBT。首次打开后，
+每次点击前后及关闭前都重验同一个原生 menu 实例和 `getEnderChestInventory()` 的对象身份；
+重入替换、stateId/布局漂移或不再能证明私有账本时，点击前失败关闭。取消走原版关闭路径，
+只承诺空 cursor 与该 Bot 的 player+末影账本总量守恒，不承诺逐槽回滚；同一物理末影箱仍由
+坐标租约保守串行，不能宣称跨 Bot 并行。
 
 外部变化使 stateId、槽位或 revision 不匹配时，事务停止并重新快照或失败；不能把新状态
 套入旧点击计划。取消必须通过原版路径安全处理 carried stack；无法解释的物品差额以

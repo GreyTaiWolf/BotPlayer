@@ -7,9 +7,10 @@
 > 适用游戏：Minecraft Java 1.21.1
 
 > 当前 P5/P6 验收状态以
-> [IMPLEMENTATION_STATUS_CN.md](IMPLEMENTATION_STATUS_CN.md) 为准：PR #11 的
-> [Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) 已通过 Java 21
-> 自动基线、156 项常规 GameTest 与 P5 两阶段重启验证。下文的 P5A-0/Build #137 说明是
+> [IMPLEMENTATION_STATUS_CN.md](IMPLEMENTATION_STATUS_CN.md) 为准：
+> [`agent/p5-p6-next`](https://github.com/GreyTaiWolf/BotPlayer/tree/agent/p5-p6-next) 的
+> [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) 已通过 Java 21
+> 自动基线、161 项常规 GameTest 与 P5 两阶段重启验证。下文的 P5A-0/Build #137 说明是
 > v1 历史基线，不能视为当前候选仍未接线的断言；各能力成熟度仍不因该自动基线而升级到
 > `VERIFIED`，真实客户端、专用服和 soak 证据仍待补齐。
 
@@ -186,8 +187,8 @@ P5A-0 状态说明：
 | ACT-06 | 打开、点击和关闭容器 | P2 | NONE | stateId、槽位和 carried stack 正确 |
 | ACT-07 | Shift 移动与整理 | P2 | NONE | 区间、堆叠和拒绝规则正确 |
 | ACT-08 | 空手右键查看 bot 背包 | P2 | NONE | 41 格真实库存、单 viewer 写锁、无复制 |
-| ACT-09 | 3×9 单箱存取；扩展到双箱/木桶/潜影盒 | P2 → P5B | BASIC 候选 | 单箱、6×9 双箱、木桶和原版潜影盒的真实 3×9/6×9 原版 menu 全量/指定数量转移已由 Build #354 自动覆盖；严格快照、关闭/空 cursor、守恒、白名单矩阵与真实客户端/专用服仍需逐项验收 |
-| ACT-10 | 末影箱 | P5B → P10 | NONE | 使用 bot 自己的原版末影库存 |
+| ACT-09 | 3×9 单箱存取；扩展到双箱/木桶/潜影盒 | P2 → P5B | BASIC 候选 | 单箱、6×9 双箱、木桶和原版潜影盒的真实 3×9/6×9 原版 menu 全量/指定数量转移已由 Build #362 自动覆盖；严格快照、关闭/空 cursor、守恒、白名单矩阵与真实客户端/专用服仍需逐项验收 |
+| ACT-10 | 末影箱 | P5B → P10 | BASIC 候选 | Build #362 自动覆盖 Bot 私有 27 槽账本的指定数量取出、全量存入、同一物理方块上的顺序双 Bot 隔离及 carried 取消后的守恒；每次点击/关闭均要求精确原版状态、同一 `ChestMenu` 与私有账本身份。不读取方块实体物品，不承诺逐槽取消回滚或同方块跨 Bot 并行；真实客户端、专用服与 soak 仍待验证 |
 | ACT-11 | 漏斗等自动物流协作 | P5B → P10 | NONE | 容器变化可观察、锁和计划可恢复 |
 | ACT-12 | 水桶取放水/熔岩/细雪 | P2 → P5B | NONE | 液体状态、容器物品和权限事件正确 |
 | ACT-13 | 打火石、火焰弹与点燃 | P2 → P5B | NONE | 风险确认、耐久、方块和事件正确 |
