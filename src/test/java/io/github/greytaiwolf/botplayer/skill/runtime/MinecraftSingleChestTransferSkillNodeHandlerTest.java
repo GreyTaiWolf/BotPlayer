@@ -177,6 +177,9 @@ class MinecraftSingleChestTransferSkillNodeHandlerTest {
                         request, barrelAt(12, 64, -8)).family());
         Assertions.assertEquals(MenuFamily.CHEST_3X9,
                 MinecraftSingleChestTransferSkillNodeHandler.transferAction(
+                        request, enderChestAt(12, 64, -8)).family());
+        Assertions.assertEquals(MenuFamily.CHEST_3X9,
+                MinecraftSingleChestTransferSkillNodeHandler.transferAction(
                         request, shulkerAt(12, 64, -8)).family());
         Assertions.assertThrows(IllegalArgumentException.class,
                 () -> MinecraftSingleChestTransferSkillNodeHandler
@@ -197,6 +200,14 @@ class MinecraftSingleChestTransferSkillNodeHandlerTest {
                                 new BlockStateFingerprint(
                                         new ResourceId("example:container"),
                                         Map.of()))));
+        Assertions.assertThrows(IllegalArgumentException.class,
+                () -> MinecraftSingleChestTransferSkillNodeHandler
+                        .transferAction(request, new BlockTargetFingerprint(
+                                new ResourceId("minecraft:overworld"),
+                                request.target(),
+                                new BlockStateFingerprint(
+                                        new ResourceId("minecraft:ender_chest"),
+                                        Map.of("facing", "north")))));
     }
 
     @Test
@@ -341,6 +352,17 @@ class MinecraftSingleChestTransferSkillNodeHandlerTest {
                 new BlockStateFingerprint(
                         new ResourceId("minecraft:barrel"),
                         Map.of("facing", "north", "open", "false")));
+    }
+
+    private static BlockTargetFingerprint enderChestAt(int x, int y, int z) {
+        return new BlockTargetFingerprint(
+                new ResourceId("minecraft:overworld"),
+                new BlockCoordinates(x, y, z),
+                new BlockStateFingerprint(
+                        new ResourceId("minecraft:ender_chest"),
+                        Map.of(
+                                "facing", "north",
+                                "waterlogged", "false")));
     }
 
     private static BlockTargetFingerprint shulkerAt(int x, int y, int z) {

@@ -36,6 +36,7 @@ import net.minecraft.world.level.block.ChestBlock;
 import net.minecraft.world.level.block.ShulkerBoxBlock;
 import net.minecraft.world.level.block.entity.BarrelBlockEntity;
 import net.minecraft.world.level.block.entity.ChestBlockEntity;
+import net.minecraft.world.level.block.entity.EnderChestBlockEntity;
 import net.minecraft.world.level.block.entity.ShulkerBoxBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.ChestType;
@@ -43,8 +44,10 @@ import net.minecraft.world.level.block.state.properties.ChestType;
 /**
  * 将一份已经审核的“原版白名单容器指定数量 transfer”节点接到真实菜单动作。
  *
- * <p>它只接受普通单箱、双箱、木桶和原版潜影盒；开始和完成时都要求 Bot 回到原生
- * {@code InventoryMenu}、cursor 与主手为空。容器内容不会在打开前读取；
+ * <p>它只接受普通单箱、双箱、木桶、原版潜影盒和末影箱；开始和完成时都要求 Bot 回到原生
+ * {@code InventoryMenu}、cursor 与主手为空。容器内容不会在打开前读取；末影箱只确认其原版
+ * 方块实体和精确状态，绝不读取方块实体内容。其私有玩家账本必须等原版右键打开后由 action
+ * adapter 绑定到当前 Bot 的 {@code PlayerEnderChestContainer}。
  * {@link WorldInteractionActionSpec.WorldMenuTransfer} 只会在原版右键成功打开精确 3×9 或
  * 6×9 menu（{@code ChestMenu} 或 {@code ShulkerBoxMenu}）后，从当时的完整快照构造全量或
  * 逐右键的精确数量 {@code PICKUP}
@@ -90,6 +93,8 @@ public final class MinecraftSingleChestTransferSkillNodeHandler
             "facing", "type", "waterlogged");
     private static final Set<String> BARREL_PROPERTY_NAMES = Set.of(
             "facing", "open");
+    private static final Set<String> ENDER_CHEST_PROPERTY_NAMES = Set.of(
+            "facing", "waterlogged");
     private static final Set<String> SHULKER_PROPERTY_NAMES = Set.of("facing");
     private static final Set<String> VANILLA_SHULKER_IDS = Set.of(
             "minecraft:shulker_box",
@@ -432,6 +437,9 @@ public final class MinecraftSingleChestTransferSkillNodeHandler
             if (state.is(Blocks.BARREL)) {
                 return inspectBarrel(player, position);
             }
+            if (state.is(Blocks.ENDER_CHEST)) {
+                return inspectEnderChest(player, position);
+            }
             if (state.getBlock() instanceof ShulkerBoxBlock) {
                 return inspectShulkerBox(player, position);
             }
@@ -558,11 +566,33 @@ public final class MinecraftSingleChestTransferSkillNodeHandler
                 : Optional.empty();
     }
 
+    /**
+     * 末影箱方块实体不保存可转移物品：真实 27 格账本属于当前玩家。这里仅验证原版 opener
+     * 存在及精确状态；绝不读取 block entity 的 NBT、槽位或“共享”库存。
+     */
+    private static Optional<ContainerTarget> inspectEnderChest(
+            BotServerPlayer player, BlockPos position) {
+        if (!(player.serverLevel().getBlockEntity(position)
+                instanceof EnderChestBlockEntity)) {
+            return Optional.empty();
+        }
+        BlockTargetFingerprint snapshot = MinecraftActionSnapshot.block(
+                player, position);
+        return isEnderChestSnapshot(snapshot)
+                ? Optional.of(new ContainerTarget(
+                        ContainerKind.ENDER_CHEST,
+                        MenuFamily.CHEST_3X9,
+                        snapshot,
+                        Optional.empty()))
+                : Optional.empty();
+    }
+
     private static boolean isFamilyCompatibleSnapshot(
             BlockTargetFingerprint target, MenuFamily family) {
         return switch (family) {
             case CHEST_3X9 -> isSingleChestSnapshot(target)
                     || isBarrelSnapshot(target)
+                    || isEnderChestSnapshot(target)
                     || isVanillaShulkerSnapshot(target);
             case CHEST_6X9 -> isDoubleChestSnapshot(target);
             default -> false;
@@ -666,6 +696,16 @@ public final class MinecraftSingleChestTransferSkillNodeHandler
                 && properties.keySet().equals(BARREL_PROPERTY_NAMES)
                 && VANILLA_DIRECTION_NAMES.contains(properties.get("facing"))
                 && BOOLEAN_PROPERTY_VALUES.contains(properties.get("open"));
+    }
+
+    private static boolean isEnderChestSnapshot(
+            BlockTargetFingerprint target) {
+        Map<String, String> properties = target.state().properties();
+        return target.state().blockId().value().equals("minecraft:ender_chest")
+                && properties.keySet().equals(ENDER_CHEST_PROPERTY_NAMES)
+                && HORIZONTAL_DIRECTION_NAMES.contains(properties.get("facing"))
+                && BOOLEAN_PROPERTY_VALUES.contains(
+                        properties.get("waterlogged"));
     }
 
     private static boolean isVanillaShulkerSnapshot(
@@ -843,6 +883,7 @@ public final class MinecraftSingleChestTransferSkillNodeHandler
         SINGLE_CHEST,
         DOUBLE_CHEST,
         BARREL,
+        ENDER_CHEST,
         SHULKER_BOX
     }
 

@@ -76,6 +76,7 @@ import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
 import net.minecraft.network.protocol.game.ServerboundUseItemOnPacket;
 import net.minecraft.network.protocol.game.ServerboundUseItemPacket;
+import net.minecraft.world.Container;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
@@ -107,6 +108,7 @@ import net.minecraft.world.item.crafting.SingleRecipeInput;
 import net.minecraft.world.item.trading.MerchantOffer;
 import net.minecraft.world.item.enchantment.EnchantmentEffectComponents;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
+import net.minecraft.world.level.block.entity.EnderChestBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
@@ -130,6 +132,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             "facing", "type", "waterlogged");
     private static final Set<String> BARREL_PROPERTY_NAMES = Set.of(
             "facing", "open");
+    private static final Set<String> ENDER_CHEST_PROPERTY_NAMES = Set.of(
+            "facing", "waterlogged");
     private static final Set<String> SHULKER_PROPERTY_NAMES = Set.of("facing");
     private static final Set<String> VANILLA_SHULKER_IDS = Set.of(
             "minecraft:shulker_box",
@@ -1700,6 +1704,15 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     ActionFailureCode.PRECONDITION_FAILED,
                     "World menu transfer target is outside the P5B vanilla container whitelist");
         }
+        if (isEnderChestTarget(
+                        menu.opener().target().state().blockId().value(),
+                        menu.opener().target().state().properties())
+                && !isExactEnderChestBlockEntity(player, menu.opener().target())) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Ender chest transfer target has no exact vanilla block entity");
+        }
         return validateBlockInteraction(
                 envelope,
                 player,
@@ -2816,8 +2829,23 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         MinecraftInteractionView.hand(menu.hand()),
                         MinecraftInteractionView.hit(menu.opener()),
                         nextSequence()));
-        MenuSnapshot opened = snapshotMenu(player, menu.family())
+        Optional<Container> expectedEnderChestInventory =
+                expectedEnderChestInventory(player, menu);
+        MenuSnapshot opened = snapshotMenu(
+                player,
+                menu.family(),
+                Optional.empty(),
+                expectedEnderChestInventory,
+                Optional.empty())
                 .orElseThrow(MenuPreconditionChangedException::new);
+        if (expectedEnderChestInventory.isPresent()) {
+            /*
+             * The item ledger of an ender chest is private to the player, not the block entity.
+             * Bind the exact native menu instance immediately after the original interaction so a
+             * re-entrant menu replacement cannot continue through a same-shape ChestMenu.
+             */
+            state.worldMenuBoundNativeMenu = player.containerMenu;
+        }
         MenuTransactionTemplate template = (menu.requestedAmount() == 0
                 ? MenuTransactionTemplateBuilder.moveOrSwap(
                         opened, menu.sourceSlot(), menu.targetSlot())
@@ -3060,7 +3088,13 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             MenuFamily family,
             long currentTick) {
         return tickWorldMenuTransaction(
-                envelope, player, state, family, Optional.empty(), currentTick);
+                envelope,
+                player,
+                state,
+                family,
+                Optional.empty(),
+                expectedEnderChestInventory(player, state.spec),
+                currentTick);
     }
 
     private BackendResult tickWorldMenuTransaction(
@@ -3069,6 +3103,24 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             InteractionState state,
             MenuFamily family,
             Optional<FurnaceKind> expectedFurnaceKind,
+            long currentTick) {
+        return tickWorldMenuTransaction(
+                envelope,
+                player,
+                state,
+                family,
+                expectedFurnaceKind,
+                expectedEnderChestInventory(player, state.spec),
+                currentTick);
+    }
+
+    private BackendResult tickWorldMenuTransaction(
+            ActionEnvelope envelope,
+            BotServerPlayer player,
+            InteractionState state,
+            MenuFamily family,
+            Optional<FurnaceKind> expectedFurnaceKind,
+            Optional<Container> expectedEnderChestInventory,
             long currentTick) {
         if (!lifecycleManager.mayActionMutateInventory(
                 envelope.botId(), envelope.botGeneration())
@@ -3085,6 +3137,13 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     ActionFailureCode.INTERNAL_ERROR,
                     "World menu transaction state is missing");
         }
+        if (expectedEnderChestInventory.isPresent()
+                && state.worldMenuBoundNativeMenu == null) {
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Ender chest menu transaction has no private native-menu binding");
+        }
         try {
             return switch (transaction.state()) {
                 case APPLYING -> tickWorldMenuClick(
@@ -3093,12 +3152,14 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         state,
                         family,
                         expectedFurnaceKind,
+                        expectedEnderChestInventory,
                         currentTick);
                 case VERIFYING -> closeVerifiedWorldMenu(
                         envelope,
                         player,
                         state,
                         expectedFurnaceKind,
+                        expectedEnderChestInventory,
                         currentTick);
                 case COMPLETED -> BackendResult.readyToVerify(envelope);
                 case OPENING,
@@ -3286,6 +3347,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         state,
                         MenuFamily.FURNACE,
                         Optional.of(session.furnaceExpectation.furnaceKind()),
+                        Optional.empty(),
                         currentTick);
                 // 最后一颗燃料一经原版接受，下一世界 tick 即可被炉子消耗。必须在同一
                 // server tick 复核并关闭投入窗口，不能把一个已经确认的精确布局暴露给
@@ -3440,11 +3502,16 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             InteractionState state,
             MenuFamily family,
             Optional<FurnaceKind> expectedFurnaceKind,
+            Optional<Container> expectedEnderChestInventory,
             long currentTick) {
         MenuTransaction transaction = Objects.requireNonNull(
                 state.worldMenuTransaction, "worldMenuTransaction");
         MenuSnapshot before = snapshotMenu(
-                player, family, expectedFurnaceKind).orElse(null);
+                player,
+                family,
+                expectedFurnaceKind,
+                expectedEnderChestInventory,
+                Optional.ofNullable(state.worldMenuBoundNativeMenu)).orElse(null);
         Optional<MenuClick> click = transaction.issueNextClick(
                 currentTick, before);
         if (transaction.state() == MenuTransactionState.FAILED) {
@@ -3465,6 +3532,30 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     ActionFailureCode.PERMISSION_DENIED,
                     "Vanilla menu slot permission changed before click");
         }
+        if (expectedEnderChestInventory.isPresent()) {
+            /*
+             * menuClickAllowed() invokes vanilla slot hooks. Re-read the complete bound menu
+             * after those potentially re-entrant hooks, then do one final field-only identity
+             * check immediately before the first world-affecting click.
+             */
+            MenuSnapshot postPermission = snapshotMenu(
+                    player,
+                    family,
+                    expectedFurnaceKind,
+                    expectedEnderChestInventory,
+                    Optional.ofNullable(state.worldMenuBoundNativeMenu)).orElse(null);
+            if (!Objects.equals(before, postPermission)
+                    || !matchesBoundEnderChestMenu(
+                            player,
+                            nativeMenu,
+                            state.worldMenuBoundNativeMenu,
+                            expectedEnderChestInventory.orElseThrow())) {
+                return failure(
+                        envelope,
+                        ActionFailureCode.PRECONDITION_FAILED,
+                        "Ender chest private native-menu binding changed before click");
+            }
+        }
         nativeMenu.clicked(
                 click.orElseThrow().slot(),
                 click.orElseThrow().button(),
@@ -3472,7 +3563,11 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 player);
         nativeMenu.broadcastChanges();
         MenuSnapshot after = snapshotMenu(
-                player, family, expectedFurnaceKind).orElse(null);
+                player,
+                family,
+                expectedFurnaceKind,
+                expectedEnderChestInventory,
+                Optional.ofNullable(state.worldMenuBoundNativeMenu)).orElse(null);
         if (!transaction.acknowledge(after, currentTick)) {
             MenuTransactionFailure failure = transaction.failure()
                     .orElseThrow();
@@ -3490,13 +3585,16 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             BotServerPlayer player,
             InteractionState state,
             Optional<FurnaceKind> expectedFurnaceKind,
+            Optional<Container> expectedEnderChestInventory,
             long currentTick) {
         MenuTransaction transaction = Objects.requireNonNull(
                 state.worldMenuTransaction, "worldMenuTransaction");
         MenuSnapshot finalSnapshot = snapshotMenu(
                 player,
                 transaction.expectedFamily(),
-                expectedFurnaceKind).orElse(null);
+                expectedFurnaceKind,
+                expectedEnderChestInventory,
+                Optional.ofNullable(state.worldMenuBoundNativeMenu)).orElse(null);
         if (!transaction.verify(finalSnapshot, currentTick)) {
             return menuTransactionFailure(
                     envelope, transaction.failure().orElseThrow());
@@ -3756,7 +3854,12 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
 
     private static Optional<MenuSnapshot> snapshotMenu(
             BotServerPlayer player, MenuFamily expectedFamily) {
-        return snapshotMenu(player, expectedFamily, Optional.empty());
+        return snapshotMenu(
+                player,
+                expectedFamily,
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty());
     }
 
     /**
@@ -3769,16 +3872,23 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 player,
                 MenuFamily.FURNACE,
                 Optional.of(Objects.requireNonNull(
-                        expectedKind, "expectedKind")));
+                        expectedKind, "expectedKind")),
+                Optional.empty(),
+                Optional.empty());
     }
 
     private static Optional<MenuSnapshot> snapshotMenu(
             BotServerPlayer player,
             MenuFamily expectedFamily,
-            Optional<FurnaceKind> expectedFurnaceKind) {
+            Optional<FurnaceKind> expectedFurnaceKind,
+            Optional<Container> expectedEnderChestInventory,
+            Optional<AbstractContainerMenu> expectedNativeMenu) {
         Objects.requireNonNull(player, "player");
         Objects.requireNonNull(expectedFamily, "expectedFamily");
         Objects.requireNonNull(expectedFurnaceKind, "expectedFurnaceKind");
+        Objects.requireNonNull(
+                expectedEnderChestInventory, "expectedEnderChestInventory");
+        Objects.requireNonNull(expectedNativeMenu, "expectedNativeMenu");
         AbstractContainerMenu menu = player.containerMenu;
         MenuFamily observed = menuFamily(player, menu).orElse(null);
         FurnaceKind observedFurnaceKind = expectedFamily
@@ -3789,8 +3899,17 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 ? expectedFurnaceKind.filter(
                         expected -> expected == observedFurnaceKind).isPresent()
                 : expectedFurnaceKind.isEmpty();
+        boolean enderChestInventoryMatches = expectedEnderChestInventory
+                .map(expected -> matchesEnderChestMenu(
+                        menu, expectedFamily, expected))
+                .orElse(true);
+        boolean nativeMenuMatches = expectedNativeMenu
+                .map(expected -> menu == expected)
+                .orElse(true);
         if (observed != expectedFamily
                 || !furnaceKindMatches
+                || !enderChestInventoryMatches
+                || !nativeMenuMatches
                 || !menu.stillValid(player)
                 || menu.slots.size() != expectedFamily.slotCount()) {
             return Optional.empty();
@@ -3807,6 +3926,45 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 MinecraftInteractionView.itemFingerprint(
                         player, menu.getCarried()),
                 slots));
+    }
+
+    /**
+     * Ender chest transfer is only safe when the exact vanilla 3x9 menu exposes this Bot's own
+     * player-owned ender inventory. The block entity itself is never used as an item container.
+     */
+    private static boolean matchesEnderChestMenu(
+            AbstractContainerMenu menu,
+            MenuFamily expectedFamily,
+            Container expectedEnderChestInventory) {
+        Objects.requireNonNull(menu, "menu");
+        Objects.requireNonNull(expectedFamily, "expectedFamily");
+        Objects.requireNonNull(
+                expectedEnderChestInventory, "expectedEnderChestInventory");
+        return expectedFamily == MenuFamily.CHEST_3X9
+                && menu.getClass() == ChestMenu.class
+                && ((ChestMenu) menu).getRowCount() == 3
+                && ((ChestMenu) menu).getContainer().getContainerSize() == 27
+                && ((ChestMenu) menu).getContainer()
+                        == expectedEnderChestInventory;
+    }
+
+    /**
+     * This contains only field identity and exact vanilla menu-shape checks. It deliberately does
+     * not call stillValid() or slot hooks: the caller invokes it after the final potentially
+     * re-entrant permission check and immediately before {@code clicked()}.
+     */
+    private static boolean matchesBoundEnderChestMenu(
+            BotServerPlayer player,
+            AbstractContainerMenu nativeMenu,
+            AbstractContainerMenu boundNativeMenu,
+            Container expectedEnderChestInventory) {
+        return boundNativeMenu != null
+                && player.containerMenu == nativeMenu
+                && nativeMenu == boundNativeMenu
+                && matchesEnderChestMenu(
+                        nativeMenu,
+                        MenuFamily.CHEST_3X9,
+                        expectedEnderChestInventory);
     }
 
     private static Optional<MenuFamily> menuFamily(
@@ -3899,6 +4057,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         return switch (family) {
             case CHEST_3X9 -> isSingleChestTarget(blockId, properties)
                     || isBarrelTarget(blockId, properties)
+                    || isEnderChestTarget(blockId, properties)
                     || isVanillaShulkerTarget(blockId, properties);
             case CHEST_6X9 -> isDoubleChestTarget(blockId, properties);
             case INVENTORY_2X2, CRAFTING_3X3, FURNACE, MERCHANT -> false;
@@ -4008,6 +4167,62 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 && properties.keySet().equals(BARREL_PROPERTY_NAMES)
                 && VANILLA_DIRECTION_NAMES.contains(properties.get("facing"))
                 && BOOLEAN_PROPERTY_VALUES.contains(properties.get("open"));
+    }
+
+    private static boolean isEnderChestTarget(
+            String blockId, Map<String, String> properties) {
+        return "minecraft:ender_chest".equals(blockId)
+                && properties.keySet().equals(ENDER_CHEST_PROPERTY_NAMES)
+                && HORIZONTAL_DIRECTION_NAMES.contains(properties.get("facing"))
+                && BOOLEAN_PROPERTY_VALUES.contains(
+                        properties.get("waterlogged"));
+    }
+
+    /** This only verifies the original vanilla opener type; it never inspects ender chest data. */
+    private static boolean isExactEnderChestBlockEntity(
+            BotServerPlayer player, BlockTargetFingerprint target) {
+        try {
+            if (!target.dimension().value().equals(player.serverLevel()
+                    .dimension().location().toString())) {
+                return false;
+            }
+            BlockPos position = MinecraftInteractionView.position(
+                    target.position());
+            return player.serverLevel().isLoaded(position)
+                    && player.serverLevel().getBlockEntity(position)
+                            instanceof EnderChestBlockEntity;
+        } catch (RuntimeException exception) {
+            return false;
+        }
+    }
+
+    /**
+     * 末影箱的 27 格 menu 容器属于玩家而不属于 block entity。只有冻结的精确原版
+     * ender_chest 指纹才要求其对象恒等；其他 3×9 原版容器继续走既有无绑定快照。
+     */
+    private static Optional<Container> expectedEnderChestInventory(
+            BotServerPlayer player,
+            WorldInteractionActionSpec spec) {
+        Objects.requireNonNull(player, "player");
+        Objects.requireNonNull(spec, "spec");
+        if (!(spec instanceof WorldInteractionActionSpec.WorldMenuTransfer menu)) {
+            return Optional.empty();
+        }
+        return expectedEnderChestInventory(player, menu);
+    }
+
+    private static Optional<Container> expectedEnderChestInventory(
+            BotServerPlayer player,
+            WorldInteractionActionSpec.WorldMenuTransfer menu) {
+        Objects.requireNonNull(player, "player");
+        Objects.requireNonNull(menu, "menu");
+        BlockTargetFingerprint target = menu.opener().target();
+        return menu.family() == MenuFamily.CHEST_3X9
+                        && isEnderChestTarget(
+                                target.state().blockId().value(),
+                                target.state().properties())
+                ? Optional.of(player.getEnderChestInventory())
+                : Optional.empty();
     }
 
     private static boolean isVanillaShulkerTarget(
@@ -6547,6 +6762,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         private InventoryMenuTransaction menuTransaction;
         private MenuTransaction worldMenuTransaction;
         private MenuSnapshot worldMenuLastSnapshot;
+        /** Only an ender-chest transfer binds the exact opened native ChestMenu instance. */
+        private AbstractContainerMenu worldMenuBoundNativeMenu;
         private RecipeSession recipeSession;
         private MerchantTradeSession merchantTradeSession;
         private InventoryMenuSnapshot villagerTradeInventoryBefore;

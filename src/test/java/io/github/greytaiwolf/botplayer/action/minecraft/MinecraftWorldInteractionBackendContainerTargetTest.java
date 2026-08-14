@@ -31,13 +31,17 @@ class MinecraftWorldInteractionBackendContainerTargetTest {
                 Map.of("facing", "up", "open", "true"),
                 MenuFamily.CHEST_3X9));
         Assertions.assertTrue(allowed(
+                "minecraft:ender_chest",
+                Map.of("facing", "north", "waterlogged", "false"),
+                MenuFamily.CHEST_3X9));
+        Assertions.assertTrue(allowed(
                 "minecraft:purple_shulker_box",
                 Map.of("facing", "down"),
                 MenuFamily.CHEST_3X9));
     }
 
     @Test
-    void rejectsWrongShapeEnderAndCustomContainerTargetsBeforeOpening() {
+    void rejectsWrongShapeMalformedEnderAndCustomContainerTargetsBeforeOpening() {
         Assertions.assertFalse(allowed(
                 "minecraft:chest",
                 Map.of(
@@ -61,6 +65,28 @@ class MinecraftWorldInteractionBackendContainerTargetTest {
                 MenuFamily.CHEST_3X9));
         Assertions.assertFalse(allowed(
                 "minecraft:ender_chest", Map.of(), MenuFamily.CHEST_3X9));
+        Assertions.assertFalse(allowed(
+                "minecraft:ender_chest",
+                Map.of("facing", "north"), MenuFamily.CHEST_3X9));
+        Assertions.assertFalse(allowed(
+                "minecraft:ender_chest",
+                Map.of("facing", "up", "waterlogged", "false"),
+                MenuFamily.CHEST_3X9));
+        Assertions.assertFalse(allowed(
+                "minecraft:ender_chest",
+                Map.of(
+                        "facing", "north",
+                        "waterlogged", "false",
+                        "open", "false"),
+                MenuFamily.CHEST_3X9));
+        Assertions.assertFalse(allowed(
+                "minecraft:ender_chest",
+                Map.of("facing", "north", "waterlogged", "maybe"),
+                MenuFamily.CHEST_3X9));
+        Assertions.assertFalse(allowed(
+                "minecraft:ender_chest",
+                Map.of("facing", "north", "waterlogged", "false"),
+                MenuFamily.CHEST_6X9));
         Assertions.assertFalse(allowed(
                 "example:looks_like_a_chest",
                 Map.of(

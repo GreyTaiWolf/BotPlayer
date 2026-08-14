@@ -1,8 +1,13 @@
 package io.github.greytaiwolf.botplayer.gametest;
 
 import io.github.greytaiwolf.botplayer.BotPlayer;
+import io.github.greytaiwolf.botplayer.action.ActionCancellationReason;
+import io.github.greytaiwolf.botplayer.action.ActionEnvelope;
 import io.github.greytaiwolf.botplayer.action.ActionFailureCode;
+import io.github.greytaiwolf.botplayer.action.ActionMailbox;
+import io.github.greytaiwolf.botplayer.action.ActionOrigin;
 import io.github.greytaiwolf.botplayer.action.ActionOutcome;
+import io.github.greytaiwolf.botplayer.action.ActionPriority;
 import io.github.greytaiwolf.botplayer.action.ActionState;
 import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockHitTarget;
@@ -12,12 +17,14 @@ import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftActionSnapshot;
 import io.github.greytaiwolf.botplayer.gametest.P2GameTestSupport.TestBot;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuFamily;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionLimits;
+import java.util.UUID;
 import java.util.concurrent.CompletionStage;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.Container;
+import net.minecraft.world.inventory.ChestMenu;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -45,6 +52,7 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @PrefixGameTestTemplate(false)
 public final class P5VanillaContainerGameTests {
     private static final String BATCH = "p5_vanilla_containers";
+    private static final String ENDER_CHEST_BATCH = "p5_ender_chest";
     private static final int TIMEOUT_TICKS = 220;
     private static final BlockPos RELATIVE_CONTAINER = new BlockPos(4, 1, 5);
     private static final int STACK_SIZE = 16;
@@ -294,6 +302,312 @@ public final class P5VanillaContainerGameTests {
         }
     }
 
+    /**
+     * 末影箱没有共享 block-entity 库存：输入只写入当前 Bot 的私有玩家账本，真实右键后再
+     * 由原版 ChestMenu 完成严格数量转移。
+     */
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = ENDER_CHEST_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void enderChestWithdrawsPartialAmountFromBotPrivateInventory(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        BlockPos target = helper.absolutePos(RELATIVE_CONTAINER);
+        helper.setBlock(RELATIVE_CONTAINER, Blocks.ENDER_CHEST);
+        P5GameTestSupport.IsolatedFixture fixture =
+                P5GameTestSupport.isolatedFixture(helper,
+                        "ender_chest_partial_withdraw");
+        TestBot bot = fixture.spawn("endw");
+        P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
+        try {
+            clearBotInventory(bot);
+            Container enderInventory = clearEnderChest(bot);
+            enderInventory.setItem(0, new ItemStack(Items.OAK_LOG, STACK_SIZE));
+            enderInventory.setChanged();
+            submitAndVerify(
+                    helper,
+                    bot,
+                    cleanup,
+                    target,
+                    MenuFamily.CHEST_3X9,
+                    0,
+                    27,
+                    PARTIAL_AMOUNT,
+                    PARTIAL_AMOUNT + 2,
+                    "Ender chest partial withdrawal",
+                    () -> P2GameTestSupport.require(
+                            itemCount(enderInventory, Items.OAK_LOG)
+                                            == STACK_SIZE - PARTIAL_AMOUNT
+                                    && itemCount(bot, Items.OAK_LOG)
+                                            == PARTIAL_AMOUNT,
+                            "Ender chest partial withdrawal did not conserve the Bot private ledger"));
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = ENDER_CHEST_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void enderChestDepositsWholeStackIntoBotPrivateInventory(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        BlockPos target = helper.absolutePos(RELATIVE_CONTAINER);
+        helper.setBlock(RELATIVE_CONTAINER, Blocks.ENDER_CHEST);
+        P5GameTestSupport.IsolatedFixture fixture =
+                P5GameTestSupport.isolatedFixture(helper,
+                        "ender_chest_whole_deposit");
+        TestBot bot = fixture.spawn("endd");
+        P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
+        try {
+            Container enderInventory = clearEnderChest(bot);
+            givePlayerMainInventory(bot, STACK_SIZE);
+            submitAndVerify(
+                    helper,
+                    bot,
+                    cleanup,
+                    target,
+                    MenuFamily.CHEST_3X9,
+                    27,
+                    0,
+                    0,
+                    2,
+                    "Ender chest whole deposit",
+                    () -> P2GameTestSupport.require(
+                            itemCount(enderInventory, Items.OAK_LOG) == STACK_SIZE
+                                    && itemCount(bot, Items.OAK_LOG) == 0,
+                            "Ender chest whole deposit did not move the complete stack into the Bot private ledger"));
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    /** The same physical ender chest must never expose one Bot's private ledger to another Bot. */
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = ENDER_CHEST_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void enderChestKeepsTwoBotPrivateInventoriesIsolated(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        BlockPos target = helper.absolutePos(RELATIVE_CONTAINER);
+        helper.setBlock(RELATIVE_CONTAINER, Blocks.ENDER_CHEST);
+        P5GameTestSupport.IsolatedFixture fixture =
+                P5GameTestSupport.isolatedFixture(helper,
+                        "ender_chest_two_bot_isolation");
+        TestBot first = fixture.spawn("enda");
+        TestBot second = fixture.spawn("endb");
+        P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
+        try {
+            P2GameTestSupport.placePlayer(
+                    second.player(),
+                    helper.getLevel(),
+                    helper.absoluteVec(new Vec3(2.5D, 1.0D, 4.5D)),
+                    0.0F);
+            clearBotInventory(first);
+            clearBotInventory(second);
+            Container firstEnderInventory = clearEnderChest(first);
+            Container secondEnderInventory = clearEnderChest(second);
+            firstEnderInventory.setItem(0,
+                    new ItemStack(Items.OAK_LOG, STACK_SIZE));
+            firstEnderInventory.setChanged();
+            secondEnderInventory.setItem(0,
+                    new ItemStack(Items.DIAMOND, STACK_SIZE));
+            secondEnderInventory.setChanged();
+            CompletionStage<ActionOutcome> firstCompletion = submitContainerTransfer(
+                    first,
+                    target,
+                    MenuFamily.CHEST_3X9,
+                    0,
+                    27,
+                    PARTIAL_AMOUNT,
+                    PARTIAL_AMOUNT + 2);
+            P2GameTestSupport.awaitOutcome(
+                    helper,
+                    firstCompletion,
+                    160,
+                    cleanup,
+                    firstOutcome -> {
+                        requireSuccessfulContainerTransfer(
+                                first,
+                                firstOutcome,
+                                MenuFamily.CHEST_3X9,
+                                PARTIAL_AMOUNT + 2,
+                                "First Bot ender chest private-ledger transfer");
+                        P2GameTestSupport.require(
+                                itemCount(firstEnderInventory, Items.OAK_LOG)
+                                                == STACK_SIZE - PARTIAL_AMOUNT
+                                        && itemCount(first, Items.OAK_LOG)
+                                                == PARTIAL_AMOUNT
+                                        && itemCount(secondEnderInventory,
+                                                Items.DIAMOND) == STACK_SIZE
+                                        && itemCount(secondEnderInventory,
+                                                Items.OAK_LOG) == 0
+                                        && itemCount(second, Items.OAK_LOG) == 0,
+                                "First ender chest transfer crossed the two Bot private inventories");
+                        CompletionStage<ActionOutcome> secondCompletion = submitContainerTransfer(
+                                second,
+                                target,
+                                MenuFamily.CHEST_3X9,
+                                0,
+                                27,
+                                PARTIAL_AMOUNT,
+                                PARTIAL_AMOUNT + 2);
+                        P2GameTestSupport.awaitOutcome(
+                                helper,
+                                secondCompletion,
+                                160,
+                                cleanup,
+                                secondOutcome -> {
+                                    try {
+                                        requireSuccessfulContainerTransfer(
+                                                second,
+                                                secondOutcome,
+                                                MenuFamily.CHEST_3X9,
+                                                PARTIAL_AMOUNT + 2,
+                                                "Second Bot ender chest private-ledger transfer");
+                                        P2GameTestSupport.require(
+                                                itemCount(firstEnderInventory,
+                                                        Items.OAK_LOG)
+                                                                == STACK_SIZE
+                                                                        - PARTIAL_AMOUNT
+                                                        && itemCount(first,
+                                                                Items.OAK_LOG)
+                                                                == PARTIAL_AMOUNT
+                                                        && itemCount(firstEnderInventory,
+                                                                Items.DIAMOND) == 0
+                                                        && itemCount(first,
+                                                                Items.DIAMOND) == 0
+                                                        && itemCount(secondEnderInventory,
+                                                                Items.DIAMOND)
+                                                                == STACK_SIZE
+                                                                        - PARTIAL_AMOUNT
+                                                        && itemCount(second,
+                                                                Items.DIAMOND)
+                                                                == PARTIAL_AMOUNT
+                                                        && itemCount(secondEnderInventory,
+                                                                Items.OAK_LOG) == 0
+                                                        && itemCount(second,
+                                                                Items.OAK_LOG) == 0,
+                                                "Ender chest transfer crossed the two Bot private inventories");
+                                    } finally {
+                                        cleanup.run();
+                                    }
+                                    helper.succeed();
+                                });
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    /**
+     * Cancellation delegates carried-stack settlement to vanilla close. It therefore proves total
+     * conservation and a closed empty cursor, not a synthetic per-slot rollback.
+     */
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = ENDER_CHEST_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void enderChestCancellationClosesAndConservesPrivateLedger(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        BlockPos target = helper.absolutePos(RELATIVE_CONTAINER);
+        helper.setBlock(RELATIVE_CONTAINER, Blocks.ENDER_CHEST);
+        P5GameTestSupport.IsolatedFixture fixture =
+                P5GameTestSupport.isolatedFixture(helper,
+                        "ender_chest_cancel");
+        TestBot bot = fixture.spawn("endc");
+        P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
+        try {
+            clearBotInventory(bot);
+            Container enderInventory = clearEnderChest(bot);
+            enderInventory.setItem(0, new ItemStack(Items.OAK_LOG, STACK_SIZE));
+            enderInventory.setChanged();
+            TrackedContainerAction tracked = submitTracked(
+                    bot,
+                    new WorldInteractionAction(
+                            new WorldInteractionActionSpec.WorldMenuTransfer(
+                                    WorldInteractionActionSpec.Hand.MAIN_HAND,
+                                    blockHit(bot, target),
+                                    ItemStackFingerprint.empty(),
+                                    MenuFamily.CHEST_3X9,
+                                    0,
+                                    27,
+                                    PARTIAL_AMOUNT,
+                                    new MenuTransactionLimits(
+                                            PARTIAL_AMOUNT + 2, 200))),
+                    120,
+                    "ender-chest-cancel");
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    80,
+                    () -> bot.player().containerMenu.getClass() == ChestMenu.class
+                            && ((ChestMenu) bot.player().containerMenu)
+                                    .getRowCount() == 3
+                            && ((ChestMenu) bot.player().containerMenu)
+                                    .getContainer() == enderInventory
+                            && itemCount(bot, Items.OAK_LOG) > 0
+                            && !bot.player().containerMenu.getCarried().isEmpty(),
+                    "Ender chest transfer never reached the Bot private carried-stack menu",
+                    cleanup,
+                    () -> cancelEnderChestTransfer(
+                            helper, bot, enderInventory, tracked, cleanup));
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    private static void cancelEnderChestTransfer(
+            GameTestHelper helper,
+            TestBot bot,
+            Container enderInventory,
+            TrackedContainerAction tracked,
+            P2GameTestSupport.Cleanup cleanup) {
+        try {
+            ActionMailbox.Cancellation cancellation = bot.manager().cancelAction(
+                    bot.player().getUUID(),
+                    tracked.actionId(),
+                    ActionCancellationReason.REQUESTED);
+            P2GameTestSupport.require(
+                    cancellation.status()
+                            == ActionMailbox.CancellationStatus.ENQUEUED,
+                    "Ender chest cancellation was not enqueued: "
+                            + cancellation.status());
+            P2GameTestSupport.awaitOutcome(
+                    helper, tracked.completion(), 80, cleanup, outcome -> {
+                        try {
+                            P2GameTestSupport.require(
+                                    outcome.state() == ActionState.CANCELLED
+                                            && outcome.failureCode()
+                                                    == ActionFailureCode.CANCELLED,
+                                    "Ender chest transfer did not report cancellation: "
+                                            + outcome);
+                            requireNativeEmptyMenu(bot,
+                                    "Cancelled ender chest transfer leaked menu or cursor");
+                            P2GameTestSupport.require(
+                                    itemCount(enderInventory, Items.OAK_LOG)
+                                                    + itemCount(bot, Items.OAK_LOG)
+                                            == STACK_SIZE,
+                                    "Cancelled ender chest transfer did not conserve the Bot private ledger");
+                        } finally {
+                            cleanup.run();
+                        }
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            helper.fail(exception.getMessage() == null
+                    ? exception.toString() : exception.getMessage());
+        }
+    }
+
     private static void submitAndVerify(
             GameTestHelper helper,
             TestBot bot,
@@ -306,7 +620,40 @@ public final class P5VanillaContainerGameTests {
             int expectedClicks,
             String label,
             Runnable ledgerVerifier) {
-        CompletionStage<ActionOutcome> completion = P2GameTestSupport.submit(
+        CompletionStage<ActionOutcome> completion = submitContainerTransfer(
+                bot,
+                target,
+                family,
+                sourceSlot,
+                targetSlot,
+                amount,
+                expectedClicks);
+        P2GameTestSupport.awaitOutcome(
+                helper,
+                completion,
+                160,
+                cleanup,
+                outcome -> {
+                    try {
+                        requireSuccessfulContainerTransfer(
+                                bot, outcome, family, expectedClicks, label);
+                        ledgerVerifier.run();
+                    } finally {
+                        cleanup.run();
+                    }
+                    helper.succeed();
+                });
+    }
+
+    private static CompletionStage<ActionOutcome> submitContainerTransfer(
+            TestBot bot,
+            BlockPos target,
+            MenuFamily family,
+            int sourceSlot,
+            int targetSlot,
+            int amount,
+            int expectedClicks) {
+        return P2GameTestSupport.submit(
                 bot,
                 new WorldInteractionAction(
                         new WorldInteractionActionSpec.WorldMenuTransfer(
@@ -319,39 +666,28 @@ public final class P5VanillaContainerGameTests {
                                 amount,
                                 new MenuTransactionLimits(expectedClicks, 200))),
                 100);
-        P2GameTestSupport.awaitOutcome(
-                helper,
-                completion,
-                160,
-                cleanup,
-                outcome -> {
-                    try {
-                        P2GameTestSupport.require(
-                                outcome.state() == ActionState.SUCCEEDED
-                                        && outcome.failureCode()
-                                                == ActionFailureCode.NONE,
-                                label + " did not succeed: " + outcome);
-                        P2GameTestSupport.require(
-                                hasEvidence(outcome, "menu.family",
-                                        family.stableId())
-                                        && hasEvidence(outcome, "menu.closed",
-                                                "true")
-                                        && hasEvidence(outcome, "menu.clicks",
-                                                Integer.toString(expectedClicks)),
-                                label + " did not verify its exact native menu transaction: "
-                                        + outcome.evidence());
-                        P2GameTestSupport.require(
-                                bot.player().containerMenu
-                                        == bot.player().inventoryMenu
-                                        && bot.player().inventoryMenu
-                                                .getCarried().isEmpty(),
-                                label + " leaked an open menu or cursor");
-                        ledgerVerifier.run();
-                    } finally {
-                        cleanup.run();
-                    }
-                    helper.succeed();
-                });
+    }
+
+    private static void requireSuccessfulContainerTransfer(
+            TestBot bot,
+            ActionOutcome outcome,
+            MenuFamily family,
+            int expectedClicks,
+            String label) {
+        P2GameTestSupport.require(
+                outcome.state() == ActionState.SUCCEEDED
+                        && outcome.failureCode() == ActionFailureCode.NONE,
+                label + " did not succeed: " + outcome);
+        P2GameTestSupport.require(
+                hasEvidence(outcome, "menu.family", family.stableId())
+                        && hasEvidence(outcome, "menu.closed", "true")
+                        && hasEvidence(
+                                outcome,
+                                "menu.clicks",
+                                Integer.toString(expectedClicks)),
+                label + " did not verify its exact native menu transaction: "
+                        + outcome.evidence());
+        requireNativeEmptyMenu(bot, label + " leaked an open menu or cursor");
     }
 
     private static DoubleChestFixture doubleChest(
@@ -391,12 +727,53 @@ public final class P5VanillaContainerGameTests {
                 "Container fixture did not start in the native InventoryMenu");
     }
 
+    private static Container clearEnderChest(TestBot bot) {
+        Container enderInventory = bot.player().getEnderChestInventory();
+        enderInventory.clearContent();
+        enderInventory.setChanged();
+        return enderInventory;
+    }
+
     private static void givePlayerMainInventory(TestBot bot, int count) {
         clearBotInventory(bot);
         // 玩家 inventory index 9 在 3×9/6×9 菜单中分别固定映射为 slot 27/54。
         bot.player().getInventory().setItem(9,
                 new ItemStack(Items.OAK_LOG, count));
         bot.player().inventoryMenu.broadcastChanges();
+    }
+
+    private static TrackedContainerAction submitTracked(
+            TestBot bot,
+            WorldInteractionAction action,
+            int maximumTicks,
+            String phase) {
+        long currentTick = bot.player().serverLevel().getServer()
+                .getTickCount();
+        UUID actionId = UUID.randomUUID();
+        ActionMailbox.Submission submission = bot.manager().submitAction(
+                new ActionEnvelope(
+                        actionId,
+                        bot.player().getUUID(),
+                        bot.player().runtimeHandle().generation(),
+                        "gametest/p5/ender-chest/" + phase + "/" + actionId,
+                        currentTick + maximumTicks + 40L,
+                        maximumTicks,
+                        action,
+                        ActionOrigin.none()),
+                ActionPriority.OWNER_TASK);
+        P2GameTestSupport.require(
+                submission.status() == ActionMailbox.SubmissionStatus.ENQUEUED,
+                "Tracked ender chest action was rejected: "
+                        + submission.status());
+        return new TrackedContainerAction(
+                actionId, submission.completion().orElseThrow());
+    }
+
+    private static void requireNativeEmptyMenu(TestBot bot, String message) {
+        P2GameTestSupport.require(
+                bot.player().containerMenu == bot.player().inventoryMenu
+                        && bot.player().inventoryMenu.getCarried().isEmpty(),
+                message);
     }
 
     private static ChestBlockEntity chestEntity(
@@ -466,5 +843,9 @@ public final class P5VanillaContainerGameTests {
             BlockPos target,
             ChestBlockEntity first,
             ChestBlockEntity second) {
+    }
+
+    private record TrackedContainerAction(
+            UUID actionId, CompletionStage<ActionOutcome> completion) {
     }
 }
