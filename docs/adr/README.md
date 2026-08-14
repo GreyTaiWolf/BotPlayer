@@ -40,6 +40,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0019](0019-owner-manual-review-only-ai-round-trip.md) | Owner 手动只读 AI 审阅往返 | Accepted | P6-R1 固定快照/本地 review-only Provider 纵切已通过 Build #354 自动基线；真实客户端/Provider E2E 仍待 |
 | [ADR-0020](0020-bounded-ai-scheduler-supervisor.md) | 有界 AI 调度监督器与 Provider-start 围栏 | Accepted | P6 纯 Java scheduler 的受信任有界 lane 合同已通过 Build #354 自动基线；尚未接入生产 lifecycle/client-sponsored bridge |
 | [ADR-0021](0021-client-sponsored-request-correlation.md) | 客户端赞助 AI 请求的单一关联身份 | Accepted | gate→dispatch→scheduler 的纯 DTO 绑定已编码；通用客户端 Provider bridge 与世界执行仍未接线 |
+| [ADR-0022](0022-client-sponsored-request-ledger.md) | 客户端赞助请求账本的精确生命周期 | Accepted | 通用 binding 的纯 Java 生命周期账本已编码；不发送网络包、不启动 Provider/Scheduler，通用 bridge 与世界执行仍未接线 |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
@@ -63,6 +64,10 @@ Navigation 和 menu 合同，允许在互不冲突的 `ActionChannel` 上持有�
 ADR-0021 固定 client-sponsored 通用请求必须先由 server gate 生成唯一 requestId/nonce，再用
 同一绑定构造客户端 dispatch、Scheduler 请求和精确取消。该合同不开放通用聊天或 AI→世界
 执行；P6-R1 仍是独立的只读路径。
+
+ADR-0022 让 server-thread coordinator 以同一不可变 binding 保存通用请求的活动生命周期；
+普通打开不隐式替换，替换、过期、退出和停服都返回精确旧 binding 供下游清理。它本身不发包、
+不创建 Provider/Scheduler，也不改变 P6-R1 或世界执行边界。
 
 ## 新 ADR 文件规则
 
