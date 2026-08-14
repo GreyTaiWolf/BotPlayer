@@ -108,7 +108,7 @@ class TaskSensorResourceFilterTest {
     }
 
     @Test
-    void exactFilteredScanPrioritizesTheTargetLayerBelowAResourceTop() {
+    void exactFilteredScanPrioritizesTheSharedResourceLayerBelowAResourceTop() {
         MinecraftTaskSensorAdapter.ResourceScanPlan plan =
                 MinecraftTaskSensorAdapter
                         .resourceScanPlanPrioritizingLayerBelow(
@@ -139,10 +139,22 @@ class TaskSensorResourceFilterTest {
                         .shouldPrioritizeLayerBelow(
                                 TaskSensorResourceFilter.COBBLESTONE,
                                 "minecraft:cobblestone")),
+                () -> Assertions.assertTrue(MinecraftTaskSensorAdapter
+                        .shouldPrioritizeLayerBelow(
+                                TaskSensorResourceFilter.COBBLESTONE,
+                                "minecraft:iron_ore"),
+                        "a Bot standing on iron ore must keep the shared lower "
+                                + "resource layer visible while seeking cobblestone"),
+                () -> Assertions.assertTrue(MinecraftTaskSensorAdapter
+                        .shouldPrioritizeLayerBelow(
+                                TaskSensorResourceFilter.IRON_ORE,
+                                "minecraft:cobblestone"),
+                        "a Bot standing on cobblestone must keep the shared lower "
+                                + "resource layer visible while seeking iron ore"),
                 () -> Assertions.assertFalse(MinecraftTaskSensorAdapter
                         .shouldPrioritizeLayerBelow(
                                 TaskSensorResourceFilter.COBBLESTONE,
-                                "minecraft:iron_ore")),
+                                "minecraft:stone")),
                 () -> Assertions.assertFalse(MinecraftTaskSensorAdapter
                         .shouldPrioritizeLayerBelow(
                                 TaskSensorResourceFilter.CRAFTING_TABLE,

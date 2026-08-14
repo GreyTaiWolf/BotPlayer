@@ -226,9 +226,9 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
                         query.resourceFilter());
         boolean truncated = plan.truncatedByBudget();
         int remainingReads = maximumBlocks - (inspectedBelow ? 1 : 0);
-        if (prioritizeLayerBelow) {
-            evidence.add(resourceEvidence(below, Objects.requireNonNull(
-                    belowBlockId, "belowBlockId")));
+        if (prioritizeLayerBelow && query.resourceFilter().accepts(
+                Objects.requireNonNull(belowBlockId, "belowBlockId"))) {
+            evidence.add(resourceEvidence(below, belowBlockId));
         }
         for (BlockPos position : plan.positions()) {
             if (inspectedBelow && position.equals(below)) {
@@ -296,10 +296,10 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
     }
 
     /**
-     * Returns the same bounded exact-filter plan with its mining plane one block below the
-     * current body. P5 resource navigation deliberately permits a grounded body to stop on top
-     * of its exact target; in that state the target's layer, not the body's layer, must retain the
-     * reviewed same-height priority beyond the nearby three-dimensional cube.
+     * 返回同一份有界精确过滤计划，但把采矿平面放在当前 body 下一格。P5 资源导航允许
+     * 已接地 body 停在某种经审计资源的顶面；此时所有仍待采集的 P5A 资源共用下方地形层，
+     * 即使承托 body 的资源并非当前查询的资源。超过近场三维立方体后，必须优先该层而不是
+     * body 所在层。
      */
     static ResourceScanPlan resourceScanPlanPrioritizingLayerBelow(
             TaskSensorScope scope,
@@ -322,7 +322,7 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
         Objects.requireNonNull(resourceFilter, "resourceFilter");
         Objects.requireNonNull(belowBlockId, "belowBlockId");
         return supportsLayerBelowPriority(resourceFilter)
-                && resourceFilter.accepts(belowBlockId);
+                && isReviewedP5ResourceBlock(belowBlockId);
     }
 
     /** Only P5 resource-acquisition filters can use the top-of-resource arrival state. */
@@ -333,6 +333,20 @@ public final class MinecraftTaskSensorAdapter implements TaskSensorSampler {
             case OAK_LOG, COBBLESTONE, IRON_ORE, COAL_ORE -> true;
             case UNFILTERED, CRAFTING_TABLE, FURNACE, BLAST_FURNACE, SMOKER ->
                     false;
+        };
+    }
+
+    /**
+     * 只有 body 正站在 P5A 精确采集资源之一时才允许采用下层排序；任意地面、工作站或未来
+     * 未在此显式审计的过滤器都不能开启该优先级。
+     */
+    private static boolean isReviewedP5ResourceBlock(String blockId) {
+        return switch (Objects.requireNonNull(blockId, "blockId")) {
+            case "minecraft:oak_log",
+                    "minecraft:cobblestone",
+                    "minecraft:iron_ore",
+                    "minecraft:coal_ore" -> true;
+            default -> false;
         };
     }
 
