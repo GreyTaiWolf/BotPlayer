@@ -1,12 +1,18 @@
 # BotPlayer P5 调研与 P5A-0 设计冻结
 
-> 状态：P5A-0 设计已冻结；当前开发切片已编码，退出门未计数
+> 状态：P5A-0 设计已冻结；以下“当前开发切片”是 2026-08-01 的历史设计基线，退出门未计数
 >
 > 更新日期：2026-08-01
 >
 > 适用版本：Minecraft Java 1.21.1、NeoForge 21.1.x、Java 21
 >
 > 决策记录：[ADR-0015](adr/0015-bounded-skill-runtime-and-menu-transactions.md)
+
+> 当前实现与验证状态以
+> [IMPLEMENTATION_STATUS_CN.md](IMPLEMENTATION_STATUS_CN.md) 为准：PR #11 的
+> [Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) 已自动验证当前
+> 受限 P5 纵切与两阶段重启。本文随后出现的“尚未接线/尚未验证”列表不得覆盖该当前事实；
+> 它仍不表示 P5 总退出门、真实客户端、独立专用服或多 bot soak 已完成。
 
 本文把 P5A 从“会做一串动作”的路线图目标收敛为可编码、可恢复、可验证的运行时合同。
 它同时记录 P4 退出门之后仍然存在的测试缺口，避免用 P5 的新功能掩盖 P4 的保留项。

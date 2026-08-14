@@ -1,12 +1,17 @@
 # BotPlayer P5A 暂停期间并行开发规划
 
-> 状态：开发流程基线 v0.1
+> 状态：开发流程历史基线 v0.1；当前 P5/P6 进度以实施状态页和 PR #11 为准
 >
 > 更新日期：2026-08-07
 >
 > 目的：当 P5A 因 Token、模型额度或其他资源暂时暂停时，允许继续开发低耦合的 PT/P6 基础设施，同时保证恢复 P5A 后不会产生接口分叉、重复实现或大规模合并冲突。
 >
 > 相关设计：[P5A 设计](AI_PLAYER_RESEARCH_AND_P5_DESIGN_CN.md)、[玩家技术动作设计](PLAYER_TECHNIQUE_BUILDING_COMBAT_DESIGN_CN.md)、[总架构路线图](ARCHITECTURE_AND_ROADMAP_CN.md)、[ADR-0015](adr/0015-bounded-skill-runtime-and-menu-transactions.md)、[ADR-0017](adr/0017-bounded-player-technique-runtime.md)
+
+> 本文的“当前事实基线”固定在 2026-08-07，用于说明当时的并行策略。它已被
+> [当前实现状态](IMPLEMENTATION_STATUS_CN.md) 与
+> [PR #11](https://github.com/GreyTaiWolf/BotPlayer/pull/11) 取代；不要将其中“P6 尚未实现”
+> 或 P5 接线缺口当作当前仓库状态。
 
 本文不是新的 P0–P10 阶段，也不改变阶段退出门。它只定义**开发顺序、并行边界、分支策略、共享接口规则和暂停/恢复交接格式**。
 

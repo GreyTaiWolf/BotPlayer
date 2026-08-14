@@ -30,15 +30,15 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | ADR-0009 | 不把 LGPL 寻路源码并入 MIT 核心 | Accepted | 当前无该依赖 |
 | ADR-0010 | P0–P2 通过前不接 DeepSeek | Accepted | 当前遵守 |
 | ADR-0011 | 在 `ServerPlayer.die` TAIL 确认死亡 | Accepted | P1 已落实 |
-| [ADR-0012](0012-client-sponsored-ai-credentials.md) | 客户端赞助的 AI 凭据与每 bot 独立智能体 | Accepted | 客户端凭据、受限 Provider/HTTP 传输与默认关闭的 P6-R1 审阅路径已编码；通用聊天与 AI→世界执行仍待 P6 |
+| [ADR-0012](0012-client-sponsored-ai-credentials.md) | 客户端赞助的 AI 凭据与每 bot 独立智能体 | Accepted | 客户端凭据、受限 Provider/HTTP 传输与默认关闭的 P6-R1 审阅路径已通过 Build #354 自动基线；真实客户端/Provider E2E、通用聊天与 AI→世界执行仍待 P6 |
 | [ADR-0013](0013-finite-perception-two-plane-world-model.md) | 有限感知、双事件平面与有界世界模型 | Accepted | P3 实现已编码并通过 Build #28 自动化退出门 |
 | [ADR-0014](0014-bounded-navigation-and-safety-plane.md) | 有界导航快照、分段路径与独立 L0 安全平面 | Accepted | P4 自动化退出门已通过 |
-| [ADR-0015](0015-bounded-skill-runtime-and-menu-transactions.md) | 有界技能运行时与统一菜单事务 | Accepted | P5A-0 设计冻结、开发中 |
+| [ADR-0015](0015-bounded-skill-runtime-and-menu-transactions.md) | 有界技能运行时与统一菜单事务 | Accepted | PR #11 的受限 P5 纵切已通过 Build #354 自动基线；P5 总退出门与跨 menu 通用事务仍未完成 |
 | [ADR-0016](0016-durable-vanilla-death-consumption-handoff.md) | 原版死亡消费的耐久交接与失败关闭 | Accepted | P5 死亡纵切已由 Build #163 验证 |
-| [ADR-0017](0017-bounded-player-technique-runtime.md) | `Action → Technique → Skill` 有界玩家技术动作层 | Accepted | Technique runtime 与已有有限自卫单击的窄 bridge 已编码；跳劈、真实施工和广泛战斗仍未实现 |
-| [ADR-0018](0018-strict-consumable-pre-use-fence.md) | 严格消耗品的原版使用前围栏 | Accepted | P5B 牛奶纵切已编码，待 Java 21/NeoForge 验证 |
-| [ADR-0019](0019-owner-manual-review-only-ai-round-trip.md) | Owner 手动只读 AI 审阅往返 | Accepted | P6-R1 固定快照/本地 review-only Provider 纵切已编码，待 Java 21/NeoForge 验证 |
-| [ADR-0020](0020-bounded-ai-scheduler-supervisor.md) | 有界 AI 调度监督器与 Provider-start 围栏 | Accepted | P6 纯 Java scheduler 的受信任有界 lane 合同已编码，待 Java 21 验证 |
+| [ADR-0017](0017-bounded-player-technique-runtime.md) | `Action → Technique → Skill` 有界玩家技术动作层 | Accepted | Technique runtime 与已有有限自卫单击的窄 bridge 已通过 Build #354 自动基线；跳劈、真实施工和广泛战斗仍未实现 |
+| [ADR-0018](0018-strict-consumable-pre-use-fence.md) | 严格消耗品的原版使用前围栏 | Accepted | P5B 牛奶纵切已通过 Build #354 自动基线；真实客户端/专用服验证仍待 |
+| [ADR-0019](0019-owner-manual-review-only-ai-round-trip.md) | Owner 手动只读 AI 审阅往返 | Accepted | P6-R1 固定快照/本地 review-only Provider 纵切已通过 Build #354 自动基线；真实客户端/Provider E2E 仍待 |
+| [ADR-0020](0020-bounded-ai-scheduler-supervisor.md) | 有界 AI 调度监督器与 Provider-start 围栏 | Accepted | P6 纯 Java scheduler 的受信任有界 lane 合同已通过 Build #354 自动基线；尚未接入生产 lifecycle/client-sponsored bridge |
 | [ADR-0021](0021-client-sponsored-request-correlation.md) | 客户端赞助 AI 请求的单一关联身份 | Accepted | gate→dispatch→scheduler 的纯 DTO 绑定已编码；通用客户端 Provider bridge 与世界执行仍未接线 |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与

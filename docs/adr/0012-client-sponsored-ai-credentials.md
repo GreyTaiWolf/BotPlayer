@@ -60,6 +60,10 @@ Key 只通过客户端本地 Screen 输入。服务端与客户端之间只交�
 
 ### 当前范围与未来请求流
 
+> 本节记录本 ADR 最初的 credential/binding 基线。后续 P6-R1 的默认关闭、本地 opt-in
+> review-only HTTPS 例外由 [ADR-0019](0019-owner-manual-review-only-ai-round-trip.md) 定义；
+> 它不改变本节对通用 bridge 和世界权威的约束。
+
 本次只建立持久 owner/`serverInstanceId`、客户端 GUI、本地凭据 profile 和每 bot 绑定
 基础设施：
 
@@ -145,4 +149,5 @@ ADR-0004 中“客户端不是世界权威、普通动作由服务端校验”�
 - 客户端单元测试覆盖保存/读取、创建/替换 profile、共享、绑定/解绑、跨服务器与 owner
   隔离、损坏/超限拒绝，以及 Key 不进入 binding 文件；
 - 命令、聊天、payload、服务端配置、世界文件、日志和崩溃信息均不含 Key；
-- 本阶段没有真实 HTTP 请求；自动测试不使用真实 API Key。
+- 本 ADR 最初的 credential/binding 基线没有真实 HTTP 请求；后续 P6-R1 是单独、默认关闭的
+  本地 opt-in HTTPS 例外。自动测试不使用真实 API Key。

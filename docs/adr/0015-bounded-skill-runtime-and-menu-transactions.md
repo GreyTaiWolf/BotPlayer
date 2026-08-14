@@ -2,21 +2,17 @@
 
 - 状态：Accepted
 - 日期：2026-07-29
-- 实现注记更新：2026-08-01
+- 实现注记更新：2026-08-14
 - 关联：ADR-0006、ADR-0013、ADR-0014
 
-> 当前实现说明：玩家 `InventoryMenu` 已接入通用 `SWAP_SEQUENCE`，允许 1～16 次点击、
-> 最多 8 个槽位，每 Tick 只派发一次原生点击；跨 Tick cleanup 使用 `PENDING`、首次冻结
-> 的安全端点、旧 owner/新 claimant 双 ticket 阻塞和精确 progress revision。真实五步
-> 场景已验证这些运行时合同。generic equipment/offhand 仍 `UNSUPPORTED`；盔甲热栏单击
-> 和主背包 2～3 步路径保持独立。这不是无条件回滚，也不表示本 ADR 冻结的跨 menu 统一
-> 事务已经完成。[Build #137](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30713366812)
-> 已通过 Java 21 `clean build`、Gradle `test`、83/83 GameTest 与 JAR 上传。源码静态计数
-> 为 380 个 JUnit `@Test` 方法、26 个 P5 GameTest、353 个 Java 源文件，不是 CI 日志
-> 逐项计数；25 个 batch 静态 Bot 预算均不超过默认 8，Build #133/#135 的超配已拆批修复。
-> `clicked()` 故障注入、生命周期 `PENDING` continuation、TaskSensor/Reservation 生产
-> 接线、Checkpoint、工具/副手、自卫、craft/chest/furnace/DAG、两次启动、独立专用服和
-> soak 仍未完成，P5A 退出门未关闭。
+> 当前实现说明：受限 P5 纵切（有界 Skill/DAG、TaskSensor/Reservation、Checkpoint、
+> 资源—制作—存放、白名单容器/工作站、作物/交易/牛奶、有限自卫、保存围栏）已由
+> [Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) 完成 Java 21
+> 自动基线、156 项常规 GameTest 和 phase-one/phase-two 重启验证。通用
+> `InventoryMenu SWAP_SEQUENCE` 仍只覆盖 `InventoryMenu` 内的受限序列，generic
+> equipment/offhand 仍 `UNSUPPORTED`。这不表示本 ADR 冻结的跨 menu 通用事务或 P5 总
+> 退出门已经完成；`clicked()` 故障注入、通用 lifecycle continuation、工具/副手、任意
+> 配方/作物/交易、广泛战斗、真实客户端、专用服和 soak 仍未实现或未验证。
 
 ## 背景
 

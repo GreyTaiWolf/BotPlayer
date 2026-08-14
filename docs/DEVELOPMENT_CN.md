@@ -42,12 +42,12 @@ gradlew.bat --no-daemon clean build
 ```
 
 P2 已加入生命周期、移动、交互和库存 GameTest；P3 加入有限感知与世界事实场景；P4
-加入导航、安全、玩家规则兼容与 Terrain Assist 场景；P5 以
-[Draft PR #6](https://github.com/GreyTaiWolf/BotPlayer/pull/6) 作为远端验收载体，
-[Build #163](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30897970406) 已通过
-Java 21 `clean build`、Gradle `test`、91/91 GameTest 与 JAR 上传。源码静态计数为
-437 个 JUnit `@Test` 方法、34 个 P5 GameTest、378 个 Java 源文件，不是 CI 日志逐项
-执行数；P5A 阶段退出门仍未通过。涉及
+加入导航、安全、玩家规则兼容与 Terrain Assist 场景。当前 P5/P6 集成验收载体为
+[Draft PR #11](https://github.com/GreyTaiWolf/BotPlayer/pull/11)；
+[Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) 已通过 Java 21
+`clean build`、Gradle `test`、156 项常规 GameTest 和 phase-one/phase-two 重启
+GameTest（各 1 项）。P5 总退出门和 P6 总退出门仍未关闭；真实客户端、专用服和多 bot soak
+不由此替代。涉及
 Minecraft 行为的提交必须运行：
 
 ```bash
@@ -320,11 +320,10 @@ P4 主线程/异步边界是：
 ## 当前 P5 开发切片规则
 
 P5 当前源码建立有界 Skill 核心、确定性 DAG 校验、TTL 资源预留、Safety handoff、
-主动进食、扫描 carried inventory `0..35` 的基础盔甲升级，以及通用
-`InventoryMenu SWAP_SEQUENCE`。Build #163 已验证 1～16 次点击、最多 8 个槽位、逐 Tick
-一击、跨 Tick `PENDING`、固定端点、双 ticket 阻塞和精确 revision；真实五步场景直接
-覆盖该合同。单条纵切不能据此计入 P5A 退出门。
-另有一个未验收的 P5C 窄接线：仅把已有有限自卫会话已经授权的一个
+主动进食、扫描 carried inventory `0..35` 的基础盔甲升级、受限资源—制作—存放 DAG、
+白名单容器/工作站和有限自卫。Build #354 已自动覆盖这些窄纵切；它们不能据此计入 P5
+总退出门。
+P5C 的窄接线仅把已有有限自卫会话已经授权的一个
 `MELEE_ATTACK`，以不可变 `AttackEntity`/target/generation/ticket 绑定交给单 child
 Technique，再在服务器主线程取回精确 Action 终态。它不选择目标、不移动、不换装备、不
 重试或连击，也不提供任何通用 Technique→Action 路由。
@@ -390,9 +389,9 @@ Technique，再在服务器主线程取回精确 Action 终态。它不选择目
 - 敌对目标继续走 P4 安全回退；当前唯一例外是已有有限自卫已完成授权的单一
   `MELEE_ATTACK` 可以走受限单击 bridge。它不补足武器选择、目标选择、撤退路线、逐击
   重观察或脱战后置条件，不能据此宣称有限自卫或高级战斗已完成；
-- 当前只完成 `InventoryMenu` 内的通用 SWAP 序列和独立盔甲路径，不表示跨 menu 统一事务
-  已完成。`clicked()` 故障注入、生命周期 `PENDING` continuation、TaskSensor/Reservation
-  生产接线、Checkpoint、工具/副手、有限自卫、craft/chest/furnace/DAG 和生产链仍未实现。
+- 当前受限生产链已具备 TaskSensor/Reservation、Checkpoint、craft/chest/furnace/DAG 和
+  有限自卫纵切，但不表示跨 menu 统一事务或 P5 总退出门已完成。`clicked()` 故障注入、
+  生命周期通用 continuation、工具/副手、任意配方/作物/交易和广泛战斗仍未实现或未验证。
 
 完整冻结合同与退出门见
 [P5 调研设计](AI_PLAYER_RESEARCH_AND_P5_DESIGN_CN.md)和
@@ -433,14 +432,18 @@ build 与 JAR upload，日志明确 `All 55 required tests passed`，其中 P4 �
 `b36a69f607e4f0e028e2afff15946a03bddd64004638c2d64d479c704706ddcd`。
 客户端组合、独立专用服、保护模组矩阵和多 Bot soak 仍需专项验证。
 
-P5 当前远端证据为
+当前 P5/P6 远端证据为
+[Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111)：Java 21
+`clean build`、Gradle `test`、156 项常规 GameTest 和 phase-one/phase-two 重启 GameTest
+均通过。真实进程崩溃/断电、死亡 handoff 的跨进程边界、Windows 或其他文件系统的目录刷盘、
+模组化 XP/掉落事件矩阵、独立专用服和多 Bot soak 仍需专项验证。
+
+早期 P5 基线证据为
 [Build #163](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30897970406)：Java 21
 `clean build`、Gradle `test`、91/91 GameTest 和 JAR 上传均成功。源码静态计数为 437 个
 JUnit `@Test` 方法、34 个 P5 GameTest 与 378 个 Java 源文件；这些不是 CI 日志逐项计数。
 日志中的 40 个实际运行 batch 在默认 `server_player.maxBots=8` 下完成；Build #133/#135
-暴露的超配仍通过拆批修复，没有提高上限。真实进程崩溃/断电、第二次服务器启动恢复、
-Windows 或其他文件系统的目录刷盘、模组化 XP/掉落事件矩阵、独立专用服和多 Bot soak
-仍需专项验证。
+暴露的超配仍通过拆批修复，没有提高上限。
 
 P5 GameTest 使用 `P5GameTestSupport` 显式传入固定 Bot 名字；清理只卸载活动 Bot，
 不会删除 roster/profile。这样同一持久 GameTest 世界连续运行时会复用同一身份与

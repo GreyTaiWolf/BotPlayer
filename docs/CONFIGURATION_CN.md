@@ -5,7 +5,9 @@
 容量和 MSPT 降级阈值。
 P4 新增导航快照/A*、安全反射和默认关闭的 Terrain Assist 配置。P3、P4 配置分别通过
 Build #28、Build #97 自动化门；通用 AI Provider、模型调用、技能和记忆配置仍不可用。P6-R1
-只有已编码、Java 21/CI 待验证的默认关闭固定审阅往返，不代表 P6 完成。实时
+是默认关闭的固定审阅往返，已通过
+[Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) Java 21 自动验证；
+真实客户端/Provider E2E 仍待验证，不代表 P6 完成。实时
 状态见 [当前实现状态](IMPLEMENTATION_STATUS_CN.md)，P4 边界见
 [P4 完成验收报告](P4_COMPLETION_REPORT_CN.md)。
 
@@ -415,7 +417,8 @@ profile；解绑不会删除共享 Key。
 ### P6-R1 本地只读审阅开关
 
 `review-only-v1.json` 不是 NeoForge `SERVER`/`CLIENT` TOML，不会被服务器读取、覆盖或同步。
-以下行为仅为已编码、Java 21/CI 待验证的 P6-R1 窄路径，不代表通用 AI 功能已可用。
+以下行为是已通过 Build #354 Java 21 自动验证、但真实客户端/Provider E2E 仍待验证的 P6-R1
+窄路径，不代表通用 AI 功能已可用。
 首次物理客户端启动会原子创建并加载以下唯一 schema；若文件缺失，行为等同于 `false`：
 
 ```json
@@ -427,7 +430,7 @@ profile；解绑不会删除共享 Key。
 }
 ```
 
-本地用户把 `reviewOnly.enabled` 改为 `true`，并重新启动客户端或调用本地设置重载，才会安装
+本地用户把 `reviewOnly.enabled` 改为 `true`，并重新启动客户端，才会安装
 R1 Provider；后续仍只有服务器持久 owner 能通过 owner/binding gate 发起审阅。它固定为
 `deepseek-chat`、`CHAT|TOOL_CALLS` 和至少 256 output tokens；唯一工具是零参数
 `botplayer_review_snapshot`。文件不接受、也不能扩展 endpoint、model、provider、key、credential
@@ -485,7 +488,7 @@ POSIX 权限的文件系统上，目录尽力设为仅 owner 可读/写/进入�
 服务端运行时 binding。`serverInstanceId` 与 `ownerUuid` 用于隔离不同服务器/owner；
 编辑客户端文件不能改变 owner 或获得服务端权限。owner 退出、bot 卸载或停服会清除服务端
 active agent binding，但客户端 `bindings-v1.json` 保留。
-未来使用本地 Key 的 Provider HTTP 必须在客户端执行，且 owner 离线时不可用。
+P6-R1 以及未来使用本地 Key 的 Provider HTTP 都必须在 owner 客户端执行，且 owner 离线时不可用。
 
 如果 Key 已经泄漏，应立即在提供商后台撤销并创建新 Key，不能只删除聊天或日志。
 

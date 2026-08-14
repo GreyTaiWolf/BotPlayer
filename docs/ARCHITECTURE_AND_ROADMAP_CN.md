@@ -1531,9 +1531,11 @@ interface AiProvider {
 
 通用模型名和能力必须配置化。不能把某个模型别名永久写死进业务代码；P6 建立授权客户端会话后
 由客户端探测 Provider 能力，只把不含 secret 的 thinking、工具调用、JSON 输出和上下文
-上限返回服务端策略层。当前代码已有有界 P6 Provider/codec/firewall/context 与客户端传输基础；
-例外的 P6-R1 是默认关闭、固定策略的 owner 只读审阅 smoke 路径，不是通用模型策略、聊天或
-世界执行，且所有新增路径仍待 Java 21/CI 验收。
+上限返回服务端策略层。当前代码已有有界 P6 Provider/codec/firewall/context 与客户端传输基础。
+例外的 P6-R1 是默认关闭、固定策略的 owner 只读审阅路径：真实持久 owner 在本地显式
+opt-in 后，固定 Provider 会在客户端发起受限 HTTPS 请求，回传只生成安全摘要并丢弃。它不是
+通用模型策略、聊天或世界执行；[Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111)
+已完成其 Java 21 自动验证，真实客户端/Provider E2E 仍待验证。
 
 ### 11.2 DeepSeek 的职责
 
@@ -1605,7 +1607,9 @@ P6 首次接入时，记忆接口使用有界内存对话窗口和可选的空 `
 解决身份与取消，不授权 Tool、Skill、Action 或世界执行，详见
 [ADR-0021](adr/0021-client-sponsored-request-correlation.md)。
 
-任何客户端或异步回调都不得直接调用 `ServerPlayer`。当前阶段尚未实现上述网络请求流。
+任何客户端或异步回调都不得直接调用 `ServerPlayer`。上述通用 client-sponsored 网络请求流
+（gate→dispatch→Scheduler lifecycle→计划接收）仍未实现；P6-R1 是独立、固定且只读的
+实际 HTTPS 例外，不构成通用聊天、计划或世界执行入口。
 
 ### 11.5 Tool Firewall
 
@@ -1635,12 +1639,15 @@ P6 首次接入时，记忆接口使用有界内存对话窗口和可选的空 `
   SQLite、日志、crash report 或模型上下文；
 - 一个 `credentialProfileId` 可供多个 bot 使用，但
   `(serverInstanceId, ownerUuid, botId)` 各自绑定独立 `agentId` 和状态；
-- 只有服务端 roster 的持久 owner 可以配置或建立未来 AI 会话；
-- owner 离线时，使用这个 Key 的 client-sponsored LLM 不可用；
-- 未来 Provider HTTP 在客户端运行，服务端把响应当作不可信计划重新校验。
+- 只有服务端 roster 的持久 owner 可以配置或建立未来通用 AI 会话；P6-R1 的固定只读
+  审阅同样要求该 owner、活动 binding 与本地显式 opt-in；
+- owner 离线时，P6-R1 与未来使用这个 Key 的 client-sponsored LLM 均不可用；
+- P6-R1 与未来通用 Provider HTTP 都在客户端运行；服务端始终把未来通用响应当作不可信
+  计划重新校验。
 
-当前实现只包含本地 credential profile、binding 与 agentId 基础，不探测能力、不验证
-Key、不请求 DeepSeek。ADR-0010 继续禁止 P0–P2 提前接入 Provider。
+当前实现已有本地 credential profile、binding、agentId，以及 P6-R1 的固定 DeepSeek
+review-only 请求；R1 不开放能力探测、可配置模型/endpoint、通用聊天或计划接收。
+ADR-0010 的历史门禁仍禁止在 P0–P2 阶段提前接入 Provider。
 
 `RedactionFilter` 必须在客户端 Provider、Minecraft payload 编解码边界和服务端日志再次
 脱敏，包括 Authorization header、常见 Key 模式和任何凭据字段。状态界面只显示用户设置的
@@ -2130,7 +2137,7 @@ docs/
 | brain | `PlanValidator` | 模型计划验证 |
 | ai | `RequestScheduler` | AI 并发、预算、取消 |
 | ai | `ToolFirewall` | 模型工具安全边界 |
-| client ai deepseek | `DeepSeekProvider` | P6 客户端固定端点 HTTP/SSE 传输与受限本地凭据生命周期已编码；通用聊天、模型策略和 Java 21/NeoForge 验收仍待完成 |
+| client ai deepseek | `DeepSeekProvider` | P6 客户端固定端点 HTTP/SSE 传输与受限本地凭据生命周期已通过 Build #354 Java 21 自动基线；通用聊天、模型策略、真实客户端/Provider E2E 仍待完成 |
 | memory | `MemoryService` | 分层记忆门面 |
 | memory sqlite | `SqliteMemoryStore` | 数据库生命周期 |
 | memory migration | `MigrationRunner` | schema 迁移 |
@@ -2772,8 +2779,8 @@ P6 可以在 P5A 通过后开始；P5B–P5D 可与 P6–P9 的基础设施并�
 
 **目标**：中文自然语言委托能安全转成已注册技能计划，API 故障不影响服务器 Tick。
 
-任务清单（以下复选框是发布退出门，而非“仓库中完全没有对应代码”的断言；当前已编码模块仍须
-Java 21/NeoForge CI 和端到端安全验证）：
+任务清单（以下复选框是发布退出门，而非“仓库中完全没有对应代码”的断言；当前已编码模块已由
+Build #354 完成 Java 21 自动基线，但仍须真实客户端/Provider 和端到端安全验证）：
 
 - [ ] `AiProvider` 与 capability probe；
 - [ ] DeepSeek Java 21 async HTTP/SSE；

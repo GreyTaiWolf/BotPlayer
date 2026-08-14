@@ -10,8 +10,10 @@
 工具选择或 P5 执行能力带到该边界。P6-R1 需要一个可验证的最小纵切，用来证明 owner 本地
 Provider 的请求、回传、过期和解绑都能失败关闭。
 
-本文记录的 P6-R1 仅为已编码、Java 21/CI 待验证的窄审阅切片，不代表 P6、聊天、通用
-Provider 或世界动作已经完成。
+本文记录的 P6-R1 是已通过
+[Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) Java 21 自动基线
+的窄审阅切片；真实客户端/Provider E2E 仍待验证，不代表 P6、聊天、通用 Provider 或世界
+动作已经完成。
 
 ## 决策
 
@@ -80,7 +82,7 @@ R1 默认禁用本地 Provider；客户端启动和显式本地重载都会读�
 - 纯 Java：固定投影 grammar、Context/response 契约、purpose、ticket 精确消费与过期、gate
   terminal receipt（含自由 prose/畸形工具/replay）、默认关闭的本地 opt-in schema、客户端
   loopback fake Provider、review-only DeepSeek fixed allowlist、disable/reload 取消；
-- NeoForge：需要在 Java 21 环境验证 payload codec、owner command、`0/1` Tick 已完成快照
-  新鲜度与 death/retire/unbind/shutdown 清理；
+- Java 21 自动基线已由 Build #354 完成；真实 NeoForge 客户端仍需要验证 payload codec、owner
+  command、`0/1` Tick 已完成快照新鲜度与 death/retire/unbind/shutdown 清理；
 - 审计：确认 P6-R1 路径没有 `AiRequestScheduler`、`SkillRuntime`、P5 adapter、Action 或世界
   执行调用。

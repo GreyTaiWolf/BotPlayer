@@ -7,16 +7,19 @@
 
 ### 新增
 
-- 新增已编码、Java 21/CI 待验证的 P6-R1 owner 手动只读审阅往返本地 consent：物理客户端仅从
+- 新增 P6-R1 owner 手动只读审阅往返本地 consent，已通过
+  [Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) Java 21 自动基线：
+  物理客户端仅从
   `review-only-v1.json` 读取 `reviewOnly.enabled=false` 默认位；启用时只安装代码固定的
   `deepseek-chat` / `CHAT|TOOL_CALLS` / 零参数 `botplayer_review_snapshot` Provider，绝不保存或
   同步 endpoint、模型、profile、工具、prompt 或 Key。禁用/重载会取消本地请求、推进 connection
   epoch 并清空 factory，不发送 C2S 控制包；服务端 R1 gate 在通用解析前终态拒绝自由 prose 或
-  非精确工具形状，接受结果仍只摘要并丢弃，不进入 Action/Skill/世界执行；
+  非精确工具形状，接受结果仍只摘要并丢弃，不进入 Action/Skill/世界执行；真实客户端/
+  Provider E2E 仍待验证；
 - 新增 P5B 原版通用容器的受限闭环：严格白名单的普通单箱/双箱、木桶和原版潜影盒复用真实
   3×9/6×9 原版 menu 点击事务，支持双向全量/指定数量转移，并以完整快照、物品守恒、关闭/空 cursor
   与方块变化失败关闭约束；未知或模组 menu 仍拒绝。新增 Unit 与 NeoForge GameTest 矩阵；
-  本地 Java 21/NeoForge 实跑待环境恢复后完成；
+  Build #354 已完成自动基线，真实客户端/专用服验证仍待完成；
 - 新增 schema v1 持久 bot roster，保存规范名字、稳定 bot/player UUID、owner 和
   `serverInstanceId`；
 - 新增 `/botplayer settings <name>`：只有 roster 中精确 owner 可以打开本地界面，OP
@@ -199,7 +202,8 @@
 - API Key 只写入 owner 客户端的独立本地明文存储，优先原子替换并尽力收紧文件权限；
 - Key 不进入命令、聊天、Minecraft payload、服务端、世界数据、日志或诊断；
 - 只有 roster 中持久 owner 可以配置对应 bot；服务器实例 ID 防止不同服务器错误复用绑定；
-- 明确当前没有 DeepSeek Provider 或 HTTP 请求，凭据保存不会让 bot 变智能；
+- 明确保存凭据不会自动启动模型请求；默认关闭的 P6-R1 是唯一固定、本地 opt-in 的
+  review-only HTTPS 例外，回传只摘要并丢弃，不让 bot 变智能；
 - 接受 ADR-0012，以客户端赞助凭据模式取代 ADR-0004 的服务端 secret 部署决定；ADR-0010
   仍然有效。
 

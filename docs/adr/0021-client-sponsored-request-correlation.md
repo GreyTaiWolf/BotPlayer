@@ -93,5 +93,6 @@ credential、P5 Skill 或世界状态。
   generation/nonce/revision 任一漂移均不匹配；half-open tick TTL；receipt purpose/expiry 失配；
 - 后续集成：断线、解绑、替换、超时和迟到 C2S 都只关闭同一 requestId；Scheduler health、
   cancellation receipt 与 gate receipt 可交叉核对；
-- Java 21/NeoForge：完整 Gradle、payload codec 和生命周期清理必须在正式 CI 中验证；
+- Java 21 自动基线：完整 Gradle 与 codec 测试已由 Build #354 验证；通用 bridge 尚未接线，
+  因而其真实 payload/lifecycle 清理仍不能宣称已集成验证；
 - 审计：本 ADR 对应代码不得调用 `SkillRuntime`、Action、Technique 或世界修改。

@@ -107,5 +107,5 @@ API。若必须回滚代码，恢复旧 API 前不得声称其具备物理 bound
   与 receipt 语义；
 - blocked Provider、blocked token setup、blocked completion delivery、dropped cleanup 与
   dropped publication；
-- Java 21 Gradle `test`/`clean build` 以及相关 NeoForge 验证必须在具备项目 toolchain 的环境
-  执行。当前改动本身不访问 Minecraft 活动对象。
+- Java 21 Gradle `test`/`clean build` 已由 Build #354 在项目 toolchain 完成。当前改动本身
+  不访问 Minecraft 活动对象，也尚未接入生产 client-sponsored lifecycle。
