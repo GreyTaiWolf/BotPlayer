@@ -29,7 +29,7 @@ public abstract class PlayerListMixin {
     private void botplayer$suppressPersistentlyUnsafePlayerDataSave(
             ServerPlayer player, CallbackInfo callback) {
         if (player instanceof BotServerPlayer botPlayer
-                && botPlayer.consumePlayerDataSaveSuppression()) {
+                && botPlayer.shouldSuppressOrdinaryPlayerDataSave()) {
             callback.cancel();
         }
     }
@@ -93,7 +93,7 @@ public abstract class PlayerListMixin {
         if (player
                         instanceof BotServerPlayer botPlayer
                 && botPlayer
-                        .consumePlayerDataSaveSuppression()) {
+                        .consumePlayerDataSaveSuppressionForRemoval()) {
             return;
         }
         original.call(playerList, player);

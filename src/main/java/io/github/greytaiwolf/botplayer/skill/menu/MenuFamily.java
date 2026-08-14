@@ -6,7 +6,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * P5A 明确允许的四种原版菜单布局。
+ * P5 明确允许的原版菜单布局。
  *
  * <p>每个枚举值同时冻结菜单槽位总数和每一个槽位的职责。适配器不能只凭槽位数把
  * 任意模组菜单当成箱子；它必须先由受信任的原版类分派，再调用
@@ -16,7 +16,12 @@ public enum MenuFamily {
     INVENTORY_2X2("inventory_2x2", inventory2x2()),
     CRAFTING_3X3("crafting_3x3", crafting3x3()),
     FURNACE("furnace", furnace()),
-    CHEST_3X9("chest_3x9", chest3x9());
+    /** 原版 {@code MerchantMenu}: 两个支付格、一个结果格与 36 格玩家背包。 */
+    MERCHANT("merchant", merchant()),
+    /** 原版 3×9 通用容器布局，供单箱、木桶和潜影盒的精确 menu 共用。 */
+    CHEST_3X9("chest_3x9", chest3x9()),
+    /** 原版双箱的 6×9 通用容器布局。 */
+    CHEST_6X9("chest_6x9", chest6x9());
 
     private final String stableId;
     private final List<MenuSlotRole> slotRoles;
@@ -53,7 +58,7 @@ public enum MenuFamily {
             case PLAYER_MAIN, PLAYER_HOTBAR, ARMOR_HEAD, ARMOR_CHEST,
                     ARMOR_LEGS, ARMOR_FEET, OFFHAND -> true;
             case RESULT, CRAFTING_INPUT, FURNACE_INPUT, FURNACE_FUEL,
-                    CONTAINER -> false;
+                    MERCHANT_PAYMENT, MERCHANT_RESULT, CONTAINER -> false;
         };
     }
 
@@ -117,9 +122,26 @@ public enum MenuFamily {
         return roles;
     }
 
+    private static List<MenuSlotRole> merchant() {
+        List<MenuSlotRole> roles = new ArrayList<>(39);
+        append(roles, MenuSlotRole.MERCHANT_PAYMENT, 2);
+        roles.add(MenuSlotRole.MERCHANT_RESULT);
+        append(roles, MenuSlotRole.PLAYER_MAIN, 27);
+        append(roles, MenuSlotRole.PLAYER_HOTBAR, 9);
+        return roles;
+    }
+
     private static List<MenuSlotRole> chest3x9() {
         List<MenuSlotRole> roles = new ArrayList<>(63);
         append(roles, MenuSlotRole.CONTAINER, 27);
+        append(roles, MenuSlotRole.PLAYER_MAIN, 27);
+        append(roles, MenuSlotRole.PLAYER_HOTBAR, 9);
+        return roles;
+    }
+
+    private static List<MenuSlotRole> chest6x9() {
+        List<MenuSlotRole> roles = new ArrayList<>(90);
+        append(roles, MenuSlotRole.CONTAINER, 54);
         append(roles, MenuSlotRole.PLAYER_MAIN, 27);
         append(roles, MenuSlotRole.PLAYER_HOTBAR, 9);
         return roles;

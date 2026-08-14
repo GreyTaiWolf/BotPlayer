@@ -1,5 +1,6 @@
 package io.github.greytaiwolf.botplayer.client.screen;
 
+import io.github.greytaiwolf.botplayer.client.BotPlayerClient;
 import io.github.greytaiwolf.botplayer.client.ClientPayloadHandlers;
 import io.github.greytaiwolf.botplayer.client.credential.BotCredentialBinding;
 import io.github.greytaiwolf.botplayer.client.credential.ClientCredentialStore;
@@ -202,6 +203,7 @@ public final class BotCredentialScreen extends Screen {
         String profileId = profileIdBox.getValue();
         String enteredKey = keyBox.getValue();
         try {
+            BotPlayerClient.cancelAiRequestForBot(openPayload.botId());
             ClientCredentialStore.BindResult result = store.bind(
                     openPayload.serverInstanceId(),
                     ownerUuid,
@@ -232,6 +234,7 @@ public final class BotCredentialScreen extends Screen {
 
     private void unbind() {
         try {
+            BotPlayerClient.cancelAiRequestForBot(openPayload.botId());
             Optional<BotCredentialBinding> removed = store.unbind(
                     openPayload.serverInstanceId(),
                     ownerUuid,

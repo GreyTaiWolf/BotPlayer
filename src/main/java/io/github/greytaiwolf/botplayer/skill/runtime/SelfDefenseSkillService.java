@@ -1,13 +1,16 @@
 package io.github.greytaiwolf.botplayer.skill.runtime;
 
 import io.github.greytaiwolf.botplayer.action.ActionEvidence;
+import io.github.greytaiwolf.botplayer.action.ActionCancellationReceipt;
 import io.github.greytaiwolf.botplayer.action.ActionOutcome;
 import io.github.greytaiwolf.botplayer.action.ActionRequest;
 import io.github.greytaiwolf.botplayer.action.ActionState;
 import io.github.greytaiwolf.botplayer.safety.HazardType;
+import io.github.greytaiwolf.botplayer.safety.SafetyFrame;
 import io.github.greytaiwolf.botplayer.safety.SafetyHandoff;
 import io.github.greytaiwolf.botplayer.safety.SafetyHandoffDecision;
 import io.github.greytaiwolf.botplayer.safety.SafetyHandoffRequest;
+import io.github.greytaiwolf.botplayer.safety.ThreatSummary;
 import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseActionKind;
 import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseActionOutcome;
 import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseActionReceipt;
@@ -136,9 +139,8 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
         Objects.requireNonNull(request, "request");
         requireOwnerThread();
         observeTick(request.currentTick());
-        if (closed
-                || request.hazard().type() != HazardType.HOSTILE_TARGETING
-                || request.hazard().sourceEntityId().isEmpty()) {
+        if (closed || !allowsLimitedSelfDefense(request)) {
+            preemptUnsafeRun(request);
             return SafetyHandoffDecision.FALLBACK;
         }
 
@@ -210,6 +212,20 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
     }
 
     /**
+     * 由 L0 的下一份安全帧撤销不再满足近战边界的活动会话。
+     *
+     * <p>这不是普通生命周期关闭：只取消同一 Bot/代际的活动 run，迟到动作回执仍按原 run
+     * 身份被忽略。
+     */
+    @Override
+    public boolean preempt(SafetyHandoffRequest request) {
+        Objects.requireNonNull(request, "request");
+        requireOwnerThread();
+        observeTick(request.currentTick());
+        return preemptUnsafeRun(request);
+    }
+
+    /**
      * 处理有界回执并推进所有活动自卫会话。
      *
      * <p>调用方必须在服务器主线程每 Tick 调用一次；时间倒退被视为编排错误。
@@ -258,10 +274,7 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
             incidentAttempts.closeGeneration(botId, generation);
             return false;
         }
-        run.session.preemptBySafety();
-        cancelOutstanding(run);
-        finish(run, RunStatus.PREEMPTED, Optional.empty(),
-                "L0 安全层已抢占", currentTick);
+        preemptActiveRun(run, "L0 安全层已抢占", currentTick);
         return true;
     }
 
@@ -276,9 +289,13 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
         if (run == null || run.generation != generation) {
             return false;
         }
-        cancelOutstanding(run);
-        finish(run, RunStatus.CLOSED,
-                Optional.of(Failure.GENERATION_CLOSED),
+        Optional<ActionCancellationReceipt> cancellation = cancelOutstanding(
+                run, AuthorizationRevocation.GENERATION_CLOSED);
+        if (finishUnsafeCancellation(run, cancellation, currentTick)) {
+            incidentAttempts.closeGeneration(botId, generation);
+            return true;
+        }
+        finish(run, RunStatus.CLOSED, Optional.of(Failure.GENERATION_CLOSED),
                 "Bot 代际已关闭", currentTick);
         incidentAttempts.closeGeneration(botId, generation);
         return true;
@@ -304,13 +321,116 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
         closed = true;
         long closingTick = Math.max(0L, lastObservedTick);
         for (ActiveRun run : List.copyOf(activeByBot.values())) {
-            cancelOutstanding(run);
+            Optional<ActionCancellationReceipt> cancellation =
+                    cancelOutstanding(run, AuthorizationRevocation.SERVER_STOP);
+            if (finishUnsafeCancellation(run, cancellation, closingTick)) {
+                continue;
+            }
             finish(run, RunStatus.CLOSED,
                     Optional.of(Failure.RUNTIME_CLOSED),
                     "有限自卫服务已关闭", closingTick);
         }
         completions.clear();
         incidentAttempts.clear();
+    }
+
+    /**
+     * P0-2 的单一近战资格门：完整安全帧、健康状态、单个敌对目标和已验证的撤退输入缺一不可。
+     */
+    private boolean allowsLimitedSelfDefense(
+            SafetyHandoffRequest request) {
+        if (request.hazard().type() != HazardType.HOSTILE_TARGETING
+                || request.hazard().sourceEntityId().isEmpty()) {
+            return false;
+        }
+        SafetyFrame frame = request.frame();
+        if (frame.threatCoverageIncomplete()
+                || frame.safeRetreat().isEmpty()
+                || frame.maximumHealth() <= 0.0F
+                || frame.health() / frame.maximumHealth()
+                        <= policy.retreatHealthFraction()
+                || frame.authoritativeVitalLoss() > 0.0F
+                || frame.voidExposure()
+                || frame.inLava()
+                || frame.onFire()
+                || frame.suffocating()
+                || frame.underWater()
+                || frame.unsafeForwardSupport()) {
+            return false;
+        }
+        UUID source = request.hazard().sourceEntityId().orElseThrow();
+        long hostileCount = frame.threats().stream()
+                .filter(threat -> threat.kind()
+                        == ThreatSummary.Kind.HOSTILE)
+                .count();
+        if (hostileCount != 1L) {
+            return false;
+        }
+        boolean sourceIsSingleTargetingHostile = frame.threats().stream()
+                .anyMatch(threat -> threat.entityId().equals(source)
+                        && threat.kind() == ThreatSummary.Kind.HOSTILE
+                        && threat.targetingBot());
+        if (!sourceIsSingleTargetingHostile) {
+            return false;
+        }
+        return frame.threats().stream().noneMatch(threat ->
+                threat.kind() == ThreatSummary.Kind.EXPLOSIVE
+                        || (threat.kind() == ThreatSummary.Kind.PROJECTILE
+                                && threat.approachScore() > 0.0D));
+    }
+
+    /** 只有当前 run 与这一帧仍是同一安全交接，才允许它继续执行。 */
+    private boolean preemptUnsafeRun(SafetyHandoffRequest request) {
+        ActiveRun run = activeByBot.get(request.botId());
+        if (run == null || run.generation != request.botGeneration()) {
+            return false;
+        }
+        if (!request.frame().threatCoverageIncomplete()
+                && request.frame().threats().stream().noneMatch(threat ->
+                        threat.kind() == ThreatSummary.Kind.HOSTILE)
+                && run.dispatch == null) {
+            return false;
+        }
+        boolean sameSecureHandoff = allowsLimitedSelfDefense(request)
+                && run.incidentId.equals(request.incidentId())
+                && request.hazard().sourceEntityId()
+                        .filter(run.target.entityId()::equals)
+                        .isPresent()
+                && outstandingRetreatStillVerified(run, request.frame());
+        if (sameSecureHandoff) {
+            return false;
+        }
+        preemptActiveRun(run, "L0 新安全帧撤销了有限自卫资格",
+                request.currentTick());
+        return true;
+    }
+
+    /** 撤退输入一旦不再等于当前 L0 候选，就取消旧输入而不是赌它仍然安全。 */
+    private static boolean outstandingRetreatStillVerified(
+            ActiveRun run, SafetyFrame frame) {
+        ActionDispatch dispatch = run.dispatch;
+        if (dispatch == null
+                || dispatch.defenseAction().kind()
+                        != DefenseActionKind.RETREAT) {
+            return true;
+        }
+        return dispatch.defenseAction().safeRetreat()
+                .filter(retreat -> frame.safeRetreat()
+                        .filter(retreat::equals)
+                        .isPresent())
+                .isPresent();
+    }
+
+    private void preemptActiveRun(
+            ActiveRun run, String summary, long currentTick) {
+        run.session.preemptBySafety();
+        Optional<ActionCancellationReceipt> cancellation = cancelOutstanding(
+                run, AuthorizationRevocation.SAFETY_PREEMPTION);
+        if (finishUnsafeCancellation(run, cancellation, currentTick)) {
+            return;
+        }
+        finish(run, RunStatus.PREEMPTED, Optional.empty(),
+                summary, currentTick);
     }
 
     private void drainCompletions(long currentTick) {
@@ -324,7 +444,7 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
                     || !current.dispatch.equals(event.dispatch)) {
                 continue;
             }
-            current.dispatch = null;
+            revokeOutstanding(current, AuthorizationRevocation.COMPLETED);
             if (event.throwable != null
                     || event.outcome == null
                     || !event.dispatch.actionId().equals(
@@ -404,21 +524,53 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
         }
         ActionDispatch dispatch = newDispatch(run, instruction, action,
                 currentTick);
+        AuthorizedActionDispatch authorization =
+                new AuthorizedActionDispatch(this, run, dispatch);
+        /*
+         * Install the exact run-bound authority before invoking the external
+         * submitter. The submitter is allowed to synchronously trigger L0 or
+         * lifecycle work; those paths must see and revoke this same object.
+         */
+        run.dispatch = dispatch;
+        run.authorization = authorization;
         CompletionStage<ActionOutcome> completion;
         try {
             completion = Objects.requireNonNull(
-                    actionSubmitter.submit(dispatch), "completion");
+                    actionSubmitter.submit(authorization), "completion");
         } catch (RuntimeException exception) {
-            safeCancel(dispatch);
-            fail(run, Failure.ACTION_SUBMISSION_REJECTED,
-                    "动作提交器拒绝有限自卫请求", currentTick);
+            /*
+             * A submitter may synchronously run lifecycle/L0 code and throw
+             * afterwards. Do not overwrite the newer terminal view (or a new
+             * generation's run) while reporting the old submission failure.
+             */
+            if (activeByBot.get(run.botId) == run) {
+                failSubmission(run, "动作提交器拒绝有限自卫请求", currentTick);
+            }
             return;
         }
-        run.dispatch = dispatch;
+        if (!authorization.wasClaimed()) {
+            if (activeByBot.get(run.botId) == run) {
+                failSubmission(run, "动作提交器未领取有限自卫授权", currentTick);
+            }
+            return;
+        }
+        if (!authorization.isAuthorityCurrent()) {
+            /* A re-entrant preempt/close already removed this exact run. */
+            if (activeByBot.get(run.botId) == run) {
+                failSubmission(run, "有限自卫授权在提交期间已失效", currentTick);
+            }
+            return;
+        }
         remember(run, RunStatus.ACTIVE, Optional.empty(),
                 "等待有限自卫动作完成");
-        completion.whenComplete((outcome, throwable) -> enqueueCompletion(
-                run, dispatch, outcome, throwable));
+        try {
+            completion.whenComplete((outcome, throwable) -> enqueueCompletion(
+                    run, dispatch, outcome, throwable));
+        } catch (RuntimeException exception) {
+            if (activeByBot.get(run.botId) == run) {
+                failSubmission(run, "动作完成回执无法注册", currentTick);
+            }
+        }
     }
 
     private ActionDispatch newDispatch(
@@ -485,8 +637,24 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
     private void fail(
             ActiveRun run, Failure failure, String summary,
             long currentTick) {
-        cancelOutstanding(run);
+        Optional<ActionCancellationReceipt> cancellation = cancelOutstanding(
+                run, AuthorizationRevocation.CANCELLED);
+        if (finishUnsafeCancellation(run, cancellation, currentTick)) {
+            return;
+        }
         finish(run, RunStatus.FAILED, Optional.of(failure), summary,
+                currentTick);
+    }
+
+    private void failSubmission(
+            ActiveRun run, String summary, long currentTick) {
+        Optional<ActionCancellationReceipt> cancellation = cancelOutstanding(
+                run, AuthorizationRevocation.SUBMISSION_REJECTED);
+        if (finishUnsafeCancellation(run, cancellation, currentTick)) {
+            return;
+        }
+        finish(run, RunStatus.FAILED,
+                Optional.of(Failure.ACTION_SUBMISSION_REJECTED), summary,
                 currentTick);
     }
 
@@ -496,30 +664,73 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
             Optional<Failure> failure,
             String summary,
             long currentTick) {
+        if (run.unsafeControlState) {
+            return;
+        }
         if (currentTick < run.updatedTick) {
             throw new IllegalArgumentException(
                     "self-defense terminal tick must not move backwards");
         }
         activeByBot.remove(run.botId, run);
-        run.dispatch = null;
+        revokeOutstanding(run, AuthorizationRevocation.TERMINAL);
         run.updatedTick = currentTick;
         remember(run, status, failure, summary);
     }
 
-    private void cancelOutstanding(ActiveRun run) {
-        ActionDispatch dispatch = run.dispatch;
+    private Optional<ActionCancellationReceipt> cancelOutstanding(
+            ActiveRun run, AuthorizationRevocation revocation) {
+        AuthorizedActionDispatch authorization = run.authorization;
+        revokeOutstanding(run, revocation);
+        if (authorization != null) {
+            return Optional.of(safeCancel(authorization));
+        }
+        return Optional.empty();
+    }
+
+    private void revokeOutstanding(
+            ActiveRun run, AuthorizationRevocation revocation) {
+        AuthorizedActionDispatch authorization = run.authorization;
         run.dispatch = null;
-        if (dispatch != null) {
-            safeCancel(dispatch);
+        run.authorization = null;
+        if (authorization != null) {
+            authorization.revoke(revocation);
         }
     }
 
-    private void safeCancel(ActionDispatch dispatch) {
+    private ActionCancellationReceipt safeCancel(
+            AuthorizedActionDispatch authorization) {
+        AuthorizedActionDispatch required = Objects.requireNonNull(
+                authorization, "authorization");
         try {
-            actionCanceller.cancel(dispatch);
+            ActionCancellationReceipt receipt = Objects.requireNonNull(
+                    actionCanceller.cancel(required), "cancellation receipt");
+            if (receipt.matches(required.botId(), required.botGeneration(),
+                    required.actionId())) {
+                return receipt;
+            }
         } catch (RuntimeException ignored) {
-            // 取消端口失败时仍将本地会话关闭，迟到回执不会重新激活它。
+            // An exception is an unknown physical endpoint, never a safe no-op.
         }
+        return ActionCancellationReceipt.unsafe(required.botId(),
+                required.botGeneration(), required.actionId(),
+                ActionCancellationReceipt.Disposition.UNKNOWN);
+    }
+
+    private boolean finishUnsafeCancellation(ActiveRun run,
+            Optional<ActionCancellationReceipt> cancellation,
+            long currentTick) {
+        if (cancellation.isEmpty()
+                || cancellation.orElseThrow().safelyRetracted()) {
+            return false;
+        }
+        run.unsafeControlState = true;
+        activeByBot.remove(run.botId, run);
+        revokeOutstanding(run, AuthorizationRevocation.TERMINAL);
+        run.updatedTick = currentTick;
+        remember(run, RunStatus.FAILED,
+                Optional.of(Failure.UNSAFE_CONTROL_STATE),
+                "有限自卫动作取消无法证明物理安全端点");
+        return true;
     }
 
     private void remember(
@@ -633,6 +844,52 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
         return matchingEntity && removed;
     }
 
+    private Optional<ClaimedActionDispatch> claim(
+            AuthorizedActionDispatch authorization) {
+        Objects.requireNonNull(authorization, "authorization");
+        requireOwnerThread();
+        if (!isAuthorizationCurrent(authorization)) {
+            if (authorization.revocation == null) {
+                authorization.revoke(AuthorizationRevocation.TERMINAL);
+            }
+            return Optional.empty();
+        }
+        if (!authorization.claimed.compareAndSet(false, true)) {
+            return Optional.empty();
+        }
+        /* Guard against a same-thread re-entrant lifecycle change during claim setup. */
+        if (!isAuthorizationCurrent(authorization)) {
+            if (authorization.revocation == null) {
+                authorization.revoke(AuthorizationRevocation.TERMINAL);
+            }
+            return Optional.empty();
+        }
+        return Optional.of(new ClaimedActionDispatch(authorization));
+    }
+
+    private boolean isClaimCurrent(
+            AuthorizedActionDispatch authorization,
+            ClaimedActionDispatch claim) {
+        Objects.requireNonNull(authorization, "authorization");
+        Objects.requireNonNull(claim, "claim");
+        requireOwnerThread();
+        return claim.authorization == authorization
+                && authorization.wasClaimed()
+                && isAuthorizationCurrent(authorization);
+    }
+
+    private boolean isAuthorizationCurrent(
+            AuthorizedActionDispatch authorization) {
+        Objects.requireNonNull(authorization, "authorization");
+        requireOwnerThread();
+        return !closed
+                && authorization.revocation == null
+                && activeByBot.get(authorization.run.botId)
+                        == authorization.run
+                && authorization.run.dispatch == authorization.dispatch
+                && authorization.run.authorization == authorization;
+    }
+
     private static String requireSummary(String value) {
         Objects.requireNonNull(value, "summary");
         String trimmed = value.strip();
@@ -664,31 +921,192 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
     }
 
     /**
-     * 提交端口由生命周期适配为 {@code ActionEnvelope}；返回的 stage 允许在任意线程完成。
+     * 提交端口只接收由本服务创建的一次性授权。生命周期适配器必须先领取授权，才能取得
+     * 提交真实 Action 所需的只读字段；它不能由一个看起来相同的普通 DTO 代替。
      */
     @FunctionalInterface
     public interface ActionSubmitter {
-        CompletionStage<ActionOutcome> submit(ActionDispatch dispatch);
+        CompletionStage<ActionOutcome> submit(
+                AuthorizedActionDispatch authorization);
     }
 
-    /** 取消端口只接收本服务最初签发的完整 dispatch。 */
+    /** 取消端口只接收本服务最初签发的授权身份，而不接收可伪造的动作 DTO。 */
     @FunctionalInterface
     public interface ActionCanceller {
-        void cancel(ActionDispatch dispatch);
+        /**
+         * Returns the exact physical cancellation receipt. A missing,
+         * mismatched, or unsafe receipt fails the originating service run
+         * closed instead of silently publishing PREEMPTED or CLOSED.
+         */
+        ActionCancellationReceipt cancel(AuthorizedActionDispatch authorization);
     }
 
-    /** 根代理稍后可无歧义地把本对象包装成真实 ActionEnvelope。 */
-    public record ActionDispatch(
-            UUID actionId,
-            UUID botId,
-            long botGeneration,
-            UUID selfDefenseRunId,
-            long deadlineTick,
-            int maximumTicks,
-            String idempotencyKey,
-            DefenseActionRequest defenseAction,
-            ActionRequest action) {
-        public ActionDispatch {
+    /**
+     * 一次性、服务创建的 Action 提交能力。
+     *
+     * <p>构造器不公开，且此对象没有原始 {@link ActionDispatch} 的 getter。领取必须发生在
+     * 创建服务的 owner thread；领取时会重新确认当前 active run、原始 dispatch 对象身份和
+     * 尚未撤销状态。即使调用者保留能力对象，第二次或终态后的领取也会失败关闭。
+     */
+    public static final class AuthorizedActionDispatch {
+        private final SelfDefenseSkillService service;
+        private final ActiveRun run;
+        private final ActionDispatch dispatch;
+        private final AtomicBoolean claimed = new AtomicBoolean();
+        private volatile AuthorizationRevocation revocation;
+
+        private AuthorizedActionDispatch(
+                SelfDefenseSkillService service,
+                ActiveRun run,
+                ActionDispatch dispatch) {
+            this.service = Objects.requireNonNull(service, "service");
+            this.run = Objects.requireNonNull(run, "run");
+            this.dispatch = Objects.requireNonNull(dispatch, "dispatch");
+        }
+
+        public DefenseActionKind kind() {
+            return dispatch.defenseAction().kind();
+        }
+
+        public UUID actionId() {
+            return dispatch.actionId();
+        }
+
+        public UUID botId() {
+            return dispatch.botId();
+        }
+
+        /** Exact immutable generation needed only by lifecycle cancellation containment. */
+        public long botGeneration() {
+            return dispatch.botGeneration();
+        }
+
+        public Optional<AuthorizationRevocation> revocation() {
+            return Optional.ofNullable(revocation);
+        }
+
+        /** Returns the single immutable claim or empty when it is stale/reused/revoked. */
+        public Optional<ClaimedActionDispatch> claim() {
+            return service.claim(this);
+        }
+
+        private boolean wasClaimed() {
+            return claimed.get();
+        }
+
+        private boolean isAuthorityCurrent() {
+            return service.isAuthorizationCurrent(this);
+        }
+
+        private void revoke(AuthorizationRevocation candidate) {
+            Objects.requireNonNull(candidate, "candidate");
+            AuthorizationRevocation previous = revocation;
+            if (previous == null || candidate.priority() > previous.priority()) {
+                revocation = candidate;
+            }
+        }
+    }
+
+    /**
+     * The one-shot read view obtained from {@link AuthorizedActionDispatch#claim()}.
+     * It exposes only immutable Action envelope fields; the raw dispatch object remains private to
+     * this service package and cannot be reconstructed or reused as a bridge ingress token.
+     */
+    public static final class ClaimedActionDispatch {
+        private final AuthorizedActionDispatch authorization;
+
+        private ClaimedActionDispatch(AuthorizedActionDispatch authorization) {
+            this.authorization = Objects.requireNonNull(
+                    authorization, "authorization");
+        }
+
+        public UUID actionId() {
+            return authorization.dispatch.actionId();
+        }
+
+        public UUID botId() {
+            return authorization.dispatch.botId();
+        }
+
+        public long botGeneration() {
+            return authorization.dispatch.botGeneration();
+        }
+
+        public UUID selfDefenseRunId() {
+            return authorization.dispatch.selfDefenseRunId();
+        }
+
+        public long deadlineTick() {
+            return authorization.dispatch.deadlineTick();
+        }
+
+        public int maximumTicks() {
+            return authorization.dispatch.maximumTicks();
+        }
+
+        public String idempotencyKey() {
+            return authorization.dispatch.idempotencyKey();
+        }
+
+        public DefenseActionRequest defenseAction() {
+            return authorization.dispatch.defenseAction();
+        }
+
+        public ActionRequest action() {
+            return authorization.dispatch.action();
+        }
+
+        public DefenseActionKind kind() {
+            return authorization.dispatch.defenseAction().kind();
+        }
+
+        /** Identity-only check for lifecycle adapters; it reveals no raw dispatch. */
+        public boolean isClaimOf(AuthorizedActionDispatch candidate) {
+            return authorization == Objects.requireNonNull(candidate,
+                    "candidate");
+        }
+
+        /** Rechecks the original service authority after an external ingress call. */
+        public boolean isAuthorityCurrent() {
+            return authorization.service.isClaimCurrent(authorization, this);
+        }
+
+        public Optional<AuthorizationRevocation> revocation() {
+            return Optional.ofNullable(authorization.revocation);
+        }
+
+        /* Package-private regression seam; it is unavailable to lifecycle/bridge callers. */
+        ActionDispatch rawDispatch() {
+            return authorization.dispatch;
+        }
+    }
+
+    /**
+     * Internal raw dispatch. It is intentionally package-private with a package-private constructor:
+     * callers outside {@code skill.runtime} cannot manufacture one, and no public bridge method
+     * accepts it.
+     */
+    static final class ActionDispatch {
+        private final UUID actionId;
+        private final UUID botId;
+        private final long botGeneration;
+        private final UUID selfDefenseRunId;
+        private final long deadlineTick;
+        private final int maximumTicks;
+        private final String idempotencyKey;
+        private final DefenseActionRequest defenseAction;
+        private final ActionRequest action;
+
+        ActionDispatch(
+                UUID actionId,
+                UUID botId,
+                long botGeneration,
+                UUID selfDefenseRunId,
+                long deadlineTick,
+                int maximumTicks,
+                String idempotencyKey,
+                DefenseActionRequest defenseAction,
+                ActionRequest action) {
             requireNonZero(actionId, "actionId");
             requireNonZero(botId, "botId");
             requireGeneration(botGeneration);
@@ -698,14 +1116,56 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
                 throw new IllegalArgumentException(
                         "action dispatch timing is outside safe bounds");
             }
-            idempotencyKey = requireIdempotencyKey(idempotencyKey);
-            defenseAction = Objects.requireNonNull(
+            this.actionId = actionId;
+            this.botId = botId;
+            this.botGeneration = botGeneration;
+            this.selfDefenseRunId = selfDefenseRunId;
+            this.deadlineTick = deadlineTick;
+            this.maximumTicks = maximumTicks;
+            this.idempotencyKey = requireIdempotencyKey(idempotencyKey);
+            this.defenseAction = Objects.requireNonNull(
                     defenseAction, "defenseAction");
-            action = Objects.requireNonNull(action, "action");
-            if (!selfDefenseRunId.equals(defenseAction.runId())) {
+            this.action = Objects.requireNonNull(action, "action");
+            if (!selfDefenseRunId.equals(this.defenseAction.runId())) {
                 throw new IllegalArgumentException(
                         "defense action must belong to self-defense run");
             }
+        }
+
+        UUID actionId() {
+            return actionId;
+        }
+
+        UUID botId() {
+            return botId;
+        }
+
+        long botGeneration() {
+            return botGeneration;
+        }
+
+        UUID selfDefenseRunId() {
+            return selfDefenseRunId;
+        }
+
+        long deadlineTick() {
+            return deadlineTick;
+        }
+
+        int maximumTicks() {
+            return maximumTicks;
+        }
+
+        String idempotencyKey() {
+            return idempotencyKey;
+        }
+
+        DefenseActionRequest defenseAction() {
+            return defenseAction;
+        }
+
+        ActionRequest action() {
+            return action;
         }
 
         private static void requireNonZero(UUID value, String name) {
@@ -724,6 +1184,27 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
                         "idempotencyKey is unsafe");
             }
             return value;
+        }
+    }
+
+    /** Reason retained for re-entrant post-submit retraction diagnostics. */
+    public enum AuthorizationRevocation {
+        COMPLETED(0),
+        TERMINAL(1),
+        CANCELLED(2),
+        SUBMISSION_REJECTED(3),
+        SAFETY_PREEMPTION(4),
+        GENERATION_CLOSED(5),
+        SERVER_STOP(6);
+
+        private final int priority;
+
+        AuthorizationRevocation(int priority) {
+            this.priority = priority;
+        }
+
+        private int priority() {
+            return priority;
         }
     }
 
@@ -781,7 +1262,8 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
         TIMEOUT,
         COMPLETION_QUEUE_OVERFLOW,
         GENERATION_CLOSED,
-        RUNTIME_CLOSED
+        RUNTIME_CLOSED,
+        UNSAFE_CONTROL_STATE
     }
 
     /** 对运维和后续生命周期接线公开的不可变运行快照。 */
@@ -813,9 +1295,12 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
             activeActionId = Objects.requireNonNull(
                     activeActionId, "activeActionId");
             failure = Objects.requireNonNull(failure, "failure");
-            if (failure.isPresent() != (status == RunStatus.FAILED)) {
+            if ((status == RunStatus.FAILED && failure.isEmpty())
+                    || (failure.isPresent()
+                            && status != RunStatus.FAILED
+                            && status != RunStatus.CLOSED)) {
                 throw new IllegalArgumentException(
-                        "only failed views may carry a failure");
+                        "only failed or lifecycle-closed views may carry a failure");
             }
             safeSummary = requireSummary(safeSummary);
         }
@@ -845,6 +1330,8 @@ public final class SelfDefenseSkillService implements SafetyHandoff, AutoCloseab
                 new AtomicBoolean();
         private long updatedTick;
         private ActionDispatch dispatch;
+        private AuthorizedActionDispatch authorization;
+        private boolean unsafeControlState;
 
         private ActiveRun(
                 UUID runId,

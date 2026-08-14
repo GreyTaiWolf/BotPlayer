@@ -125,6 +125,30 @@ public final class ActionLedger {
       }
    }
 
+   /**
+    * Returns the immutable canonical envelope for one retained Action id.
+    *
+    * <p>The P5C containment port needs the canonical generation as well as
+    * its action id: a same-bot action-id collision across generations is not
+    * an exact terminal receipt for the requested identity.
+    */
+   Optional<ActionEnvelope> canonicalEnvelope(UUID var1, UUID var2) {
+      this.assertOwnerThread();
+      ActionEnvelope.requireNonZero(var1, "botId");
+      ActionEnvelope.requireNonZero(var2, "actionId");
+      ActionLedger.LedgerKey var3 = this.keyByAction.get(
+         new ActionLedger.ActionKey(var1, var2)
+      );
+      if (var3 == null) {
+         return Optional.empty();
+      }
+      ActionLedger.Entry var4 = this.entries.get(var3);
+      if (var4 == null) {
+         throw new IllegalStateException("Action index points to a missing ledger entry");
+      }
+      return Optional.of(var4.envelope);
+   }
+
    public Optional<ActionOutcome> completedOutcome(UUID var1, String var2) {
       this.assertOwnerThread();
       ActionLedger.LedgerKey var3 = ActionLedger.LedgerKey.of(var1, var2);

@@ -85,12 +85,33 @@ public enum P5ARecipe {
             1),
     RAW_IRON_TO_IRON_INGOTS(
             "raw_iron_to_iron_ingots",
+            FurnaceKind.FURNACE,
             "minecraft:raw_iron",
             3,
             "minecraft:coal",
             1,
             "minecraft:iron_ingot",
             3,
+            64),
+    RAW_IRON_TO_IRON_INGOTS_BLASTING(
+            "raw_iron_to_iron_ingots_blasting",
+            FurnaceKind.BLAST_FURNACE,
+            "minecraft:raw_iron",
+            3,
+            "minecraft:coal",
+            1,
+            "minecraft:iron_ingot",
+            3,
+            64),
+    RAW_CHICKEN_TO_COOKED_CHICKEN_SMOKING(
+            "raw_chicken_to_cooked_chicken_smoking",
+            FurnaceKind.SMOKER,
+            "minecraft:chicken",
+            1,
+            "minecraft:coal",
+            1,
+            "minecraft:cooked_chicken",
+            1,
             64),
     IRON_PICKAXE(
             "iron_pickaxe",
@@ -112,6 +133,7 @@ public enum P5ARecipe {
     private final int furnaceInputCount;
     private final ResourceId furnaceFuel;
     private final int furnaceFuelCount;
+    private final FurnaceKind furnaceKind;
     private final ResourceId output;
     private final int outputCount;
     private final int outputMaxStackSize;
@@ -130,6 +152,7 @@ public enum P5ARecipe {
         furnaceInputCount = 0;
         furnaceFuel = null;
         furnaceFuelCount = 0;
+        furnaceKind = null;
         this.output = new ResourceId(output);
         this.outputCount = requirePositive(outputCount, "outputCount");
         this.outputMaxStackSize = requireOutputStackSize(
@@ -138,6 +161,7 @@ public enum P5ARecipe {
 
     P5ARecipe(
             String stableId,
+            FurnaceKind furnaceKind,
             String furnaceInput,
             int furnaceInputCount,
             String furnaceFuel,
@@ -148,6 +172,8 @@ public enum P5ARecipe {
         this.stableId = requireStableId(stableId);
         family = MenuFamily.FURNACE;
         ingredients = List.of();
+        this.furnaceKind = Objects.requireNonNull(
+                furnaceKind, "furnaceKind");
         this.furnaceInput = new ResourceId(furnaceInput);
         this.furnaceInputCount = requirePositive(
                 furnaceInputCount, "furnaceInputCount");
@@ -160,9 +186,10 @@ public enum P5ARecipe {
                 outputMaxStackSize, this.outputCount);
         if (this.furnaceInput.equals(this.furnaceFuel)
                 || this.furnaceInput.equals(this.output)
-                || this.furnaceFuel.equals(this.output)) {
+                || this.furnaceFuel.equals(this.output)
+                || this.outputCount % this.furnaceInputCount != 0) {
             throw new IllegalArgumentException(
-                    "furnace contract materials must be distinct");
+                    "furnace contract must use distinct materials and an integral per-input output");
         }
     }
 
@@ -230,6 +257,24 @@ public enum P5ARecipe {
     public int furnaceFuelCount() {
         requireFurnace();
         return furnaceFuelCount;
+    }
+
+    /**
+     * 这份炉子配方绑定的精确原版炉型及其对应 {@code RecipeType}。不能因为三者共享 39 槽
+     * 布局，就把普通熔炉、高炉和烟熏炉互换。
+     */
+    public FurnaceKind furnaceKind() {
+        requireFurnace();
+        return furnaceKind;
+    }
+
+    /**
+     * 原版每次烹饪匹配的 output 数量。整体 action 的 {@link #outputCount()} 仍表示本次受限
+     * 投入合同的总产物；两者必须整除，避免把三次炉 tick 的总数误当成单个 RecipeType 输出。
+     */
+    public int furnaceOutputPerInput() {
+        requireFurnace();
+        return outputCount / furnaceInputCount;
     }
 
     /**

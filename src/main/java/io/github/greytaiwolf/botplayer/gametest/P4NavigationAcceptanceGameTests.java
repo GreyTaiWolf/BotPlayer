@@ -15,6 +15,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.animal.Cow;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
@@ -30,6 +32,8 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @PrefixGameTestTemplate(false)
 public final class P4NavigationAcceptanceGameTests {
     private static final String BATCH = "p4_navigation";
+    private static final String RECOVERY_BATCH =
+            "p4_navigation_recovery";
     private static final String TERRAIN_BREAK_BATCH =
             "p4_terrain_break";
     private static final String TERRAIN_PLACE_BATCH =
@@ -224,6 +228,199 @@ public final class P4NavigationAcceptanceGameTests {
                                             "Bot did not physically reach the dynamic target");
                                     cleanup.run();
                                     helper.succeed();
+                                });
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = RECOVERY_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void transientPassiveEntityWaitsBeforeContinuing(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        prepareOneBlockCorridor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4EntityWait",
+                new Vec3(4.5D, 1.0D, 2.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        cleanup.add(() -> clearOneBlockCorridor(helper));
+        try {
+            Cow blocker = helper.spawnWithNoFreeWill(
+                    EntityType.COW, new Vec3(4.5D, 1.0D, 4.5D));
+            blocker.setPersistenceRequired();
+            blocker.setInvulnerable(true);
+            blocker.setDeltaMovement(Vec3.ZERO);
+            cleanup.add(blocker::discard);
+            BlockPos target =
+                    helper.absolutePos(new BlockPos(4, 1, 7));
+            double startZ = bot.player().getZ();
+            long teleportAcknowledgementsBeforeNavigation =
+                    teleportAcknowledgements(bot);
+            NavigationSubmission submission =
+                    bot.manager().startNavigation(
+                            bot.name(), GridPoint.from(target));
+            P2GameTestSupport.require(
+                    submission.status()
+                            == NavigationSubmission.Status.ENQUEUED,
+                    "P4 transient entity navigation was rejected");
+            CompletableFuture<NavigationOutcome> completion =
+                    submission.completion()
+                            .orElseThrow()
+                            .toCompletableFuture();
+
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    160,
+                    () -> bot.manager()
+                            .navigationSession(bot.name())
+                            .filter(view -> view.state()
+                                            == NavigationState.RECOVERING
+                                    && view.safeSummary().contains("实体"))
+                            .isPresent(),
+                    "P4 did not stop for the passive entity before issuing movement",
+                    cleanup,
+                    () -> {
+                        blocker.discard();
+                        P2GameTestSupport.awaitCondition(
+                                helper,
+                                180,
+                                completion::isDone,
+                                "P4 did not continue after the passive entity left the corridor",
+                                cleanup,
+                                () -> {
+                                    NavigationOutcome outcome =
+                                            completion.join();
+                                    P2GameTestSupport.require(
+                                            outcome.recoveryAttempts() == 0,
+                                            "A short-lived passive entity consumed a stuck recovery attempt");
+                                    verifyNavigation(
+                                            helper,
+                                            cleanup,
+                                            bot,
+                                            outcome,
+                                            target,
+                                            startZ,
+                                            teleportAcknowledgementsBeforeNavigation);
+                                });
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = RECOVERY_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void forcedStuckRecoveryStopsBeforeReplanning(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        prepareOneBlockCorridor(helper);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P4StuckStop",
+                new Vec3(4.5D, 1.0D, 2.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup = cleanup(bot);
+        cleanup.add(() -> clearOneBlockCorridor(helper));
+        try {
+            BlockPos target =
+                    helper.absolutePos(new BlockPos(4, 1, 7));
+            BlockPos wallLower = new BlockPos(4, 1, 5);
+            BlockPos wallUpper = new BlockPos(4, 2, 5);
+            cleanup.add(() -> {
+                helper.setBlock(wallLower, Blocks.AIR);
+                helper.setBlock(wallUpper, Blocks.AIR);
+            });
+            double startZ = bot.player().getZ();
+            long teleportAcknowledgementsBeforeNavigation =
+                    teleportAcknowledgements(bot);
+            NavigationSubmission submission =
+                    bot.manager().startNavigation(
+                            bot.name(), GridPoint.from(target));
+            P2GameTestSupport.require(
+                    submission.status()
+                            == NavigationSubmission.Status.ENQUEUED,
+                    "P4 forced-stuck navigation was rejected");
+            CompletableFuture<NavigationOutcome> completion =
+                    submission.completion()
+                            .orElseThrow()
+                            .toCompletableFuture();
+
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    120,
+                    () -> bot.manager()
+                            .navigationSession(bot.name())
+                            .filter(view -> view.state()
+                                            == NavigationState.FOLLOWING
+                                    && bot.player().getZ()
+                                            < target.getZ() - 1.0D)
+                            .isPresent(),
+                    "P4 route never entered FOLLOWING before the forced blocker",
+                    cleanup,
+                    () -> {
+                        helper.setBlock(wallLower, Blocks.STONE);
+                        helper.setBlock(wallUpper, Blocks.STONE);
+                        P2GameTestSupport.awaitCondition(
+                                helper,
+                                140,
+                                () -> bot.manager()
+                                        .navigationSession(bot.name())
+                                        .filter(view -> view.state()
+                                                        == NavigationState
+                                                                .RECOVERING
+                                                && view.safeSummary()
+                                                        .contains("停止输入"))
+                                        .isPresent(),
+                                "P4 did not enter forced STOP recovery after real collision",
+                                cleanup,
+                                () -> {
+                                    P2GameTestSupport.require(
+                                            bot.player().xxa == 0.0F
+                                                    && bot.player().yya
+                                                            == 0.0F
+                                                    && bot.player().zza
+                                                            == 0.0F
+                                                    && !bot.player()
+                                                            .isSprinting(),
+                                            "Forced stuck recovery did not clear the live player input");
+                                    helper.setBlock(wallLower, Blocks.AIR);
+                                    helper.setBlock(wallUpper, Blocks.AIR);
+                                    P2GameTestSupport.awaitCondition(
+                                            helper,
+                                            160,
+                                            completion::isDone,
+                                            "P4 did not replan after forced STOP recovery",
+                                            cleanup,
+                                            () -> {
+                                                NavigationOutcome outcome =
+                                                        completion.join();
+                                                P2GameTestSupport.require(
+                                                        outcome.recoveryAttempts()
+                                                                > 0
+                                                                && outcome.replans()
+                                                                        > 0,
+                                                        "Forced stuck recovery was not charged and replanned");
+                                                verifyNavigation(
+                                                        helper,
+                                                        cleanup,
+                                                        bot,
+                                                        outcome,
+                                                        target,
+                                                        startZ,
+                                                        teleportAcknowledgementsBeforeNavigation);
+                                            });
                                 });
                     });
         } catch (RuntimeException | AssertionError exception) {
@@ -1137,6 +1334,26 @@ public final class P4NavigationAcceptanceGameTests {
                                 bot.player().getZ()
                                         - (target.getZ() + 0.5D))
                         <= 1.0D;
+    }
+
+    private static void prepareOneBlockCorridor(
+            GameTestHelper helper) {
+        for (int z = 1; z <= 7; z++) {
+            for (int y = 1; y <= 2; y++) {
+                helper.setBlock(new BlockPos(3, y, z), Blocks.STONE);
+                helper.setBlock(new BlockPos(5, y, z), Blocks.STONE);
+            }
+        }
+    }
+
+    private static void clearOneBlockCorridor(
+            GameTestHelper helper) {
+        for (int z = 1; z <= 7; z++) {
+            for (int y = 1; y <= 2; y++) {
+                helper.setBlock(new BlockPos(3, y, z), Blocks.AIR);
+                helper.setBlock(new BlockPos(5, y, z), Blocks.AIR);
+            }
+        }
     }
 
     private static long teleportAcknowledgements(TestBot bot) {

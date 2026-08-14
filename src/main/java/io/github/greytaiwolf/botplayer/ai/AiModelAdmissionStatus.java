@@ -1,0 +1,21 @@
+package io.github.greytaiwolf.botplayer.ai;
+
+/** Stable, non-secret reasons a configured model request cannot be admitted. */
+public enum AiModelAdmissionStatus {
+    ACCEPTED,
+    PROVIDER_MISMATCH,
+    MODEL_NOT_ALLOWLISTED,
+    MODEL_NOT_AVAILABLE,
+    INPUT_BUDGET_EXCEEDED,
+    OUTPUT_BUDGET_EXCEEDED,
+    CONTEXT_WINDOW_EXCEEDED,
+    TIMEOUT_EXCEEDED,
+    RESPONSE_FORMAT_NOT_ALLOWED,
+    RESPONSE_FORMAT_UNSUPPORTED,
+    REASONING_NOT_ALLOWED,
+    REASONING_UNSUPPORTED,
+    TOOL_CALLS_NOT_ALLOWED,
+    TOOL_CALLS_UNSUPPORTED,
+    TEMPERATURE_NOT_ALLOWED,
+    TEMPERATURE_EXCEEDED
+}

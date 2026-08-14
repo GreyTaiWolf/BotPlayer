@@ -7,6 +7,19 @@
 
 ### 新增
 
+- 新增 P6-R1 owner 手动只读审阅往返本地 consent，已通过
+  [Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) Java 21 自动基线：
+  物理客户端仅从
+  `review-only-v1.json` 读取 `reviewOnly.enabled=false` 默认位；启用时只安装代码固定的
+  `deepseek-chat` / `CHAT|TOOL_CALLS` / 零参数 `botplayer_review_snapshot` Provider，绝不保存或
+  同步 endpoint、模型、profile、工具、prompt 或 Key。禁用/重载会取消本地请求、推进 connection
+  epoch 并清空 factory，不发送 C2S 控制包；服务端 R1 gate 在通用解析前终态拒绝自由 prose 或
+  非精确工具形状，接受结果仍只摘要并丢弃，不进入 Action/Skill/世界执行；真实客户端/
+  Provider E2E 仍待验证；
+- 新增 P5B 原版通用容器的受限闭环：严格白名单的普通单箱/双箱、木桶和原版潜影盒复用真实
+  3×9/6×9 原版 menu 点击事务，支持双向全量/指定数量转移，并以完整快照、物品守恒、关闭/空 cursor
+  与方块变化失败关闭约束；未知或模组 menu 仍拒绝。新增 Unit 与 NeoForge GameTest 矩阵；
+  Build #354 已完成自动基线，真实客户端/专用服验证仍待完成；
 - 新增 schema v1 持久 bot roster，保存规范名字、稳定 bot/player UUID、owner 和
   `serverInstanceId`；
 - 新增 `/botplayer settings <name>`：只有 roster 中精确 owner 可以打开本地界面，OP
@@ -113,6 +126,9 @@
   body 永久 poison 分离，successor 只释放自己继承的 fence。ItemEntity 回调内嵌套
   `die()` 只允许外层执行一次物品/经验掉落，迟到 predecessor 的死亡与保存不能扰动当前
   ACTIVE successor；修改 `AUTO_RESPAWN` 的场景拆为独立 batch，消除全局配置竞态。
+- `PlayerList.save` 的通用围栏不再消费仅属于 `PlayerList.remove` 内原版保存的一次性
+  门闩；死亡精确保存许可与持久 no-save fence 仍在通用保存入口 fail-closed，避免普通保存
+  抢先放开随后 remove 的隔离保存。
 - P3 事件、快照、事实、revision scope、声音候选、扫描和证据全部有界；死亡、重生、
   换维度、卸载、回滚和停服关闭旧 generation 认知；
 - 定向声音 ingress 按 generation 分队列、限制动态公平份额并 round-robin 抽取；全局
@@ -186,7 +202,8 @@
 - API Key 只写入 owner 客户端的独立本地明文存储，优先原子替换并尽力收紧文件权限；
 - Key 不进入命令、聊天、Minecraft payload、服务端、世界数据、日志或诊断；
 - 只有 roster 中持久 owner 可以配置对应 bot；服务器实例 ID 防止不同服务器错误复用绑定；
-- 明确当前没有 DeepSeek Provider 或 HTTP 请求，凭据保存不会让 bot 变智能；
+- 明确保存凭据不会自动启动模型请求；默认关闭的 P6-R1 是唯一固定、本地 opt-in 的
+  review-only HTTPS 例外，回传只摘要并丢弃，不让 bot 变智能；
 - 接受 ADR-0012，以客户端赞助凭据模式取代 ADR-0004 的服务端 secret 部署决定；ADR-0010
   仍然有效。
 

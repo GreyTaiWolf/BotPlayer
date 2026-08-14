@@ -11,6 +11,10 @@ public enum MenuSlotRole {
     CRAFTING_INPUT,
     FURNACE_INPUT,
     FURNACE_FUEL,
+    /** 原版 MerchantMenu 的第一、第二支付格；它们不是通用容器格。 */
+    MERCHANT_PAYMENT,
+    /** 原版 MerchantMenu 的交易结果格；只允许受限交易动作领取。 */
+    MERCHANT_RESULT,
     CONTAINER,
     PLAYER_MAIN,
     PLAYER_HOTBAR,

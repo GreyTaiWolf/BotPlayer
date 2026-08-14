@@ -8,11 +8,13 @@ import org.junit.jupiter.api.Test;
 
 class MenuFamilyTest {
     @Test
-    void acceptsOnlyTheFourExactVanillaShapes() {
+    void acceptsOnlyTheSixExactVanillaShapes() {
         Assertions.assertEquals(46, MenuFamily.INVENTORY_2X2.slotCount());
         Assertions.assertEquals(46, MenuFamily.CRAFTING_3X3.slotCount());
         Assertions.assertEquals(39, MenuFamily.FURNACE.slotCount());
+        Assertions.assertEquals(39, MenuFamily.MERCHANT.slotCount());
         Assertions.assertEquals(63, MenuFamily.CHEST_3X9.slotCount());
+        Assertions.assertEquals(90, MenuFamily.CHEST_6X9.slotCount());
         Assertions.assertEquals(
                 MenuSlotRole.RESULT,
                 MenuFamily.INVENTORY_2X2.roleAt(0));
@@ -23,6 +25,18 @@ class MenuFamilyTest {
                 MenuSlotRole.FURNACE_FUEL,
                 MenuFamily.FURNACE.roleAt(1));
         Assertions.assertEquals(
+                MenuSlotRole.MERCHANT_PAYMENT,
+                MenuFamily.MERCHANT.roleAt(0));
+        Assertions.assertEquals(
+                MenuSlotRole.MERCHANT_RESULT,
+                MenuFamily.MERCHANT.roleAt(2));
+        Assertions.assertEquals(
+                MenuSlotRole.PLAYER_MAIN,
+                MenuFamily.MERCHANT.roleAt(3));
+        Assertions.assertEquals(
+                MenuSlotRole.PLAYER_HOTBAR,
+                MenuFamily.MERCHANT.roleAt(30));
+        Assertions.assertEquals(
                 MenuSlotRole.CONTAINER,
                 MenuFamily.CHEST_3X9.roleAt(26));
         Assertions.assertEquals(
@@ -31,12 +45,31 @@ class MenuFamilyTest {
         Assertions.assertEquals(
                 MenuSlotRole.PLAYER_HOTBAR,
                 MenuFamily.CHEST_3X9.roleAt(54));
+        Assertions.assertEquals(
+                MenuSlotRole.CONTAINER,
+                MenuFamily.CHEST_6X9.roleAt(53));
+        Assertions.assertEquals(
+                MenuSlotRole.PLAYER_MAIN,
+                MenuFamily.CHEST_6X9.roleAt(54));
+        Assertions.assertEquals(
+                MenuSlotRole.PLAYER_HOTBAR,
+                MenuFamily.CHEST_6X9.roleAt(81));
 
         Assertions.assertEquals(
                 MenuFamily.CHEST_3X9,
                 MenuFamily.resolveExact("chest_3x9", 63).orElseThrow());
         Assertions.assertTrue(
                 MenuFamily.resolveExact("chest_3x9", 62).isEmpty());
+        Assertions.assertEquals(
+                MenuFamily.CHEST_6X9,
+                MenuFamily.resolveExact("chest_6x9", 90).orElseThrow());
+        Assertions.assertTrue(
+                MenuFamily.resolveExact("chest_6x9", 89).isEmpty());
+        Assertions.assertEquals(
+                MenuFamily.MERCHANT,
+                MenuFamily.resolveExact("merchant", 39).orElseThrow());
+        Assertions.assertTrue(
+                MenuFamily.resolveExact("merchant", 38).isEmpty());
         Assertions.assertTrue(
                 MenuFamily.resolveExact("modded_chest", 63).isEmpty());
         Assertions.assertTrue(MenuFamily.resolveExact(null, 63).isEmpty());

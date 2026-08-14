@@ -7,6 +7,8 @@ import io.github.greytaiwolf.botplayer.skill.menu.MenuFamily;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuSlotRole;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionLimits;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionTemplate;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -19,6 +21,7 @@ public sealed interface WorldInteractionActionSpec
    WorldInteractionActionSpec.WorldMenuTransaction,
    WorldInteractionActionSpec.WorldMenuTransfer,
    WorldInteractionActionSpec.WorldMenuRecipe,
+   WorldInteractionActionSpec.WorldVillagerTrade,
    WorldInteractionActionSpec.UseItem,
    WorldInteractionActionSpec.ReleaseUse,
    WorldInteractionActionSpec.UseOnBlock,
@@ -31,6 +34,8 @@ public sealed interface WorldInteractionActionSpec
    int SCHEMA_VERSION = 1;
    int MAX_HOLD_TICKS = 6000;
    int MAX_PICKUP_WAIT_TICKS = 6000;
+   /** A bounded multi-receipt pickup fits the terminal ActionOutcome evidence budget. */
+   int MAX_PICKUP_EXPECTED_ITEM_ENTITIES = 4;
 
    WorldInteractionActionSpec.Kind kind();
 
@@ -55,14 +60,70 @@ public sealed interface WorldInteractionActionSpec
       }
    }
 
-   public static record BreakBlock(BlockHitTarget target, ItemStackFingerprint expectedTool) implements WorldInteractionActionSpec {
+   /**
+    * A bounded break request with the exact source block, held tool, and optional
+    * face-adjacent world-state fences.
+    *
+    * <p>The two-argument constructor deliberately retains the established generic
+    * break contract.  Callers whose safety depends on a supporting or exposed
+    * neighbour staying unchanged (for example, harvesting only the top segment of
+    * a sugar-cane column) may provide up to the six face-adjacent fingerprints.
+    * The Minecraft backend checks those fences before dispatch, while mining, and
+    * again before it reports the break successful.
+    */
+   public static record BreakBlock(
+      BlockHitTarget target,
+      ItemStackFingerprint expectedTool,
+      List<BlockTargetFingerprint> neighborPreconditions
+   ) implements WorldInteractionActionSpec {
       private static final Set<ActionChannel> CHANNELS = Set.of(ActionChannel.MAIN_HAND, ActionChannel.INTERACT);
 
+      public static final int MAX_NEIGHBOR_PRECONDITIONS = 6;
+
+      /** Preserves the legacy single-target break contract. */
       public BreakBlock(BlockHitTarget target, ItemStackFingerprint expectedTool) {
+         this(target, expectedTool, List.of());
+      }
+
+      public BreakBlock {
          Objects.requireNonNull(target, "target");
          Objects.requireNonNull(expectedTool, "expectedTool");
-         this.target = target;
-         this.expectedTool = expectedTool;
+         neighborPreconditions = List.copyOf(Objects.requireNonNull(
+            neighborPreconditions, "neighborPreconditions"
+         ));
+         if (neighborPreconditions.size() > MAX_NEIGHBOR_PRECONDITIONS) {
+            throw new IllegalArgumentException(
+               "break block neighbor preconditions exceed face-adjacent bound"
+            );
+         }
+         for (int index = 0; index < neighborPreconditions.size(); index++) {
+            BlockTargetFingerprint neighbor = Objects.requireNonNull(
+               neighborPreconditions.get(index), "break block neighbor precondition"
+            );
+            if (!neighbor.dimension().equals(target.target().dimension())
+                  || !isFaceAdjacent(target.target().position(), neighbor.position())) {
+               throw new IllegalArgumentException(
+                  "break block neighbor must be face-adjacent in the target dimension"
+               );
+            }
+            for (int previous = 0; previous < index; previous++) {
+               if (neighbor.position().equals(
+                     neighborPreconditions.get(previous).position())) {
+                  throw new IllegalArgumentException(
+                     "break block neighbor positions must be unique"
+                  );
+               }
+            }
+         }
+      }
+
+      private static boolean isFaceAdjacent(
+         BlockCoordinates target, BlockCoordinates neighbor
+      ) {
+         long deltaX = Math.abs((long) target.x() - neighbor.x());
+         long deltaY = Math.abs((long) target.y() - neighbor.y());
+         long deltaZ = Math.abs((long) target.z() - neighbor.z());
+         return deltaX + deltaY + deltaZ == 1L;
       }
 
       @Override
@@ -115,15 +176,65 @@ public sealed interface WorldInteractionActionSpec
       }
    }
 
-   public static record InteractEntity(WorldInteractionActionSpec.Hand hand, EntityTargetFingerprint target, Optional<EntityLocalHit> localHit)
+   /**
+    * A vanilla entity interaction whose target and (when present) held stack are
+    * frozen before it enters the action mailbox.
+    *
+    * <p>{@link #expectedHeldItem()} is deliberately optional only for source
+    * compatibility with pre-P5B generic interactions.  New callers which
+    * depend on an item effect must use the four-argument constructor: the
+    * backend compares that fingerprint against the declared hand both during
+    * validation and again immediately before packet dispatch.  An empty value
+    * does not make an item claim and must not be used for an item-consuming
+    * workflow.
+    */
+   public static record InteractEntity(
+      WorldInteractionActionSpec.Hand hand,
+      EntityTargetFingerprint target,
+      Optional<EntityLocalHit> localHit,
+      Optional<ItemStackFingerprint> expectedHeldItem
+   )
       implements WorldInteractionActionSpec {
-      public InteractEntity(WorldInteractionActionSpec.Hand hand, EntityTargetFingerprint target, Optional<EntityLocalHit> localHit) {
+      /** Legacy generic interaction without an item precondition. */
+      public InteractEntity(
+         WorldInteractionActionSpec.Hand hand,
+         EntityTargetFingerprint target,
+         Optional<EntityLocalHit> localHit
+      ) {
+         this(hand, target, localHit, Optional.empty());
+      }
+
+      /**
+       * Strict interaction constructor for an item-dependent vanilla effect.
+       */
+      public InteractEntity(
+         WorldInteractionActionSpec.Hand hand,
+         EntityTargetFingerprint target,
+         Optional<EntityLocalHit> localHit,
+         ItemStackFingerprint expectedHeldItem
+      ) {
+         this(
+            hand,
+            target,
+            localHit,
+            Optional.of(Objects.requireNonNull(expectedHeldItem, "expectedHeldItem"))
+         );
+      }
+
+      public InteractEntity(
+         WorldInteractionActionSpec.Hand hand,
+         EntityTargetFingerprint target,
+         Optional<EntityLocalHit> localHit,
+         Optional<ItemStackFingerprint> expectedHeldItem
+      ) {
          Objects.requireNonNull(hand, "hand");
          Objects.requireNonNull(target, "target");
          Objects.requireNonNull(localHit, "localHit");
+         Objects.requireNonNull(expectedHeldItem, "expectedHeldItem");
          this.hand = hand;
          this.target = target;
          this.localHit = localHit;
+         this.expectedHeldItem = expectedHeldItem;
       }
 
       @Override
@@ -154,6 +265,7 @@ public sealed interface WorldInteractionActionSpec
       WORLD_MENU_TRANSACTION,
       WORLD_MENU_TRANSFER,
       WORLD_MENU_RECIPE,
+      WORLD_VILLAGER_TRADE,
       USE_ITEM,
       RELEASE_USE,
       USE_ON_BLOCK,
@@ -222,11 +334,21 @@ public sealed interface WorldInteractionActionSpec
          Objects.requireNonNull(expectedHeldItem, "expectedHeldItem");
          Objects.requireNonNull(template, "template");
          Objects.requireNonNull(limits, "limits");
+         if (template.family() == MenuFamily.MERCHANT) {
+            throw new IllegalArgumentException(
+               "merchant menus require the dedicated vanilla villager trade action"
+            );
+         }
          boolean nativeInventory = template.family()
             == MenuFamily.INVENTORY_2X2;
          if (nativeInventory != opener.isEmpty()) {
             throw new IllegalArgumentException(
                "inventory menu must omit opener and world menus must require one"
+            );
+         }
+         if (template.family() == MenuFamily.FURNACE) {
+            throw new IllegalArgumentException(
+               "furnace layouts require a typed WorldMenuRecipe contract"
             );
          }
          this.hand = hand;
@@ -248,9 +370,10 @@ public sealed interface WorldInteractionActionSpec
    }
 
    /**
-    * 在同一动作中打开一个白名单世界菜单、从刚打开的权威完整快照构造一次完整堆叠
-    * transfer，并在验证后关闭。与 {@link WorldMenuTransaction} 的区别是模板不能在
-    * 打开前预知容器内容；只允许 move-or-swap 这一条严格守恒原语。
+    * 在同一动作中打开一个白名单世界菜单、从刚打开的权威完整快照构造一次 transfer，
+    * 并在验证后关闭。与 {@link WorldMenuTransaction} 的区别是模板不能在打开前预知
+    * 容器内容；{@code requestedAmount=0} 只保留给旧的完整堆叠 move-or-swap，正数则
+    * 表示移入空 target 的精确数量。
     */
    public static record WorldMenuTransfer(
       WorldInteractionActionSpec.Hand hand,
@@ -259,8 +382,11 @@ public sealed interface WorldInteractionActionSpec
       MenuFamily family,
       int sourceSlot,
       int targetSlot,
+      int requestedAmount,
       MenuTransactionLimits limits
    ) implements WorldInteractionActionSpec {
+      /** P5A 单次逐右键 transfer 的审计上限，较大数量应拆成多个明确节点。 */
+      public static final int MAXIMUM_EXACT_TRANSFER_AMOUNT = 32;
       private static final Set<ActionChannel> CHANNELS = Set.of(
          ActionChannel.INVENTORY,
          ActionChannel.MAIN_HAND,
@@ -277,14 +403,37 @@ public sealed interface WorldInteractionActionSpec
          int targetSlot,
          MenuTransactionLimits limits
       ) {
+         this(
+            hand,
+            opener,
+            expectedHeldItem,
+            family,
+            sourceSlot,
+            targetSlot,
+            0,
+            limits
+         );
+      }
+
+      public WorldMenuTransfer(
+         WorldInteractionActionSpec.Hand hand,
+         BlockHitTarget opener,
+         ItemStackFingerprint expectedHeldItem,
+         MenuFamily family,
+         int sourceSlot,
+         int targetSlot,
+         int requestedAmount,
+         MenuTransactionLimits limits
+      ) {
          Objects.requireNonNull(hand, "hand");
          Objects.requireNonNull(opener, "opener");
          Objects.requireNonNull(expectedHeldItem, "expectedHeldItem");
          Objects.requireNonNull(family, "family");
          Objects.requireNonNull(limits, "limits");
-         if (family == MenuFamily.INVENTORY_2X2) {
+         if (family == MenuFamily.INVENTORY_2X2
+               || family == MenuFamily.MERCHANT) {
             throw new IllegalArgumentException(
-               "world menu transfer cannot target native inventory"
+               "world menu transfer cannot target native inventory or merchant"
             );
          }
          family.requireSlot(sourceSlot);
@@ -292,6 +441,18 @@ public sealed interface WorldInteractionActionSpec
          if (sourceSlot == targetSlot) {
             throw new IllegalArgumentException(
                "world menu transfer source and target must differ"
+            );
+         }
+         if (requestedAmount < 0
+               || requestedAmount > MAXIMUM_EXACT_TRANSFER_AMOUNT) {
+            throw new IllegalArgumentException(
+               "world menu transfer requested amount exceeds the P5A bound"
+            );
+         }
+         if (requestedAmount > 0
+               && limits.maxClicks() < requestedAmount + 2) {
+            throw new IllegalArgumentException(
+               "world menu transfer limits cannot settle the requested amount"
             );
          }
          if (!transferRoleAllowed(family.roleAt(sourceSlot))
@@ -306,6 +467,7 @@ public sealed interface WorldInteractionActionSpec
          this.family = family;
          this.sourceSlot = sourceSlot;
          this.targetSlot = targetSlot;
+         this.requestedAmount = requestedAmount;
          this.limits = limits;
       }
 
@@ -321,7 +483,9 @@ public sealed interface WorldInteractionActionSpec
 
       private static boolean transferRoleAllowed(MenuSlotRole role) {
          return role != MenuSlotRole.RESULT
-            && role != MenuSlotRole.CRAFTING_INPUT;
+            && role != MenuSlotRole.CRAFTING_INPUT
+            && role != MenuSlotRole.MERCHANT_PAYMENT
+            && role != MenuSlotRole.MERCHANT_RESULT;
       }
    }
 
@@ -338,7 +502,6 @@ public sealed interface WorldInteractionActionSpec
       int batches,
       MenuTransactionLimits limits
    ) implements WorldInteractionActionSpec {
-      private static final long MINIMUM_FURNACE_TICKS = 700L;
       private static final Set<ActionChannel> CHANNELS = Set.of(
          ActionChannel.INVENTORY,
          ActionChannel.MAIN_HAND,
@@ -372,9 +535,10 @@ public sealed interface WorldInteractionActionSpec
             );
          }
          if (recipe.isFurnace()
-               && limits.maxTicks() < MINIMUM_FURNACE_TICKS) {
+               && limits.maxTicks()
+                  < recipe.furnaceKind().minimumTransactionTicks()) {
             throw new IllegalArgumentException(
-               "furnace recipe requires at least 700 transaction ticks"
+               "furnace recipe transaction limit is below its exact furnace-kind minimum"
             );
          }
          this.hand = hand;
@@ -396,18 +560,221 @@ public sealed interface WorldInteractionActionSpec
       }
    }
 
-   public static record PickupWait(int ticks, Optional<UUID> expectedItemEntityId) implements WorldInteractionActionSpec {
+   /**
+    * 一次受限的原版村民交易。
+    *
+    * <p>这不是通用商店或 UI 自动化。它只表达一笔单支付物的 {@code Villager} offer：开始
+    * 时主手和 cursor 都为空，玩家 36 格可交易背包中只有指定 output 格为空；适配器会打开
+    * 精确 {@code MerchantMenu}，逐右键投入冻结的支付数量，再以一次原版 {@code QUICK_MOVE}
+    * 领取结果。这样取消不会把已经领取的结果遗留在 cursor。所有 offer、库存、菜单、实体和
+    * generation 都必须在服务端重新验证；交易 XP 也被冻结，并拒绝会跨越村民等级门槛的
+    * offer。未知 merchant、双支付 offer、折扣漂移和布局漂移一律失败关闭。
+    */
+   public static record WorldVillagerTrade(
+      WorldInteractionActionSpec.Hand hand,
+      EntityTargetFingerprint villager,
+      int offerIndex,
+      int sourceInventorySlot,
+      int outputInventorySlot,
+      ItemStackFingerprint expectedSource,
+      ItemStackFingerprint expectedCost,
+      ItemStackFingerprint expectedResult,
+      MerchantOfferState expectedOfferState,
+      int expectedVillagerLevel,
+      int expectedVillagerXp,
+      int expectedOfferUses,
+      int expectedOfferMaxUses,
+      MenuTransactionLimits limits
+   ) implements WorldInteractionActionSpec {
+      /** 单次精确支付右键的 P5B 审计上限。 */
+      public static final int MAXIMUM_COST_COUNT = 16;
+      /** 原版玩家 inventory 的可交易主背包与快捷栏，盔甲/副手不在 MerchantMenu 中。 */
+      public static final int FIRST_PLAYER_INVENTORY_SLOT = 0;
+      public static final int LAST_PLAYER_INVENTORY_SLOT = 35;
+      private static final Set<ActionChannel> CHANNELS = Set.of(
+         ActionChannel.INVENTORY,
+         ActionChannel.MAIN_HAND,
+         ActionChannel.INTERACT
+      );
+
+      public WorldVillagerTrade(
+         WorldInteractionActionSpec.Hand hand,
+         EntityTargetFingerprint villager,
+         int offerIndex,
+         int sourceInventorySlot,
+         int outputInventorySlot,
+         ItemStackFingerprint expectedSource,
+         ItemStackFingerprint expectedCost,
+         ItemStackFingerprint expectedResult,
+         MerchantOfferState expectedOfferState,
+         int expectedVillagerLevel,
+         int expectedVillagerXp,
+         int expectedOfferUses,
+         int expectedOfferMaxUses,
+         MenuTransactionLimits limits
+      ) {
+         Objects.requireNonNull(hand, "hand");
+         Objects.requireNonNull(villager, "villager");
+         Objects.requireNonNull(expectedSource, "expectedSource");
+         Objects.requireNonNull(expectedCost, "expectedCost");
+         Objects.requireNonNull(expectedResult, "expectedResult");
+         Objects.requireNonNull(expectedOfferState, "expectedOfferState");
+         Objects.requireNonNull(limits, "limits");
+         if (hand != WorldInteractionActionSpec.Hand.MAIN_HAND) {
+            throw new IllegalArgumentException(
+               "vanilla villager trade only permits the empty main hand"
+            );
+         }
+         if (!"minecraft:villager".equals(villager.entityType().value())) {
+            throw new IllegalArgumentException(
+               "vanilla villager trade requires an exact minecraft:villager target"
+            );
+         }
+         if (offerIndex < 0
+               || sourceInventorySlot < FIRST_PLAYER_INVENTORY_SLOT
+               || sourceInventorySlot > LAST_PLAYER_INVENTORY_SLOT
+               || outputInventorySlot < FIRST_PLAYER_INVENTORY_SLOT
+               || outputInventorySlot > LAST_PLAYER_INVENTORY_SLOT
+               || sourceInventorySlot == outputInventorySlot) {
+            throw new IllegalArgumentException(
+               "vanilla villager trade inventory slots or offer index are invalid"
+            );
+         }
+         if (expectedSource.isEmpty()
+               || expectedCost.isEmpty()
+               || expectedCost.count() > MAXIMUM_COST_COUNT
+               || expectedResult.isEmpty()
+               || !expectedSource.sameItemAndComponents(expectedCost)
+               || expectedSource.count() <= expectedCost.count()
+               || expectedCost.sameItemAndComponents(expectedResult)
+               || !expectedOfferState.baseCost()
+                     .sameItemAndComponents(expectedCost)) {
+            throw new IllegalArgumentException(
+               "vanilla villager trade must use a larger exact source, stable base price, and distinct bounded cost/result"
+            );
+         }
+         if (expectedVillagerLevel < 1
+               || expectedVillagerLevel > 5
+               || expectedVillagerXp < 0
+               || expectedOfferUses < 0
+               || expectedOfferMaxUses < 1
+               || expectedOfferUses >= expectedOfferMaxUses) {
+            throw new IllegalArgumentException(
+               "vanilla villager trade XP or offer use bounds are invalid"
+            );
+         }
+         if (limits.maxClicks() < expectedCost.count() + 3) {
+            throw new IllegalArgumentException(
+               "vanilla villager trade click limit cannot complete its bounded payment"
+            );
+         }
+         try {
+            Math.addExact(
+               expectedVillagerXp,
+               expectedOfferState.rewardsExperience()
+                  ? expectedOfferState.xp() : 0
+            );
+         } catch (ArithmeticException exception) {
+            throw new IllegalArgumentException(
+               "vanilla villager trade XP would overflow", exception
+            );
+         }
+         this.hand = hand;
+         this.villager = villager;
+         this.offerIndex = offerIndex;
+         this.sourceInventorySlot = sourceInventorySlot;
+         this.outputInventorySlot = outputInventorySlot;
+         this.expectedSource = expectedSource;
+         this.expectedCost = expectedCost;
+         this.expectedResult = expectedResult;
+         this.expectedOfferState = expectedOfferState;
+         this.expectedVillagerLevel = expectedVillagerLevel;
+         this.expectedVillagerXp = expectedVillagerXp;
+         this.expectedOfferUses = expectedOfferUses;
+         this.expectedOfferMaxUses = expectedOfferMaxUses;
+         this.limits = limits;
+      }
+
+      @Override
+      public WorldInteractionActionSpec.Kind kind() {
+         return WorldInteractionActionSpec.Kind.WORLD_VILLAGER_TRADE;
+      }
+
+      @Override
+      public Set<ActionChannel> channels() {
+         return CHANNELS;
+      }
+
+      /**
+       * 交易 offer 的所有价格/经验状态。它与可见的 {@link WorldVillagerTrade#expectedCost()}、结果、uses
+       * 和 max uses 一起构成动作提交时的完整原版 offer 冻结，而不是仅按当前 cost 猜测。
+       */
+      public static record MerchantOfferState(
+         ItemStackFingerprint baseCost,
+         int demand,
+         int specialPriceDiff,
+         int priceMultiplierBits,
+         int xp,
+         boolean rewardsExperience
+      ) {
+         public MerchantOfferState {
+            Objects.requireNonNull(baseCost, "baseCost");
+            float priceMultiplier = Float.intBitsToFloat(
+               priceMultiplierBits
+            );
+            if (baseCost.isEmpty()
+                  || !Float.isFinite(priceMultiplier)
+                  || priceMultiplier < 0.0F
+                  || xp < 0) {
+               throw new IllegalArgumentException(
+                  "merchant offer state must contain a valid base price and non-negative XP"
+               );
+            }
+         }
+      }
+   }
+
+   /**
+    * Waits only for a bounded, frozen set of normal collision-driven item pickups.
+    * An empty list retains the generic "some inventory change" contract; a non-empty
+    * list requires every exact receipt UUID to disappear and be conserved before success.
+    */
+   public static record PickupWait(int ticks, List<UUID> expectedItemEntityIds) implements WorldInteractionActionSpec {
       private static final Set<ActionChannel> CHANNELS = Set.of(ActionChannel.INVENTORY);
 
+      /** Preserves callers that bind exactly one receipt or no receipt. */
       public PickupWait(int ticks, Optional<UUID> expectedItemEntityId) {
-         if (ticks >= 1 && ticks <= 6000) {
-            Objects.requireNonNull(expectedItemEntityId, "expectedItemEntityId");
-            expectedItemEntityId.ifPresent(var0 -> InteractionChecks.requireNonZeroUuid(var0, "expectedItemEntityId"));
-            this.ticks = ticks;
-            this.expectedItemEntityId = expectedItemEntityId;
-         } else {
+         this(ticks, Objects.requireNonNull(expectedItemEntityId,
+               "expectedItemEntityId").map(List::of).orElseGet(List::of));
+      }
+
+      public PickupWait {
+         if (ticks < 1 || ticks > MAX_PICKUP_WAIT_TICKS) {
             throw new IllegalArgumentException("pickup wait ticks must be between 1 and 6000");
          }
+         expectedItemEntityIds = List.copyOf(Objects.requireNonNull(
+               expectedItemEntityIds, "expectedItemEntityIds"));
+         if (expectedItemEntityIds.size()
+               > MAX_PICKUP_EXPECTED_ITEM_ENTITIES) {
+            throw new IllegalArgumentException(
+                  "pickup wait expected item entities exceed bounded receipt capacity");
+         }
+         Set<UUID> unique = new LinkedHashSet<>();
+         for (UUID entityId : expectedItemEntityIds) {
+            InteractionChecks.requireNonZeroUuid(Objects.requireNonNull(
+                  entityId, "expectedItemEntityId"), "expectedItemEntityId");
+            if (!unique.add(entityId)) {
+               throw new IllegalArgumentException(
+                     "pickup wait expected item entity ids must be unique");
+            }
+         }
+      }
+
+      /** Legacy single-receipt view; multi-receipt callers must use the full list. */
+      public Optional<UUID> expectedItemEntityId() {
+         return expectedItemEntityIds.size() == 1
+               ? Optional.of(expectedItemEntityIds.get(0))
+               : Optional.empty();
       }
 
       @Override
@@ -584,12 +951,63 @@ public sealed interface WorldInteractionActionSpec
    }
 
    public static record UseItem(
-      WorldInteractionActionSpec.Hand hand, ItemStackFingerprint expectedHeldItem, WorldInteractionActionSpec.ItemUseMode mode, int holdTicks
+      WorldInteractionActionSpec.Hand hand,
+      ItemStackFingerprint expectedHeldItem,
+      WorldInteractionActionSpec.ItemUseMode mode,
+      int holdTicks,
+      Optional<UseItemPreconditions> strictPreconditions
    ) implements WorldInteractionActionSpec {
-      public UseItem(WorldInteractionActionSpec.Hand hand, ItemStackFingerprint expectedHeldItem, WorldInteractionActionSpec.ItemUseMode mode, int holdTicks) {
+      private static final Set<ActionChannel> STRICT_MAIN_HAND_CHANNELS = Set.of(
+         ActionChannel.MAIN_HAND, ActionChannel.INTERACT, ActionChannel.INVENTORY
+      );
+      private static final Set<ActionChannel> STRICT_OFF_HAND_CHANNELS = Set.of(
+         ActionChannel.OFF_HAND, ActionChannel.INTERACT, ActionChannel.INVENTORY
+      );
+
+      /**
+       * Backwards-compatible generic use without menu/effect dispatch fences.
+       */
+      public UseItem(
+         WorldInteractionActionSpec.Hand hand,
+         ItemStackFingerprint expectedHeldItem,
+         WorldInteractionActionSpec.ItemUseMode mode,
+         int holdTicks
+      ) {
+         this(hand, expectedHeldItem, mode, holdTicks, Optional.empty());
+      }
+
+      /**
+       * Strict native use with an immutable menu/effect snapshot.
+       */
+      public UseItem(
+         WorldInteractionActionSpec.Hand hand,
+         ItemStackFingerprint expectedHeldItem,
+         WorldInteractionActionSpec.ItemUseMode mode,
+         int holdTicks,
+         UseItemPreconditions strictPreconditions
+      ) {
+         this(
+            hand,
+            expectedHeldItem,
+            mode,
+            holdTicks,
+            Optional.of(Objects.requireNonNull(
+               strictPreconditions, "strictPreconditions"
+            ))
+         );
+      }
+
+      public UseItem(
+         WorldInteractionActionSpec.Hand hand,
+         ItemStackFingerprint expectedHeldItem,
+         WorldInteractionActionSpec.ItemUseMode mode,
+         int holdTicks,
+         Optional<UseItemPreconditions> strictPreconditions
+      ) {
          Objects.requireNonNull(hand, "hand");
          Objects.requireNonNull(expectedHeldItem, "expectedHeldItem");
          Objects.requireNonNull(mode, "mode");
+         Objects.requireNonNull(strictPreconditions, "strictPreconditions");
          switch (mode) {
             case INSTANT:
             case FINISH_NATURALLY:
@@ -607,6 +1025,7 @@ public sealed interface WorldInteractionActionSpec
          this.expectedHeldItem = expectedHeldItem;
          this.mode = mode;
          this.holdTicks = holdTicks;
+         this.strictPreconditions = strictPreconditions;
       }
 
       @Override
@@ -616,7 +1035,13 @@ public sealed interface WorldInteractionActionSpec
 
       @Override
       public Set<ActionChannel> channels() {
-         return this.hand.interactionChannels();
+         if (this.strictPreconditions.isEmpty()) {
+            return this.hand.interactionChannels();
+         }
+         return switch (this.hand) {
+            case MAIN_HAND -> STRICT_MAIN_HAND_CHANNELS;
+            case OFF_HAND -> STRICT_OFF_HAND_CHANNELS;
+         };
       }
    }
 

@@ -718,6 +718,92 @@ public final class P5SurvivalSkillAcceptanceGameTests {
 
     @GameTest(
             template = P2GameTestSupport.TEMPLATE,
+            batch = LIFECYCLE_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void ordinarySaveDoesNotConsumeRemovalOnlySaveFence(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        P5GameTestSupport.IsolatedFixture fixture =
+                P5GameTestSupport.isolatedFixture(
+                        helper, "save_fence_remove");
+        TestBot bot = fixture.spawn("rmone");
+        P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
+        try {
+            BotServerPlayer player = bot.player();
+            cleanup.add(player::clearPlayerDataSaveSuppression);
+            var server = helper.getLevel().getServer();
+            UUID botId = player.getUUID();
+            long generation = player.runtimeHandle().generation();
+            Path playerData = server
+                    .getWorldPath(LevelResource.PLAYER_DATA_DIR)
+                    .resolve(botId + ".dat");
+            PlayerListAccessor playerList =
+                    (PlayerListAccessor) (Object) server.getPlayerList();
+            P2GameTestSupport.require(
+                    player.connection.getConnection()
+                            instanceof BotConnection,
+                    "Removal-only save-fence fixture has no BotConnection");
+            BotConnection connection = (BotConnection) player.connection
+                    .getConnection();
+
+            player.getInventory().clearContent();
+            player.getInventory().selected = 1;
+            player.getInventory().setItem(
+                    1, new ItemStack(Items.STONE));
+            playerList.botplayer$saveExactPlayer(player);
+            P2GameTestSupport.require(
+                    Files.isRegularFile(playerData)
+                            && savedLayout(playerData).equals(
+                                    new PersistedLayout(1, Set.of(1))),
+                    "Removal-only save-fence fixture could not persist its baseline");
+
+            player.suppressNextPlayerDataSave();
+            P2GameTestSupport.require(
+                    !player.shouldSuppressOrdinaryPlayerDataSave(),
+                    "Removal-only gate leaked into ordinary PlayerList.save");
+            player.getInventory().clearContent();
+            player.getInventory().selected = 3;
+            player.getInventory().setItem(
+                    11, new ItemStack(Items.EMERALD));
+            playerList.botplayer$saveExactPlayer(player);
+            PersistedLayout ordinarySave =
+                    new PersistedLayout(3, Set.of(11));
+            P2GameTestSupport.require(
+                    savedLayout(playerData).equals(ordinarySave),
+                    "Ordinary PlayerList.save consumed or suppressed the removal-only gate");
+
+            player.getInventory().clearContent();
+            player.getInventory().selected = 7;
+            player.getInventory().setItem(
+                    14, new ItemStack(Items.DIAMOND));
+            player.connection.disconnect(Component.literal(
+                    "P5 removal-only save fence fixture"));
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    180,
+                    () -> !connection.snapshot().open()
+                            && server.getPlayerList().getPlayer(botId)
+                                    == null
+                            && bot.manager()
+                                    .resolveActive(botId, generation)
+                                    .isEmpty(),
+                    "Removal-only save-fence disconnect did not remove the bot",
+                    cleanup,
+                    () -> {
+                        P2GameTestSupport.require(
+                                savedLayout(playerData).equals(ordinarySave),
+                                "PlayerList.remove internal save was not suppressed by the retained one-shot gate");
+                        cleanup.run();
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
             batch = RESPAWN_FENCE_BATCH,
             timeoutTicks = TIMEOUT_TICKS)
     public static void persistentNoSaveFenceCrossesRespawnBody(

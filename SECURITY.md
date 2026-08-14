@@ -46,9 +46,11 @@ BotPlayer 当前没有正式稳定版本。
 4. 检查调用记录和异常费用；
 5. 报告泄漏路径，以便修复脱敏和输入边界。
 
-当前代码尚未接入 DeepSeek，也没有合法的 Key 命令参数。合法入口是客户端本地凭据
-Screen；Key 只写入客户端游戏目录的 `config/botplayer/credentials-v1.json`（默认启动目录
-通常是 `.minecraft`）。bot/agent 绑定写入同目录的 `bindings-v1.json`，后者不包含 Key。
+当前没有把 Key 放进命令参数的合法入口。客户端本地凭据 Screen 是唯一的 Key 写入入口；
+默认关闭的 P6-R1 owner 只读审阅路径只有在本地显式启用时才会构造固定 Provider，不能聊天、
+规划或执行世界动作，且仍待 Java 21/CI 验证。Key 只写入客户端游戏目录的
+`config/botplayer/credentials-v1.json`（默认启动目录通常是 `.minecraft`）。bot/agent 绑定写入
+同目录的 `bindings-v1.json`，后者不包含 Key。
 凭据文件当前是明文存储，写入时优先原子替换（文件系统不支持时退化为同目录覆盖）并
 尽力收紧文件权限；它不是加密或操作系统密钥库。不要将这两个文件加入支持包、云同步、
 截图、仓库或世界配置。
@@ -87,9 +89,9 @@ Screen；Key 只写入客户端游戏目录的 `config/botplayer/credentials-v1.
 - 已有持久 owner，但 trusted/observer ACL 尚未实现；
 - 一个原版权限等级仍控制基础管理命令；凭据配置额外要求持久 owner；
 - 没有保护模组兼容矩阵；
-- 没有动作 Tool Firewall，因为动作和 AI 尚未实现；
+- 严格 Tool Firewall 已编码，但尚未接通 AI→技能计划或世界动作执行；
 - 客户端凭据文件没有加密或系统 keychain 保护；
-- 没有 DeepSeek Provider 或 HTTP 请求，尚无端到端模型响应安全验证；
+- 已编码的 P6-R1 固定本地 Provider/HTTP 往返默认关闭，尚无 Java 21/NeoForge 端到端模型响应安全验证；通用聊天、计划和世界执行尚未接通；
 - 没有生命周期故障注入 GameTest；
 - 没有正式依赖漏洞扫描和发布签名；
 - 没有生产环境支持承诺。

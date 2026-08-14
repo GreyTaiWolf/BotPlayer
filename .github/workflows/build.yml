@@ -34,6 +34,17 @@ jobs:
       - name: Build
         run: ./gradlew --no-daemon clean build runGameTestServer
 
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: botplayer-test-reports
+          path: |
+            build/reports/tests/
+            build/test-results/
+            build/gametest/
+          if-no-files-found: warn
+
       - name: Upload mod artifact
         uses: actions/upload-artifact@v4
         with:

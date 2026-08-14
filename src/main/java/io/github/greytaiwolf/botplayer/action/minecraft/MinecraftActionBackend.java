@@ -125,6 +125,17 @@ public final class MinecraftActionBackend implements ActionBackend {
         worldInteractionBackend.closeSkillInventoryFences();
     }
 
+    /**
+     * Runs the strict natural-use fence from the native LivingEntity item-use
+     * hook. The lifecycle manager has already verified server-thread listener
+     * authority; this backend only examines its short-lived action state.
+     *
+     * @return whether vanilla must skip the pending native item-use update
+     */
+    public boolean beforeNativeItemUseUpdate(BotServerPlayer player) {
+        return worldInteractionBackend.beforeNativeItemUseUpdate(player);
+    }
+
     @Override
     public BackendResult validate(
             ActionEnvelope envelope, long currentTick) {

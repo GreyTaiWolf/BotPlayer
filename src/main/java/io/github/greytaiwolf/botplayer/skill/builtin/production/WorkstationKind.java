@@ -2,10 +2,11 @@ package io.github.greytaiwolf.botplayer.skill.builtin.production;
 
 import io.github.greytaiwolf.botplayer.action.interaction.BlockStateFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.FurnaceKind;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuFamily;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
+import java.util.Optional;
 
 /**
  * P5A production DAG 可以通过原版动作放置的封闭工作站集合。
@@ -17,21 +18,36 @@ import java.util.Set;
 public enum WorkstationKind {
     CRAFTING_TABLE(
             ProductionMaterials.CRAFTING_TABLE,
-            MenuFamily.CRAFTING_3X3),
+            MenuFamily.CRAFTING_3X3,
+            null),
     FURNACE(
             ProductionMaterials.FURNACE,
-            MenuFamily.FURNACE);
-
-    private static final Set<String> HORIZONTAL_FACINGS = Set.of(
-            "north", "south", "west", "east");
+            MenuFamily.FURNACE,
+            FurnaceKind.FURNACE),
+    BLAST_FURNACE(
+            ProductionMaterials.BLAST_FURNACE,
+            MenuFamily.FURNACE,
+            FurnaceKind.BLAST_FURNACE),
+    SMOKER(
+            ProductionMaterials.SMOKER,
+            MenuFamily.FURNACE,
+            FurnaceKind.SMOKER);
 
     private final ProductionMaterial material;
     private final MenuFamily menuFamily;
+    private final FurnaceKind furnaceKind;
 
     WorkstationKind(
-            ProductionMaterial material, MenuFamily menuFamily) {
+            ProductionMaterial material,
+            MenuFamily menuFamily,
+            FurnaceKind furnaceKind) {
         this.material = Objects.requireNonNull(material, "material");
         this.menuFamily = Objects.requireNonNull(menuFamily, "menuFamily");
+        if ((menuFamily == MenuFamily.FURNACE) != (furnaceKind != null)) {
+            throw new IllegalArgumentException(
+                    "furnace workstation kind must bind exactly one furnace contract");
+        }
+        this.furnaceKind = furnaceKind;
     }
 
     /**
@@ -46,6 +62,13 @@ public enum WorkstationKind {
      */
     public MenuFamily menuFamily() {
         return menuFamily;
+    }
+
+    /**
+     * 炉型工作站返回绑定的精确炉子合同；工作台没有炉型，调用方必须显式处理。
+     */
+    public Optional<FurnaceKind> furnaceKind() {
+        return Optional.ofNullable(furnaceKind);
     }
 
     /**
@@ -64,15 +87,8 @@ public enum WorkstationKind {
         return switch (this) {
             case CRAFTING_TABLE -> new BlockStateFingerprint(
                     blockId(), Map.of());
-            case FURNACE -> {
-                if (!HORIZONTAL_FACINGS.contains(horizontalFacing)) {
-                    throw new IllegalArgumentException(
-                            "furnace placement facing must be horizontal");
-                }
-                yield new BlockStateFingerprint(blockId(), Map.of(
-                        "facing", horizontalFacing,
-                        "lit", "false"));
-            }
+            case FURNACE, BLAST_FURNACE, SMOKER -> furnaceKind
+                    .expectedPlacedState(horizontalFacing);
         };
     }
 
@@ -87,9 +103,8 @@ public enum WorkstationKind {
         }
         return switch (this) {
             case CRAFTING_TABLE -> state.properties().isEmpty();
-            case FURNACE -> state.properties().size() == 2
-                    && HORIZONTAL_FACINGS.contains(
-                            state.properties().get("facing"))
+            case FURNACE, BLAST_FURNACE, SMOKER -> furnaceKind
+                    .matchesWorkstationState(state)
                     && "false".equals(state.properties().get("lit"));
         };
     }

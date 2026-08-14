@@ -7,6 +7,8 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyDispatchReceipt;
+import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyDispatchStatus;
 import io.github.greytaiwolf.botplayer.config.BotPlayerConfig;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.lifecycle.BotPlayerManagers;
@@ -72,6 +74,13 @@ public final class BotPlayerCommands {
                                 .executes(context -> settings(
                                         context.getSource(),
                                         StringArgumentType.getString(context, "name")))))
+                .then(literal("ai")
+                        .then(literal("review")
+                                .then(argument("name", StringArgumentType.word())
+                                        .executes(context -> reviewAi(
+                                                context.getSource(),
+                                                StringArgumentType.getString(
+                                                        context, "name"))))))
                 .then(literal("list")
                         .requires(source -> source.hasPermission(
                                 BotPlayerConfig.COMMAND_PERMISSION_LEVEL.get()))
@@ -997,6 +1006,48 @@ public final class BotPlayerCommands {
             source.sendFailure(Component.literal(exception.getMessage()));
             return 0;
         }
+    }
+
+    /** Starts the only P6-R1 manual flow; it never accepts a user prompt or action request. */
+    private static int reviewAi(CommandSourceStack source, String name) {
+        if (!(source.getEntity() instanceof ServerPlayer requester)
+                || requester instanceof BotServerPlayer) {
+            source.sendFailure(Component.literal(
+                    "Only the real persistent owner can request a BotPlayer AI review"));
+            return 0;
+        }
+        AiReviewOnlyDispatchReceipt receipt;
+        try {
+            receipt = BotPlayerManagers.get(source.getServer())
+                    .requestAiReview(requester, name);
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal(
+                    "The P6-R1 review request could not be prepared"));
+            return 0;
+        }
+        if (receipt.status() == AiReviewOnlyDispatchStatus.DISPATCHED) {
+            source.sendSuccess(
+                    () -> Component.literal(
+                            "P6-R1 review was sent to your locally enabled client provider; "
+                                    + "it receives only a fixed read-only snapshot and cannot act."),
+                    false);
+            return 1;
+        }
+        source.sendFailure(Component.literal(reviewFailureMessage(receipt.status())));
+        return 0;
+    }
+
+    private static String reviewFailureMessage(AiReviewOnlyDispatchStatus status) {
+        return switch (status) {
+            case NOT_OWNER -> "Only the persistent BotPlayer owner can request this review";
+            case AGENT_NOT_BOUND -> "No active local AI agent is bound for that BotPlayer";
+            case SNAPSHOT_UNAVAILABLE, SNAPSHOT_NOT_CURRENT ->
+                    "No current review-safe perception snapshot is available; try again next tick";
+            case OWNER_OFFLINE -> "The persistent owner is not available on this server";
+            case BOT_NOT_ACTIVE -> "That BotPlayer is not active";
+            case INTERNAL_ERROR -> "The P6-R1 review request could not be prepared";
+            case DISPATCHED -> throw new IllegalArgumentException("dispatched is not a failure");
+        };
     }
 
     private static int inspectPerception(

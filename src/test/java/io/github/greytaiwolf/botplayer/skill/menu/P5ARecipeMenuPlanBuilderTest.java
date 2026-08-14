@@ -5,6 +5,7 @@ import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
 import io.github.greytaiwolf.botplayer.action.interaction.InventoryContentsSnapshot;
 import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.FurnaceKind;
 import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.P5ARecipe;
 import java.util.ArrayList;
@@ -135,7 +136,10 @@ class P5ARecipeMenuPlanBuilderTest {
 
         P5AFurnaceMenuPlanBuilder.Deposit deposit =
                 P5AFurnaceMenuPlanBuilder.deposit(
-                        opened, recipe, prototypes).orElseThrow();
+                        opened,
+                        recipe,
+                        prototypes,
+                        FurnaceKind.FURNACE).orElseThrow();
         MenuSnapshot afterDeposit = deposit.plan().finalSnapshot();
         List<ItemStackFingerprint> smeltedSlots = new ArrayList<>(
                 afterDeposit.slots());
@@ -146,19 +150,68 @@ class P5ARecipeMenuPlanBuilderTest {
                 13, 4, smeltedSlots);
 
         MenuTransactionPlan collection = P5AFurnaceMenuPlanBuilder.collect(
-                reopenedReady, deposit.expectation()).orElseThrow();
+                reopenedReady,
+                deposit.expectation(),
+                FurnaceKind.FURNACE).orElseThrow();
 
         Assertions.assertAll(
                 () -> Assertions.assertEquals(6,
                         deposit.plan().orderedSteps().size()),
                 () -> Assertions.assertTrue(deposit.expectation()
-                        .readyToCollect(reopenedReady)),
+                        .readyToCollect(reopenedReady, FurnaceKind.FURNACE)),
                 () -> Assertions.assertEquals(2,
                         collection.orderedSteps().size()),
                 () -> Assertions.assertEquals(stack("minecraft:iron_ingot", 3, 'c'),
                         collection.finalSnapshot().itemAt(5)),
                 () -> Assertions.assertEquals(ItemStackFingerprint.empty(),
                         collection.finalSnapshot().itemAt(2)));
+    }
+
+    @Test
+    void furnacePlansRejectCrossVariantEvenWhenTheThirtyNineSlotLayoutMatches() {
+        P5ARecipe recipe = P5ARecipe.RAW_IRON_TO_IRON_INGOTS_BLASTING;
+        Map<ResourceId, ItemStackFingerprint> prototypes = prototypes(recipe);
+        List<ItemStackFingerprint> slots = emptySlots(MenuFamily.FURNACE);
+        slots.set(3, stack("minecraft:raw_iron", 3, 'a'));
+        slots.set(4, stack("minecraft:coal", 1, 'b'));
+        MenuSnapshot opened = snapshot(MenuFamily.FURNACE, 12, 30, slots);
+
+        P5AFurnaceMenuPlanBuilder.Deposit deposit =
+                P5AFurnaceMenuPlanBuilder.deposit(
+                        opened,
+                        recipe,
+                        prototypes,
+                        FurnaceKind.BLAST_FURNACE).orElseThrow();
+        List<ItemStackFingerprint> smeltedSlots = new ArrayList<>(
+                deposit.plan().finalSnapshot().slots());
+        smeltedSlots.set(0, ItemStackFingerprint.empty());
+        smeltedSlots.set(1, ItemStackFingerprint.empty());
+        smeltedSlots.set(2, stack("minecraft:iron_ingot", 3, 'c'));
+        MenuSnapshot reopenedReady = snapshot(MenuFamily.FURNACE,
+                13, 4, smeltedSlots);
+
+        Assertions.assertAll(
+                () -> Assertions.assertTrue(P5AFurnaceMenuPlanBuilder.deposit(
+                        opened,
+                        recipe,
+                        prototypes,
+                        FurnaceKind.FURNACE).isEmpty()),
+                () -> Assertions.assertEquals(FurnaceKind.BLAST_FURNACE,
+                        deposit.expectation().furnaceKind()),
+                () -> Assertions.assertFalse(deposit.expectation()
+                        .pollingSnapshotAllowed(
+                                reopenedReady, FurnaceKind.FURNACE)),
+                () -> Assertions.assertTrue(deposit.expectation()
+                        .pollingSnapshotAllowed(
+                                reopenedReady, FurnaceKind.BLAST_FURNACE)),
+                () -> Assertions.assertTrue(P5AFurnaceMenuPlanBuilder.collect(
+                        reopenedReady,
+                        deposit.expectation(),
+                        FurnaceKind.FURNACE).isEmpty()),
+                () -> Assertions.assertTrue(P5AFurnaceMenuPlanBuilder.collect(
+                        reopenedReady,
+                        deposit.expectation(),
+                        FurnaceKind.BLAST_FURNACE).isPresent()));
     }
 
     @Test

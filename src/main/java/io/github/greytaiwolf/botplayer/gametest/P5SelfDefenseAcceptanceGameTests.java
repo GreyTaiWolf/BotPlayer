@@ -20,6 +20,7 @@ import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.monster.Zombie;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -92,6 +93,121 @@ public final class P5SelfDefenseAcceptanceGameTests {
         }
     }
 
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void lowHealthMultipleHostilesNeverDispatchMelee(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        P5GameTestSupport.IsolatedFixture fixture =
+                P5GameTestSupport.isolatedFixture(
+                        helper, "self_defense_low_health_multiple_hostiles");
+        TestBot bot = fixture.spawn("guard");
+        P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
+        Zombie first = Objects.requireNonNull(
+                EntityType.ZOMBIE.create(helper.getLevel()),
+                "P5A first low-health hostile");
+        Zombie second = Objects.requireNonNull(
+                EntityType.ZOMBIE.create(helper.getLevel()),
+                "P5A second low-health hostile");
+        cleanup.add(first::discard);
+        cleanup.add(second::discard);
+        Difficulty previousDifficulty = helper.getLevel()
+                .getServer()
+                .getWorldData()
+                .getDifficulty();
+        cleanup.add(() -> helper.getLevel()
+                .getServer()
+                .setDifficulty(previousDifficulty, true));
+        try {
+            helper.getLevel().getServer().setDifficulty(Difficulty.NORMAL, true);
+            prepareDefender(bot);
+            bot.player().setHealth(3.0F);
+            configureTarget(
+                    helper, first, new Vec3(3.0D, 1.0D, 4.5D));
+            configureTarget(
+                    helper, second, new Vec3(6.0D, 1.0D, 4.5D));
+            first.setInvulnerable(true);
+            second.setInvulnerable(true);
+            float firstHealth = first.getHealth();
+            float secondHealth = second.getHealth();
+            activateTarget(helper, bot, first);
+            activateTarget(helper, bot, second);
+
+            boolean[] observedBothThreats = {false};
+            boolean[] observedSelfDefenseRun = {false};
+            boolean[] observedMelee = {false};
+            int[] completeThreatFrames = {0};
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    60,
+                    () -> {
+                        boolean bothTargeting = bot.manager()
+                                .latestSafetyFrame(bot.name())
+                                .map(frame -> frame.threats().stream()
+                                        .filter(threat -> threat.targetingBot())
+                                        .map(threat -> threat.entityId())
+                                        .collect(java.util.stream.Collectors.toSet()))
+                                .map(ids -> ids.contains(first.getUUID())
+                                        && ids.contains(second.getUUID()))
+                                .orElse(false);
+                        observedBothThreats[0] |= bothTargeting;
+                        if (bothTargeting) {
+                            completeThreatFrames[0]++;
+                        }
+                        long generation = bot.player().runtimeHandle()
+                                .generation();
+                        observedSelfDefenseRun[0] |= bot.manager()
+                                .selfDefenseRun(bot.player().getUUID())
+                                .filter(view -> view.generation() == generation
+                                        && (view.targetId().equals(first.getUUID())
+                                                || view.targetId().equals(
+                                                        second.getUUID())))
+                                .isPresent();
+                        observedMelee[0] |= bot.manager()
+                                .selfDefenseRun(bot.player().getUUID())
+                                .filter(view -> view.generation() == generation
+                                        && (view.targetId().equals(first.getUUID())
+                                                || view.targetId().equals(
+                                                        second.getUUID()))
+                                        && view.status()
+                                                == SelfDefenseSkillService
+                                                        .RunStatus.ACTIVE
+                                        && view.decision().state()
+                                                == DefenseState.ATTACK_IN_FLIGHT
+                                        && view.decision().action()
+                                                .filter(action -> action.kind()
+                                                        == DefenseActionKind
+                                                                .MELEE_ATTACK)
+                                                .isPresent())
+                                .isPresent();
+                        return completeThreatFrames[0] >= 5;
+                    },
+                    "P0-2 fixture never observed both targeting hostiles",
+                    cleanup,
+                    () -> {
+                        try {
+                            P2GameTestSupport.require(
+                                    observedBothThreats[0]
+                                            && !observedSelfDefenseRun[0]
+                                            && !observedMelee[0],
+                                    "Low health plus multiple hostiles started self-defense");
+                            P2GameTestSupport.require(
+                                    first.getHealth() == firstHealth
+                                            && second.getHealth() == secondHealth,
+                                    "Low health plus multiple hostiles changed hostile health");
+                        } finally {
+                            cleanup.run();
+                        }
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
     private static void prepareDefender(TestBot bot) {
         bot.player().getInventory().clearContent();
         bot.player().getInventory().selected = 0;
@@ -105,10 +221,17 @@ public final class P5SelfDefenseAcceptanceGameTests {
 
     private static void configureTarget(GameTestHelper helper, Zombie zombie) {
         /* Match the already-proven hostile handoff geometry exactly. */
-        Vec3 position = helper.absoluteVec(new Vec3(4.5D, 1.0D, 3.0D));
+        configureTarget(helper, zombie, new Vec3(4.5D, 1.0D, 3.0D));
+    }
+
+    private static void configureTarget(
+            GameTestHelper helper, Zombie zombie, Vec3 relativePosition) {
+        Vec3 position = helper.absoluteVec(relativePosition);
         zombie.moveTo(position.x, position.y, position.z, 0.0F, 0.0F);
         zombie.setNoAi(true);
         zombie.setPersistenceRequired();
+        zombie.setItemSlot(EquipmentSlot.HEAD,
+                new ItemStack(Items.DIAMOND_HELMET));
         zombie.setHealth(1.0F);
     }
 

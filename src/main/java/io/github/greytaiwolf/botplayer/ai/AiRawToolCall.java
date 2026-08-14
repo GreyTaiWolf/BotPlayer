@@ -22,4 +22,12 @@ public record AiRawToolCall(
                 MAX_ARGUMENTS_LENGTH,
                 false);
     }
+
+    /** callId 与 JSON 参数来自模型，不能由默认 record 格式泄漏。 */
+    @Override
+    public String toString() {
+        return "AiRawToolCall[callIdLength=" + callId.length()
+                + ", nameLength=" + name.length()
+                + ", argumentsLength=" + argumentsJson.length() + "]";
+    }
 }

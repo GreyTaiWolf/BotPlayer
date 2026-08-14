@@ -89,6 +89,9 @@ public final class MinecraftProductionSkillNodeHandler
     private static final int MAXIMUM_RESOURCE_DROP_NAVIGATION_TICKS = 240;
     /** 到达精确掉落实体附近后，仅允许有限 collision-driven PickupWait。 */
     private static final int MAXIMUM_RESOURCE_DROP_PICKUP_TICKS = 80;
+    /** PickupWait reaches verification at its wait bound, before this envelope expires. */
+    private static final int MAXIMUM_RESOURCE_DROP_PICKUP_ACTION_TICKS =
+            MAXIMUM_RESOURCE_DROP_PICKUP_TICKS + 1;
     /** Exact UUID-drop goals are deliberately approached without sprint overshoot. */
     private static final NavigationPolicy RESOURCE_DROP_NAVIGATION_POLICY =
             NavigationPolicy.safeDefault().withSprint(false);
@@ -540,7 +543,8 @@ public final class MinecraftProductionSkillNodeHandler
 
     private static boolean matchesResourceDropPickup(
             ProductionAction action, ResourceDropCandidate candidate) {
-        if (action.maximumTicks() > MAXIMUM_RESOURCE_DROP_PICKUP_TICKS
+        if (action.maximumTicks()
+                > MAXIMUM_RESOURCE_DROP_PICKUP_ACTION_TICKS
                 || !(action.action().spec()
                         instanceof WorldInteractionActionSpec.PickupWait pickup)
                 || pickup.expectedItemEntityId().isEmpty()
@@ -549,7 +553,8 @@ public final class MinecraftProductionSkillNodeHandler
             return false;
         }
         return pickup.ticks() >= 1
-                && pickup.ticks() <= MAXIMUM_RESOURCE_DROP_PICKUP_TICKS;
+                && pickup.ticks() <= MAXIMUM_RESOURCE_DROP_PICKUP_TICKS
+                && action.maximumTicks() > pickup.ticks();
     }
 
     private SkillNodeDirective verifyResourceAction(

@@ -21,6 +21,10 @@ public final class ProductionMaterials {
             ProductionMaterial.minecraft("cobblestone");
     public static final ProductionMaterial FURNACE =
             ProductionMaterial.minecraft("furnace");
+    public static final ProductionMaterial BLAST_FURNACE =
+            ProductionMaterial.minecraft("blast_furnace");
+    public static final ProductionMaterial SMOKER =
+            ProductionMaterial.minecraft("smoker");
     public static final ProductionMaterial STONE_PICKAXE =
             ProductionMaterial.minecraft("stone_pickaxe");
     public static final ProductionMaterial RAW_IRON =

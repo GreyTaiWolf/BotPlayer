@@ -49,6 +49,11 @@ public final class P2InteractionAcceptanceGameTests {
      * failure before either action is dispatched.
      */
     private static final String STRICT_PLACEMENT_BATCH = "p2_strict_placement";
+    /*
+     * UUID-bound pickup regression coverage uses a separate batch so its two
+     * fixtures cannot exceed the ordinary interaction batch's eight-bot cap.
+     */
+    private static final String PICKUP_BATCH = "p2_interaction_pickup";
 
     private P2InteractionAcceptanceGameTests() {}
 
@@ -809,6 +814,189 @@ public final class P2InteractionAcceptanceGameTests {
                                             + emeraldsBefore
                                             + ", after="
                                             + emeraldsAfter);
+                        } finally {
+                            cleanup.run();
+                        }
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = PICKUP_BATCH,
+            timeoutTicks = P2GameTestSupport.TIMEOUT_TICKS)
+    public static void pickupWaitCollectsEveryBoundItemEntity(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        helper.killAllEntitiesOfClass(ItemEntity.class);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P2PickupGroup",
+                new Vec3(4.5D, 1.0D, 4.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup =
+                cleanupBot(bot, "P2 grouped pickup GameTest completed");
+        try {
+            Vec3 position = bot.player().position();
+            ItemEntity emerald = new ItemEntity(
+                    bot.player().serverLevel(),
+                    position.x,
+                    position.y,
+                    position.z,
+                    new ItemStack(Items.EMERALD, 3));
+            emerald.setDeltaMovement(Vec3.ZERO);
+            emerald.setPickUpDelay(8);
+            ItemEntity diamond = new ItemEntity(
+                    bot.player().serverLevel(),
+                    position.x,
+                    position.y,
+                    position.z,
+                    new ItemStack(Items.DIAMOND, 2));
+            diamond.setDeltaMovement(Vec3.ZERO);
+            diamond.setPickUpDelay(8);
+            ItemEntity decoy = new ItemEntity(
+                    bot.player().serverLevel(),
+                    position.x,
+                    position.y,
+                    position.z,
+                    new ItemStack(Items.GOLD_INGOT, 5));
+            decoy.setDeltaMovement(Vec3.ZERO);
+            decoy.setPickUpDelay(6000);
+            P2GameTestSupport.require(
+                    bot.player().serverLevel().addFreshEntity(emerald)
+                            && bot.player().serverLevel().addFreshEntity(diamond)
+                            && bot.player().serverLevel().addFreshEntity(decoy),
+                    "Could not add the grouped pickup fixture entities");
+            cleanup.add(emerald::discard);
+            cleanup.add(diamond::discard);
+            cleanup.add(decoy::discard);
+            int emeraldsBefore = countItem(bot, Items.EMERALD);
+            int diamondsBefore = countItem(bot, Items.DIAMOND);
+
+            CompletionStage<ActionOutcome> completion =
+                    P2GameTestSupport.submit(
+                            bot,
+                            new WorldInteractionAction(
+                                    new WorldInteractionActionSpec.PickupWait(
+                                            80,
+                                            List.of(
+                                                    emerald.getUUID(),
+                                                    diamond.getUUID()))),
+                            81);
+            P2GameTestSupport.awaitOutcome(
+                    helper,
+                    completion,
+                    180,
+                    cleanup,
+                    outcome -> {
+                        try {
+                            requireState(
+                                    outcome,
+                                    ActionState.SUCCEEDED,
+                                    ActionFailureCode.NONE);
+                            P2GameTestSupport.require(
+                                    bot.player().serverLevel().getEntity(
+                                                    emerald.getUUID())
+                                            == null
+                                            && bot.player().serverLevel()
+                                                            .getEntity(
+                                                                    diamond
+                                                                            .getUUID())
+                                                    == null,
+                                    "Grouped pickup did not collect every exact receipt UUID");
+                            P2GameTestSupport.require(
+                                    bot.player().serverLevel().getEntity(
+                                                    decoy.getUUID())
+                                            == decoy
+                                            && !decoy.isRemoved(),
+                                    "Grouped pickup consumed an unbound delayed decoy");
+                            P2GameTestSupport.require(
+                                    countItem(bot, Items.EMERALD)
+                                                    - emeraldsBefore
+                                            == 3
+                                            && countItem(bot, Items.DIAMOND)
+                                                            - diamondsBefore
+                                                    == 2,
+                                    "Grouped pickup did not conserve every frozen item delta");
+                            P2GameTestSupport.require(
+                                    evidence(outcome, "entity.ids").equals(
+                                            emerald.getUUID() + ","
+                                                    + diamond.getUUID())
+                                            && evidence(outcome, "entity.count")
+                                                    .equals("2"),
+                                    "Grouped pickup omitted exact receipt coverage evidence");
+                        } finally {
+                            cleanup.run();
+                        }
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = PICKUP_BATCH,
+            timeoutTicks = P2GameTestSupport.TIMEOUT_TICKS)
+    public static void exhaustedPickupWaitVerifiesBeforeItsActionEnvelopeExpires(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        helper.killAllEntitiesOfClass(ItemEntity.class);
+        TestBot bot = P2GameTestSupport.spawnBot(
+                helper,
+                null,
+                "P2PickupBound",
+                new Vec3(4.5D, 1.0D, 4.5D),
+                0.0F);
+        P2GameTestSupport.Cleanup cleanup =
+                cleanupBot(bot, "P2 pickup wait boundary GameTest completed");
+        try {
+            Vec3 position = bot.player().position();
+            ItemEntity delayed = new ItemEntity(
+                    bot.player().serverLevel(),
+                    position.x,
+                    position.y,
+                    position.z,
+                    new ItemStack(Items.EMERALD));
+            delayed.setDeltaMovement(Vec3.ZERO);
+            delayed.setPickUpDelay(6000);
+            P2GameTestSupport.require(
+                    bot.player().serverLevel().addFreshEntity(delayed),
+                    "Could not add the delayed pickup fixture entity");
+            cleanup.add(delayed::discard);
+
+            CompletionStage<ActionOutcome> completion =
+                    P2GameTestSupport.submit(
+                            bot,
+                            new WorldInteractionAction(
+                                    new WorldInteractionActionSpec.PickupWait(
+                                            80,
+                                            Optional.of(delayed.getUUID()))),
+                            81);
+            P2GameTestSupport.awaitOutcome(
+                    helper,
+                    completion,
+                    180,
+                    cleanup,
+                    outcome -> {
+                        try {
+                            requireState(
+                                    outcome,
+                                    ActionState.FAILED,
+                                    ActionFailureCode.TARGET_UNAVAILABLE);
+                            P2GameTestSupport.require(
+                                    bot.player().serverLevel().getEntity(
+                                                    delayed.getUUID())
+                                            == delayed
+                                            && !delayed.isRemoved(),
+                                    "The delayed receipt changed before the bounded verification");
                         } finally {
                             cleanup.run();
                         }

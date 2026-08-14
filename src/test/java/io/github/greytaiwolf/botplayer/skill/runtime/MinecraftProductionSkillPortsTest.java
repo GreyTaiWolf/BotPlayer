@@ -4,6 +4,7 @@ import io.github.greytaiwolf.botplayer.action.interaction.BlockCoordinates;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockStateFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockTargetFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.P5ARecipe;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.AcquisitionMethod;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionLedger;
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionMaterials;
@@ -155,6 +156,16 @@ class MinecraftProductionSkillPortsTest {
                         MinecraftProductionSkillPorts
                                 .resourceFilterForExpectedBlock(
                                         "minecraft:furnace")),
+                () -> Assertions.assertEquals(
+                        TaskSensorResourceFilter.BLAST_FURNACE,
+                        MinecraftProductionSkillPorts
+                                .resourceFilterForExpectedBlock(
+                                        "minecraft:blast_furnace")),
+                () -> Assertions.assertEquals(
+                        TaskSensorResourceFilter.SMOKER,
+                        MinecraftProductionSkillPorts
+                                .resourceFilterForExpectedBlock(
+                                        "minecraft:smoker")),
                 () -> Assertions.assertThrows(
                         IllegalArgumentException.class,
                         () -> MinecraftProductionSkillPorts
@@ -227,6 +238,38 @@ class MinecraftProductionSkillPortsTest {
                 () -> Assertions.assertFalse(MinecraftProductionSkillPorts
                         .workstationStateValidAfter(
                                 unlit, lit, MenuFamily.CRAFTING_3X3)));
+    }
+
+    @Test
+    void typedFurnaceCompletionRejectsAChangedVariantEvenWithMatchingLayout() {
+        BlockTargetFingerprint blastUnlit = workstation(
+                "minecraft:overworld", 3, 1, 4,
+                "minecraft:blast_furnace",
+                Map.of("facing", "north", "lit", "false"));
+        BlockTargetFingerprint blastLit = workstation(
+                "minecraft:overworld", 3, 1, 4,
+                "minecraft:blast_furnace",
+                Map.of("facing", "north", "lit", "true"));
+        BlockTargetFingerprint smokerLit = workstation(
+                "minecraft:overworld", 3, 1, 4, "minecraft:smoker",
+                Map.of("facing", "north", "lit", "true"));
+
+        Assertions.assertAll(
+                () -> Assertions.assertTrue(MinecraftProductionSkillPorts
+                        .workstationStateValidAfter(
+                                blastUnlit,
+                                blastLit,
+                                P5ARecipe.RAW_IRON_TO_IRON_INGOTS_BLASTING)),
+                () -> Assertions.assertFalse(MinecraftProductionSkillPorts
+                        .workstationStateValidAfter(
+                                blastUnlit,
+                                smokerLit,
+                                P5ARecipe.RAW_IRON_TO_IRON_INGOTS_BLASTING)),
+                () -> Assertions.assertFalse(MinecraftProductionSkillPorts
+                        .workstationStateValidAfter(
+                                blastUnlit,
+                                blastLit,
+                                P5ARecipe.RAW_CHICKEN_TO_COOKED_CHICKEN_SMOKING)));
     }
 
     private static BlockTargetFingerprint workstation(

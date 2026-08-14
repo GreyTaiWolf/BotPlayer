@@ -3,6 +3,7 @@ package io.github.greytaiwolf.botplayer.lifecycle;
 import com.mojang.authlib.GameProfile;
 import io.github.greytaiwolf.botplayer.BotPlayer;
 import io.github.greytaiwolf.botplayer.action.ActionCancellationReason;
+import io.github.greytaiwolf.botplayer.action.ActionCancellationReceipt;
 import io.github.greytaiwolf.botplayer.action.ActionEnvelope;
 import io.github.greytaiwolf.botplayer.action.ActionMailbox;
 import io.github.greytaiwolf.botplayer.action.ActionOrigin;
@@ -25,6 +26,22 @@ import io.github.greytaiwolf.botplayer.action.interaction.menu.PlayerInventoryMe
 import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftActionBackend;
 import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftActionSnapshot;
 import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftPlayerInputAdapter;
+import io.github.greytaiwolf.botplayer.ai.AiRequest;
+import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyContract;
+import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyDispatchReceipt;
+import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyDispatchStatus;
+import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyProposalSummary;
+import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyReviewReceipt;
+import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyReviewStatus;
+import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlySnapshotProjection;
+import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyTicket;
+import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyTicketBook;
+import io.github.greytaiwolf.botplayer.ai.transport.AiClientRequestDispatch;
+import io.github.greytaiwolf.botplayer.ai.transport.AiProposalAuthority;
+import io.github.greytaiwolf.botplayer.ai.transport.AiProposalRequestEnvelope;
+import io.github.greytaiwolf.botplayer.ai.transport.AiProposalReviewReceipt;
+import io.github.greytaiwolf.botplayer.ai.transport.AiProposalSessionGate;
+import io.github.greytaiwolf.botplayer.ai.transport.AiRequestDispatchReceipt;
 import io.github.greytaiwolf.botplayer.config.BotPlayerConfig;
 import io.github.greytaiwolf.botplayer.inventory.BotInventoryMenu;
 import io.github.greytaiwolf.botplayer.inventory.BotInventorySession;
@@ -51,6 +68,9 @@ import io.github.greytaiwolf.botplayer.lifecycle.retirement.GenerationRetirement
 import io.github.greytaiwolf.botplayer.lifecycle.retirement.GenerationRetirementStatus;
 import io.github.greytaiwolf.botplayer.lifecycle.retirement.GenerationRetirementTicket;
 import io.github.greytaiwolf.botplayer.network.payload.AgentBindingStatus;
+import io.github.greytaiwolf.botplayer.network.payload.AiProposalPayload;
+import io.github.greytaiwolf.botplayer.network.payload.AiRequestCancellationPayload;
+import io.github.greytaiwolf.botplayer.network.payload.AiRequestDispatchPayload;
 import io.github.greytaiwolf.botplayer.network.payload.OpenCredentialScreenPayload;
 import io.github.greytaiwolf.botplayer.navigation.GridPoint;
 import io.github.greytaiwolf.botplayer.navigation.NavigationGoal;
@@ -95,11 +115,13 @@ import io.github.greytaiwolf.botplayer.perception.SoundObservationCandidate;
 import io.github.greytaiwolf.botplayer.profile.BotProfile;
 import io.github.greytaiwolf.botplayer.safety.DamageCandidate;
 import io.github.greytaiwolf.botplayer.safety.SafetyFrame;
+import io.github.greytaiwolf.botplayer.safety.SafetyHandoff;
 import io.github.greytaiwolf.botplayer.safety.SafetyHandoffDecision;
 import io.github.greytaiwolf.botplayer.safety.SafetyHandoffRequest;
 import io.github.greytaiwolf.botplayer.safety.SafetyIncidentView;
 import io.github.greytaiwolf.botplayer.safety.SafetyService;
 import io.github.greytaiwolf.botplayer.safety.SafetySettings;
+import io.github.greytaiwolf.botplayer.safety.ThreatSummary;
 import io.github.greytaiwolf.botplayer.skill.core.SkillRegistry;
 import io.github.greytaiwolf.botplayer.skill.core.SkillCategory;
 import io.github.greytaiwolf.botplayer.skill.core.SkillDescriptor;
@@ -110,11 +132,18 @@ import io.github.greytaiwolf.botplayer.skill.core.SkillParameterSchema;
 import io.github.greytaiwolf.botplayer.skill.core.SkillRiskLevel;
 import io.github.greytaiwolf.botplayer.skill.core.SkillRunState;
 import io.github.greytaiwolf.botplayer.skill.core.SkillVersion;
+import io.github.greytaiwolf.botplayer.skill.builtin.breeding.VanillaCowBreeding;
 import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseActionKind;
 import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseActionRequest;
 import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseObservation;
 import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseTarget;
 import io.github.greytaiwolf.botplayer.skill.builtin.defense.DefenseTargetClass;
+import io.github.greytaiwolf.botplayer.skill.builtin.farming.SugarCaneFarmingPlanCompiler;
+import io.github.greytaiwolf.botplayer.skill.builtin.farming.SugarCaneFarmingSkillIds;
+import io.github.greytaiwolf.botplayer.skill.builtin.farming.WheatFarmingPlanCompiler;
+import io.github.greytaiwolf.botplayer.skill.builtin.farming.WheatFarmingSkillIds;
+import io.github.greytaiwolf.botplayer.skill.builtin.recovery.VanillaMilkBucketRecovery;
+import io.github.greytaiwolf.botplayer.skill.builtin.trading.VanillaVillagerTrade;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuFamily;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuSnapshot;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionLimits;
@@ -142,11 +171,20 @@ import io.github.greytaiwolf.botplayer.skill.runtime.SurvivalSkillRunView;
 import io.github.greytaiwolf.botplayer.skill.runtime.SurvivalSkillService;
 import io.github.greytaiwolf.botplayer.skill.runtime.SurvivalSkillSubmission;
 import io.github.greytaiwolf.botplayer.skill.runtime.SelfDefenseSkillService;
+import io.github.greytaiwolf.botplayer.skill.runtime.SelfDefenseSkillService.AuthorizedActionDispatch;
+import io.github.greytaiwolf.botplayer.skill.runtime.SelfDefenseSkillService.AuthorizationRevocation;
+import io.github.greytaiwolf.botplayer.skill.runtime.SelfDefenseSkillService.ClaimedActionDispatch;
+import io.github.greytaiwolf.botplayer.technique.bridge.SelfDefenseTechniqueBridge;
 import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftEquipmentSkillNodeHandler;
+import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftCowBreedingSkillNodeHandler;
 import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftProductionNavigationSkillNodeHandler;
 import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftProductionSkillNodeHandler;
 import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftProductionSkillPorts;
+import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftMilkBucketRecoverySkillNodeHandler;
 import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftSingleChestTransferSkillNodeHandler;
+import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftSugarCaneFarmingSkillNodeHandler;
+import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftVillagerTradeSkillNodeHandler;
+import io.github.greytaiwolf.botplayer.skill.runtime.MinecraftWheatFarmingSkillNodeHandler;
 import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRunRequest;
 import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRunSubmission;
 import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRunView;
@@ -180,6 +218,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletionStage;
@@ -238,8 +277,12 @@ public final class BotLifecycleManager {
     private final SkillPackApprovalLedgerSavedData skillPackApprovalLedger;
     private final BotInventorySessionManager inventorySessions;
     private final PlayerInputController inputController;
+    /** Native-use fence for strict consumables, reached from a narrow mixin hook. */
+    private final MinecraftActionBackend minecraftActionBackend;
     private final PerceptionService perceptionService;
     private final BotActionRuntime actionRuntime;
+    /** Shared physical-cancellation port for the P5C bridge and direct RETREAT. */
+    private final SelfDefenseActionGateway selfDefenseActionGateway;
     private final NavigationService navigationService;
     private final SkillRegistry skillRegistry;
     private final ResourceReservationService skillReservations;
@@ -250,6 +293,8 @@ public final class BotLifecycleManager {
     private final MinecraftProductionSkillPorts productionSkillPorts;
     private final SkillPackManager skillPackManager;
     private final SurvivalSkillService survivalSkillService;
+    /** Narrow P5C bridge; it owns no generic technique or AI action route. */
+    private final SelfDefenseTechniqueBridge selfDefenseTechniqueBridge;
     private final SelfDefenseSkillService selfDefenseSkillService;
     private final SafetyService safetyService;
     private final VanillaDeathTombstoneStore deathTombstones;
@@ -259,7 +304,19 @@ public final class BotLifecycleManager {
     private final Map<UUID, BotRuntimeHandle> handlesByBot = new LinkedHashMap<>();
     private final Map<UUID, UUID> activeAgentByBot = new LinkedHashMap<>();
     private final Map<UUID, UUID> botByActiveAgent = new LinkedHashMap<>();
+    /** P6 request/response correlation only; it has no direct world-action path. */
+    private final AiProposalSessionGate aiProposalSessionGate =
+            new AiProposalSessionGate();
+    /** Exact P6-R1 snapshot correlation; it never stores model prose or a proposed SkillPlan. */
+    private final AiReviewOnlyTicketBook aiReviewOnlyTickets =
+            new AiReviewOnlyTicketBook();
     private final Map<UUID, Long> skillCheckpointRevisions =
+            new LinkedHashMap<>();
+    /**
+     * 仅记录由 L0 hostile handoff 暂停的通用 P5A run。普通业务节点自行请求的暂停
+     * 不进入这里，因而不会因为某次 Safety incident 清除而被生命周期擅自恢复。
+     */
+    private final Map<UUID, SafetyPausedSkillRun> safetyPausedSkillRuns =
             new LinkedHashMap<>();
     /** 新 generation 的后缀 run 仍须把安全点写回其完整批准计划谱系。 */
     private final Map<UUID, RecoveredSkillCheckpointLineage>
@@ -299,17 +356,21 @@ public final class BotLifecycleManager {
                 server,
                 PerceptionSettings.fromConfig(),
                 this::resolveActive);
-        MinecraftActionBackend minecraftActionBackend =
+        this.minecraftActionBackend =
                 new MinecraftActionBackend(
                         this, inputController);
         this.actionRuntime = new BotActionRuntime(
-                minecraftActionBackend,
+                this.minecraftActionBackend,
                 BotPlayerConfig.ACTION_MAILBOX_CAPACITY.get(),
                 BotPlayerConfig.ACTION_LEDGER_CAPACITY.get(),
                 BotPlayerConfig.ACTION_COMMANDS_PER_TICK.get(),
                 BotPlayerConfig.ACTION_ACTIVE_CAPACITY.get(),
                 BotPlayerConfig.ACTION_COMPLETION_CAPACITY.get(),
                 perceptionService.actionOutcomeSink());
+        this.selfDefenseActionGateway = new SelfDefenseActionGateway(
+                this.actionRuntime);
+        this.selfDefenseTechniqueBridge = new SelfDefenseTechniqueBridge(
+                selfDefenseActionGateway, server::getTickCount);
         this.navigationService = new NavigationService(
                 NavigationSettings.fromConfig(),
                 TerrainAssistSettings::fromConfig,
@@ -454,10 +515,7 @@ public final class BotLifecycleManager {
                 },
                 this::createSelfDefenseAction,
                 this::submitSelfDefenseAction,
-                dispatch -> cancelAction(
-                        dispatch.botId(),
-                        dispatch.actionId(),
-                        ActionCancellationReason.REQUESTED));
+                this::cancelSelfDefenseAction);
         this.safetyService = new SafetyService(
                 SafetySettings.fromConfig(),
                 navigationService,
@@ -467,7 +525,18 @@ public final class BotLifecycleManager {
                                 botId,
                                 generation,
                                 InventoryCloseReason.DANGER),
-                this::handoffSafetySkill);
+                new SafetyHandoff() {
+                    @Override
+                    public SafetyHandoffDecision request(
+                            SafetyHandoffRequest request) {
+                        return handoffSafetySkill(request);
+                    }
+
+                    @Override
+                    public boolean preempt(SafetyHandoffRequest request) {
+                        return preemptSelfDefenseForSafety(request);
+                    }
+                });
     }
 
     /**
@@ -561,7 +630,7 @@ public final class BotLifecycleManager {
                 0,
                 false));
         /*
-         * 箱子坐标只是一份受 schema 限定的标量请求；真正的 block/menu identity
+         * 原版容器坐标只是一份受 schema 限定的标量请求；真正的 block/menu identity
          * 必须由 handler 在服务器线程重新观察并冻结，不能由 Pack 伪造。
          */
         registerBuiltinDescriptor(new SkillDescriptor(
@@ -584,10 +653,18 @@ public final class BotLifecycleManager {
                                 true, -30_000_000, 30_000_000),
                         MinecraftSingleChestTransferSkillNodeHandler
                                 .SOURCE_SLOT_PARAMETER,
-                        new SkillParameterRule.IntegerRule(true, 0, 62),
+                        new SkillParameterRule.IntegerRule(true, 0, 89),
                         MinecraftSingleChestTransferSkillNodeHandler
                                 .TARGET_SLOT_PARAMETER,
-                        new SkillParameterRule.IntegerRule(true, 0, 62),
+                        new SkillParameterRule.IntegerRule(true, 0, 89),
+                        MinecraftSingleChestTransferSkillNodeHandler
+                                .AMOUNT_PARAMETER,
+                        new SkillParameterRule.IntegerRule(
+                                true,
+                                0,
+                                WorldInteractionActionSpec
+                                        .WorldMenuTransfer
+                                        .MAXIMUM_EXACT_TRANSFER_AMOUNT),
                         MinecraftSingleChestTransferSkillNodeHandler
                                 .DIRECTION_PARAMETER,
                         new SkillParameterRule.StringRule(
@@ -610,6 +687,22 @@ public final class BotLifecycleManager {
                 .handlerDescriptor());
         registerBuiltinDescriptor(ProductionSkillPlanCompiler
                 .resourceNavigationHandlerDescriptor());
+        /*
+         * P5B 的农业/畜牧/交易/恢复 descriptor 只登记到固定 server runtime。它们刻意不进入
+         * 外部 skill-pack 白名单；坐标、实体和库存都必须由随后受审的 server-side
+         * 调用路径重新观察，不能让磁盘 Pack 自行扩大世界写入能力。
+         */
+        for (SkillDescriptor descriptor : WheatFarmingPlanCompiler
+                .descriptors()) {
+            registerBuiltinDescriptor(descriptor);
+        }
+        for (SkillDescriptor descriptor : SugarCaneFarmingPlanCompiler
+                .descriptors()) {
+            registerBuiltinDescriptor(descriptor);
+        }
+        registerBuiltinDescriptor(VanillaCowBreeding.descriptor());
+        registerBuiltinDescriptor(VanillaVillagerTrade.descriptor());
+        registerBuiltinDescriptor(VanillaMilkBucketRecovery.descriptor());
     }
 
     private void registerBuiltinDescriptor(SkillDescriptor descriptor) {
@@ -710,6 +803,50 @@ public final class BotLifecycleManager {
                         navigationService,
                         actions,
                         skillRuntime::offerSignal));
+        registerP5ANodeHandler(
+                WheatFarmingSkillIds.HARVEST_MATURE_WHEAT,
+                WheatFarmingSkillIds.VERSION,
+                new MinecraftWheatFarmingSkillNodeHandler(
+                        MinecraftWheatFarmingSkillNodeHandler.Mode.HARVEST,
+                        this::resolveActive,
+                        actions,
+                        skillRuntime::offerSignal));
+        registerP5ANodeHandler(
+                WheatFarmingSkillIds.PLANT_WHEAT,
+                WheatFarmingSkillIds.VERSION,
+                new MinecraftWheatFarmingSkillNodeHandler(
+                        MinecraftWheatFarmingSkillNodeHandler.Mode.PLANT,
+                        this::resolveActive,
+                        actions,
+                        skillRuntime::offerSignal));
+        registerP5ANodeHandler(
+                SugarCaneFarmingSkillIds.HARVEST_UPPER_SUGAR_CANE,
+                SugarCaneFarmingSkillIds.VERSION,
+                new MinecraftSugarCaneFarmingSkillNodeHandler(
+                        this::resolveActive,
+                        actions,
+                        skillRuntime::offerSignal));
+        registerP5ANodeHandler(
+                VanillaCowBreeding.ID,
+                VanillaCowBreeding.VERSION,
+                new MinecraftCowBreedingSkillNodeHandler(
+                        this::resolveActive,
+                        actions,
+                        skillRuntime::offerSignal));
+        registerP5ANodeHandler(
+                VanillaVillagerTrade.ID,
+                VanillaVillagerTrade.VERSION,
+                new MinecraftVillagerTradeSkillNodeHandler(
+                        this::resolveActive,
+                        actions,
+                        skillRuntime::offerSignal));
+        registerP5ANodeHandler(
+                VanillaMilkBucketRecovery.ID,
+                VanillaMilkBucketRecovery.VERSION,
+                new MinecraftMilkBucketRecoverySkillNodeHandler(
+                        this::resolveActive,
+                        actions,
+                        skillRuntime::offerSignal));
     }
 
     private void registerP5ANodeHandler(
@@ -773,8 +910,10 @@ public final class BotLifecycleManager {
     }
 
     /**
-     * L0 在 hostile 交接前先终止普通 DAG 的等待/菜单所有权，避免自卫与低优先级计划
-     * 共同占用动作通道。非 hostile 的恢复仍交给既有进食服务。
+     * L0 在 hostile 交接前暂停普通 DAG 的等待/菜单所有权，避免自卫与低优先级计划
+     * 共同占用动作通道。暂停 run 保留 run identity，但必须在危险稳定解除、原版控制面
+     * 静止且生产 checkpoint 已耐久化后重新观察同一节点；非 hostile 的恢复仍交给既有
+     * 进食服务。
      */
     private SafetyHandoffDecision handoffSafetySkill(
             SafetyHandoffRequest request) {
@@ -782,17 +921,117 @@ public final class BotLifecycleManager {
         if (request.hazard().type()
                 == io.github.greytaiwolf.botplayer.safety
                         .HazardType.HOSTILE_TARGETING) {
-            skillRuntime.inspect(request.botId())
-                    .filter(view -> view.botGeneration()
-                            == request.botGeneration()
-                            && !view.state().isTerminal())
-                    .ifPresent(view -> skillRuntime.preempt(
-                            view.runId(),
-                            request.currentTick(),
-                            "L0 hostile safety handoff preempted the plan"));
+            pauseGenericSkillForSafety(request);
             return selfDefenseSkillService.request(request);
         }
         return survivalSkillService.request(request);
+    }
+
+    private void pauseGenericSkillForSafety(SafetyHandoffRequest request) {
+        SafetyPausedSkillRun existing = safetyPausedSkillRuns.get(
+                request.botId());
+        SkillRunView view = skillRuntime.inspect(request.botId())
+                .filter(candidate -> candidate.botGeneration()
+                        == request.botGeneration()
+                        && !candidate.state().isTerminal())
+                .orElse(null);
+        if (view == null) {
+            if (existing != null
+                    && existing.generation() == request.botGeneration()) {
+                safetyPausedSkillRuns.remove(request.botId(), existing);
+            }
+            return;
+        }
+        SkillRuntime.PauseStatus status = skillRuntime.pauseForSafety(
+                view.runId(),
+                request.currentTick(),
+                "L0 hostile safety handoff paused the plan");
+        if (status == SkillRuntime.PauseStatus.PAUSED) {
+            safetyPausedSkillRuns.put(
+                    request.botId(),
+                    new SafetyPausedSkillRun(
+                            view.runId(),
+                            request.botGeneration(),
+                            request.incidentId()));
+        } else if (status == SkillRuntime.PauseStatus.ALREADY_PAUSED
+                && existing != null
+                && existing.runId().equals(view.runId())
+                && existing.generation() == request.botGeneration()) {
+            /* 同一 L0 暂停的重复 handoff 只能刷新 incident 归属，不能唤醒业务暂停。 */
+            safetyPausedSkillRuns.put(
+                    request.botId(),
+                    new SafetyPausedSkillRun(
+                            view.runId(),
+                            request.botGeneration(),
+                            request.incidentId()));
+        }
+    }
+
+    /**
+     * 只恢复明确由 L0 暂停的 run。SafetyService 只有在本 Tick 已完成 clear-stability
+     * 判定后才移除 incident；随后还需确认自卫、原版 menu/cursor、动作运行时以及生产
+     * checkpoint 都已到静止点，才能把 runtime 推入 RESUMING。runtime 的下一步会重新
+     * 执行当前节点 begin()，重新取得 lease 并以新的 state revision 观察世界。
+     */
+    private void resumeSafetyPausedSkillRuns(long currentTick) {
+        for (Map.Entry<UUID, SafetyPausedSkillRun> entry :
+                List.copyOf(safetyPausedSkillRuns.entrySet())) {
+            UUID botId = entry.getKey();
+            SafetyPausedSkillRun paused = entry.getValue();
+            RuntimeEntry runtime = runtimes.get(botId);
+            if (runtime == null
+                    || runtime.state != BotLifecycleState.ACTIVE
+                    || runtime.handle.generation() != paused.generation()) {
+                safetyPausedSkillRuns.remove(botId, paused);
+                continue;
+            }
+            SkillRunView view = skillRuntime.inspectRun(paused.runId())
+                    .orElse(null);
+            if (view == null
+                    || !view.botId().equals(botId)
+                    || view.botGeneration() != paused.generation()
+                    || view.state() != SkillRunState.PAUSED) {
+                safetyPausedSkillRuns.remove(botId, paused);
+                continue;
+            }
+            if (safetyService.inspect(botId).isPresent()
+                    || selfDefenseSkillService.latestView(botId)
+                            .filter(defense -> defense.generation()
+                                    == paused.generation()
+                                    && !defense.status().terminal())
+                            .isPresent()) {
+                continue;
+            }
+            BotServerPlayer player = runtime.handle.player().orElse(null);
+            if (player == null
+                    || !isListenerAuthority(player)
+                    || !hasDurableCheckpointQuiescence(
+                            player, botId, paused.generation())) {
+                continue;
+            }
+            SkillRuntimeCheckpoint checkpoint = skillRuntime.checkpoint(botId)
+                    .orElse(null);
+            if (checkpoint == null
+                    || !checkpoint.view().runId().equals(paused.runId())
+                    || checkpoint.view().stateRevision()
+                            != view.stateRevision()) {
+                safetyPausedSkillRuns.remove(botId, paused);
+                continue;
+            }
+            if (requiresProductionCheckpointScope(checkpoint.plan())
+                    && skillCheckpointRevisions.getOrDefault(botId, -1L)
+                            != view.stateRevision()) {
+                /* persistSafeSkillCheckpoints() 会在本 Tick 稍后写出同一 PAUSED revision。 */
+                continue;
+            }
+            SkillRuntime.ResumeStatus status = skillRuntime.resume(
+                    paused.runId(), currentTick);
+            if (status == SkillRuntime.ResumeStatus.RESUMING
+                    || status == SkillRuntime.ResumeStatus.NOT_ACTIVE
+                    || status == SkillRuntime.ResumeStatus.NOT_PAUSED) {
+                safetyPausedSkillRuns.remove(botId, paused);
+            }
+        }
     }
 
     private Optional<DefenseTarget> resolveSelfDefenseTarget(
@@ -823,12 +1062,21 @@ public final class BotLifecycleManager {
             UUID botId, long generation, DefenseTarget target) {
         BotServerPlayer player = resolveActive(botId, generation)
                 .orElse(null);
-        if (player == null) {
+        SafetyFrame frame = safetyService.latestFrame(botId)
+                .filter(candidate -> candidate.botGeneration() == generation)
+                .orElse(null);
+        if (player == null || frame == null) {
             return Optional.empty();
         }
         Entity entity = player.serverLevel().getEntity(target.entityId());
         if (entity == null || entity.isRemoved()) {
-            return Optional.empty();
+            return Optional.of(observationFromSafetyFrame(
+                    frame,
+                    new DefenseTarget(
+                            target.entityId(),
+                            target.targetClass(),
+                            false,
+                            target.distanceSquared())));
         }
         DefenseTargetClass classification = entity instanceof Player
                 ? DefenseTargetClass.PLAYER
@@ -836,16 +1084,31 @@ public final class BotLifecycleManager {
                         && mob.getTarget() == player
                         ? DefenseTargetClass.EXPLICIT_HOSTILE
                         : DefenseTargetClass.UNKNOWN;
-        double health = Math.max(0.0D, player.getHealth());
-        double maximum = Math.max(1.0D, player.getMaxHealth());
-        return Optional.of(new DefenseObservation(
-                Math.min(health, maximum),
-                maximum,
+        return Optional.of(observationFromSafetyFrame(
+                frame,
                 new DefenseTarget(
                         target.entityId(),
                         classification,
                         entity.isAlive(),
                         player.distanceToSqr(entity))));
+    }
+
+    /** 把同一份 L0 帧的健康、覆盖和已验证撤退候选原样交给纯自卫状态机。 */
+    private static DefenseObservation observationFromSafetyFrame(
+            SafetyFrame frame,
+            DefenseTarget target) {
+        double health = Math.max(0.0D, frame.health());
+        double maximum = Math.max(1.0D, frame.maximumHealth());
+        int hostileThreatCount = (int) frame.threats().stream()
+                .filter(threat -> threat.kind() == ThreatSummary.Kind.HOSTILE)
+                .count();
+        return new DefenseObservation(
+                Math.min(health, maximum),
+                maximum,
+                target,
+                frame.threatCoverageIncomplete(),
+                hostileThreatCount,
+                frame.safeRetreat());
     }
 
     private Optional<ActionRequest> createSelfDefenseAction(
@@ -858,8 +1121,18 @@ public final class BotLifecycleManager {
             return Optional.empty();
         }
         return switch (instruction.kind()) {
-            case RETREAT -> Optional.of(new MoveInputAction(
-                    -1.0F, 0.0F, false, true, false, 6, 6));
+            case RETREAT -> instruction.safeRetreat()
+                    .filter(retreat -> observation.safeRetreat()
+                            .filter(retreat::equals)
+                            .isPresent())
+                    .map(retreat -> (ActionRequest) new MoveInputAction(
+                            retreat.forwardInput(),
+                            retreat.strafeInput(),
+                            false,
+                            true,
+                            false,
+                            retreat.inputTicks(),
+                            retreat.inputTicks()));
             case MELEE_ATTACK -> uniqueDefensePlayer(
                     instruction.targetId()).map(player -> {
                         Entity target = player.serverLevel().getEntity(
@@ -883,9 +1156,20 @@ public final class BotLifecycleManager {
     }
 
     private CompletionStage<ActionOutcome> submitSelfDefenseAction(
-            SelfDefenseSkillService.ActionDispatch dispatch) {
-        Objects.requireNonNull(dispatch, "dispatch");
-        ActionMailbox.Submission submission = submitAction(
+            AuthorizedActionDispatch authorization) {
+        AuthorizedActionDispatch required = Objects.requireNonNull(
+                authorization, "authorization");
+        if (required.kind() == DefenseActionKind.MELEE_ATTACK) {
+            return selfDefenseTechniqueBridge.submit(required);
+        }
+        if (required.kind() != DefenseActionKind.RETREAT) {
+            throw new IllegalArgumentException(
+                    "unsupported limited self-defense authorization kind");
+        }
+        ClaimedActionDispatch dispatch = required.claim().orElseThrow(() ->
+                new IllegalStateException(
+                        "self-defense retreat authorization was not current"));
+        ActionMailbox.Submission submission = selfDefenseActionGateway.submit(
                 new ActionEnvelope(
                         dispatch.actionId(),
                         dispatch.botId(),
@@ -898,10 +1182,84 @@ public final class BotLifecycleManager {
                                 ControllerKind.SAFETY,
                                 dispatch.selfDefenseRunId())),
                 ActionPriority.EMERGENCY);
-        return submission.completion().orElseThrow(() ->
+        CompletionStage<ActionOutcome> completion = submission.completion().orElseThrow(() ->
                 new IllegalStateException(
                         "self-defense action was rejected: "
                                 + submission.status()));
+        /*
+         * A synchronous lifecycle/L0 callback may have revoked the exact
+         * one-shot authority inside Action ingress. The action runtime has
+         * already received the envelope, so retract its exact identity before
+         * exposing a completion to the self-defense service.
+         */
+        if (!dispatch.isAuthorityCurrent()) {
+            AuthorizationRevocation revocation = dispatch.revocation().orElse(
+                    AuthorizationRevocation.TERMINAL);
+            ActionCancellationReceipt receipt =
+                    selfDefenseActionGateway.cancelOrContain(
+                            dispatch.botId(), dispatch.botGeneration(),
+                            dispatch.actionId(), cancellationReasonFor(revocation),
+                            server.getTickCount());
+            if (!receipt.safelyRetracted()) {
+                BotPlayer.LOGGER.error(
+                        "Self-defense RETREAT cancellation is unsafe for bot {} generation {} action {}: {}",
+                        dispatch.botId(), dispatch.botGeneration(),
+                        dispatch.actionId(), receipt.disposition());
+            }
+            throw new IllegalStateException(
+                    "self-defense retreat authorization was revoked during submission");
+        }
+        return completion;
+    }
+
+    /**
+     * Only the narrow bridge may cancel a melee action it previously bound to
+     * its exact technique ticket. Retreat remains the pre-existing direct
+     * limited-self-defense action path.
+     */
+    private ActionCancellationReceipt cancelSelfDefenseAction(
+            AuthorizedActionDispatch authorization) {
+        AuthorizedActionDispatch required = Objects.requireNonNull(
+                authorization, "authorization");
+        if (required.kind() == DefenseActionKind.MELEE_ATTACK) {
+            return selfDefenseTechniqueBridge.cancelDispatch(required);
+        }
+        if (required.kind() != DefenseActionKind.RETREAT) {
+            throw new IllegalArgumentException(
+                    "unsupported limited self-defense authorization kind");
+        }
+        AuthorizationRevocation revocation = required.revocation().orElse(
+                AuthorizationRevocation.CANCELLED);
+        return selfDefenseActionGateway.cancelOrContain(required.botId(),
+                required.botGeneration(), required.actionId(),
+                cancellationReasonFor(revocation), server.getTickCount());
+    }
+
+    private static ActionCancellationReason cancellationReasonFor(
+            AuthorizationRevocation revocation) {
+        return switch (Objects.requireNonNull(revocation, "revocation")) {
+            case SERVER_STOP -> ActionCancellationReason.RUNTIME_SHUTDOWN;
+            case GENERATION_CLOSED, TERMINAL ->
+                    ActionCancellationReason.LIFECYCLE;
+            case COMPLETED, CANCELLED, SUBMISSION_REJECTED,
+                    SAFETY_PREEMPTION -> ActionCancellationReason.REQUESTED;
+        };
+    }
+
+    /**
+     * A technique gets an L0 preemption only if the limited self-defense
+     * session itself actually accepted that preemption. A routine safety frame
+     * must never terminate a bridge run by implication.
+     */
+    private boolean preemptSelfDefenseForSafety(
+            SafetyHandoffRequest request) {
+        Objects.requireNonNull(request, "request");
+        boolean preempted = selfDefenseSkillService.preempt(request);
+        if (preempted) {
+            selfDefenseTechniqueBridge.preemptForSafety(request.botId(),
+                    request.botGeneration(), request.currentTick());
+        }
+        return preempted;
     }
 
     private Optional<BotServerPlayer> uniqueDefensePlayer(UUID targetId) {
@@ -1196,11 +1554,13 @@ public final class BotLifecycleManager {
          */
         BotActionRuntime.GenerationCancellationResult cancellation;
         try {
+            long currentTick = server.getTickCount();
+            closeSelfDefenseGeneration(bot.getUUID(), generation, currentTick);
             cancellation = actionRuntime.cancelBotGenerationNow(
                     bot.getUUID(),
                     generation,
                     ActionCancellationReason.LIFECYCLE,
-                    server.getTickCount());
+                    currentTick);
         } catch (RuntimeException exception) {
             BotPlayer.LOGGER.error(
                     "Refused BotPlayer inventory menu for bot {} generation {} because "
@@ -2382,6 +2742,227 @@ public final class BotLifecycleManager {
     }
 
     /**
+     * Dispatches the one P6-R1 owner command path: a fixed completed snapshot from this command
+     * Tick or its immediately preceding Tick may be reviewed by the owner client's locally
+     * enabled Provider, but it cannot request an action or arbitrary chat completion.
+     */
+    public AiReviewOnlyDispatchReceipt requestAiReview(
+            ServerPlayer requester, String name) {
+        requireServerThread();
+        Objects.requireNonNull(requester, "requester");
+        Objects.requireNonNull(name, "name");
+        if (stopping) {
+            return AiReviewOnlyDispatchReceipt.rejected(
+                    AiReviewOnlyDispatchStatus.BOT_NOT_ACTIVE);
+        }
+        if (requester instanceof BotServerPlayer) {
+            return AiReviewOnlyDispatchReceipt.rejected(
+                    AiReviewOnlyDispatchStatus.NOT_OWNER);
+        }
+
+        RuntimeEntry runtime = findByName(name);
+        if (runtime == null || runtime.state != BotLifecycleState.ACTIVE) {
+            return AiReviewOnlyDispatchReceipt.rejected(
+                    AiReviewOnlyDispatchStatus.BOT_NOT_ACTIVE);
+        }
+        if (!isExactOwner(runtime, requester)) {
+            return AiReviewOnlyDispatchReceipt.rejected(
+                    AiReviewOnlyDispatchStatus.NOT_OWNER);
+        }
+
+        UUID botId = runtime.handle.botId();
+        UUID ownerId = roster.findById(botId)
+                .flatMap(BotProfile::ownerId)
+                .orElse(null);
+        ServerPlayer owner = ownerId == null
+                ? null
+                : server.getPlayerList().getPlayer(ownerId);
+        if (owner == null
+                || owner instanceof BotServerPlayer
+                || !ownerId.equals(owner.getUUID())) {
+            return AiReviewOnlyDispatchReceipt.rejected(
+                    AiReviewOnlyDispatchStatus.OWNER_OFFLINE);
+        }
+        UUID agentId = activeAgentByBot.get(botId);
+        if (agentId == null || !botId.equals(botByActiveAgent.get(agentId))) {
+            return AiReviewOnlyDispatchReceipt.rejected(
+                    AiReviewOnlyDispatchStatus.AGENT_NOT_BOUND);
+        }
+
+        long generation = runtime.handle.generation();
+        long currentTick = server.getTickCount();
+        ObservationSnapshot snapshot = perceptionService.latest(botId, generation).orElse(null);
+        if (snapshot == null) {
+            return AiReviewOnlyDispatchReceipt.rejected(
+                    AiReviewOnlyDispatchStatus.SNAPSHOT_UNAVAILABLE);
+        }
+        final AiReviewOnlySnapshotProjection projection;
+        try {
+            projection = AiReviewOnlySnapshotProjection.fromRequestAiReviewCompletedSnapshot(
+                    snapshot, botId, generation, currentTick);
+        } catch (IllegalArgumentException exception) {
+            return AiReviewOnlyDispatchReceipt.rejected(
+                    AiReviewOnlyDispatchStatus.SNAPSHOT_NOT_CURRENT);
+        }
+
+        try {
+            AiRequestDispatchReceipt dispatch = dispatchAiReviewOnlyRequest(
+                    runtime,
+                    owner,
+                    ownerId,
+                    agentId,
+                    projection,
+                    AiReviewOnlyContract.requestTemplate(projection));
+            return AiReviewOnlyDispatchReceipt.dispatched(dispatch, projection);
+        } catch (RuntimeException exception) {
+            /* Do not attach exception text: local/Provider-shaped values must never reach chat. */
+            closeAiProposalRequestForBot(botId);
+            return AiReviewOnlyDispatchReceipt.rejected(
+                    AiReviewOnlyDispatchStatus.INTERNAL_ERROR);
+        }
+    }
+
+    /**
+     * Opens and hands off exactly one fixed review dispatch. It is private so no scheduler or
+     * caller can substitute a prompt, provider, model, tool policy, revision, or TTL.
+     */
+    private AiRequestDispatchReceipt dispatchAiReviewOnlyRequest(
+            RuntimeEntry runtime,
+            ServerPlayer owner,
+            UUID ownerId,
+            UUID agentId,
+            AiReviewOnlySnapshotProjection projection,
+            AiRequest requestTemplate) {
+        UUID botId = runtime.handle.botId();
+        if (!AiReviewOnlyContract.requestTemplate(projection).equals(requestTemplate)) {
+            throw new IllegalArgumentException("review request template is not canonical");
+        }
+        AiClientRequestDispatch.requireDispatchableTemplate(
+                AiReviewOnlyContract.PURPOSE,
+                AiReviewOnlyContract.PROVIDER_ID,
+                requestTemplate,
+                AiReviewOnlyContract.REQUEST_TTL_TICKS);
+
+        long issuedAtEpochMillis = System.currentTimeMillis();
+        long ttlMillis;
+        long expiresAtEpochMillis;
+        try {
+            ttlMillis = Math.multiplyExact(
+                    AiReviewOnlyContract.REQUEST_TTL_TICKS, 50L);
+            expiresAtEpochMillis = Math.addExact(issuedAtEpochMillis, ttlMillis);
+        } catch (ArithmeticException exception) {
+            throw new IllegalArgumentException("review request expiry overflow", exception);
+        }
+
+        /* A replacement closes the old gate and exact ticket before fresh correlation ids exist. */
+        closeAiProposalRequestForBot(botId);
+        AiProposalRequestEnvelope envelope = aiProposalSessionGate.open(
+                botId,
+                ownerId,
+                agentId,
+                runtime.handle.generation(),
+                projection.snapshotId(),
+                server.getTickCount(),
+                AiReviewOnlyContract.REQUEST_TTL_TICKS,
+                AiReviewOnlyContract.PURPOSE,
+                true,
+                AiReviewOnlyContract.firewallPolicy());
+        try {
+            AiClientRequestDispatch dispatch = AiClientRequestDispatch.fromEnvelope(
+                    roster.serverInstanceId(),
+                    envelope,
+                    issuedAtEpochMillis,
+                    expiresAtEpochMillis,
+                    AiReviewOnlyContract.PROVIDER_ID,
+                    requestTemplate);
+            if (!AiReviewOnlyContract.isCanonicalDispatch(dispatch)) {
+                throw new IllegalArgumentException("review dispatch is not canonical");
+            }
+            AiRequestDispatchReceipt receipt = AiRequestDispatchReceipt.fromEnvelope(envelope);
+            aiReviewOnlyTickets.open(new AiReviewOnlyTicket(receipt, projection));
+            PacketDistributor.sendToPlayer(owner, new AiRequestDispatchPayload(dispatch));
+            return receipt;
+        } catch (RuntimeException exception) {
+            // A packet that was not safely packaged/handed off retains neither gate nor ticket.
+            closeAiProposalRequestForBot(botId);
+            throw exception;
+        }
+    }
+
+    /**
+     * Reviews one untrusted C2S proposal and drops it after producing at most a secret-free R1
+     * summary. This method has no SkillRuntime, action, or world-execution bridge.
+     */
+    public AiReviewOnlyReviewReceipt reviewAiProposal(
+            ServerPlayer sender, AiProposalPayload payload) {
+        requireServerThread();
+        Objects.requireNonNull(sender, "sender");
+        Objects.requireNonNull(payload, "payload");
+        RuntimeEntry runtime = runtimes.get(payload.botId());
+        boolean botActive = !stopping
+                && runtime != null
+                && runtime.state == BotLifecycleState.ACTIVE;
+        Optional<UUID> persistentOwnerId = botActive
+                ? roster.findById(payload.botId()).flatMap(BotProfile::ownerId)
+                : Optional.empty();
+        boolean senderIsPersistentOwner = persistentOwnerId
+                .filter(sender.getUUID()::equals)
+                .isPresent()
+                && !(sender instanceof BotServerPlayer);
+        Optional<UUID> activeAgentId = botActive
+                ? Optional.ofNullable(activeAgentByBot.get(payload.botId()))
+                : Optional.empty();
+        OptionalLong activeGeneration = botActive
+                && runtime.handle.generation() > 0L
+                ? OptionalLong.of(runtime.handle.generation())
+                : OptionalLong.empty();
+        AiProposalReviewReceipt gateReceipt = aiProposalSessionGate.reviewWithReceipt(
+                payload,
+                new AiProposalAuthority(
+                        botActive,
+                        senderIsPersistentOwner,
+                        persistentOwnerId,
+                        activeAgentId,
+                        activeGeneration),
+                server.getTickCount());
+
+        Optional<AiReviewOnlyTicket> ticket = gateReceipt.terminalDispatch()
+                .flatMap(aiReviewOnlyTickets::close);
+        if (gateReceipt.terminalDispatch().isEmpty()) {
+            return AiReviewOnlyReviewReceipt.rejected(
+                    AiReviewOnlyReviewStatus.GATE_REJECTED,
+                    gateReceipt.review().status());
+        }
+        if (ticket.isEmpty()) {
+            return AiReviewOnlyReviewReceipt.rejected(
+                    AiReviewOnlyReviewStatus.UNTRACKED_TERMINAL_DROPPED,
+                    gateReceipt.review().status());
+        }
+        if (!gateReceipt.review().acceptedNoExecution()) {
+            return AiReviewOnlyReviewReceipt.rejected(
+                    AiReviewOnlyReviewStatus.GATE_REJECTED,
+                    gateReceipt.review().status());
+        }
+        if (!AiReviewOnlyContract.isCanonicalProposalPayload(payload)
+                || gateReceipt.review().proposal().isEmpty()
+                || !AiReviewOnlyContract.isCanonicalProposal(
+                        gateReceipt.review().proposal().orElseThrow())) {
+            return AiReviewOnlyReviewReceipt.rejected(
+                    AiReviewOnlyReviewStatus.REVIEW_CONTRACT_REJECTED_DROPPED,
+                    gateReceipt.review().status());
+        }
+
+        AiReviewOnlySnapshotProjection projection = ticket.orElseThrow().projection();
+        return AiReviewOnlyReviewReceipt.accepted(
+                gateReceipt.review().status(),
+                new AiReviewOnlyProposalSummary(
+                        projection.snapshotId(),
+                        projection.gameTick(),
+                        projection.threatCount(),
+                        1));
+    }
+
+    /**
      * Clears transient bindings sponsored by a real player when that player disconnects.
      */
     public void onRealPlayerLogout(ServerPlayer player) {
@@ -2459,6 +3040,8 @@ public final class BotLifecycleManager {
                             "Death was observed on a non-authoritative BotPlayer body"));
             return;
         }
+        /* A death body can never become the authoritative ACTIVE body again. */
+        closeAiProposalRequestForBot(runtime.handle.botId());
         revokePendingSkillCheckpointRecovery(
                 runtime, "authoritative_death");
         if (runtime.state == BotLifecycleState.DEAD) {
@@ -3253,6 +3836,35 @@ public final class BotLifecycleManager {
                 player.getUUID());
     }
 
+    /**
+     * Native item-use preflight reached immediately before vanilla advances a
+     * consumable. This must remain much narrower than the normal lifecycle
+     * tick: it only lets the action backend stop an already-active strict use,
+     * so it cannot schedule, observe, or mutate any unrelated bot state.
+     *
+     * @return whether vanilla must skip the pending item-use update
+     */
+    public boolean beforeNativeItemUseUpdate(BotServerPlayer player) {
+        Objects.requireNonNull(player, "player");
+        requireServerThread();
+        RuntimeEntry runtime = runtimes.get(player.getUUID());
+        if (runtime == null
+                || runtime.state != BotLifecycleState.ACTIVE
+                || runtime.handle.generation()
+                        != player.runtimeHandle().generation()
+                || runtime.handle.player().orElse(null) != player
+                || !isListenerAuthority(player)) {
+            /*
+             * A stale, retiring or detached Bot body must not advance a
+             * consumable between lifecycle teardown and action cleanup. The
+             * hook is reached only for a live native use, so suppressing it is
+             * the fail-closed outcome even for a non-strict legacy use.
+             */
+            return player.isUsingItem();
+        }
+        return minecraftActionBackend.beforeNativeItemUseUpdate(player);
+    }
+
     public void tick() {
         requireServerThread();
         if (stopping) {
@@ -3262,6 +3874,14 @@ public final class BotLifecycleManager {
         long tickStartedNanos = serverTickStartedNanos;
         serverTickStartedNanos = -1L;
         int currentTick = server.getTickCount();
+        aiProposalSessionGate.closeExpiredThrough(currentTick)
+                .forEach(envelope -> {
+                    aiReviewOnlyTickets.close(
+                            AiRequestDispatchReceipt.fromEnvelope(envelope));
+                    sendAiRequestCancellation(envelope);
+                });
+        /* Defensive orphan cleanup: a ticket never outlives its dispatch TTL. */
+        aiReviewOnlyTickets.closeExpiredThrough(currentTick);
         taskSensorService.beginTick(currentTick);
         for (RuntimeEntry runtime : List.copyOf(runtimes.values())) {
             if (hasRequestedListenerDisconnect(
@@ -3350,13 +3970,24 @@ public final class BotLifecycleManager {
                         currentTick);
             }
         }
+        /*
+         * P5C ordering is deliberate: a successful melee child can complete
+         * its technique before the self-defense FSM consumes its Action
+         * receipt and considers another bounded decision. Action outcomes are
+         * then drained back into the exact child ticket before finishTick
+         * seals this server tick against late callbacks.
+         */
+        selfDefenseTechniqueBridge.tick(currentTick);
         selfDefenseSkillService.tick(currentTick);
+        resumeSafetyPausedSkillRuns(currentTick);
         advanceSkillCheckpointRecoveries(currentTick);
         skillRuntime.tick(currentTick);
         persistSafeSkillCheckpoints(currentTick);
         survivalSkillService.tick(currentTick);
         navigationService.tick(currentTick);
         actionRuntime.tick(currentTick);
+        selfDefenseTechniqueBridge.drainCompletedActions(currentTick);
+        selfDefenseTechniqueBridge.finishTick(currentTick);
         advanceDirectDisconnectRetirements(currentTick);
         advanceDeathRetirements(currentTick);
         perceptionService.tick(currentTick);
@@ -3432,7 +4063,7 @@ public final class BotLifecycleManager {
             boolean currentQuiescent = hasDurableCheckpointQuiescence(
                     player, botId, runtime.handle.generation());
             boolean oldGenerationActionsQuiescent = checkpoint != null
-                    && actionRuntime.isGenerationSafe(
+                    && isP5GenerationQuiescent(
                             botId, checkpoint.generation());
             boolean oldGenerationTokensCleared = false;
             if (currentQuiescent && oldGenerationActionsQuiescent) {
@@ -3482,7 +4113,7 @@ public final class BotLifecycleManager {
                                 new SkillCheckpointRecoverySafety(
                                         player.containerMenu
                                                 == player.inventoryMenu,
-                                        actionRuntime.isGenerationSafe(
+                                        isP5GenerationQuiescent(
                                                 botId,
                                                 runtime.handle.generation()),
                                         player.inventoryMenu
@@ -3605,7 +4236,7 @@ public final class BotLifecycleManager {
                 || !player.inventoryMenu.getCarried().isEmpty()) {
             return "menu_layout_active";
         }
-        if (!actionRuntime.isGenerationSafe(botId, generation)) {
+        if (!isP5GenerationQuiescent(botId, generation)) {
             return "action_layout_active";
         }
         return null;
@@ -3835,7 +4466,19 @@ public final class BotLifecycleManager {
             BotServerPlayer player, UUID botId, long generation) {
         return player.containerMenu == player.inventoryMenu
                 && player.inventoryMenu.getCarried().isEmpty()
-                && actionRuntime.isGenerationSafe(botId, generation);
+                && isP5GenerationQuiescent(botId, generation);
+    }
+
+    /**
+     * An Action ledger drain alone is not enough after P5C: a completed melee
+     * Action may still be waiting for its owner-thread technique acknowledgement
+     * and terminal boundary. Check both independent fences before a body or
+     * checkpoint is treated as quiescent.
+     */
+    private boolean isP5GenerationQuiescent(UUID botId, long generation) {
+        return actionRuntime.isGenerationSafe(botId, generation)
+                && selfDefenseTechniqueBridge.isGenerationSafe(
+                        botId, generation);
     }
 
     /**
@@ -4000,6 +4643,7 @@ public final class BotLifecycleManager {
         }
         long currentTick = server.getTickCount();
         stopping = true;
+        closeAllAiProposalRequests();
         List<RuntimeEntry> shutdownRuntimes =
                 new ArrayList<>(runtimes.values());
         RuntimeException preparationFailure = null;
@@ -4052,6 +4696,12 @@ public final class BotLifecycleManager {
                     preparationFailure, exception);
         }
         try {
+            selfDefenseTechniqueBridge.shutdown(currentTick);
+        } catch (RuntimeException exception) {
+            preparationFailure = appendFailure(
+                    preparationFailure, exception);
+        }
+        try {
             selfDefenseSkillService.close();
         } catch (RuntimeException exception) {
             preparationFailure = appendFailure(
@@ -4075,8 +4725,15 @@ public final class BotLifecycleManager {
             preparationFailure = appendFailure(
                     preparationFailure, exception);
         }
+        safetyPausedSkillRuns.clear();
         try {
             actionRuntime.shutdown(currentTick);
+        } catch (RuntimeException exception) {
+            preparationFailure = appendFailure(
+                    preparationFailure, exception);
+        }
+        try {
+            selfDefenseTechniqueBridge.drainCompletedActions(currentTick);
         } catch (RuntimeException exception) {
             preparationFailure = appendFailure(
                     preparationFailure, exception);
@@ -4135,10 +4792,8 @@ public final class BotLifecycleManager {
                         currentTick,
                         (botId, generation) ->
                                 allowNormalPlayerSave
-                                        && actionRuntime
-                                                .isGenerationSafe(
-                                                        botId,
-                                                        generation));
+                                        && isP5GenerationQuiescent(
+                                                botId, generation));
             } catch (RuntimeException exception) {
                 BotPlayer.LOGGER.error(
                         "Failed to close BotPlayer survival skill state during server stop",
@@ -4176,7 +4831,7 @@ public final class BotLifecycleManager {
                 || runtime.handle.generation()
                         != generation
                 || player == null
-                || !actionRuntime.isGenerationSafe(
+                || !isP5GenerationQuiescent(
                         botId, generation)) {
             return false;
         }
@@ -4934,11 +5589,14 @@ public final class BotLifecycleManager {
         RuntimeException failure = null;
         if (pending.vanillaConsumedTicket != null) {
             try {
+                long currentTick = server.getTickCount();
+                closeSelfDefenseGeneration(runtime.handle.botId(),
+                        pending.generation, currentTick);
                 GenerationDrainStatus status = actionRuntime
                         .consumeBotGenerationForVanillaDeathNow(
                                 runtime.handle.botId(),
                                 pending.generation,
-                                server.getTickCount());
+                                currentTick);
                 if (status == GenerationDrainStatus.UNSAFE) {
                     failure = appendFailure(
                             failure,
@@ -5359,10 +6017,13 @@ public final class BotLifecycleManager {
             }
             if (generation > 0L) {
                 try {
+                    long currentTick = server.getTickCount();
+                    closeSelfDefenseGeneration(runtime.handle.botId(),
+                            generation, currentTick);
                     actionRuntime.quarantineBotGenerationNow(
                             runtime.handle.botId(),
                             generation,
-                            server.getTickCount());
+                            currentTick);
                 } catch (RuntimeException exception) {
                     failure = appendFailure(failure, exception);
                 }
@@ -5454,6 +6115,8 @@ public final class BotLifecycleManager {
             return new GenerationRetirement(
                     true, null);
         }
+        /* Any retirement invalidates a proposal bound to the predecessor body generation. */
+        closeAiProposalRequestForBot(runtime.handle.botId());
         if (runtime.generationRetirementInProgress) {
             return new GenerationRetirement(
                     false,
@@ -6767,11 +7430,28 @@ public final class BotLifecycleManager {
         if (throughGeneration <= 0) {
             return;
         }
+        long currentTick = server.getTickCount();
+        closeSelfDefenseGeneration(runtime.handle.botId(), throughGeneration,
+                currentTick);
         actionRuntime.cancelBotNow(
                 runtime.handle.botId(),
                 throughGeneration,
                 reason,
-                server.getTickCount());
+                currentTick);
+    }
+
+    /**
+     * A self-defense melee has two owner-thread layers above the Action
+     * runtime. Close the technique first so it can retract and cancel its
+     * exact immutable child, then close the limited-defense session before an
+     * Action generation is drained or quarantined.
+     */
+    private void closeSelfDefenseGeneration(
+            UUID botId, long generation, long currentTick) {
+        selfDefenseTechniqueBridge.closeGeneration(
+                botId, generation, currentTick);
+        selfDefenseSkillService.closeGeneration(
+                botId, generation, currentTick);
     }
 
     private boolean closeP4Generation(
@@ -6810,6 +7490,13 @@ public final class BotLifecycleManager {
                     failure, exception);
         }
         try {
+            selfDefenseTechniqueBridge.closeGeneration(
+                    botId, generation, currentTick);
+        } catch (RuntimeException exception) {
+            failure = appendFailure(
+                    failure, exception);
+        }
+        try {
             selfDefenseSkillService.closeGeneration(
                     botId, generation, currentTick);
         } catch (RuntimeException exception) {
@@ -6833,7 +7520,7 @@ public final class BotLifecycleManager {
         if (failure != null) {
             throw failure;
         }
-        return safelyClosed;
+        return safelyClosed && isP5GenerationQuiescent(botId, generation);
     }
 
     private void closeGenericSkillGeneration(
@@ -6855,6 +7542,11 @@ public final class BotLifecycleManager {
             long currentTick,
             String reason,
             boolean preserveSafeCheckpoint) {
+        safetyPausedSkillRuns.computeIfPresent(
+                botId,
+                (ignored, paused) -> paused.generation() == generation
+                        ? null
+                        : paused);
         skillRuntime.closeGeneration(
                 botId, generation, currentTick, reason);
         if (!preserveSafeCheckpoint) {
@@ -7878,7 +8570,53 @@ public final class BotLifecycleManager {
                 .isPresent();
     }
 
+    /**
+     * Closes the server gate first, then best-effort notifies the exact owner client so it can
+     * cancel local HTTP work. The returned gate envelope is the sole source of the correlation;
+     * this method deliberately never reconstructs a broad bot-level cancellation.
+     */
+    private void closeAiProposalRequestForBot(UUID botId) {
+        aiProposalSessionGate.closeBot(botId).ifPresent(envelope -> {
+            aiReviewOnlyTickets.close(AiRequestDispatchReceipt.fromEnvelope(envelope));
+            sendAiRequestCancellation(envelope);
+        });
+        /* Handles only a defensive gate/ticket divergence; no broad request-id reconstruction. */
+        aiReviewOnlyTickets.closeBot(botId);
+    }
+
+    /** Sends shutdown cancellations for every still-open owner-client request. */
+    private void closeAllAiProposalRequests() {
+        aiProposalSessionGate.closeAll().forEach(envelope -> {
+            aiReviewOnlyTickets.close(AiRequestDispatchReceipt.fromEnvelope(envelope));
+            sendAiRequestCancellation(envelope);
+        });
+        aiReviewOnlyTickets.closeAll();
+    }
+
+    private void sendAiRequestCancellation(AiProposalRequestEnvelope envelope) {
+        ServerPlayer owner = server.getPlayerList().getPlayer(envelope.ownerId());
+        if (owner == null
+                || owner instanceof BotServerPlayer
+                || !envelope.ownerId().equals(owner.getUUID())) {
+            return;
+        }
+        try {
+            PacketDistributor.sendToPlayer(owner, new AiRequestCancellationPayload(
+                    roster.serverInstanceId(),
+                    envelope.botId(),
+                    envelope.ownerId(),
+                    envelope.agentId(),
+                    envelope.generation(),
+                    envelope.requestId(),
+                    envelope.nonce(),
+                    envelope.revision()));
+        } catch (RuntimeException ignored) {
+            /* The gate is already closed; a transport failure must not retain client authority. */
+        }
+    }
+
     private void clearAgentBinding(UUID botId) {
+        closeAiProposalRequestForBot(botId);
         UUID agentId = activeAgentByBot.remove(botId);
         if (agentId != null) {
             botByActiveAgent.remove(agentId, botId);
@@ -8079,6 +8817,21 @@ public final class BotLifecycleManager {
             if (!prior.plan().equals(restartPlan.sourcePlan())) {
                 throw new IllegalArgumentException(
                         "checkpoint lineage source plan must match prior record");
+            }
+        }
+    }
+
+    /** 已清理 reservation、但尚未通过 L0 clear gate 的单个通用 P5A run。 */
+    private record SafetyPausedSkillRun(
+            UUID runId,
+            long generation,
+            UUID incidentId) {
+        private SafetyPausedSkillRun {
+            Objects.requireNonNull(runId, "runId");
+            Objects.requireNonNull(incidentId, "incidentId");
+            if (generation <= 0L) {
+                throw new IllegalArgumentException(
+                        "safety-paused run generation must be positive");
             }
         }
     }

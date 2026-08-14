@@ -37,6 +37,7 @@ public final class P5ARestartPhaseOneGameTests {
     public static void persistsSafeCheckpointThenNormallyShutsDown(
             GameTestHelper helper) {
         P2GameTestSupport.prepareEmptyFloor(helper);
+        placeDeferredSourceVein(helper);
         placeLogTargets(helper);
         P5GameTestSupport.IsolatedFixture fixture =
                 P5GameTestSupport.persistentFixture(
@@ -51,6 +52,9 @@ public final class P5ARestartPhaseOneGameTests {
         P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
         MinecraftServer server = helper.getLevel().getServer();
         try {
+            P2GameTestSupport.placePlayer(
+                    bot.player(), helper.getLevel(), helper.absoluteVec(
+                            P5ARestartGameTestSupport.SOURCE_POSITION), 0.0F);
             P5ARestartGameTestSupport.loadCheckpointScopeChunks(bot.player());
             bot.player().getInventory().setItem(
                     P5ARestartGameTestSupport.PERSISTED_ITEM_SLOT,
@@ -157,9 +161,59 @@ public final class P5ARestartPhaseOneGameTests {
          * drop is in deterministic pickup range. The prior diagonal third
          * target could be broken successfully but remain uncollected.
          */
-        helper.setBlock(new BlockPos(3, 1, 4), Blocks.OAK_LOG);
-        helper.setBlock(new BlockPos(4, 1, 3), Blocks.OAK_LOG);
-        helper.setBlock(new BlockPos(4, 1, 5), Blocks.OAK_LOG);
-        helper.setBlock(new BlockPos(5, 1, 4), Blocks.OAK_LOG);
+        helper.setBlock(new BlockPos(10, 1, 4), Blocks.OAK_LOG);
+        helper.setBlock(new BlockPos(11, 1, 3), Blocks.OAK_LOG);
+        helper.setBlock(new BlockPos(12, 1, 4), Blocks.OAK_LOG);
+        helper.setBlock(new BlockPos(11, 1, 5), Blocks.OAK_LOG);
+    }
+
+    /**
+     * 后缀所需的非木头资源在首次提交前就已存在，但刻意放在 phase-two 空模板之外。
+     * 这样第二个 GameTest 进程重载自己的 9×5×9 模板时不会把持久世界中的真实资源
+     * 偷换为第二阶段直接赠送。阶段一的 checkpoint body 已移到模板边缘：这样 source、
+     * 工作台放置位和后续熔炉仍保留在 P5A 当前的本地观察/交互合同中。过滤传感器在 r=6
+     * 起即受 256-block 上限截断，不能把“半径八”误当成必然可观测。
+     */
+    private static void placeDeferredSourceVein(GameTestHelper helper) {
+        for (int x = 9; x <= 13; x++) {
+            for (int z = 0; z <= 6; z++) {
+                helper.setBlock(new BlockPos(x, 0, z), Blocks.STONE);
+                /* The source cells remain outside the phase-two 9x5x9 template.
+                 * Clear persisted structure residue around and above the compact
+                 * source cluster before the first server stops, so the production
+                 * UP-face ray remains a real line-of-sight check rather than a
+                 * fixture artifact. The four log targets are written afterwards. */
+                for (int y = 1; y <= 4; y++) {
+                    helper.setBlock(new BlockPos(x, y, z), Blocks.AIR);
+                }
+            }
+        }
+        java.util.List<SourceBlock> sources = java.util.List.of(
+                new SourceBlock(new BlockPos(9, 1, 1), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(10, 1, 1), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(11, 1, 1), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(12, 1, 1), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(13, 1, 1), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(9, 1, 3), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(12, 1, 3), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(13, 1, 3), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(9, 1, 5), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(10, 1, 5), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(12, 1, 5), Blocks.COBBLESTONE),
+                new SourceBlock(new BlockPos(13, 1, 5), Blocks.IRON_ORE),
+                new SourceBlock(new BlockPos(9, 1, 2), Blocks.IRON_ORE),
+                new SourceBlock(new BlockPos(13, 1, 2), Blocks.IRON_ORE),
+                new SourceBlock(new BlockPos(10, 1, 2), Blocks.COAL_ORE));
+        for (SourceBlock source : sources) {
+            helper.setBlock(source.position(), source.block());
+        }
+    }
+
+    private record SourceBlock(BlockPos position,
+            net.minecraft.world.level.block.Block block) {
+        private SourceBlock {
+            position = java.util.Objects.requireNonNull(position, "position");
+            block = java.util.Objects.requireNonNull(block, "block");
+        }
     }
 }

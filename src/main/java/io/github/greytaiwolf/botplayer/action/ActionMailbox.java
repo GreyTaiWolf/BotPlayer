@@ -62,40 +62,107 @@ public final class ActionMailbox {
    }
 
    public synchronized ActionMailbox.Cancellation cancel(UUID var1, UUID var2, ActionCancellationReason var3) {
-      ActionEnvelope.requireNonZero(var1, "botId");
-      ActionEnvelope.requireNonZero(var2, "actionId");
-      Objects.requireNonNull(var3, "reason");
+      return this.cancel(var1, 0L, var2, var3);
+   }
+
+   /**
+    * Atomically removes one exact queued envelope for P5C containment.
+    *
+    * <p>This deliberately bypasses the ordinary cancellation lane. A full
+    * cancellation receipt queue must not force a still-unstarted exact action
+    * into the ambiguous generation-containment path. The caller owns the
+    * returned submission's terminal completion and must not use this method
+    * for aliases or arbitrary cancellation.
+    */
+   synchronized Optional<ActionMailbox.SubmitCommand> removeExactQueuedForContainment(
+      UUID botId, long botGeneration, UUID actionId
+   ) {
+      ActionEnvelope.requireNonZero(botId, "botId");
+      if (botGeneration <= 0L) {
+         throw new IllegalArgumentException("botGeneration must be positive");
+      }
+      ActionEnvelope.requireNonZero(actionId, "actionId");
+
+      ActionMailbox.SubmitCommand exactSubmission = this.submissions
+         .stream()
+         .filter(submission -> submission.envelope().botId().equals(botId)
+            && submission.envelope().botGeneration() == botGeneration
+            && submission.envelope().actionId().equals(actionId))
+         .findFirst()
+         .orElse(null);
+      if (exactSubmission == null) {
+         return Optional.empty();
+      }
+      if (!this.submissions.remove(exactSubmission)) {
+         throw new IllegalStateException(
+            "Exact queued action disappeared during containment"
+         );
+      }
+      return Optional.of(exactSubmission);
+   }
+
+   private synchronized ActionMailbox.Cancellation cancel(
+      UUID botId, long containmentGeneration, UUID actionId,
+      ActionCancellationReason reason
+   ) {
+      ActionEnvelope.requireNonZero(botId, "botId");
+      ActionEnvelope.requireNonZero(actionId, "actionId");
+      Objects.requireNonNull(reason, "reason");
       if (this.closed.get()) {
          return ActionMailbox.Cancellation.rejected(ActionMailbox.CancellationStatus.RUNTIME_CLOSED);
       } else {
-         CompletionDispatcher.Completion<ActionMailbox.CancellationStatus> var4 =
+         CompletionDispatcher.Completion<ActionMailbox.CancellationStatus> completion =
             this.completionDispatcher.tryReserveCancellation();
-         if (var4 == null) {
+         if (completion == null) {
             return ActionMailbox.Cancellation.rejected(ActionMailbox.CancellationStatus.COMPLETION_BACKPRESSURE);
          } else {
-            ActionMailbox.SubmitCommand var5 = this.submissions
+            ActionMailbox.SubmitCommand exactSubmission = this.submissions
                .stream()
-               .filter(var2x -> var2x.envelope().botId().equals(var1) && var2x.envelope().actionId().equals(var2))
+               .filter(
+                  submission -> submission.envelope().botId().equals(botId)
+                     && submission.envelope().actionId().equals(actionId)
+                     && (containmentGeneration == 0L
+                        || submission.envelope().botGeneration()
+                           == containmentGeneration)
+               )
                .findFirst()
                .orElse(null);
-            ActionMailbox.SubmitCommand var6 = var5 == null
-               ? null
-               : this.submissions
-                  .stream()
-                  .filter(
-                     var1x -> var1x.envelope().idempotencyKey().equals(var5.envelope().idempotencyKey())
-                           && var5.envelope().hasSameIdempotentOperation(var1x.envelope())
-                  )
-                  .findFirst()
-                  .orElseThrow();
-            ActionMailbox.CancelCommand var7 = new ActionMailbox.CancelCommand(var1, var2, var3, Optional.ofNullable(var6), var4);
-            if (!this.cancellations.offer(var7)) {
-               this.completionDispatcher.releaseUnusedReservation(var4);
+            /*
+             * P5C's stronger path must remove the requested submission
+             * itself. The legacy cancellation path retains canonical-alias
+             * coalescing, but treating a sibling alias as proof would leave
+             * this exact envelope eligible to start later.
+             */
+            ActionMailbox.SubmitCommand queuedSubmission = containmentGeneration > 0L
+               ? exactSubmission
+               : exactSubmission == null
+                  ? null
+                  : this.submissions
+                     .stream()
+                     .filter(
+                        submission -> submission.envelope().idempotencyKey()
+                              .equals(exactSubmission.envelope().idempotencyKey())
+                              && exactSubmission.envelope()
+                                 .hasSameIdempotentOperation(
+                                    submission.envelope())
+                     )
+                     .findFirst()
+                     .orElseThrow();
+            ActionMailbox.CancelCommand cancellation = new ActionMailbox.CancelCommand(
+               botId, actionId, reason, Optional.ofNullable(queuedSubmission),
+               containmentGeneration, completion
+            );
+            if (!this.cancellations.offer(cancellation)) {
+               this.completionDispatcher.releaseUnusedReservation(completion);
                return ActionMailbox.Cancellation.rejected(ActionMailbox.CancellationStatus.MAILBOX_FULL);
-            } else if (var6 != null && !this.submissions.remove(var6)) {
+            } else if (queuedSubmission != null
+               && !this.submissions.remove(queuedSubmission)) {
                throw new IllegalStateException("Queued action disappeared while its cancellation was reserved");
             } else {
-               return ActionMailbox.Cancellation.enqueued(var4.future().minimalCompletionStage());
+               return ActionMailbox.Cancellation.enqueued(
+                  completion.future().minimalCompletionStage(),
+                  containmentGeneration > 0L && queuedSubmission != null
+               );
             }
          }
       }
@@ -232,6 +299,7 @@ public final class ActionMailbox {
       UUID actionId,
       ActionCancellationReason reason,
       Optional<ActionMailbox.SubmitCommand> queuedSubmission,
+      long containmentGeneration,
       CompletionDispatcher.Completion<ActionMailbox.CancellationStatus> completion
    ) implements ActionMailbox.Command {
       CancelCommand(
@@ -239,35 +307,70 @@ public final class ActionMailbox {
          UUID actionId,
          ActionCancellationReason reason,
          Optional<ActionMailbox.SubmitCommand> queuedSubmission,
+         long containmentGeneration,
          CompletionDispatcher.Completion<ActionMailbox.CancellationStatus> completion
       ) {
          Objects.requireNonNull(queuedSubmission, "queuedSubmission");
+         if (containmentGeneration < 0L) {
+            throw new IllegalArgumentException("containmentGeneration must not be negative");
+         }
          this.botId = botId;
          this.actionId = actionId;
          this.reason = reason;
          this.queuedSubmission = queuedSubmission;
+         this.containmentGeneration = containmentGeneration;
          this.completion = completion;
+      }
+
+      boolean requiresGenerationContainment() {
+         return this.containmentGeneration > 0L;
       }
    }
 
-   public static record Cancellation(ActionMailbox.CancellationStatus status, Optional<CompletionStage<ActionMailbox.CancellationStatus>> completion) {
-      public Cancellation(ActionMailbox.CancellationStatus status, Optional<CompletionStage<ActionMailbox.CancellationStatus>> completion) {
+   public static record Cancellation(
+      ActionMailbox.CancellationStatus status,
+      Optional<CompletionStage<ActionMailbox.CancellationStatus>> completion,
+      boolean exactQueuedActionRemoved
+   ) {
+      public Cancellation(
+         ActionMailbox.CancellationStatus status,
+         Optional<CompletionStage<ActionMailbox.CancellationStatus>> completion
+      ) {
+         this(status, completion, false);
+      }
+
+      public Cancellation(
+         ActionMailbox.CancellationStatus status,
+         Optional<CompletionStage<ActionMailbox.CancellationStatus>> completion,
+         boolean exactQueuedActionRemoved
+      ) {
          Objects.requireNonNull(status, "status");
          Objects.requireNonNull(completion, "completion");
          if (status == ActionMailbox.CancellationStatus.ENQUEUED != completion.isPresent()) {
             throw new IllegalArgumentException("Only an enqueued cancellation has a completion stage");
+         } else if (exactQueuedActionRemoved
+            && status != ActionMailbox.CancellationStatus.ENQUEUED) {
+            throw new IllegalArgumentException(
+               "Only an enqueued cancellation can remove a queued action"
+            );
          } else {
             this.status = status;
             this.completion = completion;
+            this.exactQueuedActionRemoved = exactQueuedActionRemoved;
          }
       }
 
-      private static ActionMailbox.Cancellation enqueued(CompletionStage<ActionMailbox.CancellationStatus> var0) {
-         return new ActionMailbox.Cancellation(ActionMailbox.CancellationStatus.ENQUEUED, Optional.of(var0));
+      private static ActionMailbox.Cancellation enqueued(
+         CompletionStage<ActionMailbox.CancellationStatus> var0,
+         boolean var1
+      ) {
+         return new ActionMailbox.Cancellation(
+            ActionMailbox.CancellationStatus.ENQUEUED, Optional.of(var0), var1
+         );
       }
 
       private static ActionMailbox.Cancellation rejected(ActionMailbox.CancellationStatus var0) {
-         return new ActionMailbox.Cancellation(var0, Optional.empty());
+         return new ActionMailbox.Cancellation(var0, Optional.empty(), false);
       }
    }
 

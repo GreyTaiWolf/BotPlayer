@@ -100,6 +100,308 @@ public final class BotActionRuntime {
       return this.mailbox.cancel(var1, var2, var3);
    }
 
+   /**
+    * Cancels one exact self-defense Action with a target-specific receipt.
+    *
+    * <p>Do not promote generation quarantine to a safe cancellation result:
+    * it can close ingress after the requested Action has started, completed,
+    * or resolved to an alias. Only an exact queued removal or an exact active
+    * ticket fenced before {@code backend.start()} is a safe retraction.
+    */
+   public BotActionRuntime.CancellationContainmentResult cancelOrContain(
+      UUID botId,
+      long botGeneration,
+      UUID actionId,
+      ActionCancellationReason reason,
+      long currentTick
+   ) {
+      this.assertOwnerThread();
+      ActionEnvelope.requireNonZero(botId, "botId");
+      ActionEnvelope.requireNonZero(actionId, "actionId");
+      if (botGeneration <= 0L) {
+         throw new IllegalArgumentException("botGeneration must be positive");
+      }
+      if (currentTick < 0L) {
+         throw new IllegalArgumentException("currentTick must not be negative");
+      }
+      Objects.requireNonNull(reason, "reason");
+
+      ActionCancellationReceipt.Identity requested =
+         new ActionCancellationReceipt.Identity(botId, botGeneration, actionId);
+      BotActionRuntime.Ticket exact = this.active.get(
+         new BotActionRuntime.ActionKey(botId, actionId)
+      );
+      if (exact != null) {
+         if (exact.envelope.botGeneration() != botGeneration) {
+            return this.containUnsafeCancellation(
+               new ActionCancellationReceipt(
+                  requested,
+                  Optional.of(new ActionCancellationReceipt.Identity(
+                     exact.envelope.botId(), exact.envelope.botGeneration(),
+                     exact.envelope.actionId()
+                  )),
+                  ActionCancellationReceipt.Disposition.UNKNOWN,
+                  Optional.empty()
+               ),
+               currentTick
+            );
+         }
+         if (exact.state.isTerminal() || exact.termination != null
+            || exact.outcome != null) {
+            return this.containUnsafeCancellation(
+               ActionCancellationReceipt.unsafe(
+                  botId, botGeneration, actionId,
+                  ActionCancellationReceipt.Disposition.TERMINAL
+               ),
+               currentTick
+            );
+         }
+         if (exact.backendStarted) {
+            return this.containUnsafeCancellation(
+               ActionCancellationReceipt.unsafe(
+                  botId, botGeneration, actionId,
+                  ActionCancellationReceipt.Disposition.STARTED
+               ),
+               currentTick
+            );
+         }
+         try {
+            ActionOutcome outcome = this.finish(
+               exact,
+               ActionState.CANCELLED,
+               ActionFailureCode.CANCELLED,
+               List.of(),
+               cancellationSummary(reason),
+               reason == ActionCancellationReason.RUNTIME_SHUTDOWN
+                  ? ActionCleanupReason.RUNTIME_SHUTDOWN
+                  : ActionCleanupReason.CANCELLED,
+               currentTick
+            );
+            if (outcome != null && outcome.state() == ActionState.CANCELLED) {
+               return new BotActionRuntime.CancellationContainmentResult(
+                  ActionCancellationReceipt.fencedBeforeStart(
+                     botId, botGeneration, actionId
+                  )
+               );
+            }
+         } catch (RuntimeException exception) {
+            // The target is still not proven retracted; use the unsafe path below.
+         }
+         return this.containUnsafeCancellation(
+            ActionCancellationReceipt.unsafe(
+               botId, botGeneration, actionId,
+               ActionCancellationReceipt.Disposition.UNKNOWN
+            ),
+            currentTick
+         );
+      }
+
+      Optional<ActionEnvelope> canonical;
+      try {
+         canonical = this.ledger.canonicalEnvelope(botId, actionId);
+      } catch (RuntimeException exception) {
+         return this.containUnsafeCancellation(
+            ActionCancellationReceipt.unsafe(
+               botId, botGeneration, actionId,
+               ActionCancellationReceipt.Disposition.UNKNOWN
+            ),
+            currentTick
+         );
+      }
+      if (canonical.isPresent()) {
+         ActionEnvelope canonicalEnvelope = canonical.orElseThrow();
+         ActionCancellationReceipt.Identity observed =
+            this.cancellationIdentity(canonicalEnvelope);
+         if (canonicalEnvelope.botGeneration() != botGeneration) {
+            return this.containUnsafeCancellation(
+               new ActionCancellationReceipt(
+                  requested,
+                  Optional.of(observed),
+                  ActionCancellationReceipt.Disposition.UNKNOWN,
+                  Optional.empty()
+               ),
+               currentTick
+            );
+         }
+         UUID canonicalActionId = canonicalEnvelope.actionId();
+         if (!canonicalActionId.equals(actionId)) {
+            return this.containUnsafeCancellation(
+               new ActionCancellationReceipt(
+                  requested,
+                  Optional.of(observed),
+                  ActionCancellationReceipt.Disposition.ALIAS,
+                  Optional.empty()
+               ),
+               currentTick
+            );
+         }
+         if (this.ledger.completedOutcome(botId, actionId).isPresent()) {
+            return this.containUnsafeCancellation(
+               ActionCancellationReceipt.unsafe(
+                  botId, botGeneration, actionId,
+                  ActionCancellationReceipt.Disposition.TERMINAL
+               ),
+               currentTick
+            );
+         }
+         return this.containUnsafeCancellation(
+            ActionCancellationReceipt.unsafe(
+               botId, botGeneration, actionId,
+               ActionCancellationReceipt.Disposition.UNKNOWN
+            ),
+            currentTick
+         );
+      }
+
+      ActionMailbox.SubmitCommand queued;
+      try {
+         queued = this.mailbox.removeExactQueuedForContainment(
+            botId, botGeneration, actionId
+         ).orElse(null);
+      } catch (RuntimeException exception) {
+         return this.containUnsafeCancellation(
+            ActionCancellationReceipt.unsafe(
+               botId, botGeneration, actionId,
+               ActionCancellationReceipt.Disposition.UNKNOWN
+            ),
+            currentTick
+         );
+      }
+      if (queued == null) {
+         return this.containUnsafeCancellation(
+            ActionCancellationReceipt.unsafe(
+               botId, botGeneration, actionId,
+               ActionCancellationReceipt.Disposition.UNKNOWN
+            ),
+            currentTick
+         );
+      }
+      BotActionRuntime.Ticket alias = this.activeCanonicalForAlias(
+         queued.envelope()
+      );
+      if (alias != null) {
+         this.publishDetachedUnsafeQueued(queued, currentTick);
+         return this.containUnsafeCancellation(
+            new ActionCancellationReceipt(
+               requested,
+               Optional.of(new ActionCancellationReceipt.Identity(
+                  alias.envelope.botId(), alias.envelope.botGeneration(),
+                  alias.envelope.actionId()
+               )),
+               ActionCancellationReceipt.Disposition.ALIAS,
+               Optional.empty()
+            ),
+            currentTick
+         );
+      }
+
+      try {
+         ActionLedger.BeginResult begin = this.ledger.begin(queued.envelope());
+         if (begin.status() == ActionLedger.BeginStatus.STARTED) {
+            BotActionRuntime.Ticket detached = new BotActionRuntime.Ticket(
+               queued.envelope(), queued.priority(), currentTick,
+               queued.completion()
+            );
+            this.finishDetached(
+               detached,
+               ActionState.CANCELLED,
+               ActionFailureCode.CANCELLED,
+               "Action cancelled before leaving the lifecycle mailbox",
+               currentTick,
+               true
+            );
+            return new BotActionRuntime.CancellationContainmentResult(
+               ActionCancellationReceipt.exactQueuedRetracted(
+                  botId, botGeneration, actionId
+               )
+            );
+         }
+         this.publishDetachedUnsafeQueued(queued, currentTick);
+         ActionCancellationReceipt.Disposition disposition = switch (begin.status()) {
+            case DUPLICATE_IN_PROGRESS -> ActionCancellationReceipt.Disposition.ALIAS;
+            case REPLAYED -> ActionCancellationReceipt.Disposition.TERMINAL;
+            case IDEMPOTENCY_CONFLICT, CAPACITY_EXHAUSTED ->
+               ActionCancellationReceipt.Disposition.UNKNOWN;
+            case STARTED -> throw new IllegalStateException(
+               "handled exact queued cancellation state repeated"
+            );
+         };
+         Optional<ActionCancellationReceipt.Identity> observed =
+            begin.canonicalActionId().flatMap(canonicalActionId ->
+               this.ledger.canonicalEnvelope(botId, canonicalActionId)
+                  .map(this::cancellationIdentity)
+            );
+         return this.containUnsafeCancellation(
+            new ActionCancellationReceipt(
+               requested, observed, disposition, Optional.empty()
+            ),
+            currentTick
+         );
+      } catch (RuntimeException exception) {
+         this.publishDetachedUnsafeQueued(queued, currentTick);
+         return this.containUnsafeCancellation(
+            ActionCancellationReceipt.unsafe(
+               botId, botGeneration, actionId,
+               ActionCancellationReceipt.Disposition.UNKNOWN
+            ),
+            currentTick
+         );
+      }
+   }
+
+   private BotActionRuntime.Ticket activeCanonicalForAlias(
+      ActionEnvelope queued
+   ) {
+      return this.active.values().stream()
+         .filter(ticket -> !ticket.envelope.actionId().equals(
+            queued.actionId()
+         ))
+         .filter(ticket -> ticket.envelope.hasSameIdempotentOperation(queued))
+         .findFirst()
+         .orElse(null);
+   }
+
+   private ActionCancellationReceipt.Identity cancellationIdentity(
+      ActionEnvelope envelope
+   ) {
+      return new ActionCancellationReceipt.Identity(
+         envelope.botId(), envelope.botGeneration(), envelope.actionId()
+      );
+   }
+
+   private void publishDetachedUnsafeQueued(
+      ActionMailbox.SubmitCommand queued, long currentTick
+   ) {
+      try {
+         this.publish(
+            queued.completion(),
+            this.rejectedOutcome(
+               queued.envelope(),
+               currentTick,
+               ActionFailureCode.UNSAFE_CONTROL_STATE,
+               "Exact self-defense cancellation could not prove action identity"
+            )
+         );
+      } catch (RuntimeException ignored) {
+         // Quarantine below remains mandatory even when this detached receipt fails.
+      }
+   }
+
+   private BotActionRuntime.CancellationContainmentResult containUnsafeCancellation(
+      ActionCancellationReceipt receipt, long currentTick
+   ) {
+      try {
+         this.quarantineBotGenerationNow(
+            receipt.requested().botId(),
+            receipt.requested().botGeneration(),
+            currentTick
+         );
+      } catch (RuntimeException ignored) {
+         // The semantic receipt remains unsafe even when remediation itself fails.
+      }
+      return new BotActionRuntime.CancellationContainmentResult(receipt);
+   }
+
    public BotActionRuntime.TickReport tick(long var1) {
       this.beginMutation(var1);
 
@@ -948,62 +1250,107 @@ public final class BotActionRuntime {
    }
 
    private void processCancellation(ActionMailbox.CancelCommand var1, long var2) {
-      BotActionRuntime.ActionKey var4 = new BotActionRuntime.ActionKey(var1.botId(), var1.actionId());
-      BotActionRuntime.Ticket var5 = this.active.get(var4);
-      if (var5 == null) {
-         var5 = this.ledger
-            .canonicalActionId(var1.botId(), var1.actionId())
-            .map(var2x -> this.active.get(new BotActionRuntime.ActionKey(var1.botId(), var2x)))
-            .orElse(null);
-      }
+      try {
+         BotActionRuntime.ActionKey var4 = new BotActionRuntime.ActionKey(var1.botId(), var1.actionId());
+         BotActionRuntime.Ticket var5 = this.active.get(var4);
+         if (var5 != null
+            && var1.requiresGenerationContainment()
+            && var5.envelope.botGeneration() != var1.containmentGeneration()) {
+            var5 = null;
+         }
+         if (var5 == null) {
+            var5 = this.ledger
+               .canonicalActionId(var1.botId(), var1.actionId())
+               .map(var2x -> this.active.get(new BotActionRuntime.ActionKey(var1.botId(), var2x)))
+               .filter(
+                  var2x -> !var1.requiresGenerationContainment()
+                     || var2x.envelope.botGeneration()
+                        == var1.containmentGeneration()
+               )
+               .orElse(null);
+         }
 
-      if (var5 != null && !var5.state.isTerminal()) {
-         ActionOutcome var8 = this.finish(
-            var5,
-            ActionState.CANCELLED,
-            ActionFailureCode.CANCELLED,
-            List.of(),
-            cancellationSummary(var1.reason()),
-            var1.reason() == ActionCancellationReason.RUNTIME_SHUTDOWN ? ActionCleanupReason.RUNTIME_SHUTDOWN : ActionCleanupReason.CANCELLED,
-            var2
-         );
-         if (var8 == null) {
-            if (!this.queueCancellationWaiter(
-               var5, var1, false
-            )) {
-               var1.queuedSubmission().ifPresent(
-                  var4x -> this.completeQueuedCancellation(
-                     var4x, var2, var1.reason()
-                  )
+         if (var5 != null && !var5.state.isTerminal()) {
+            ActionOutcome var8 = this.finish(
+               var5,
+               ActionState.CANCELLED,
+               ActionFailureCode.CANCELLED,
+               List.of(),
+               cancellationSummary(var1.reason()),
+               var1.reason() == ActionCancellationReason.RUNTIME_SHUTDOWN ? ActionCleanupReason.RUNTIME_SHUTDOWN : ActionCleanupReason.CANCELLED,
+               var2
+            );
+            if (var8 == null) {
+               if (!this.queueCancellationWaiter(
+                  var5, var1, false
+               )) {
+                  var1.queuedSubmission().ifPresent(
+                     var4x -> this.completeQueuedCancellation(
+                        var4x, var2, var1.reason()
+                     )
+                  );
+                  this.completeCancellation(
+                     var1,
+                     ActionMailbox.CancellationStatus.COMPLETION_BACKPRESSURE,
+                     var2
+                  );
+               }
+            } else {
+               this.completeCancellation(
+                  var1,
+                  var8.state() == ActionState.CANCELLED ? ActionMailbox.CancellationStatus.CANCELLED : ActionMailbox.CancellationStatus.CLEANUP_FAILED,
+                  var2
                );
-               this.publish(
-                  var1.completion(),
-                  ActionMailbox.CancellationStatus.COMPLETION_BACKPRESSURE
+               var1.queuedSubmission().ifPresent(var4x -> this.completeQueuedCancellation(var4x, var2, var1.reason()));
+            }
+         } else if (var1.queuedSubmission().isPresent()) {
+            ActionMailbox.CancellationStatus var7 =
+               this.completeQueuedCancellation(
+                  var1.queuedSubmission().orElseThrow(),
+                  var2,
+                  var1.reason(),
+                  var1
                );
+            if (var7 != null) {
+               this.completeCancellation(var1, var7, var2);
             }
          } else {
-            this.publish(
-               var1.completion(),
-               var8.state() == ActionState.CANCELLED ? ActionMailbox.CancellationStatus.CANCELLED : ActionMailbox.CancellationStatus.CLEANUP_FAILED
-            );
-            var1.queuedSubmission().ifPresent(var4x -> this.completeQueuedCancellation(var4x, var2, var1.reason()));
+            ActionMailbox.CancellationStatus var6 = this.ledger.completedOutcome(var1.botId(), var1.actionId()).isPresent()
+               ? ActionMailbox.CancellationStatus.ALREADY_TERMINAL
+               : ActionMailbox.CancellationStatus.NOT_FOUND;
+            this.completeCancellation(var1, var6, var2);
          }
-      } else if (var1.queuedSubmission().isPresent()) {
-         ActionMailbox.CancellationStatus var7 =
-            this.completeQueuedCancellation(
-               var1.queuedSubmission().orElseThrow(),
-               var2,
-               var1.reason(),
-               var1
-            );
-         if (var7 != null) {
-            this.publish(var1.completion(), var7);
-         }
-      } else {
-         ActionMailbox.CancellationStatus var6 = this.ledger.completedOutcome(var1.botId(), var1.actionId()).isPresent()
-            ? ActionMailbox.CancellationStatus.ALREADY_TERMINAL
-            : ActionMailbox.CancellationStatus.NOT_FOUND;
-         this.publish(var1.completion(), var6);
+      } catch (RuntimeException exception) {
+         this.containCancellationFailure(var1, var2);
+         throw exception;
+      }
+   }
+
+   /**
+    * Publishes the ordinary mailbox receipt only after the stronger P5C
+    * contract has dealt with a non-cancelled terminal state. In particular,
+    * an {@code ENQUEUED} receipt is never mistaken for physical success.
+    */
+   private void completeCancellation(
+      ActionMailbox.CancelCommand command,
+      ActionMailbox.CancellationStatus status,
+      long currentTick
+   ) {
+      Objects.requireNonNull(command, "command");
+      Objects.requireNonNull(status, "status");
+      if (status != ActionMailbox.CancellationStatus.CANCELLED) {
+         this.containCancellationFailure(command, currentTick);
+      }
+      this.publish(command.completion(), status);
+   }
+
+   private void containCancellationFailure(
+      ActionMailbox.CancelCommand command, long currentTick
+   ) {
+      if (command.requiresGenerationContainment()) {
+         this.quarantineBotGenerationNow(
+            command.botId(), command.containmentGeneration(), currentTick
+         );
       }
    }
 
@@ -1703,14 +2050,19 @@ public final class BotActionRuntime {
       for (BotActionRuntime.PendingCancellation var8
          : var1.cancellationWaiters) {
          ActionMailbox.CancelCommand var9 = var8.command;
-         if (!var8.queuedSubmissionHandled) {
-            var9.queuedSubmission().ifPresent(
-            var3x -> this.completeQueuedCancellation(
-                  var3x, var4, var9.reason()
-               )
-            );
+         try {
+            if (!var8.queuedSubmissionHandled) {
+               var9.queuedSubmission().ifPresent(
+               var3x -> this.completeQueuedCancellation(
+                     var3x, var4, var9.reason()
+                  )
+               );
+            }
+            this.completeCancellation(var9, var6, var4);
+         } catch (RuntimeException exception) {
+            this.containCancellationFailure(var9, var4);
+            throw exception;
          }
-         this.publish(var9.completion(), var6);
       }
    }
 
@@ -2119,10 +2471,10 @@ public final class BotActionRuntime {
 
    private ActionOutcome finishDetached(BotActionRuntime.Ticket var1, ActionState var2, ActionFailureCode var3, String var4, long var5, boolean var7) {
       if (var2 == ActionState.FAILED) {
-         this.transition(var1, ActionState.VALIDATING);
+         this.transition(var1, ActionState.VALIDATING, var5);
       }
 
-      this.transition(var1, var2);
+      this.transition(var1, var2, var5);
       ActionOutcome var8 = new ActionOutcome(var1.envelope.actionId(), var2, var3, var5, var5, List.of(), var4);
       if (var7) {
          this.ledger.complete(var1.envelope, var8);
@@ -2144,8 +2496,12 @@ public final class BotActionRuntime {
    }
 
    private void transition(BotActionRuntime.Ticket var1, ActionState var2) {
-      ActionState var3 = var1.state;
-      var3.requireTransitionTo(var2);
+      this.transition(var1, var2, this.lastMutationTick);
+   }
+
+   private void transition(BotActionRuntime.Ticket var1, ActionState var2, long var3) {
+      ActionState var4 = var1.state;
+      var4.requireTransitionTo(var2);
       if (this.transitionHistory.size() == 512) {
          this.transitionHistory.removeFirst();
       }
@@ -2153,7 +2509,7 @@ public final class BotActionRuntime {
       this.transitionHistory
          .addLast(
             new ActionTransition(
-               var1.envelope.botId(), var1.envelope.botGeneration(), var1.envelope.actionId(), var1.envelope.action().kind(), var3, var2, this.lastMutationTick
+               var1.envelope.botId(), var1.envelope.botGeneration(), var1.envelope.actionId(), var1.envelope.action().kind(), var4, var2, var3
             )
          );
       var1.state = var2;
@@ -2321,6 +2677,25 @@ public final class BotActionRuntime {
             && !this.pending
             && !this.ticketRemaining
             && !this.leaseRemaining;
+      }
+   }
+
+   /**
+    * Exact P5C cancellation result. Its receipt stays unsafe after generation
+    * quarantine because quarantine never proves that this Action was not
+    * already started or terminal.
+    */
+   public static record CancellationContainmentResult(
+      ActionCancellationReceipt receipt
+   ) {
+      public CancellationContainmentResult(
+         ActionCancellationReceipt receipt
+      ) {
+         this.receipt = Objects.requireNonNull(receipt, "receipt");
+      }
+
+      public boolean safelyRetracted() {
+         return this.receipt.safelyRetracted();
       }
    }
 
