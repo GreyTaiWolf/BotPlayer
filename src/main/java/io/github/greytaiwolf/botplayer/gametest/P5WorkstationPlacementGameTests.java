@@ -300,6 +300,72 @@ public final class P5WorkstationPlacementGameTests {
     }
 
     /**
+     * 端口已生成的旧 {@code PlaceBlock} 也不能跨过朝向漂移直接进入原版 packet。这个场景不再
+     * 询问 ports 重规划，而是提交漂移前冻结的动作，证明 backend 的 start-time 围栏会在扣物品
+     * 或放置错误朝向的炉子前失败关闭。
+     */
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void furnacePlacementRejectsFrozenActionAfterDirectionDrift(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        P5GameTestSupport.IsolatedFixture fixture =
+                P5GameTestSupport.isolatedFixture(helper,
+                        "workstation_furnace_frozen_drift");
+        TestBot bot = fixture.spawn("frzdr");
+        P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
+        try {
+            prepareWorkstationHand(bot, Items.FURNACE);
+            PreparedPlacement prepared = preparePlacement(
+                    bot, FURNACE_NODE, WorkstationKind.FURNACE);
+            WorldInteractionActionSpec.PlaceBlock place = placeBlock(
+                    prepared.action());
+            BlockPos target = position(place.expectedPlaced());
+            Direction before = bot.player().getDirection();
+            turnRight(bot);
+            P2GameTestSupport.require(
+                    bot.player().getDirection() != before,
+                    "Frozen-action direction-drift fixture did not rotate the bot");
+
+            CompletionStage<ActionOutcome> completion =
+                    P2GameTestSupport.submit(
+                            bot,
+                            prepared.action().action(),
+                            prepared.action().maximumTicks());
+            P2GameTestSupport.awaitOutcome(
+                    helper,
+                    completion,
+                    TIMEOUT_TICKS - 20,
+                    cleanup,
+                    outcome -> {
+                        try {
+                            P2GameTestSupport.require(
+                                    outcome.state() == ActionState.FAILED
+                                            && outcome.failureCode()
+                                                    == ActionFailureCode
+                                                            .PRECONDITION_FAILED,
+                                    "Frozen furnace action did not fail before native dispatch: "
+                                            + outcome);
+                            P2GameTestSupport.require(
+                                    bot.player().serverLevel().getBlockState(
+                                                    target).isAir()
+                                            && inventoryCount(bot,
+                                                    Items.FURNACE) == 2,
+                                    "Facing-drift rejection placed or debited a furnace before failing");
+                        } finally {
+                            cleanup.run();
+                        }
+                        helper.succeed();
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    /**
      * 占位发生在 port 冻结 air target 并产生严格 action 后、backend 真正 dispatch 前。后端必须
      * 拒绝该动作，且 completion re-observation 不能把漂移的目标伪装成 production 成功。
      */

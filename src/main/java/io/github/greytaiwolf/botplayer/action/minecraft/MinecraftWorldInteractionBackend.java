@@ -13,6 +13,7 @@ import io.github.greytaiwolf.botplayer.action.ActionOutcome;
 import io.github.greytaiwolf.botplayer.action.ResourceIdEvidence;
 import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockHitTarget;
+import io.github.greytaiwolf.botplayer.action.interaction.BlockStateFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockTargetFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.EntityLocalHit;
 import io.github.greytaiwolf.botplayer.action.interaction.EntityTargetFingerprint;
@@ -2540,7 +2541,42 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     ActionFailureCode.INVALID_REQUEST,
                     "Block placement expected state does not match the held block item");
         }
+        if (!matchesFrozenFurnacePlacementFacing(
+                player, placeBlock.expectedPlaced())) {
+            /*
+             * A furnace's complete state is derived from the vanilla placement
+             * context, including the player's horizontal facing.  P5A freezes
+             * that state before enqueueing its old PlaceBlock action, so a
+             * changed facing must be rejected before the native packet can
+             * consume an item and leave a differently-oriented workstation.
+             * This is deliberately limited to the reviewed unlit furnace
+             * states; generic PlaceBlock keeps its existing contract.
+             */
+            return failure(
+                    envelope,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    "Block placement facing changed before native dispatch");
+        }
         return BackendResult.accepted(envelope);
+    }
+
+    private static boolean matchesFrozenFurnacePlacementFacing(
+            BotServerPlayer player, BlockTargetFingerprint expectedPlaced) {
+        BlockStateFingerprint expectedState = expectedPlaced.state();
+        if (!"false".equals(expectedState.properties().get("lit"))) {
+            return true;
+        }
+        boolean reviewedFurnace = false;
+        for (FurnaceKind furnaceKind : FurnaceKind.values()) {
+            if (furnaceKind.matchesWorkstationState(expectedState)) {
+                reviewedFurnace = true;
+                break;
+            }
+        }
+        return !reviewedFurnace
+                || expectedState.properties().get("facing").equals(
+                        player.getDirection().getOpposite()
+                                .getSerializedName());
     }
 
     /**
