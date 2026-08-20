@@ -168,6 +168,8 @@ P5A-0 状态说明：
   提升成熟度；
 - 有限自卫尚未按严格资格门、逐次重观察和脱战验证实现，COMBAT-02/07 不因已有底层攻击
   动作原语提升成熟度；盾牌、远程、多目标和团队战斗仍在 P5C；
+- P5C-S1 另有待验证的固定源码：管理员只能让已装备的精确原版副手盾牌持有 8 Tick 后释放。
+  它没有目标、策略、真实受击、耐久或斧破盾验证，因此 COMBAT-03 继续保持 `NONE`；
 - 当前只开放 `InventoryMenu` 内的通用 SWAP 序列和独立盔甲路径；跨 menu 统一事务、
   `clicked()` 故障注入、生命周期 `PENDING` continuation、TaskSensor/Reservation 生产
   接线、Checkpoint、工具/副手、有限自卫、craft/chest/furnace/DAG 和生产链仍未完成；

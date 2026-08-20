@@ -79,7 +79,7 @@ build/libs/
 
 `spawn`、`list`、`remove` 默认要求原版权限等级 `2`，可通过
 `permissions.commandPermissionLevel` 调整；P3 `perception`、P4 `navigation/safety`
-与 P5 `skill` 管理命令固定要求等级 `2`，不随该配置降级。`settings` 使用精确 owner
+与 P5 `skill/combat` 管理命令固定要求等级 `2`，不随该配置降级。`settings` 使用精确 owner
 校验，不要求 OP。
 
 ### 生成
@@ -251,13 +251,15 @@ idle moving exploring mining building combat farming crafting smelting none
 走向安全邻格、上浮和规避箭/TNT/敌对目标。P4 L0 本身不会吃东西；P5 开发切片可以接收
 临界饥饿 handoff，并尝试真实食用背包中的安全原版基础食物。P5 还提供扫描 carried
 inventory `0..35` 的基础盔甲升级入口；主动进食，以及热栏和主背包 2～3 步路径已由
-Build #137 运行验证。主动用药、工具/副手选择、持盾和反击仍未实现。
+Build #137 运行验证。主动用药、工具/通用副手选择、策略性盾牌格挡和反击仍未实现；下文的
+固定副手盾牌持有源码不改变这些边界。
 
 ### P5 生存技能管理与诊断
 
 ```text
 /botplayer skill equip-armor <name>
 /botplayer skill inspect <name>
+/botplayer combat shield-hold <name>
 ```
 
 固定要求原版权限等级 `2`。`equip-armor` 手动启动扫描 carried inventory `0..35` 的
@@ -266,7 +268,10 @@ Build #137 运行验证。主动用药、工具/副手选择、持盾和反击�
 并保持独立盔甲路径。底层通用 `InventoryMenu SWAP_SEQUENCE` 可执行 1～16 次点击、最多
 8 个槽位，每 Tick 一击；跨 Tick cleanup 保持 `PENDING` 和固定端点，非端点时旧 owner/
 新 claimant 都不会完成。通用 equipment/offhand 仍 `UNSUPPORTED`，因此当前不选择工具/
-副手，也不提供盾牌格挡。`inspect` 读取活动 bot 当前
+副手，也不提供盾牌格挡。`combat shield-hold` 是单独的 P5C-S1 管理员入口：它只接受无竞争
+owner、原版 `InventoryMenu` 空 cursor 且已装备精确原版副手盾牌的活动 bot，固定持有 8 Tick
+后释放；没有目标、换装、重试或普通停止参数，也不证明真实受击格挡、耐久或斧破盾。该新增
+源码仍待 Java 21 CI 与 NeoForge GameTest。`inspect` 读取活动 bot 当前
 或最近一条 P5 生存技能 run 的 generation、状态、revision、操作序号、失败码和安全摘要。
 没有 P5 运行记录时会失败；该纵切通过运行门也不表示 P5A 阶段退出门已经完成。
 
@@ -338,7 +343,7 @@ Build #137 的 batch 预算记录是早期基线；Build #133/#135 暴露的超�
 - 通过普通玩家任务、技能或 AI 自主选择并执行 P2/P4 动作；
 - 强制加载远方区块、跨维度寻路或维护永久地图/地标；
 - 自动寻找或生产食物；主动进食和受限资源—制作—存放纵切已经自动验证，但主动
-  用药/通用药物策略、选择工具/副手或完整战斗仍不支持；
+  用药/通用药物策略、选择工具/通用副手、策略性盾牌格挡或完整战斗仍不支持；
 - 执行泛化的砍树、采矿、制作、熔炼、完整战斗策略或建造技能；当前只有固定、有限的
   P5 生产 DAG，不能把它当作自主生存能力；
 - 通过普通命令、GUI 或 AI 操作任意箱子、工作站或模组自定义 menu；P5B 只覆盖内部严格

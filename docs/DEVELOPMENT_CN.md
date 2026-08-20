@@ -47,7 +47,7 @@ P2 已加入生命周期、移动、交互和库存 GameTest；P3 加入有限�
 [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) 已通过 Java 21
 `clean build`、Gradle `test`、161 项常规 GameTest 和 phase-one/phase-two 重启
 GameTest（各 1 项）。P5 总退出门和 P6 总退出门仍未关闭；真实客户端、专用服和多 bot soak
-不由此替代。Build #362 是当前 P5A 修复、P5C lifecycle Contract、P6 会话协调器、本地
+不由此替代。Build #362 是当前 P5A 修复、P5C lifecycle Contract/固定副手盾牌持有、P6 会话协调器、本地
 ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget、P6-B0 server-owned
 physical-attempt handshake 与 P5D-A0/A1/A2/A3/A4/A5/A6 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item/loaded-world survey/spatial-lease 数据增量提交之前的自动化基线；这些提交仍须各自通过 Java 21 CI。涉及
 Minecraft 行为的提交必须运行：
@@ -78,7 +78,7 @@ src/main/java/io/github/greytaiwolf/botplayer/
   navigation/                    P4 请求/session、运动快照、A*、follower 与 Terrain Assist
   safety/                        P4 每 Tick SafetyFrame、incident FSM、威胁探针与抢占
   skill/                         P5 有界 Skill 契约、DAG、资源预留与当前生存纵切
-  technique/                     短生命周期玩家 Technique；当前一个 lifecycle coordinator + 有限自卫单次近战 route
+  technique/                     短生命周期玩家 Technique；当前一个 lifecycle coordinator + 有限自卫单次近战及固定副手盾牌 route
   building/blueprint/            P5D-A0 有界纯 Java Blueprint、计划方块需求与内容 hash；不接 Minecraft/Action/Technique/world
   building/construction/         P5D-A1 有界纯 Java work-package exact-cover/DAG 数据合同；不接 site/material/Technique/Action/world
   building/site/                 P5D-A2 candidate anchor/derived-bounds/work-plan binding，A3 caller-supplied exact target evidence 的 fail-closed assessment；A5 `minecraft/` 只在 server thread 将 binding 的已加载 canonical target state 转为 immutable survey；A6 只复用现有 TTL reservation 将 exact bounds 映射为最多 8 个 conservative spatial tile lease；不创建材料/临时区 reservation、许可、placement/Technique/Action
@@ -330,20 +330,25 @@ P5 当前源码建立有界 Skill 核心、确定性 DAG 校验、TTL 资源预�
 主动进食、扫描 carried inventory `0..35` 的基础盔甲升级、受限资源—制作—存放 DAG、
 白名单容器/工作站（含 Bot 私有末影箱）和有限自卫。Build #362 已自动覆盖这些窄纵切；
 它们不能据此计入 P5 总退出门。
-P5C 的窄接线仅把已有有限自卫会话已经授权的一个
-`MELEE_ATTACK`，以不可变 `AttackEntity`/target/generation/ticket 绑定交给单 child
-Technique。服务器生命周期只驱动一个 owner-thread `TechniqueLifecycleCoordinator`；当前
-有限自卫 bridge 只是其中一条受限 Action 路由，并不拥有第二个 runtime。它再在服务器主
-线程取回精确 Action 终态；不选择目标、不移动、不换装备、不重试或连击，也不提供任何
-通用 Technique→Action 路由，更不构成 P5D 建筑/红石能力。
+P5C 的窄接线把已有有限自卫会话已经授权的一个 `MELEE_ATTACK`，以不可变
+`AttackEntity`/target/generation/ticket 绑定交给单 child Technique。另有管理员请求的
+P5C-S1：只从生命周期已冻结、已经装备的精确原版副手盾牌创建一条 generic
+`UseItem(OFF_HAND, RELEASE_AFTER_HOLD)`，固定 8 Tick 后释放；入口要求所有竞争 owner
+静止、原版 `InventoryMenu` 与空 cursor。服务器生命周期只驱动一个 owner-thread
+`TechniqueLifecycleCoordinator`；两条 bridge 都是受限 Action 路由，并不拥有第二个 runtime。
+盾牌 route 不接受目标、移动、换装、重试、反击、自由时长或普通停止，且不能宣称真实受击
+格挡、耐久变化或斧破盾。它们都不提供任何通用 Technique→Action 路由，更不构成 P5D
+建筑/红石能力；P5C-S1 的纯 Java/GameTest 源仍待 Java 21 CI 与 NeoForge GameTest。
 管理入口为：
 
 ```text
 /botplayer skill equip-armor <name>
 /botplayer skill inspect <name>
+/botplayer combat shield-hold <name>
 ```
 
-`equip-armor` 启动基础盔甲升级，`inspect` 只查看 run 状态。修改这批代码时至少检查：
+`equip-armor` 启动基础盔甲升级，`inspect` 只查看 run 状态。`combat shield-hold` 是固定、
+无普通停止的副手盾牌 hold/release 管理入口，而非战斗规划或通用副手选择。修改这批代码时至少检查：
 
 - 每个运行、异步动作和管理视图都绑定 `botId + generation + runId + revision`；
 - 异步回调只提交不可变信号，世界读取与状态推进留在服务器主线程；
@@ -396,8 +401,9 @@ Technique。服务器生命周期只驱动一个 owner-thread `TechniqueLifecycl
 - 每件盔甲仍是独立 `InventoryMenu` 事务；动作完成信号进入技能 FSM 后必须再次读取权威
   41 槽布局，外部修改以 `WORLD_CHANGED` 失败，不能用冻结计划自证成功；
 - 敌对目标继续走 P4 安全回退；当前唯一例外是已有有限自卫已完成授权的单一
-  `MELEE_ATTACK` 可以走受限单击 bridge。它不补足武器选择、目标选择、撤退路线、逐击
-  重观察或脱战后置条件，不能据此宣称有限自卫或高级战斗已完成；
+  `MELEE_ATTACK` 可以走受限单击 bridge，以及管理员触发、预装备精确原版副手盾牌的固定
+  8 Tick hold/release。后者没有真实受击格挡、耐久或斧破盾证据；两者都不补足武器选择、
+  目标选择、撤退路线、逐击重观察或脱战后置条件，不能据此宣称有限自卫或高级战斗已完成；
 - 当前受限生产链已具备 TaskSensor/Reservation、Checkpoint、craft/chest/furnace/DAG 和
   有限自卫纵切；P5A-M1a 另为 world-menu 的原版 `clicked()` / `broadcastChanges()` 异常建立了
   `CLICK_DISPATCH_FAILED` fail-closed 边界：已领取 click 不会被 ACK 或重派，适配器只作一次
@@ -447,7 +453,7 @@ build 与 JAR upload，日志明确 `All 55 required tests passed`，其中 P4 �
 当前 P5/P6 远端证据为
 [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094)：Java 21
 `clean build`、Gradle `test`、161 项常规 GameTest 和 phase-one/phase-two 重启 GameTest
-均通过；它是当前 P5A/P5C/P6（含本地 ledger-first proposal review）增量提交之前的基线，不能代替
+均通过；它是当前 P5A/P5C/P6（含本地 ledger-first proposal review、P5C-S1 固定副手盾牌源码）增量提交之前的基线，不能代替
 这些提交待完成的 Java 21 CI。
 真实进程崩溃/断电、死亡 handoff 的跨进程边界、Windows 或其他文件系统的目录刷盘、模组化
 XP/掉落事件矩阵、独立专用服和多 Bot soak 仍需专项验证。

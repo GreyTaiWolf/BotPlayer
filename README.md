@@ -7,7 +7,7 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 
 > **当前状态：P2、P3 与 P4 自动化退出门已通过；Build #362 已验证受限 P5 纵切与
 > P6-R1 的先前自动化基线。其后的 P5A 修复、单 `TechniqueLifecycleCoordinator` Contract 与
-> P6 会话协调器、客户端安全 terminal-observation/Error-cleanup/间接重入收口、ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget 与 P6-B0 handshake / P6-B1 R1 physical-attempt production bridge、受限 Technique→Action permit Contract 与 P5D-A0/A1/A2/A3/A4/A5 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item/loaded-world survey 数据 Contract
+> P5C-S1 固定副手盾牌持有、P6 会话协调器、客户端安全 terminal-observation/Error-cleanup/间接重入收口、ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget 与 P6-B0 handshake / P6-B1 R1 physical-attempt production bridge、受限 Technique→Action permit Contract 与 P5D-A0/A1/A2/A3/A4/A5 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item/loaded-world survey 数据 Contract
 > 提交仍待各自 Java 21 CI；仍不是
 > 正式版本，P5/P6 总退出门均未关闭。**
 >
@@ -24,6 +24,10 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 > 作物/交易/牛奶、有限自卫、保存围栏和两阶段重启路径；仍不代表通用容器、任意配方/作物/
 > 交易、广泛战斗或完整生存能力。末影箱只使用 Bot 自己的私有账本，不读取方块实体物品；
 > 同一物理方块跨 Bot 目前保守串行。
+> P5C-S1 新增的管理员固定入口只接受已装备的精确原版副手盾牌，冻结后固定持有
+> 8 Tick 并释放；它没有目标、移动、换装、重试、普通停止或通用 Action 入口。源码包含无库存
+> 漂移和主手盾拒绝的 GameTest，但本增量仍待 Java 21 CI 与 NeoForge GameTest；它不证明真实受击
+> 格挡、耐久变化或斧破盾。
 > 当前 P5D 已有未注册的 lifecycle-owned `TechniqueActionPort` adapter Contract：它只把精确 permit
 > 映射到既有 Action runtime 的入队、exact terminal drain 与 cancel-or-contain，不暴露 future 或 world DTO。
 > P5D-A0 另有纯 Java 的有界 `Blueprint`/content hash/计划方块需求 Contract，P5D-A1 只把同一
@@ -189,7 +193,7 @@ BotPlayer 最终要成为由 AI 控制的长期服务器伙伴，而不是换皮
 - 跨未加载区块/维度的长期路线、船/矿车/坐骑/鞘翅、复杂水流、脚手架和藤蔓；
 - 自动寻找/生产食物与完整补给闭环；主动进食、受限生产链、盔甲专用路径和通用
   `InventoryMenu SWAP_SEQUENCE` 已由 Build #362 自动验证；主动用药/解毒、正式反击/
-  持盾、工具/副手仍未实现；
+  策略性盾牌格挡（含受击耐久与斧破盾）、工具/通用副手仍未实现；
 - 除受限 P5B 白名单切片外的通用世界容器、工作站与制作/熔炼流程；
 - 独立专用服与多 bot 性能验证；
 - 持久世界模型、长期来源化记忆和自然语言“刚才发生了什么”对话；
@@ -283,7 +287,7 @@ JAR upload 均通过；GameTest 日志明确报告 `All 55 required tests passed
 ## 当前命令
 
 `spawn`、`list`、`remove` 需要达到 `permissions.commandPermissionLevel`，默认是
-`2`。P3 `perception`、P4 `navigation/safety` 与 P5 `skill` 管理命令固定要求原版权限
+`2`。P3 `perception`、P4 `navigation/safety` 与 P5 `skill/combat` 管理命令固定要求原版权限
 等级 `2`，不随该配置降级。
 `settings` 不要求 OP 等级，但只能由 roster 中记录的精确 owner 对活动 bot 执行；OP
 也不能配置别人的 bot。
@@ -302,6 +306,7 @@ JAR upload 均通过；GameTest 日志明确报告 `All 55 required tests passed
 /botplayer safety inspect <name>
 /botplayer skill equip-armor <name>
 /botplayer skill inspect <name>
+/botplayer combat shield-hold <name>
 ```
 
 感知 `inspect` 有界显示活动 bot 的最新快照、置信活动/generation-local 证据序号和最近
@@ -314,6 +319,9 @@ JAR upload 均通过；GameTest 日志明确报告 `All 55 required tests passed
 `skill inspect` 只显示当前或最近一条 P5 生存技能 run 的 generation、状态、revision、
 操作序号与安全摘要。主动进食、盔甲专用路径，以及 1～16 步通用
 `InventoryMenu SWAP_SEQUENCE` 已由 Build #137 运行验证；通用 equipment/offhand 仍拒绝。
+`combat shield-hold` 只允许 OP 对无竞争所有者、原版 `InventoryMenu` 空 cursor 且已预装备
+精确原版副手盾牌的活动 bot 触发固定 8 Tick 持有后释放；它没有普通停止、目标或换装参数，
+也不代表真实格挡。该新增源码仍待 Java 21 CI 与 NeoForge GameTest。
 `ai review` 是唯一 P6-R1 手动入口：只允许活动 bot 的真实持久 owner，在已有本地 agent
 binding 和 0/1 Tick 已完成快照时发起固定只读审阅；本地开关未启用时不会启动 Provider。它不
 接收用户 prompt、不创建计划，也不执行 Skill、Action 或世界变更。该 binding 指向的
@@ -399,7 +407,7 @@ P0 工程基线
 
 P2、P3 与 P4 自动化退出门均已关闭。当前 P5/P6 候选已由 Build #362 完成 Java 21
 `clean build`、Gradle `test`、161 项常规 GameTest 与 phase-one/phase-two 重启验证。
-P5 仍缺跨 menu 通用事务、任意配方/作物/交易、工具/副手、广泛战斗、独立专用服和多 bot
+P5 仍缺跨 menu 通用事务、任意配方/作物/交易、工具/通用副手、策略性盾牌格挡与广泛战斗、独立专用服和多 bot
 soak；P6 仍缺通用 client-sponsored bridge、聊天、模型策略和 AI→世界执行。模组自定义 menu
 和专用语义属于 P8。
 

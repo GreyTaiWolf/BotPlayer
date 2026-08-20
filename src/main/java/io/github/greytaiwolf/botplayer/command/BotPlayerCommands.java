@@ -29,6 +29,7 @@ import io.github.greytaiwolf.botplayer.skill.pack.SkillPackTransition;
 import io.github.greytaiwolf.botplayer.skill.runtime.SurvivalSkillRunView;
 import io.github.greytaiwolf.botplayer.skill.runtime.SurvivalSkillSubmission;
 import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRunSubmission;
+import io.github.greytaiwolf.botplayer.technique.combat.ShieldHoldSubmission;
 import io.github.greytaiwolf.botplayer.worldmodel.ActivityReportFormatter;
 import io.github.greytaiwolf.botplayer.worldmodel.WorldFact;
 import java.util.List;
@@ -159,6 +160,19 @@ public final class BotPlayerCommands {
                                                 StringArgumentType.word())
                                         .executes(context ->
                                                 inspectSafety(
+                                                        context.getSource(),
+                                                        StringArgumentType
+                                                                .getString(
+                                                                        context,
+                                                                        "name"))))))
+                .then(literal("combat")
+                        .requires(source -> source.hasPermission(2))
+                        .then(literal("shield-hold")
+                                .then(argument(
+                                                "name",
+                                                StringArgumentType.word())
+                                        .executes(context ->
+                                                startShieldHold(
                                                         context.getSource(),
                                                         StringArgumentType
                                                                 .getString(
@@ -917,6 +931,32 @@ public final class BotPlayerCommands {
                                 + " run="
                                 + submission.runId()
                                         .orElseThrow()
+                                + " "
+                                + submission.safeSummary()),
+                false);
+        return 1;
+    }
+
+    /** Starts only the fixed, already-equipped off-hand shield hold route. */
+    private static int startShieldHold(
+            CommandSourceStack source, String name) {
+        ShieldHoldSubmission submission = BotPlayerManagers
+                .get(source.getServer())
+                .startShieldHold(name);
+        if (!submission.accepted()) {
+            source.sendFailure(Component.literal(
+                    "P5C 固定副手盾牌持有未启动："
+                            + submission.status().name()
+                            + " "
+                            + submission.safeSummary()));
+            return 0;
+        }
+        source.sendSuccess(
+                () -> Component.literal(
+                        "P5C 固定副手盾牌持有已启动："
+                                + name
+                                + " run="
+                                + submission.techniqueRunId().orElseThrow()
                                 + " "
                                 + submission.safeSummary()),
                 false);

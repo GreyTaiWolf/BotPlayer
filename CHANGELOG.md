@@ -7,6 +7,12 @@
 
 ### 新增
 
+- 新增 P5C-S1 的 `/botplayer combat shield-hold <name>` 管理员窄入口：只在活动 bot 没有竞争
+  owner、原版 `InventoryMenu`/空 cursor 静止且已经装备精确原版副手盾牌时，冻结该指纹并通过
+  单个 lifecycle-owned Technique child 发出固定 8 Tick `UseItem(OFF_HAND, RELEASE_AFTER_HOLD)`。
+  它没有目标、移动、换装、重试、反击或普通停止入口；纯 Java 回归与“无库存漂移/主手盾拒绝”
+  GameTest 源已加入，但 Java 21 CI、NeoForge GameTest、真实受击格挡/耐久/斧破盾和 P5 总退出门
+  仍待完成；
 - 新增 P5A-M1a 原版 world-menu click dispatch 失败边界：`MenuTransaction` 现在会把已领取
   click 的 `clicked()` / `broadcastChanges()` 异常终结为 `CLICK_DISPATCH_FAILED`，不推进
   `confirmedClicks`、不把可能已经发生的变更当 ACK、也不允许下一 Tick 重派。适配器生产默认仍只走

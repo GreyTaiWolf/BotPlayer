@@ -2748,9 +2748,12 @@ P5A-0 的冻结合同、Safety handoff、统一 menu 事务、checkpoint schema�
 
 #### P5C：运输、探索、进程与高级战斗
 
-当前只有一个未验收的窄实现切片：已有有限自卫已经授权的一次 `MELEE_ATTACK` 可经
-不可变 `AttackEntity` 绑定进入单 child Technique，并在 owner-thread 回收 Action 结果。
-它不含目标选择、移动、装备、重试、连击或泛化战斗路由，不能关闭本节任一任务或退出门。
+当前有两个未验收的窄实现切片：已有有限自卫已经授权的一次 `MELEE_ATTACK` 可经不可变
+`AttackEntity` 绑定进入单 child Technique，并在 owner-thread 回收 Action 结果；P5C-S1 只允许
+管理员对已装备、冻结的精确原版副手盾牌启动一条固定 8 Tick `UseItem` hold/release。后者要求
+竞争 owner 静止、原版 `InventoryMenu` 空 cursor，且没有目标、移动、换装、重试、普通停止、真实
+受击格挡、耐久或斧破盾验证。两条切片都不含目标选择、装备策略、连击或泛化战斗路由，不能关闭
+本节任一任务或退出门。
 
 任务与验收：
 
