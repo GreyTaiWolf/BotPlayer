@@ -7,6 +7,13 @@
 
 ### 新增
 
+- 新增 ADR-0031 的 P6-A0 有界纯 Java token-reservation ledger Contract：每个 runtime-local
+  `(ownerId, botId, agentId)` scope 以完整 request binding 和随机 exact reservation 管理已接受
+  `AiModelAdmission` 的输入/最大输出/总 token；`reserved + committed` 受上限约束，release/expiry
+  只释放未开始 reservation，物理调用前 settle 后永不因 response、error、cancel、timeout 或
+  `AiTokenUsage` 退款。同一 logical request 的每次 future physical retry 必须有新 reservation。
+  它不接 Scheduler/Retrying Provider/Provider、client session/transport、HTTP、Lifecycle、Skill、Action
+  或 Minecraft，也不是实际计费、预算统计或通用 AI bridge；当前 Java 21 CI 与真实 Provider E2E 仍待完成；
 - 新增 ADR-0030 的 P5D-A1 有界纯 Java construction work-package Contract：每个 package 必须完整绑定
   `blueprintId + revision + contentHash + ordinal`，在一个 Blueprint 内精确覆盖一次；小蓝图只能有一个
   `1..64` cell package，较大蓝图每包 `16..64` cell、总数最多 16，并对完整 key prerequisite 验证 DAG

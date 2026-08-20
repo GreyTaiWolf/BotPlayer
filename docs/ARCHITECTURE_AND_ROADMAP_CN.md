@@ -1548,6 +1548,13 @@ opt-in 后，固定 Provider 会在客户端发起受限 HTTPS 请求，回传�
 通用模型策略、聊天或世界执行；[Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111)
 已完成其 Java 21 自动验证，真实客户端/Provider E2E 仍待验证。
 
+ADR-0031 另只加入纯 Java 的 scope-local `AiTokenBudgetLedger`：它冻结已接受 admission 的
+conservative input/output/total reservation，按 `reserved + committed` 限额，release/expiry 只退未
+开始的 attempt，physical-attempt settle 后不因 usage、response、error、cancel 或 timeout 退款。它不
+接 `AiRequestScheduler`、`RetryingAiProvider`、HTTP、client session、network、Lifecycle、Skill、Action
+或世界；真正每次 retry 的调用前 hook、预算统计/真实计费、generic bridge、聊天和 AI→世界执行仍是后续
+工作。
+
 ### 11.2 DeepSeek 的职责
 
 适合交给模型：
