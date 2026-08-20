@@ -172,6 +172,42 @@ class AiPhysicalAttemptBudgetCoordinatorTest {
     }
 
     @Test
+    void exactExpiryBookkeepingReportsOnlyTheIdentitiesItClosed() {
+        Harness unstartedHarness = harness(new AiPhysicalAttemptBudgetCoordinator.Limits(2, 4));
+        AiPhysicalAttemptOffer unstarted = unstartedHarness.offer(START.plusSeconds(5L))
+                .offer().orElseThrow();
+        unstartedHarness.clock.set(START.plusSeconds(5L));
+
+        AiPhysicalAttemptBudgetCoordinator.ExpiredAttempts expiredUnstarted =
+                unstartedHarness.coordinator.expireDueAttemptIdentities();
+
+        Harness committedHarness = harness(new AiPhysicalAttemptBudgetCoordinator.Limits(2, 4));
+        AiPhysicalAttemptOffer committed = committedHarness.offer(START.plusSeconds(5L))
+                .offer().orElseThrow();
+        committedHarness.coordinator.acknowledge(committed.prepareAck()).grant().orElseThrow();
+        committedHarness.clock.set(START.plusSeconds(5L));
+
+        AiPhysicalAttemptBudgetCoordinator.ExpiredAttempts expiredCommitted =
+                committedHarness.coordinator.expireDueAttemptIdentities();
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(List.of(unstarted.identity()),
+                        expiredUnstarted.identities()),
+                () -> Assertions.assertEquals(new AiPhysicalAttemptCloseSummary(1, 0),
+                        expiredUnstarted.summary()),
+                () -> Assertions.assertThrows(UnsupportedOperationException.class,
+                        () -> expiredUnstarted.identities().add(unstarted.identity())),
+                () -> Assertions.assertEquals(List.of(committed.identity()),
+                        expiredCommitted.identities()),
+                () -> Assertions.assertEquals(new AiPhysicalAttemptCloseSummary(0, 1),
+                        expiredCommitted.summary()),
+                () -> Assertions.assertEquals(new AiPhysicalAttemptBudgetSnapshot(0, 0, 1),
+                        unstartedHarness.coordinator.snapshot()),
+                () -> Assertions.assertEquals(new AiPhysicalAttemptBudgetSnapshot(0, 0, 1),
+                        committedHarness.coordinator.snapshot()));
+    }
+
+    @Test
     void expiredGrantReplayAndDisconnectNeverRefundCommittedAttemptEvenWhenGrantIsLost() {
         Harness harness = harness(new AiPhysicalAttemptBudgetCoordinator.Limits(2, 4));
         AiPhysicalAttemptOffer first = harness.offer(START.plusSeconds(5L))

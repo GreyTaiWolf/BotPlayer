@@ -279,6 +279,19 @@ public final class AiPhysicalAttemptBudgetCoordinator {
      * periodically so a lost grant cannot retain an active slot forever.
      */
     public AiPhysicalAttemptCloseSummary expireDueAttempts() {
+        return expireDueAttemptIdentities().summary();
+    }
+
+    /**
+     * Expires unusable attempts and returns their exact identities for lifecycle correlation
+     * cleanup.
+     *
+     * <p>The returned identities are safe only for exact local bookkeeping; they do not report a
+     * factual Provider start, HTTP outcome, token usage, or billing event. A lifecycle bridge
+     * must still close the matching gate/ticket by the complete receipt rather than infer a bot
+     * request from an attempt id.
+     */
+    public ExpiredAttempts expireDueAttemptIdentities() {
         requireOwnerThread();
         Instant now = requireMonotonicCurrentInstant();
         long nowEpochMillis = epochMillis(now);
@@ -295,8 +308,24 @@ public final class AiPhysicalAttemptBudgetCoordinator {
         }
         expiredUnstarted.forEach(this::closeUnstarted);
         expiredCommitted.forEach(this::closeCommitted);
-        return new AiPhysicalAttemptCloseSummary(
-                expiredUnstarted.size(), expiredCommitted.size());
+        List<AiPhysicalAttemptIdentity> identities = new ArrayList<>(
+                expiredUnstarted.size() + expiredCommitted.size());
+        expiredUnstarted.forEach(active -> identities.add(active.identity));
+        expiredCommitted.forEach(active -> identities.add(active.identity));
+        return new ExpiredAttempts(
+                List.copyOf(identities),
+                new AiPhysicalAttemptCloseSummary(
+                        expiredUnstarted.size(), expiredCommitted.size()));
+    }
+
+    /** Exact expiry bookkeeping returned only to the trusted server-thread lifecycle owner. */
+    public record ExpiredAttempts(
+            List<AiPhysicalAttemptIdentity> identities,
+            AiPhysicalAttemptCloseSummary summary) {
+        public ExpiredAttempts {
+            identities = List.copyOf(Objects.requireNonNull(identities, "identities"));
+            summary = Objects.requireNonNull(summary, "summary");
+        }
     }
 
     /**

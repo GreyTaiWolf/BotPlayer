@@ -4,6 +4,7 @@ import io.github.greytaiwolf.botplayer.ai.AiModelAdmission;
 import io.github.greytaiwolf.botplayer.ai.AiModelAdmissionStatus;
 import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptBudgetCoordinator;
 import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptCloseResult;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptCloseStatus;
 import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptIdentity;
 import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptOfferRequest;
 import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptOfferResult;
@@ -19,6 +20,7 @@ import io.github.greytaiwolf.botplayer.ai.transport.AiRequestDispatchReceipt;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -41,6 +43,7 @@ public final class AiReviewOnlyPhysicalAttemptOwner implements AutoCloseable {
     private static final AiTokenBudgetPolicy LEDGER_POLICY = new AiTokenBudgetPolicy(
             MAXIMUM_SCOPE_TOKENS, 1, MAXIMUM_RESERVATION_AGE);
 
+    private final Thread ownerThread;
     private final UUID ownerId;
     private final AiPhysicalAttemptBudgetCoordinator coordinator;
     private final Map<AiTokenBudgetScope, AiTokenBudgetLedger> ledgersByScope =
@@ -57,6 +60,7 @@ public final class AiReviewOnlyPhysicalAttemptOwner implements AutoCloseable {
     /** Visible for deterministic pure-Java tests that inject a coordinator on its owner thread. */
     AiReviewOnlyPhysicalAttemptOwner(
             UUID ownerId, AiPhysicalAttemptBudgetCoordinator coordinator) {
+        ownerThread = Thread.currentThread();
         this.ownerId = requireNonZero(ownerId, "ownerId");
         this.coordinator = Objects.requireNonNull(coordinator, "coordinator");
     }
@@ -74,6 +78,7 @@ public final class AiReviewOnlyPhysicalAttemptOwner implements AutoCloseable {
      * B0 coordinator captures the owner thread when this holder is constructed.
      */
     public AiPhysicalAttemptOfferResult offer(AiClientRequestDispatch dispatch) {
+        requireOwnerThread();
         requireOpen();
         AiClientRequestDispatch checked = Objects.requireNonNull(dispatch, "dispatch");
         if (!ownerId.equals(checked.ownerId())
@@ -109,6 +114,7 @@ public final class AiReviewOnlyPhysicalAttemptOwner implements AutoCloseable {
 
     /** Delegates one lifecycle-authenticated exact ACK to the bounded B0 coordinator. */
     public AiPhysicalAttemptPrepareResult acknowledge(AiPhysicalAttemptPrepareAck prepareAck) {
+        requireOwnerThread();
         requireOpen();
         return coordinator.acknowledge(Objects.requireNonNull(prepareAck, "prepareAck"));
     }
@@ -116,6 +122,7 @@ public final class AiReviewOnlyPhysicalAttemptOwner implements AutoCloseable {
     /** Finds only the exact active identity belonging to one safe dispatch receipt. */
     public Optional<AiPhysicalAttemptIdentity> findIdentity(
             AiRequestDispatchReceipt receipt) {
+        requireOwnerThread();
         return Optional.ofNullable(identitiesByReceipt.get(Objects.requireNonNull(
                 receipt, "receipt")));
     }
@@ -128,23 +135,57 @@ public final class AiReviewOnlyPhysicalAttemptOwner implements AutoCloseable {
      */
     public Optional<AiPhysicalAttemptCloseResult> closeReceipt(
             AiRequestDispatchReceipt receipt) {
+        requireOwnerThread();
         AiRequestDispatchReceipt checked = Objects.requireNonNull(receipt, "receipt");
-        AiPhysicalAttemptIdentity identity = identitiesByReceipt.remove(checked);
+        AiPhysicalAttemptIdentity identity = identitiesByReceipt.get(checked);
         if (identity == null) {
             return Optional.empty();
         }
-        return Optional.of(coordinator.closeExact(identity));
+        return Optional.of(closeIndexedIdentity(checked, identity));
     }
 
-    /** Expires bounded B0 entries; the lifecycle still owns ticket/gate expiry and cancellation. */
+    /**
+     * Closes only the stored identity that is byte-for-byte equal to the lifecycle ticket.
+     *
+     * <p>A receipt alone is enough only for owner-local cleanup. A production lifecycle should
+     * prefer this method so a stale or internally divergent ticket cannot close a later attempt
+     * that happens to share a request receipt.
+     */
+    public Optional<AiPhysicalAttemptCloseResult> closeExact(
+            AiPhysicalAttemptIdentity identity) {
+        requireOwnerThread();
+        AiPhysicalAttemptIdentity checked = Objects.requireNonNull(identity, "identity");
+        AiPhysicalAttemptIdentity current = identitiesByReceipt.get(
+                checked.dispatchReceipt());
+        if (!checked.equals(current)) {
+            return Optional.empty();
+        }
+        return Optional.of(closeIndexedIdentity(checked.dispatchReceipt(), checked));
+    }
+
+    /** Compatibility expiry API for callers that do not own lifecycle correlation. */
     public void expireDueAttempts() {
+        expireDueAttemptIdentities();
+    }
+
+    /**
+     * Expires bounded B0 entries and returns their exact identities for lifecycle ticket/gate
+     * cleanup.
+     */
+    public List<AiPhysicalAttemptIdentity> expireDueAttemptIdentities() {
+        requireOwnerThread();
         requireOpen();
-        coordinator.expireDueAttempts();
+        List<AiPhysicalAttemptIdentity> expired = coordinator
+                .expireDueAttemptIdentities().identities();
+        expired.forEach(identity -> identitiesByReceipt.remove(
+                identity.dispatchReceipt(), identity));
         coordinator.expireTombstones();
+        return expired;
     }
 
     /** Number of exact active receipt indexes retained by this owner, for bounded diagnostics/tests. */
     public int indexedAttemptCount() {
+        requireOwnerThread();
         return identitiesByReceipt.size();
     }
 
@@ -156,6 +197,7 @@ public final class AiReviewOnlyPhysicalAttemptOwner implements AutoCloseable {
      */
     @Override
     public void close() {
+        requireOwnerThread();
         if (closed) {
             return;
         }
@@ -186,6 +228,27 @@ public final class AiReviewOnlyPhysicalAttemptOwner implements AutoCloseable {
         if (closed) {
             throw new IllegalStateException("physical attempt owner is closed");
         }
+    }
+
+    private void requireOwnerThread() {
+        if (Thread.currentThread() != ownerThread) {
+            throw new IllegalStateException(
+                    "physical attempt owner must run on its construction thread");
+        }
+    }
+
+    /**
+     * Lets the coordinator enforce its owner thread before this owner mutates its local index.
+     * A coordinator identity mismatch remains indexed for diagnosis rather than hiding a divergent
+     * live attempt.
+     */
+    private AiPhysicalAttemptCloseResult closeIndexedIdentity(
+            AiRequestDispatchReceipt receipt, AiPhysicalAttemptIdentity identity) {
+        AiPhysicalAttemptCloseResult result = coordinator.closeExact(identity);
+        if (result.status() != AiPhysicalAttemptCloseStatus.IDENTITY_MISMATCH) {
+            identitiesByReceipt.remove(receipt, identity);
+        }
+        return result;
     }
 
     private static UUID requireNonZero(UUID value, String name) {
