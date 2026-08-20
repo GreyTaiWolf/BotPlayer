@@ -31,14 +31,22 @@ import java.util.UUID;
  * falsely reported as retracted.
  */
 final class LifecycleTechniqueActionPort extends TechniqueActionPort {
-    private static final int MAX_RETAINED_CANCELLATION_RECEIPTS = 256;
+    private static final int MAX_RETAINED_REJECTED_INGRESS_RECEIPTS = 256;
 
     private final TechniqueActionRuntimeGateway actionRuntime;
     private final Map<TechniqueActionPermit, Binding> bindings =
             new IdentityHashMap<>();
-    /* Opaque permit identity, not actionId, is the exact cancellation cache key. */
+    /*
+     * Opaque permit identity, not actionId, is the exact cancellation cache
+     * key. A P2 receipt lives only with its live binding: historical receipts
+     * must never evict a still-live safe containment proof. Rejected ingress
+     * has a separate bounded local fence because it never reached P2.
+     */
     private final Map<TechniqueActionPermit, ActionCancellationReceipt>
             cancellationReceipts = new IdentityHashMap<>();
+    /* Rejected ingress never reached P2, so this bounded local fallback is safe. */
+    private final Map<TechniqueActionPermit, ActionCancellationReceipt>
+            rejectedIngressReceipts = new IdentityHashMap<>();
     private final Set<GenerationKey> unsafeGenerations = new HashSet<>();
 
     LifecycleTechniqueActionPort(TechniqueLifecycleCoordinator coordinator,
@@ -137,6 +145,12 @@ final class LifecycleTechniqueActionPort extends TechniqueActionPort {
             return new TechniqueActionCancellation(required, requiredReason,
                     cached.orElseThrow());
         }
+        Optional<ActionCancellationReceipt> rejectedIngress =
+                cachedRejectedIngress(required);
+        if (rejectedIngress.isPresent()) {
+            return new TechniqueActionCancellation(required, requiredReason,
+                    rejectedIngress.orElseThrow());
+        }
         Binding binding = bindings.get(required);
         if (binding == null || binding.state == BindingState.INGRESS_UNKNOWN) {
             ActionCancellationReceipt receipt = unsafeUnknownReceipt(required);
@@ -157,14 +171,22 @@ final class LifecycleTechniqueActionPort extends TechniqueActionPort {
     }
 
     /**
-     * Releases one retained binding only after its route has either accepted
-     * its exact terminal signal or reaped the corresponding run.
+     * Releases one retained binding and its exact P2 receipt only after its
+     * route has either accepted its exact terminal signal or reaped the
+     * corresponding run. A locally fenced rejected-ingress receipt remains
+     * available by opaque permit because no Action ever reached P2.
      */
     void release(TechniqueActionPermit permit) {
         requireActionPortOwnerThread();
         TechniqueActionPermit required = Objects.requireNonNull(permit,
                 "permit");
-        bindings.remove(required);
+        Binding binding = bindings.remove(required);
+        ActionCancellationReceipt receipt = cancellationReceipts.remove(
+                required);
+        if (binding != null && binding.state
+                == BindingState.REJECTED_BEFORE_INGRESS && receipt != null) {
+            cacheRejectedIngress(required, receipt);
+        }
     }
 
     /** A route must include this in its exact generation-safety proof. */
@@ -209,15 +231,29 @@ final class LifecycleTechniqueActionPort extends TechniqueActionPort {
         return Optional.ofNullable(cancellationReceipts.get(permit));
     }
 
+    private Optional<ActionCancellationReceipt> cachedRejectedIngress(
+            TechniqueActionPermit permit) {
+        return Optional.ofNullable(rejectedIngressReceipts.get(permit));
+    }
+
     private void cacheCancellation(TechniqueActionPermit permit,
             ActionCancellationReceipt receipt) {
+        if (!bindings.containsKey(permit)) {
+            return;
+        }
         cancellationReceipts.putIfAbsent(permit, Objects.requireNonNull(
                 receipt, "receipt"));
-        while (cancellationReceipts.size()
-                > MAX_RETAINED_CANCELLATION_RECEIPTS) {
-            TechniqueActionPermit oldest = cancellationReceipts
-                    .keySet().iterator().next();
-            cancellationReceipts.remove(oldest);
+    }
+
+    private void cacheRejectedIngress(TechniqueActionPermit permit,
+            ActionCancellationReceipt receipt) {
+        rejectedIngressReceipts.putIfAbsent(Objects.requireNonNull(permit,
+                "permit"), Objects.requireNonNull(receipt, "receipt"));
+        while (rejectedIngressReceipts.size()
+                > MAX_RETAINED_REJECTED_INGRESS_RECEIPTS) {
+            TechniqueActionPermit oldest = rejectedIngressReceipts.keySet()
+                    .iterator().next();
+            rejectedIngressReceipts.remove(oldest);
         }
     }
 

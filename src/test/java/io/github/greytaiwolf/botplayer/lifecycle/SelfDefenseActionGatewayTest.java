@@ -296,6 +296,33 @@ class SelfDefenseActionGatewayTest {
                 service.latestView(BOT).orElseThrow().failure().orElseThrow());
     }
 
+    @Test
+    void exactEnvelopeCancellationNeverReusesAForeignSameTripleReceipt() {
+        BotActionRuntime runtime = runtime(new CountingBackend());
+        SelfDefenseActionGateway gateway = new SelfDefenseActionGateway(runtime);
+        UUID actionId = UUID.fromString("55555555-5555-5555-5555-555555555555");
+        ActionEnvelope foreign = new ActionEnvelope(actionId, BOT, 1L,
+                "foreign/collision", 100L, 10, new WaitAction(1),
+                ActionOrigin.none());
+        ActionEnvelope expected = new ActionEnvelope(actionId, BOT, 1L,
+                "expected/collision", 100L, 10, new WaitAction(1),
+                ActionOrigin.none());
+        assertEquals(ActionMailbox.SubmissionStatus.ENQUEUED,
+                gateway.submit(foreign, ActionPriority.OWNER_TASK).status());
+
+        assertTrue(gateway.cancelOrContain(foreign,
+                ActionCancellationReason.REQUESTED, 0L).safelyRetracted());
+        ActionCancellationReceipt collision = gateway.cancelOrContain(expected,
+                ActionCancellationReason.REQUESTED, 1L);
+
+        assertFalse(collision.safelyRetracted(),
+                "a foreign envelope must never supply a safe exact receipt");
+        assertEquals(ActionState.CANCELLED,
+                runtime.completedOutcomeExact(foreign).orElseThrow().state());
+        assertTrue(runtime.completedOutcomeExact(expected).isEmpty(),
+                "a foreign terminal is not retained for the expected envelope");
+    }
+
     private static CompletionStage<ActionOutcome> submitRetreatThenClose(
             AuthorizedActionDispatch authorization,
             SelfDefenseActionGateway gateway,
@@ -438,9 +465,14 @@ class SelfDefenseActionGatewayTest {
         }
 
         @Override
-        public Optional<ActionOutcome> completedOutcome(UUID botId,
-                UUID actionId) {
-            return delegate.completedOutcome(botId, actionId);
+        public Optional<ActionOutcome> completedOutcomeExact(
+                ActionEnvelope expected) {
+            return delegate.completedOutcomeExact(expected);
+        }
+
+        @Override
+        public void release(ActionEnvelope envelope) {
+            delegate.release(envelope);
         }
 
         private ActionEnvelope singleEnvelope() {

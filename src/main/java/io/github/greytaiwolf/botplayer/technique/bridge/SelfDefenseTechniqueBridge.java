@@ -31,6 +31,7 @@ import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueSignal;
 import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueSignalStatus;
 import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueStartRequest;
 import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueSubmission;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -59,7 +60,7 @@ import java.util.function.LongSupplier;
  * boundary before it releases the original self-defense completion.
  */
 public final class SelfDefenseTechniqueBridge extends TechniqueRoute {
-    private static final int MAX_RETAINED_CANCELLATION_RECEIPTS = 256;
+    private static final int MAX_RETAINED_RELEASED_CANCELLATION_RECEIPTS = 256;
     private final TechniqueLifecycleCoordinator coordinator;
     private final SingleMeleeStrikeTechnique technique;
     private final ActionGateway actions;
@@ -79,10 +80,13 @@ public final class SelfDefenseTechniqueBridge extends TechniqueRoute {
      */
     private final Map<UUID, ActionCancellationReason>
             dispatchedCancellationsByActionId = new LinkedHashMap<>();
-    /** Duplicate lifecycle order must not convert an exact receipt into a no-op. */
-    private final Map<ActionCancellationReceipt.Identity,
-            ActionCancellationReceipt> cancellationReceipts =
+    /** Duplicate lifecycle order must retain only its full immutable envelope. */
+    private final Map<ActionEnvelope, ActionCancellationReceipt>
+            cancellationReceipts =
             new LinkedHashMap<>();
+    /* A rejected or reaped child can answer only the same opaque authorization. */
+    private final Map<AuthorizedActionDispatch, ActionCancellationReceipt>
+            releasedCancellationReceipts = new IdentityHashMap<>();
     private final Map<UUID, RunBinding> runsByTechniqueId =
             new LinkedHashMap<>();
     private final Map<UUID, RunBinding> runsByBotId = new LinkedHashMap<>();
@@ -127,12 +131,10 @@ public final class SelfDefenseTechniqueBridge extends TechniqueRoute {
                     "Self-defense melee authorization was not current");
         }
         if (!isEligibleDispatch(claimed)) {
-            ActionEnvelope rejectedEnvelope = envelopeFor(claimed);
-            rememberCancellationReceipt(rejectedEnvelope,
+            retainReleasedCancellationReceipt(required,
                     ActionCancellationReceipt.fencedBeforeStart(
-                            rejectedEnvelope.botId(),
-                            rejectedEnvelope.botGeneration(),
-                            rejectedEnvelope.actionId()));
+                            claimed.botId(), claimed.botGeneration(),
+                            claimed.actionId()));
             throw new SubmissionRejectedException(
                     "Self-defense melee binding was rejected");
         }
@@ -186,6 +188,15 @@ public final class SelfDefenseTechniqueBridge extends TechniqueRoute {
             throw new SubmissionRejectedException(
                     "Self-defense technique start failed", exception);
         } finally {
+            if (pending.binding != null
+                    && actionBindingsByActionId.get(
+                            pending.binding.claim().actionId())
+                            != pending.binding) {
+                cachedCancellationReceipt(pending.binding.envelope()).ifPresent(
+                        receipt -> retainReleasedCancellationReceipt(
+                                pending.authorization, receipt));
+                forgetCancellationReceipt(pending.binding.envelope());
+            }
             pendingStart = null;
         }
         return reply.view();
@@ -212,8 +223,8 @@ public final class SelfDefenseTechniqueBridge extends TechniqueRoute {
                 actionBindingsByActionId.values())) {
             ActionOutcome outcome;
             try {
-                outcome = actions.completedOutcome(binding.claim().botId(),
-                        binding.claim().actionId()).orElse(null);
+                outcome = actions.completedOutcomeExact(binding.envelope())
+                        .orElse(null);
             } catch (RuntimeException exception) {
                 settleInvalidCompletion(binding, currentTick,
                         "Self-defense action outcome lookup failed",
@@ -239,14 +250,6 @@ public final class SelfDefenseTechniqueBridge extends TechniqueRoute {
             }
             Retraction retraction = retractionsByActionId.get(
                     binding.claim().actionId());
-            if (cachedCancellationReceipt(binding.envelope()).isEmpty()) {
-                rememberCancellationReceipt(binding.envelope(),
-                        ActionCancellationReceipt.unsafe(
-                                binding.envelope().botId(),
-                                binding.envelope().botGeneration(),
-                                binding.envelope().actionId(),
-                                ActionCancellationReceipt.Disposition.TERMINAL));
-            }
             removeActionBinding(binding);
             if (signalStatus != TechniqueSignalStatus.ACCEPTED) {
                 coordinator.closeGeneration(binding.run().botId(),
@@ -326,12 +329,10 @@ public final class SelfDefenseTechniqueBridge extends TechniqueRoute {
                 && pending.binding != null) {
             return cancelBinding(pending.binding, reason);
         }
-        return cachedCancellationReceipt(required.botId(),
-                required.botGeneration(), required.actionId()).orElseGet(
-                        () -> ActionCancellationReceipt.unsafe(
-                                required.botId(), required.botGeneration(),
-                                required.actionId(),
-                                ActionCancellationReceipt.Disposition.UNKNOWN));
+        return takeReleasedCancellationReceipt(required).orElseGet(
+                () -> ActionCancellationReceipt.unsafe(required.botId(),
+                        required.botGeneration(), required.actionId(),
+                        ActionCancellationReceipt.Disposition.UNKNOWN));
     }
 
     @Override
@@ -624,34 +625,46 @@ public final class SelfDefenseTechniqueBridge extends TechniqueRoute {
         actionBindingsByTicketId.remove(binding.ticket().ticketId(), binding);
         retractionsByActionId.remove(binding.claim().actionId());
         dispatchedCancellationsByActionId.remove(binding.claim().actionId());
+        forgetCancellationReceipt(binding.envelope());
     }
 
     private Optional<ActionCancellationReceipt> cachedCancellationReceipt(
             ActionEnvelope envelope) {
-        return cachedCancellationReceipt(envelope.botId(),
-                envelope.botGeneration(), envelope.actionId());
-    }
-
-    private Optional<ActionCancellationReceipt> cachedCancellationReceipt(
-            UUID botId, long botGeneration, UUID actionId) {
         return Optional.ofNullable(cancellationReceipts.get(
-                new ActionCancellationReceipt.Identity(botId, botGeneration,
-                        actionId)));
+                Objects.requireNonNull(envelope, "envelope")));
     }
 
     private void rememberCancellationReceipt(ActionEnvelope envelope,
             ActionCancellationReceipt receipt) {
-        ActionCancellationReceipt.Identity identity =
-                new ActionCancellationReceipt.Identity(envelope.botId(),
-                        envelope.botGeneration(), envelope.actionId());
-        cancellationReceipts.put(identity, Objects.requireNonNull(receipt,
+        cancellationReceipts.putIfAbsent(Objects.requireNonNull(envelope,
+                "envelope"), Objects.requireNonNull(receipt, "receipt"));
+    }
+
+    private void forgetCancellationReceipt(ActionEnvelope envelope) {
+        ActionEnvelope required = Objects.requireNonNull(envelope,
+                "envelope");
+        cancellationReceipts.remove(required);
+        actions.release(required);
+    }
+
+    private void retainReleasedCancellationReceipt(
+            AuthorizedActionDispatch authorization,
+            ActionCancellationReceipt receipt) {
+        releasedCancellationReceipts.putIfAbsent(Objects.requireNonNull(
+                authorization, "authorization"), Objects.requireNonNull(receipt,
                 "receipt"));
-        while (cancellationReceipts.size()
-                > MAX_RETAINED_CANCELLATION_RECEIPTS) {
-            ActionCancellationReceipt.Identity oldest = cancellationReceipts
+        while (releasedCancellationReceipts.size()
+                > MAX_RETAINED_RELEASED_CANCELLATION_RECEIPTS) {
+            AuthorizedActionDispatch oldest = releasedCancellationReceipts
                     .keySet().iterator().next();
-            cancellationReceipts.remove(oldest);
+            releasedCancellationReceipts.remove(oldest);
         }
+    }
+
+    private Optional<ActionCancellationReceipt> takeReleasedCancellationReceipt(
+            AuthorizedActionDispatch authorization) {
+        return Optional.ofNullable(releasedCancellationReceipts.remove(
+                Objects.requireNonNull(authorization, "authorization")));
     }
 
     private static ActionCancellationReceipt unsafeUnknownReceipt(
@@ -981,16 +994,22 @@ public final class SelfDefenseTechniqueBridge extends TechniqueRoute {
         }
     }
 
-    /** Minimal lifecycle port; all operations are still invoked on its owner thread. */
+    /** Minimal lifecycle port; all operations are invoked on its owner thread. */
     public interface ActionGateway {
         ActionMailbox.Submission submit(ActionEnvelope envelope,
                 ActionPriority priority);
 
-        /** Returns an exact target receipt; generation quarantine is never proof. */
+        /** Returns a receipt for this full immutable envelope only. */
         ActionCancellationReceipt cancelOrContain(ActionEnvelope envelope,
                 ActionCancellationReason reason, long currentTick);
 
-        Optional<ActionOutcome> completedOutcome(UUID botId, UUID actionId);
+        /** Returns a terminal only when it belongs to this full immutable envelope. */
+        Optional<ActionOutcome> completedOutcomeExact(ActionEnvelope expected);
+
+        /** Forgets a released bridge child and any retained exact receipt. */
+        default void release(ActionEnvelope envelope) {
+            Objects.requireNonNull(envelope, "envelope");
+        }
     }
 
     private static final class Reply {

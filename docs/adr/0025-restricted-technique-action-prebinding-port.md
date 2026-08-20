@@ -107,8 +107,12 @@ gateway 在同步返回 `ENQUEUED` 后还会重新检查该 permit 仍是原始 
 `ACTIVE` child；若 close/preempt 已发生，会对同一 identity 做一次 exact containment，但仍把已入 P2
 的 child 留到真正 terminal drain。拒绝 ingress 的 permit 则缓存本地 `fencedBeforeStart` receipt，后续
 取消绝不再触碰 runtime；首次真实 cancellation receipt 按 opaque permit identity 缓存，避免第二次 close
-把 safe receipt 改写为 `TERMINAL` 或 `UNKNOWN`。route 只能在接受 terminal signal 或 reaping 后 release
-binding，并必须把 adapter 的 outstanding/unsafe generation 状态纳入自己的 safety proof。
+把 safe receipt 改写为 `TERMINAL` 或 `UNKNOWN`。来自 P2 的 receipt 只在对应 binding 仍 live 时保留，
+route 在接受 terminal signal 或 reaping 后 release 时必须同时清除它，历史 receipt 绝不能按容量淘汰仍
+live 的安全 containment proof；release 后的重复取消只能失败关闭。唯一例外是从未到达 P2 的
+`REJECTED_BEFORE_INGRESS` 本地 fenced receipt：它可按 opaque permit 有界保留，供同一 permit 的后续
+取消安全返回，绝不重入 runtime。route 还必须把 adapter 的 outstanding/unsafe generation 状态纳入自己的
+safety proof。
 
 ### 5. 本提交落地未注册 adapter Contract，不接建筑能力
 
@@ -158,7 +162,8 @@ Action、Skill、自卫、P2 状态机和网络协议无需迁移。
 - permit 绑定 route、一次性 ingress claim、cross-port reuse 和取消前 ingress 围栏均失败关闭；
 - `ENQUEUED` 与 terminal/安全取消语义分离。
 - adapter 映射每个 Action mailbox rejection，拒绝 ingress 后只返回本地 fenced receipt；首次 exact
-  cancellation receipt 缓存并保持绑定到 terminal/reap；unsafe receipt 使 generation 继续不安全；
+  cancellation receipt 只与 live permit binding 共存，并在 terminal/reap release 时一并清除；仅未到达 P2
+  的 rejected-ingress fenced receipt 可按 opaque permit 有界保留；unsafe receipt 使 generation 继续不安全；
 - synchronous generation close/L0 preempt 在 Action ingress 内发生时只 containment 同一 exact identity
   一次，迟到 terminal 不得复活已 reaped child；不同 immutable envelope 的同 action ID terminal 不得
   作为 permit evidence 或安全 cancellation receipt。

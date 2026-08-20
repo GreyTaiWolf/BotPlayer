@@ -109,6 +109,35 @@ class SelfDefenseTechniqueBridgeTest {
     }
 
     @Test
+    void foreignEnvelopeWithTheSameTripleCannotCompleteTheBoundChild() {
+        Harness harness = new Harness();
+        harness.start();
+        UUID actionId = harness.singleActionId();
+        ActionEnvelope expected = harness.gateway.submitted.get(actionId);
+        ActionEnvelope foreign = new ActionEnvelope(actionId, BOT, 1L,
+                "other/collision", expected.deadlineTick(),
+                expected.maxTicks(), expected.action(),
+                io.github.greytaiwolf.botplayer.action.ActionOrigin.none());
+
+        harness.tick.value = 1L;
+        harness.gateway.complete(foreign, success(actionId, 1L));
+        harness.coordinator.drainCompletedChildren(1L);
+
+        assertEquals(expected, harness.gateway.lastCompletedOutcomeLookup,
+                "the bridge must ask its gateway for the exact child envelope");
+        assertEquals(TechniqueState.WAITING_CHILDREN,
+                harness.coordinator.inspect(BOT).orElseThrow().state());
+        assertFalse(harness.submittedCompletion.toCompletableFuture().isDone(),
+                "a same-triple foreign terminal is not child evidence");
+
+        harness.gateway.complete(expected, success(actionId, 1L));
+        harness.coordinator.drainCompletedChildren(1L);
+        harness.service.tick(1L);
+        assertEquals(SelfDefenseSkillService.RunStatus.COMPLETED,
+                harness.service.latestView(BOT).orElseThrow().status());
+    }
+
+    @Test
     void publicIngressAcceptsOnlyTheOpaqueServiceCapability() {
         Method[] publicSubmitMethods = Arrays.stream(
                         SelfDefenseTechniqueBridge.class.getMethods())
@@ -206,6 +235,8 @@ class SelfDefenseTechniqueBridgeTest {
         harness.start();
 
         assertTrue(harness.gateway.submitted.isEmpty());
+        assertTrue(harness.gateway.cancellations.isEmpty(),
+                "the same opaque authorization must consume only its local fence");
         assertEquals(SelfDefenseSkillService.RunStatus.FAILED,
                 harness.service.latestView(BOT).orElseThrow().status());
         assertEquals(SelfDefenseSkillService.Failure.ACTION_SUBMISSION_REJECTED,
@@ -477,7 +508,8 @@ class SelfDefenseTechniqueBridgeTest {
             implements SelfDefenseTechniqueBridge.ActionGateway {
         private final Map<UUID, ActionEnvelope> submitted = new LinkedHashMap<>();
         private final Map<UUID, ActionPriority> priorities = new LinkedHashMap<>();
-        private final Map<UUID, ActionOutcome> completed = new LinkedHashMap<>();
+        private final Map<ActionEnvelope, ActionOutcome> completed =
+                new LinkedHashMap<>();
         private final List<Cancellation> cancellations = new ArrayList<>();
         private Runnable beforeSubmit;
         private ActionMailbox.SubmissionStatus submissionStatus =
@@ -485,6 +517,7 @@ class SelfDefenseTechniqueBridgeTest {
         private ActionCancellationReceipt.Disposition cancellationDisposition =
                 ActionCancellationReceipt.Disposition.EXACT_QUEUED_RETRACTED;
         private boolean returnMismatchedSafeReceipt;
+        private ActionEnvelope lastCompletedOutcomeLookup;
 
         @Override
         public ActionMailbox.Submission submit(ActionEnvelope envelope,
@@ -532,13 +565,27 @@ class SelfDefenseTechniqueBridgeTest {
         }
 
         @Override
-        public Optional<ActionOutcome> completedOutcome(UUID botId,
-                UUID actionId) {
-            return Optional.ofNullable(completed.get(actionId));
+        public Optional<ActionOutcome> completedOutcomeExact(
+                ActionEnvelope expected) {
+            lastCompletedOutcomeLookup = expected;
+            return Optional.ofNullable(completed.get(expected));
         }
 
         private void complete(ActionOutcome outcome) {
-            completed.put(outcome.actionId(), outcome);
+            ActionEnvelope envelope = submitted.get(outcome.actionId());
+            if (envelope == null) {
+                throw new IllegalArgumentException(
+                        "missing submitted envelope for synthetic outcome");
+            }
+            complete(envelope, outcome);
+        }
+
+        private void complete(ActionEnvelope envelope, ActionOutcome outcome) {
+            if (!envelope.actionId().equals(outcome.actionId())) {
+                throw new IllegalArgumentException(
+                        "synthetic outcome did not match its envelope");
+            }
+            completed.put(envelope, outcome);
         }
     }
 

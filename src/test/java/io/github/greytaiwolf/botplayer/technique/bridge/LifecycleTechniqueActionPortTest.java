@@ -254,6 +254,52 @@ class LifecycleTechniqueActionPortTest {
     }
 
     @Test
+    void releasedPermitForgetsItsReceiptWithoutReenteringTheActionGateway() {
+        TechniqueLifecycleCoordinator coordinator =
+                new TechniqueLifecycleCoordinator();
+        RecordingGateway gateway = new RecordingGateway();
+        AdapterRoute route = AdapterRoute.withGateway(coordinator, gateway);
+        coordinator.register(route);
+        coordinator.start(route, request(route.technique(), 0L));
+        TechniqueActionPermit permit = route.issuedPermit;
+
+        assertTrue(route.port.cancelOrContain(permit,
+                TechniqueActionCancellationReason.REQUESTED, 0L)
+                .safelyRetracted());
+        gateway.complete(route.envelope, ActionState.CANCELLED,
+                ActionFailureCode.CANCELLED);
+        coordinator.drainCompletedChildren(1L);
+        assertTrue(route.port.isGenerationSafe(BOT, 1L));
+
+        TechniqueActionCancellation afterRelease = route.port.cancelOrContain(
+                permit, TechniqueActionCancellationReason.REQUESTED, 1L);
+        assertFalse(afterRelease.safelyRetracted(),
+                "a released permit has no live containment proof");
+        assertEquals(1, gateway.cancelCount,
+                "a released historical receipt must not reenter P2");
+    }
+
+    @Test
+    void staleCallerTickIsNeverForwardedToTheActionGateway() {
+        TechniqueLifecycleCoordinator coordinator =
+                new TechniqueLifecycleCoordinator();
+        RecordingGateway gateway = new RecordingGateway();
+        AdapterRoute route = AdapterRoute.withGateway(coordinator, gateway);
+        coordinator.register(route);
+        coordinator.start(route, request(route.technique(), 7L));
+
+        assertTrue(route.port.cancelOrContain(route.issuedPermit,
+                TechniqueActionCancellationReason.REQUESTED, 0L)
+                .safelyRetracted());
+        assertEquals(7L, gateway.lastCancellationTick,
+                "P2 must receive the coordinator's observed owner tick");
+
+        gateway.complete(route.envelope, ActionState.CANCELLED,
+                ActionFailureCode.CANCELLED);
+        coordinator.drainCompletedChildren(7L);
+    }
+
+    @Test
     void cancellationReceiptCacheIsBoundToTheOpaquePermitNotOnlyActionId() {
         TechniqueLifecycleCoordinator coordinator =
                 new TechniqueLifecycleCoordinator();
@@ -613,6 +659,7 @@ class LifecycleTechniqueActionPortTest {
         private ActionCancellationReceipt cancellationReceipt;
         private Runnable onSubmit;
         private int cancelCount;
+        private long lastCancellationTick = -1L;
 
         @Override
         public ActionMailbox.Submission submit(ActionEnvelope envelope,
@@ -632,6 +679,7 @@ class LifecycleTechniqueActionPortTest {
                 ActionEnvelope envelope, ActionCancellationReason reason,
                 long currentTick) {
             cancelCount++;
+            lastCancellationTick = currentTick;
             return cancellationReceipt == null
                     ? ActionCancellationReceipt.fencedBeforeStart(
                             envelope.botId(), envelope.botGeneration(),
