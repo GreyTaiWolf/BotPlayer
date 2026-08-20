@@ -2,7 +2,7 @@
 
 - 状态：Accepted
 - 日期：2026-07-29
-- 实现注记更新：2026-08-14
+- 实现注记更新：2026-08-20
 - 关联：ADR-0006、ADR-0013、ADR-0014
 
 > 当前实现说明：受限 P5 纵切（有界 Skill/DAG、TaskSensor/Reservation、Checkpoint、
@@ -11,9 +11,12 @@
 > [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) 完成 Java 21
 > 自动基线、161 项常规 GameTest 和 phase-one/phase-two 重启验证。通用
 > `InventoryMenu SWAP_SEQUENCE` 仍只覆盖 `InventoryMenu` 内的受限序列，generic
-> equipment/offhand 仍 `UNSUPPORTED`。这不表示本 ADR 冻结的跨 menu 通用事务或 P5 总
-> 退出门已经完成；`clicked()` 故障注入、通用 lifecycle continuation、工具/副手、任意
-> 配方/作物/交易、广泛战斗、真实客户端、专用服和 soak 仍未实现或未验证。
+> equipment/offhand 仍 `UNSUPPORTED`。当前增量的 P5A-M1a 已为 world-menu 已领取 click 的
+> `clicked()` / `broadcastChanges()` 异常加入 `CLICK_DISPATCH_FAILED`、一次 exact reread 和
+> 原版 close cleanup 的 fail-closed 边界；纯 Java 回归已覆盖修改前/后抛错，但 Java 21 CI、真实
+> 原版故障 GameTest 与跨 Tick cleanup 仍待验证。这不表示本 ADR 冻结的跨 menu 通用事务或 P5 总
+> 退出门已经完成；通用 lifecycle continuation、工具/副手、任意配方/作物/交易、广泛战斗、真实
+> 客户端、专用服和 soak 仍未实现或未验证。
 
 ## 背景
 
@@ -132,6 +135,14 @@ P5B 的受限末影箱切片仍使用这套事务内核，但账本只能是当�
 外部变化使 stateId、槽位或 revision 不匹配时，事务停止并重新快照或失败；不能把新状态
 套入旧点击计划。取消必须通过原版路径安全处理 carried stack；无法解释的物品差额以
 `ITEM_CONSERVATION_VIOLATION` 失败并隔离 generation。
+
+对于 world-menu 的每个已领取 click，原版 `clicked()`、slot/event hook 或
+`broadcastChanges()` 在修改前后都可能抛出。P5A-M1a 因而要求 adapter 在该 dispatch 边界捕获
+`RuntimeException`，至多重读一次同一 exact native menu，并把纯 Java transaction 终结为
+`CLICK_DISPATCH_FAILED`：after snapshot 只可冻结诊断，绝不作为 ACK、绝不推进 confirmed prefix、
+绝不在下一 Tick 重派。重读异常、menu identity 漂移或空快照也同样失败关闭。失败后的窗口仍只由
+既有 action runtime cleanup 经原版 `closeContainer()` 关闭；不得直接写 inventory/slot 或猜测回滚。
+该窄边界不覆盖独立的 `InventoryMenu` swap 路径，也不构成跨 menu 事务泛化。
 
 ### 6. Checkpoint
 

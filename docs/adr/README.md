@@ -33,7 +33,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0012](0012-client-sponsored-ai-credentials.md) | 客户端赞助的 AI 凭据与每 bot 独立智能体 | Accepted | 客户端凭据、受限 Provider/HTTP 传输与默认关闭的 P6-R1 审阅路径已通过 Build #362 自动基线；真实客户端/Provider E2E、通用聊天与 AI→世界执行仍待 P6 |
 | [ADR-0013](0013-finite-perception-two-plane-world-model.md) | 有限感知、双事件平面与有界世界模型 | Accepted | P3 实现已编码并通过 Build #28 自动化退出门 |
 | [ADR-0014](0014-bounded-navigation-and-safety-plane.md) | 有界导航快照、分段路径与独立 L0 安全平面 | Accepted | P4 自动化退出门已通过 |
-| [ADR-0015](0015-bounded-skill-runtime-and-menu-transactions.md) | 有界技能运行时与统一菜单事务 | Accepted | 当前连续集成分支的受限 P5 纵切已通过 Build #362 自动基线；P5 总退出门与跨 menu 通用事务仍未完成 |
+| [ADR-0015](0015-bounded-skill-runtime-and-menu-transactions.md) | 有界技能运行时与统一菜单事务 | Accepted | 当前连续集成分支的受限 P5 纵切已通过 Build #362 自动基线；当前 M1a 已编码 world-menu click dispatch exception 的 pure fail-closed 边界，仍待 Java 21 CI/真实故障 GameTest；P5 总退出门与跨 menu 通用事务仍未完成 |
 | [ADR-0016](0016-durable-vanilla-death-consumption-handoff.md) | 原版死亡消费的耐久交接与失败关闭 | Accepted | P5 死亡纵切已由 Build #163 验证 |
 | [ADR-0017](0017-bounded-player-technique-runtime.md) | `Action → Technique → Skill` 有界玩家技术动作层 | Accepted | 旧有 Technique runtime 与有限自卫单击窄 bridge 已通过 Build #362 自动基线；当前分支已迁为单 lifecycle coordinator Contract，仍待该提交 Java 21 CI；跳劈、真实施工和广泛战斗仍未实现 |
 | [ADR-0018](0018-strict-consumable-pre-use-fence.md) | 严格消耗品的原版使用前围栏 | Superseded | 被 ADR-0040 取代；其旧 P5B 牛奶纵切已通过 Build #362 自动基线 |

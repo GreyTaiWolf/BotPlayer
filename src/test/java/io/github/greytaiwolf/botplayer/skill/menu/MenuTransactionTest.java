@@ -5,6 +5,8 @@ import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -164,6 +166,222 @@ class MenuTransactionTest {
         Assertions.assertEquals(
                 MenuTransactionFailure.SNAPSHOT_DRIFT,
                 drift.failure().orElseThrow());
+    }
+
+    @Test
+    void clickDispatchExceptionFailsClosedBeforeOrAfterMutationWithoutAckOrRetry() {
+        MenuSnapshot opened = chest(3, 20, List.of(
+                SlotChange.at(0, item("oak_log", 1, '1'))));
+        MenuSnapshot moved = chest(3, 21, List.of(
+                SlotChange.at(27, item("oak_log", 1, '1'))));
+        MenuTransactionPlan plan = oneStepPlan(
+                opened, withState(moved, 0));
+
+        MenuTransaction beforeMutation = start(plan, opened);
+        Assertions.assertTrue(beforeMutation.issueNextClick(
+                11L, opened).isPresent());
+        Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> beforeMutation.issueNextClick(11L, opened));
+        Assertions.assertFalse(beforeMutation
+                .failAfterClickDispatchException(opened, 11L));
+        Assertions.assertEquals(
+                MenuTransactionState.FAILED, beforeMutation.state());
+        Assertions.assertEquals(
+                MenuTransactionFailure.CLICK_DISPATCH_FAILED,
+                beforeMutation.failure().orElseThrow());
+        Assertions.assertEquals(0, beforeMutation.confirmedClicks());
+        Assertions.assertEquals(opened,
+                beforeMutation.observedSnapshot().orElseThrow());
+        Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> beforeMutation.acknowledge(moved, 11L));
+        Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> beforeMutation.issueNextClick(12L, opened));
+
+        MenuTransaction afterMutation = start(plan, opened);
+        Assertions.assertTrue(afterMutation.issueNextClick(
+                11L, opened).isPresent());
+        Assertions.assertFalse(afterMutation
+                .failAfterClickDispatchException(moved, 11L));
+        Assertions.assertEquals(
+                MenuTransactionState.FAILED, afterMutation.state());
+        Assertions.assertEquals(
+                MenuTransactionFailure.CLICK_DISPATCH_FAILED,
+                afterMutation.failure().orElseThrow());
+        Assertions.assertEquals(0, afterMutation.confirmedClicks());
+        Assertions.assertEquals(moved,
+                afterMutation.observedSnapshot().orElseThrow());
+        Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> afterMutation.acknowledge(moved, 11L));
+    }
+
+    @Test
+    void clickDispatchExceptionNeverAcceptsForeignOrLateObservation() {
+        MenuSnapshot opened = chest(3, 20, List.of(
+                SlotChange.at(0, item("oak_log", 1, '1'))));
+        MenuSnapshot moved = chest(3, 21, List.of(
+                SlotChange.at(27, item("oak_log", 1, '1'))));
+        MenuTransactionPlan plan = oneStepPlan(
+                opened, withState(moved, 0));
+
+        MenuTransaction foreign = start(plan, opened);
+        Assertions.assertTrue(foreign.issueNextClick(
+                11L, opened).isPresent());
+        Assertions.assertFalse(foreign.failAfterClickDispatchException(
+                chest(4, 21, List.of()), 11L));
+        Assertions.assertEquals(opened,
+                foreign.observedSnapshot().orElseThrow());
+        Assertions.assertEquals(0, foreign.confirmedClicks());
+
+        MenuTransaction late = start(plan, opened);
+        Assertions.assertTrue(late.issueNextClick(11L, opened).isPresent());
+        Assertions.assertFalse(late.failAfterClickDispatchException(
+                moved, 12L));
+        Assertions.assertEquals(opened,
+                late.observedSnapshot().orElseThrow());
+        Assertions.assertEquals(0, late.confirmedClicks());
+    }
+
+    @Test
+    void clickDispatchBoundaryRereadsExactlyOnceBeforeOrAfterMutation() {
+        MenuSnapshot opened = chest(3, 20, List.of(
+                SlotChange.at(0, item("oak_log", 1, '1'))));
+        MenuSnapshot moved = chest(3, 21, List.of(
+                SlotChange.at(27, item("oak_log", 1, '1'))));
+        MenuTransactionPlan plan = oneStepPlan(
+                opened, withState(moved, 0));
+
+        MenuTransaction beforeMutation = start(plan, opened);
+        Assertions.assertTrue(beforeMutation.issueNextClick(
+                11L, opened).isPresent());
+        AtomicInteger beforeDispatches = new AtomicInteger();
+        AtomicInteger beforeReads = new AtomicInteger();
+        MenuClickDispatchBoundary.Result before =
+                MenuClickDispatchBoundary.dispatch(
+                        beforeMutation,
+                        11L,
+                        () -> {
+                            beforeDispatches.incrementAndGet();
+                            throw new IllegalStateException("before mutation");
+                        },
+                        () -> {
+                            beforeReads.incrementAndGet();
+                            return opened;
+                        });
+        Assertions.assertEquals(
+                MenuClickDispatchBoundary.Disposition.FAILED,
+                before.disposition());
+        Assertions.assertEquals(1, beforeDispatches.get());
+        Assertions.assertEquals(1, beforeReads.get());
+        Assertions.assertEquals(opened,
+                before.observedAfter().orElseThrow());
+        Assertions.assertEquals(0, beforeMutation.confirmedClicks());
+        Assertions.assertEquals(
+                MenuTransactionFailure.CLICK_DISPATCH_FAILED,
+                beforeMutation.failure().orElseThrow());
+
+        MenuTransaction afterMutation = start(plan, opened);
+        Assertions.assertTrue(afterMutation.issueNextClick(
+                11L, opened).isPresent());
+        AtomicReference<MenuSnapshot> observed =
+                new AtomicReference<>(opened);
+        AtomicInteger afterReads = new AtomicInteger();
+        MenuClickDispatchBoundary.Result after =
+                MenuClickDispatchBoundary.dispatch(
+                        afterMutation,
+                        11L,
+                        () -> {
+                            observed.set(moved);
+                            throw new IllegalStateException("after mutation");
+                        },
+                        () -> {
+                            afterReads.incrementAndGet();
+                            return observed.get();
+                        });
+        Assertions.assertEquals(
+                MenuClickDispatchBoundary.Disposition.FAILED,
+                after.disposition());
+        Assertions.assertEquals(1, afterReads.get());
+        Assertions.assertEquals(moved,
+                after.observedAfter().orElseThrow());
+        Assertions.assertEquals(moved,
+                afterMutation.observedSnapshot().orElseThrow());
+        Assertions.assertEquals(0, afterMutation.confirmedClicks());
+        Assertions.assertEquals(
+                MenuTransactionFailure.CLICK_DISPATCH_FAILED,
+                afterMutation.failure().orElseThrow());
+    }
+
+    @Test
+    void clickDispatchBoundaryFailsClosedForRereadOrReentrantCancellation() {
+        MenuSnapshot opened = chest(3, 20, List.of(
+                SlotChange.at(0, item("oak_log", 1, '1'))));
+        MenuSnapshot moved = chest(3, 21, List.of(
+                SlotChange.at(27, item("oak_log", 1, '1'))));
+        MenuTransactionPlan plan = oneStepPlan(
+                opened, withState(moved, 0));
+
+        MenuTransaction rereadFailure = start(plan, opened);
+        Assertions.assertTrue(rereadFailure.issueNextClick(
+                11L, opened).isPresent());
+        AtomicInteger reads = new AtomicInteger();
+        MenuClickDispatchBoundary.Result failedReread =
+                MenuClickDispatchBoundary.dispatch(
+                        rereadFailure,
+                        11L,
+                        () -> {
+                        },
+                        () -> {
+                            reads.incrementAndGet();
+                            throw new IllegalStateException("reread failed");
+                        });
+        Assertions.assertEquals(
+                MenuClickDispatchBoundary.Disposition.FAILED,
+                failedReread.disposition());
+        Assertions.assertTrue(failedReread.observedAfter().isEmpty());
+        Assertions.assertEquals(1, reads.get());
+        Assertions.assertEquals(
+                MenuTransactionFailure.CLICK_DISPATCH_FAILED,
+                rereadFailure.failure().orElseThrow());
+
+        MenuTransaction reentrantCancellation = start(plan, opened);
+        Assertions.assertTrue(reentrantCancellation.issueNextClick(
+                11L, opened).isPresent());
+        MenuClickDispatchBoundary.Result reentrant =
+                MenuClickDispatchBoundary.dispatch(
+                        reentrantCancellation,
+                        11L,
+                        () -> {
+                            Assertions.assertTrue(reentrantCancellation.cancel());
+                            throw new IllegalStateException("reentrant cancel");
+                        },
+                        () -> opened);
+        Assertions.assertEquals(
+                MenuClickDispatchBoundary.Disposition.UNSAFE_REENTRANT,
+                reentrant.disposition());
+        Assertions.assertEquals(
+                MenuTransactionState.CANCELLED,
+                reentrantCancellation.state());
+        Assertions.assertEquals(
+                MenuTransactionFailure.CANCELLED,
+                reentrantCancellation.failure().orElseThrow());
+        Assertions.assertEquals(0, reentrantCancellation.confirmedClicks());
+
+        MenuTransaction normal = start(plan, opened);
+        Assertions.assertTrue(normal.issueNextClick(11L, opened).isPresent());
+        MenuClickDispatchBoundary.Result normalResult =
+                MenuClickDispatchBoundary.dispatch(
+                        normal, 11L, () -> {
+                        }, () -> moved);
+        Assertions.assertTrue(normalResult.mayAcknowledge());
+        Assertions.assertEquals(
+                MenuClickDispatchBoundary.Disposition.ACKNOWLEDGE,
+                normalResult.disposition());
+        Assertions.assertTrue(normal.acknowledge(
+                normalResult.observedAfter().orElse(null), 11L));
     }
 
     @Test

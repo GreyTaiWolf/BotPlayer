@@ -7,6 +7,14 @@
 
 ### 新增
 
+- 新增 P5A-M1a 原版 world-menu click dispatch 失败边界：`MenuTransaction` 现在会把已领取
+  click 的 `clicked()` / `broadcastChanges()` 异常终结为 `CLICK_DISPATCH_FAILED`，不推进
+  `confirmedClicks`、不把可能已经发生的变更当 ACK、也不允许下一 Tick 重派。适配器生产默认仍只走
+  原版 click + broadcast，package test seam 可确定性模拟修改前或修改后抛错；异常后仅尝试一次
+  exact native-menu reread 用于冻结诊断，identity/read 失败同样 fail-close，随后由既有 runtime
+  cleanup 关闭 menu/cursor，绝不直接写库存或回滚猜测。纯 Java 回归覆盖前/后抛错、foreign/late
+  observation 和 ACK/retry 拒绝；Java 21 CI、真实 `clicked()` 故障 GameTest、跨 menu 通用事务与
+  lifecycle continuation 仍待完成，不能据此宣称 P5 总退出门完成；
 - 接入 ADR-0041 的 P6-B1 R1 physical-attempt production bridge：protocol v3 注册 atomic S2C offer、
   C2S prepare ACK 与 S2C start grant，并删除旧 raw dispatch 生产入口。lifecycle 只在认证当前 owner、
   runtime/generation/agent、gate/ticket/nonce/identity 与 tick TTL 全部 exact 时 settle；grant 前 proposal

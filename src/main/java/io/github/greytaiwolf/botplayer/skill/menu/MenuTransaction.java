@@ -183,6 +183,31 @@ public final class MenuTransaction {
     }
 
     /**
+     * 记录已经领取的原版 click 在 dispatch 边界抛出。
+     *
+     * <p>原版 {@code AbstractContainerMenu.clicked(...)} 可以在修改前抛出，也可以在已经
+     * 修改部分状态后由 slot hook、事件或 {@code broadcastChanges()} 抛出。两种情况都不能
+     * 假设 click 未发生，更不能把刚读到的 after snapshot 当作 ACK。因此本方法只在
+     * {@link MenuTransactionState#ACK} 使用，保留同 Tick 已领取 click 的事实，绝不推进
+     * {@code confirmedClicks}，并把事务终结为失败。适配器可以提供一次受限的 after
+     * snapshot 供失败诊断/关闭使用；它必须与已确认的 native menu family/containerId 一致，
+     * 否则不会覆盖此前的权威 snapshot。
+     *
+     * <p>返回值固定为 {@code false}，与其他会把事务推进到失败终态的方法保持一致。
+     */
+    public boolean failAfterClickDispatchException(
+            MenuSnapshot observedAfterException, long currentTick) {
+        requireState(MenuTransactionState.ACK);
+        if (currentTick == lastClickTick
+                && observedAfterException != null
+                && observedSnapshot != null
+                && observedAfterException.sameMenu(observedSnapshot)) {
+            observedSnapshot = observedAfterException;
+        }
+        return fail(MenuTransactionFailure.CLICK_DISPATCH_FAILED);
+    }
+
+    /**
      * 在关闭窗口前复核最终布局和当前 stateId。
      */
     public boolean verify(MenuSnapshot finalSnapshot, long currentTick) {

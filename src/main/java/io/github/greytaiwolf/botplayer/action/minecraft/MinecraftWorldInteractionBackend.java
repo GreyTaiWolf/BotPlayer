@@ -47,6 +47,7 @@ import io.github.greytaiwolf.botplayer.lifecycle.BotLifecycleManager;
 import io.github.greytaiwolf.botplayer.skill.builtin.trading.VillagerTradeInventoryConservation;
 import io.github.greytaiwolf.botplayer.skill.menu.CraftingPreviewResolver;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuClick;
+import io.github.greytaiwolf.botplayer.skill.menu.MenuClickDispatchBoundary;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuClickType;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuFamily;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuSnapshot;
@@ -168,11 +169,26 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
     private final InventoryLayoutCleanupFence
             inventoryLayoutCleanupFence =
                     new InventoryLayoutCleanupFence();
+    /**
+     * 窄的 package test seam：生产构造器始终绑定真实原版 click + broadcast 路径。
+     * 它不暴露给 Action/Skill，不能用于绕过 {@link MenuTransaction} 的 snapshot/ACK 合同。
+     */
+    private final WorldMenuClickDispatcher worldMenuClickDispatcher;
     private int packetSequence;
 
     MinecraftWorldInteractionBackend(BotLifecycleManager lifecycleManager) {
+        this(
+                lifecycleManager,
+                MinecraftWorldInteractionBackend::dispatchVanillaWorldMenuClick);
+    }
+
+    MinecraftWorldInteractionBackend(
+            BotLifecycleManager lifecycleManager,
+            WorldMenuClickDispatcher worldMenuClickDispatcher) {
         this.lifecycleManager =
                 Objects.requireNonNull(lifecycleManager, "lifecycleManager");
+        this.worldMenuClickDispatcher = Objects.requireNonNull(
+                worldMenuClickDispatcher, "worldMenuClickDispatcher");
     }
 
     /**
@@ -3882,8 +3898,9 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         if (click.isEmpty()) {
             return BackendResult.running(envelope);
         }
+        MenuClick nextClick = click.orElseThrow();
         AbstractContainerMenu nativeMenu = player.containerMenu;
-        if (!menuClickAllowed(nativeMenu, player, click.orElseThrow())) {
+        if (!menuClickAllowed(nativeMenu, player, nextClick)) {
             return failure(
                     envelope,
                     ActionFailureCode.PERMISSION_DENIED,
@@ -3913,18 +3930,33 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         "Ender chest private native-menu binding changed before click");
             }
         }
-        nativeMenu.clicked(
-                click.orElseThrow().slot(),
-                click.orElseThrow().button(),
-                nativeClickType(click.orElseThrow().type()),
-                player);
-        nativeMenu.broadcastChanges();
-        MenuSnapshot after = snapshotMenu(
-                player,
-                family,
-                expectedFurnaceKind,
-                expectedEnderChestInventory,
-                Optional.ofNullable(state.worldMenuBoundNativeMenu)).orElse(null);
+        MenuClickDispatchBoundary.Result dispatch =
+                MenuClickDispatchBoundary.dispatch(
+                        transaction,
+                        currentTick,
+                        () -> worldMenuClickDispatcher.dispatch(
+                                nativeMenu, nextClick, player),
+                        () -> snapshotMenu(
+                                player,
+                                family,
+                                expectedFurnaceKind,
+                                expectedEnderChestInventory,
+                                Optional.of(nativeMenu)).orElse(null));
+        if (!dispatch.mayAcknowledge()) {
+            dispatch.observedAfter().ifPresent(
+                    observed -> state.worldMenuLastSnapshot = observed);
+            return switch (dispatch.disposition()) {
+                case FAILED -> menuTransactionFailure(
+                        envelope, transaction.failure().orElseThrow());
+                case UNSAFE_REENTRANT -> failure(
+                        envelope,
+                        ActionFailureCode.UNSAFE_CONTROL_STATE,
+                        "World menu transaction changed during failed native click dispatch");
+                case ACKNOWLEDGE -> throw new IllegalStateException(
+                        "acknowledgable dispatch reached failure branch");
+            };
+        }
+        MenuSnapshot after = dispatch.observedAfter().orElse(null);
         if (!transaction.acknowledge(after, currentTick)) {
             MenuTransactionFailure failure = transaction.failure()
                     .orElseThrow();
@@ -4839,6 +4871,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             case TIMEOUT -> ActionFailureCode.DEADLINE_EXCEEDED;
             case CONSERVATION_BREACH ->
                     ActionFailureCode.UNSAFE_CONTROL_STATE;
+            case CLICK_DISPATCH_FAILED ->
+                    ActionFailureCode.UNSAFE_CONTROL_STATE;
             case INVALID_PLAN -> ActionFailureCode.INVALID_REQUEST;
             case UNEXPECTED_MENU,
                     STALE_STATE,
@@ -4847,6 +4881,18 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         };
         return MinecraftWorldInteractionBackend.failure(
                 envelope, code, "World menu transaction failed: " + failure);
+    }
+
+    private static void dispatchVanillaWorldMenuClick(
+            AbstractContainerMenu nativeMenu,
+            MenuClick click,
+            BotServerPlayer player) {
+        nativeMenu.clicked(
+                click.slot(),
+                click.button(),
+                nativeClickType(click.type()),
+                player);
+        nativeMenu.broadcastChanges();
     }
 
     /**
@@ -7296,6 +7342,20 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         "pickup expectation is outside the bounded item contract");
             }
         }
+    }
+
+    /**
+     * Exact native world-menu dispatch seam. Production binds it to
+     * {@link #dispatchVanillaWorldMenuClick(AbstractContainerMenu, MenuClick, BotServerPlayer)};
+     * package tests can deterministically throw before or after a simulated
+     * mutation without exposing a production Action/Skill escape hatch.
+     */
+    @FunctionalInterface
+    interface WorldMenuClickDispatcher {
+        void dispatch(
+                AbstractContainerMenu nativeMenu,
+                MenuClick click,
+                BotServerPlayer player);
     }
 
     /**

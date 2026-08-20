@@ -399,8 +399,11 @@ Technique。服务器生命周期只驱动一个 owner-thread `TechniqueLifecycl
   `MELEE_ATTACK` 可以走受限单击 bridge。它不补足武器选择、目标选择、撤退路线、逐击
   重观察或脱战后置条件，不能据此宣称有限自卫或高级战斗已完成；
 - 当前受限生产链已具备 TaskSensor/Reservation、Checkpoint、craft/chest/furnace/DAG 和
-  有限自卫纵切，但不表示跨 menu 统一事务或 P5 总退出门已完成。`clicked()` 故障注入、
-  生命周期通用 continuation、工具/副手、任意配方/作物/交易和广泛战斗仍未实现或未验证。
+  有限自卫纵切；P5A-M1a 另为 world-menu 的原版 `clicked()` / `broadcastChanges()` 异常建立了
+  `CLICK_DISPATCH_FAILED` fail-closed 边界：已领取 click 不会被 ACK 或重派，适配器只作一次
+  exact reread 后交给既有原版 close cleanup。该 pure Java/adapter seam 仍待 Java 21 CI 和真实
+  修改前/后抛错 GameTest；跨 menu 统一事务、生命周期通用 continuation、工具/副手、任意
+  配方/作物/交易和广泛战斗仍未实现或未验证，P5 总退出门没有完成。
 
 完整冻结合同与退出门见
 [P5 调研设计](AI_PLAYER_RESEARCH_AND_P5_DESIGN_CN.md)和
