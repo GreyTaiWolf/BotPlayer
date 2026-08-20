@@ -24,8 +24,9 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 > 作物/交易/牛奶、有限自卫、保存围栏和两阶段重启路径；仍不代表通用容器、任意配方/作物/
 > 交易、广泛战斗或完整生存能力。末影箱只使用 Bot 自己的私有账本，不读取方块实体物品；
 > 同一物理方块跨 Bot 目前保守串行。
-> 当前 P5D 只新增精确 Technique child→Action 的 opaque permit Contract；尚未有 lifecycle adapter、
-> `GroundPlace`、蓝图、材料授权或任何真实建筑世界动作。
+> 当前 P5D 已有未注册的 lifecycle-owned `TechniqueActionPort` adapter Contract：它只把精确 permit
+> 映射到既有 Action runtime 的入队、exact terminal drain 与 cancel-or-contain，不暴露 future 或 world DTO。
+> 仍没有 approved construction route、`GroundPlace`、蓝图、材料授权或任何真实建筑/红石世界动作。
 > P6-R1 是默认关闭的固定本地只读审阅往返，只有真实 owner 本地 `reviewOnly.enabled=true`
 > 时才会尝试发起固定 Provider HTTPS；回传只形成安全摘要并丢弃，绝不进入 Skill、Action 或
 > 世界动作。通用 DeepSeek/chat、通用 client-sponsored bridge 与 AI→世界执行尚未实现；R1

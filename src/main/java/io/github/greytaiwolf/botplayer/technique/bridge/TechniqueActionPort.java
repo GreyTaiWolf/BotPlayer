@@ -103,6 +103,26 @@ public abstract class TechniqueActionPort {
         return cancellation;
     }
 
+    /**
+     * Returns whether the claimed permit still belongs to its live child after
+     * an external Action ingress call returns. It never reclaims the permit.
+     */
+    protected final boolean isClaimedPermitStillActive(
+            TechniqueActionPermit permit) {
+        return coordinator.isClaimedActionPermitStillActive(route,
+                Objects.requireNonNull(permit, "permit"));
+    }
+
+    /** Exact lifecycle tick to use if post-ingress containment is required. */
+    protected final long currentActionPortTick() {
+        return coordinator.currentActionPortTick();
+    }
+
+    /** Owner-thread fence for package-private adapter cleanup and diagnostics. */
+    protected final void requireActionPortOwnerThread() {
+        coordinator.requireActionPortOwnerThread();
+    }
+
     /** Runs only after this exact permit has been irreversibly claimed once. */
     protected abstract TechniqueActionSubmission submitClaimed(
             TechniqueActionPermit permit);

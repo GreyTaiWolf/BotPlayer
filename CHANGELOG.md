@@ -18,14 +18,15 @@
   失败关闭：嵌套 session 不会在外层 lock 内再次 handoff/token/observe，外层与嵌套 session 都为
   `FAILED`，外层 queue lease 立即失效，随后统一在锁外清理。不发送 packet、不接 Lifecycle 或通用
   client-sponsored bridge；当前提交 Java 21 CI 与 Minecraft 实机验证仍待完成；
-- 新增 ADR-0025 的受限 `Technique → Action` 预绑定 Contract：只有单一 lifecycle coordinator
+- 新增 ADR-0025 的受限 `Technique → Action` 预绑定与未注册 lifecycle Action runtime adapter Contract：只有单一 lifecycle coordinator
   正在分派的精确活动 child ticket 才能签发 opaque `TechniqueActionPermit`；permit 冻结
   run/ticket/revision、generation、Action origin/kind/channel/deadline/idempotency 与低于 L0 的 priority，
   route 默认拒绝未 allowlist 的 kind，且 route-bound Port 对 permit 只允许一次 ingress。它只允许
   Port 按 permit 提交、读取 terminal evidence 或 exact cancel-or-contain，不公开 raw
-  Action/world DTO，不接现有 SafetyService 或 Action runtime adapter，不注册 construction route，
-  因而不表示 `GroundPlace`、蓝图、红石或 P5D 已实现；当前提交的 Java 21 CI 与 Minecraft 实机
-  验证仍待完成；
+  Action/world DTO，不接现有 SafetyService 或 construction route；adapter 只委派既有 Action runtime
+  的入队、full-envelope exact terminal drain 和 cancel-or-contain（同三元组不同 envelope 一律失败关闭），拒绝 ingress 使用本地 fenced receipt，
+  且同步 close/preempt 后复核 exact active child。它不注册 construction route，因而不表示 `GroundPlace`、
+  蓝图、红石或 P5D 已实现；当前提交的 Java 21 CI 与 Minecraft 实机验证仍待完成；
 - 新增 P6-C2 客户端本地终态观察 Contract：`ClientAiRequestSessionController` 可选注入、默认
   no-op 的 `ClientAiRequestTerminalObserver`，只在已登记 session 首次精确终结后交付
   `AiRequestDispatchReceipt + SUCCEEDED|FAILED|CANCELLED`。安全 receipt 不含 nonce、owner、

@@ -96,12 +96,27 @@ Technique。
 generation 关闭和停服的 richer Technique reason 会被保留在 port DTO，即使 P2 当前的取消枚举
 只能接收其较窄映射。
 
-### 5. 本提交只落地合同，不接建筑能力
+为避免只按 `botId + actionId` 的历史结果读取或取消把不同 generation/origin/idempotency 的 evidence
+误交给 permit，`BotActionRuntime` 还提供窄的 `completedOutcomeExact(ActionEnvelope)` 与
+`cancelOrContainExact(ActionEnvelope, ...)`：前者只有 retention 中的 canonical immutable envelope 与
+permit 内部 envelope 完全相等才返回 terminal；后者会在 active、ledger 和 mailbox 三处都验证完整
+envelope，不能把同一 `(botId, generation, actionId)` 的另一条请求当成安全撤回。发生不一致时
+generation 失败关闭。adapter 不读取 caller completion future。
 
-本提交不实现 `LifecycleTechniqueActionPort` adapter、不注册 `GroundPlaceTechnique`、不创建
-placement candidate、蓝图、材料预留、hotbar 固定、checkpoint、人类覆盖、navigation 或真实
-Minecraft 放置。它也不改变现有 self-defense bridge、SafetyService、Action runtime、原版死亡
-消费或任何网络/AI 路径。
+gateway 在同步返回 `ENQUEUED` 后还会重新检查该 permit 仍是原始 `WAITING_CHILDREN` run 的 exact
+`ACTIVE` child；若 close/preempt 已发生，会对同一 identity 做一次 exact containment，但仍把已入 P2
+的 child 留到真正 terminal drain。拒绝 ingress 的 permit 则缓存本地 `fencedBeforeStart` receipt，后续
+取消绝不再触碰 runtime；首次真实 cancellation receipt 按 opaque permit identity 缓存，避免第二次 close
+把 safe receipt 改写为 `TERMINAL` 或 `UNKNOWN`。route 只能在接受 terminal signal 或 reaping 后 release
+binding，并必须把 adapter 的 outstanding/unsafe generation 状态纳入自己的 safety proof。
+
+### 5. 本提交落地未注册 adapter Contract，不接建筑能力
+
+本提交实现 package-private `LifecycleTechniqueActionPort` 和只供测试触发同步 lifecycle reentry 的
+gateway seam；生产构造器仅委派已存在的 `BotActionRuntime`。它不注册 `GroundPlaceTechnique`，不改
+`BotLifecycleManager`，不创建 placement candidate、蓝图、材料预留、hotbar 固定、checkpoint、人类
+覆盖、navigation 或真实 Minecraft 放置。它也不改变现有 self-defense bridge、SafetyService、原版
+死亡消费或任何网络/AI 路径。
 
 ## 被否决方案
 
@@ -126,9 +141,8 @@ Minecraft 对象、第三方依赖或许可证义务。
 
 ## 迁移和回滚
 
-下一阶段只能在 lifecycle owner 中实现一个把 permit 映射到既有 `BotActionRuntime` 的窄 adapter，
-并复用自卫 route 的 prebind→同步重入复核→exact cancel-or-contain→owner-thread terminal drain
-模式。随后才可为已审核的 route 签发特定 Action kind 的 permit。
+下一阶段只能为已经独立审核的 route 注册这个 adapter，并复用 prebind→同步重入复核→exact
+cancel-or-contain→owner-thread terminal drain 模式。随后才可为该 route 签发特定 Action kind 的 permit。
 
 若需回滚，删除未被任何生产 route 使用的 permit/port 合同与 `TechniqueChildOrigin` 即可；现有
 Action、Skill、自卫、P2 状态机和网络协议无需迁移。
@@ -143,11 +157,14 @@ Action、Skill、自卫、P2 状态机和网络协议无需迁移。
 - public route 不能构造任意 permit，terminal/cancellation 不能跨 permit identity；
 - permit 绑定 route、一次性 ingress claim、cross-port reuse 和取消前 ingress 围栏均失败关闭；
 - `ENQUEUED` 与 terminal/安全取消语义分离。
+- adapter 映射每个 Action mailbox rejection，拒绝 ingress 后只返回本地 fenced receipt；首次 exact
+  cancellation receipt 缓存并保持绑定到 terminal/reap；unsafe receipt 使 generation 继续不安全；
+- synchronous generation close/L0 preempt 在 Action ingress 内发生时只 containment 同一 exact identity
+  一次，迟到 terminal 不得复活已 reaped child；不同 immutable envelope 的同 action ID terminal 不得
+  作为 permit evidence 或安全 cancellation receipt。
 
-### 后续 adapter 与 NeoForge
+### 后续 construction route 与 NeoForge
 
-- synchronous generation close、L0 preempt 和授权撤销发生在 Action ingress 期间时，只能 exact
-  cancel-or-contain 一次，迟到 SUCCESS 不能让 Technique 成功；
 - 原版死亡消费前先关闭 Technique，且没有 exact child cleanup proof 时 generation 不静止；
 - 未来单块 `AimAndPlaceBlock` 的真实 GameTest 覆盖 target/support/material drift、取消、换代和
   safety；之后再做真实客户端、独立专用服和 soak。

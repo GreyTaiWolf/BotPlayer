@@ -368,41 +368,42 @@ public final class TechniqueLifecycleCoordinator {
         TechniqueRoute checkedRoute = requireRegisteredRoute(route);
         TechniqueActionPermit checkedPermit = Objects.requireNonNull(permit,
                 "permit");
-        if (!checkedPermit.belongsTo(checkedRoute)
-                || pendingChildSubmissionRoute != checkedRoute
-                || pendingChildPermit != checkedPermit
-                || pendingChildSubmissionTicket == null
-                || !pendingChildSubmissionTicket.ticketId().equals(
-                        checkedPermit.techniqueChildTicketId())
-                || !pendingChildSubmissionTicket.techniqueRunId().equals(
-                        checkedPermit.techniqueRunId())
-                || pendingChildSubmissionTicket.revision()
-                        != checkedPermit.techniqueChildRevision()) {
-            return false;
-        }
-        TechniqueRunView current = runtime.inspectRun(
-                checkedPermit.techniqueRunId()).orElse(null);
-        if (current == null || current.state()
-                != io.github.greytaiwolf.botplayer.technique.runtime
-                        .TechniqueState.WAITING_CHILDREN
-                || !current.botId().equals(checkedPermit.botId())
-                || current.botGeneration() != checkedPermit.botGeneration()
-                || current.childTickets().stream().noneMatch(ticket ->
-                        ticket.ticketId().equals(
-                                checkedPermit.techniqueChildTicketId())
-                                && ticket.revision()
-                                        == checkedPermit.techniqueChildRevision()
-                                && ticket.state()
-                                        == io.github.greytaiwolf.botplayer.technique.runtime
-                                                .TechniqueChildState.ACTIVE)) {
-            return false;
-        }
-        return checkedPermit.claimForActionIngress();
+        return isActionPermitDispatchCurrent(checkedRoute, checkedPermit)
+                && checkedPermit.claimForActionIngress();
+    }
+
+    /**
+     * Rechecks a permit after Action ingress returns without consuming it again.
+     *
+     * <p>An Action gateway is allowed to synchronously re-enter lifecycle code
+     * after it has accepted the exact envelope. The adapter uses this narrow
+     * query to detect a generation close or L0 preemption before it lets the
+     * route retain the child binding. It deliberately remains package-private:
+     * routes cannot poll arbitrary runtime state or revive a retained permit.
+     */
+    boolean isClaimedActionPermitStillActive(TechniqueRoute route,
+            TechniqueActionPermit permit) {
+        requireOwnerThread();
+        TechniqueRoute checkedRoute = requireRegisteredRoute(route);
+        TechniqueActionPermit checkedPermit = Objects.requireNonNull(permit,
+                "permit");
+        return checkedPermit.ingressWasClaimed()
+                && isActionPermitDispatchCurrent(checkedRoute, checkedPermit);
     }
 
     /** Owner-thread fence shared by every permit port operation. */
     void requireActionPortOwnerThread() {
         requireOwnerThread();
+    }
+
+    /** Current owner-thread lifecycle tick for exact post-ingress containment. */
+    long currentActionPortTick() {
+        requireOwnerThread();
+        if (lastObservedTick < 0L) {
+            throw new IllegalStateException(
+                    "Technique Action port was used before lifecycle tick observation");
+        }
+        return lastObservedTick;
     }
 
     /** Package-private exact runtime view for route-side identity checks only. */
@@ -504,6 +505,37 @@ public final class TechniqueLifecycleCoordinator {
             return;
         }
         ticketRoute.route().cancelChild(checkedTicket, checkedReason);
+    }
+
+    private boolean isActionPermitDispatchCurrent(TechniqueRoute route,
+            TechniqueActionPermit permit) {
+        if (!permit.belongsTo(route)
+                || pendingChildSubmissionRoute != route
+                || pendingChildPermit != permit
+                || pendingChildSubmissionTicket == null
+                || !pendingChildSubmissionTicket.ticketId().equals(
+                        permit.techniqueChildTicketId())
+                || !pendingChildSubmissionTicket.techniqueRunId().equals(
+                        permit.techniqueRunId())
+                || pendingChildSubmissionTicket.revision()
+                        != permit.techniqueChildRevision()) {
+            return false;
+        }
+        TechniqueRunView current = runtime.inspectRun(
+                permit.techniqueRunId()).orElse(null);
+        return current != null && current.state()
+                == io.github.greytaiwolf.botplayer.technique.runtime
+                        .TechniqueState.WAITING_CHILDREN
+                && current.botId().equals(permit.botId())
+                && current.botGeneration() == permit.botGeneration()
+                && current.childTickets().stream().anyMatch(ticket ->
+                        ticket.ticketId().equals(
+                                permit.techniqueChildTicketId())
+                                && ticket.revision()
+                                        == permit.techniqueChildRevision()
+                                && ticket.state()
+                                        == io.github.greytaiwolf.botplayer.technique.runtime
+                                                .TechniqueChildState.ACTIVE);
     }
 
     private TechniqueRoute requireRegisteredRoute(TechniqueRoute route) {

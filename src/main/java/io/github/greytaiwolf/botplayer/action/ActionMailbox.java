@@ -101,6 +101,34 @@ public final class ActionMailbox {
       return Optional.of(exactSubmission);
    }
 
+   /**
+    * Atomically removes one queue entry only when its full immutable envelope
+    * matches the caller's expected Action identity.
+    *
+    * <p>P5D Technique permits retain more authority than the legacy P5C
+    * triple: a same bot/generation/action-id collision with another origin or
+    * idempotency key is not evidence that the permitted Action was retracted.
+    */
+   synchronized Optional<ActionMailbox.SubmitCommand> removeExactQueuedForContainment(
+      ActionEnvelope expected
+   ) {
+      ActionEnvelope required = Objects.requireNonNull(expected, "expected");
+      ActionMailbox.SubmitCommand exactSubmission = this.submissions
+         .stream()
+         .filter(submission -> submission.envelope().equals(required))
+         .findFirst()
+         .orElse(null);
+      if (exactSubmission == null) {
+         return Optional.empty();
+      }
+      if (!this.submissions.remove(exactSubmission)) {
+         throw new IllegalStateException(
+            "Exact queued action disappeared during containment"
+         );
+      }
+      return Optional.of(exactSubmission);
+   }
+
    private synchronized ActionMailbox.Cancellation cancel(
       UUID botId, long containmentGeneration, UUID actionId,
       ActionCancellationReason reason

@@ -3,8 +3,8 @@
 > 状态：开发流程历史基线 v0.1；当前 P5/P6 进度以实施状态页和连续集成分支为准。当前
 > `agent/p5-p6-next` 上的单 `TechniqueLifecycleCoordinator` 是 ADR-0017 的共享 Contract：
 > 它把已有有限自卫窄 route 迁到一个 lifecycle-owned runtime；ADR-0025 另增加精确 child 的
-> opaque `TechniqueActionPermit` 合同。两者均未实现 lifecycle Action adapter、P5D 建筑/红石，
-> 也不放宽本文件的 P6/Technique 并行边界。
+> opaque `TechniqueActionPermit` 合同；另有未注册的 lifecycle Action runtime adapter Contract，
+> 但仍未实现 P5D 建筑/红石，也不放宽本文件的 P6/Technique 并行边界。
 >
 > 更新日期：2026-08-07
 >
@@ -237,11 +237,12 @@ abstract class TechniqueActionPort {
 ADR-0025 已编码 permit 与 DTO 的纯 Java 合同：只有 coordinator 在精确活动 child dispatch 中
 可以签发 permit，它冻结 run/ticket/revision、generation、origin、kind/channel、deadline、idempotency
 和低于 L0 的 priority；route 必须显式 allowlist kind，Port 以 route-bound final 方法一次性 claim
-permit。实现 Adapter 仍由 action/runtime 集成层提供，当前**尚未实现**，所以
-该合同不允许 Technique 提交任何 Action 或世界副作用。Port 的外部可见 DTO 只包含 ID、generation、
-ActionKind、状态、失败码、terminal evidence 和 revision；原始 Action payload 保持在 lifecycle
-adapter 内部。permit 的一次 claim 必须仍在签发它的原始 child dispatch 调用栈和 lifecycle owner
-thread 内；child 返回、L0 抢占、generation close 或 tick seal 后的 retained permit 一律拒绝。
+permit。已有 package-private `LifecycleTechniqueActionPort` 只把已签发 permit 转给现有 P2 Action
+runtime，并只在 owner-thread drain 读取 exact-envelope terminal；它不注册 route，也不向 Technique
+公开 Action、future 或世界副作用。Port 的外部可见 DTO 只包含 ID、generation、ActionKind、状态、
+失败码、terminal evidence 和 revision；原始 Action payload 保持在 lifecycle adapter 内部。permit 的
+一次 claim 必须仍在签发它的原始 child dispatch 调用栈和 lifecycle owner thread 内；child 返回、L0
+抢占、generation close 或 tick seal 后的 retained permit 一律拒绝。
 
 ### 5.2 PT 只依赖 Navigation Port
 

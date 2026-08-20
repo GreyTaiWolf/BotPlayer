@@ -276,6 +276,99 @@ public final class BotActionRuntime {
             currentTick
          );
       }
+      return this.containQueuedExact(queued, requested, currentTick);
+   }
+
+   /**
+    * Cancels one full immutable Action envelope without collapsing a
+    * same-triple collision into a safe receipt.
+    *
+    * <p>This is intentionally narrower than the legacy triple-based
+    * containment API. A lifecycle-owned Technique permit must prove that its
+    * own origin, idempotency key, deadline and request body were removed; a
+    * different envelope sharing an action id is unsafe and quarantines the
+    * requested generation.
+    */
+   public BotActionRuntime.CancellationContainmentResult cancelOrContainExact(
+      ActionEnvelope expected,
+      ActionCancellationReason reason,
+      long currentTick
+   ) {
+      this.assertOwnerThread();
+      ActionEnvelope required = Objects.requireNonNull(expected, "expected");
+      Objects.requireNonNull(reason, "reason");
+      if (currentTick < 0L) {
+         throw new IllegalArgumentException("currentTick must not be negative");
+      }
+
+      ActionCancellationReceipt.Identity requested = this.cancellationIdentity(
+         required
+      );
+      BotActionRuntime.Ticket active = this.active.get(
+         new BotActionRuntime.ActionKey(required.botId(), required.actionId())
+      );
+      if (active != null) {
+         if (!required.equals(active.envelope)) {
+            return this.containUnsafeCancellation(
+               this.envelopeMismatchReceipt(requested, active.envelope),
+               currentTick
+            );
+         }
+         return this.cancelOrContain(required.botId(), required.botGeneration(),
+            required.actionId(), reason, currentTick);
+      }
+
+      Optional<ActionEnvelope> canonical;
+      try {
+         canonical = this.ledger.canonicalEnvelope(required.botId(),
+            required.actionId());
+      } catch (RuntimeException exception) {
+         return this.containUnsafeCancellation(
+            ActionCancellationReceipt.unsafe(required.botId(),
+               required.botGeneration(), required.actionId(),
+               ActionCancellationReceipt.Disposition.UNKNOWN),
+            currentTick
+         );
+      }
+      if (canonical.isPresent()) {
+         ActionEnvelope observed = canonical.orElseThrow();
+         if (!required.equals(observed)) {
+            return this.containUnsafeCancellation(
+               this.envelopeMismatchReceipt(requested, observed), currentTick
+            );
+         }
+         return this.cancelOrContain(required.botId(), required.botGeneration(),
+            required.actionId(), reason, currentTick);
+      }
+
+      ActionMailbox.SubmitCommand queued;
+      try {
+         queued = this.mailbox.removeExactQueuedForContainment(required)
+            .orElse(null);
+      } catch (RuntimeException exception) {
+         return this.containUnsafeCancellation(
+            ActionCancellationReceipt.unsafe(required.botId(),
+               required.botGeneration(), required.actionId(),
+               ActionCancellationReceipt.Disposition.UNKNOWN),
+            currentTick
+         );
+      }
+      if (queued == null) {
+         return this.containUnsafeCancellation(
+            ActionCancellationReceipt.unsafe(required.botId(),
+               required.botGeneration(), required.actionId(),
+               ActionCancellationReceipt.Disposition.UNKNOWN),
+            currentTick
+         );
+      }
+      return this.containQueuedExact(queued, requested, currentTick);
+   }
+
+   private BotActionRuntime.CancellationContainmentResult containQueuedExact(
+      ActionMailbox.SubmitCommand queued,
+      ActionCancellationReceipt.Identity requested,
+      long currentTick
+   ) {
       BotActionRuntime.Ticket alias = this.activeCanonicalForAlias(
          queued.envelope()
       );
@@ -312,7 +405,8 @@ public final class BotActionRuntime {
             );
             return new BotActionRuntime.CancellationContainmentResult(
                ActionCancellationReceipt.exactQueuedRetracted(
-                  botId, botGeneration, actionId
+                  requested.botId(), requested.botGeneration(),
+                  requested.actionId()
                )
             );
          }
@@ -328,7 +422,7 @@ public final class BotActionRuntime {
          };
          Optional<ActionCancellationReceipt.Identity> observed =
             begin.canonicalActionId().flatMap(canonicalActionId ->
-               this.ledger.canonicalEnvelope(botId, canonicalActionId)
+               this.ledger.canonicalEnvelope(requested.botId(), canonicalActionId)
                   .map(this::cancellationIdentity)
             );
          return this.containUnsafeCancellation(
@@ -341,12 +435,24 @@ public final class BotActionRuntime {
          this.publishDetachedUnsafeQueued(queued, currentTick);
          return this.containUnsafeCancellation(
             ActionCancellationReceipt.unsafe(
-               botId, botGeneration, actionId,
+               requested.botId(), requested.botGeneration(), requested.actionId(),
                ActionCancellationReceipt.Disposition.UNKNOWN
             ),
             currentTick
          );
       }
+   }
+
+   private ActionCancellationReceipt envelopeMismatchReceipt(
+      ActionCancellationReceipt.Identity requested,
+      ActionEnvelope observed
+   ) {
+      return new ActionCancellationReceipt(
+         requested,
+         Optional.of(this.cancellationIdentity(observed)),
+         ActionCancellationReceipt.Disposition.UNKNOWN,
+         Optional.empty()
+      );
    }
 
    private BotActionRuntime.Ticket activeCanonicalForAlias(
@@ -1156,6 +1262,27 @@ public final class BotActionRuntime {
    public Optional<ActionOutcome> completedOutcome(UUID var1, UUID var2) {
       this.assertOwnerThread();
       return this.ledger.completedOutcome(var1, var2);
+   }
+
+   /**
+    * Returns a terminal outcome only when the retained ledger envelope is the
+    * exact immutable Action identity supplied by a lifecycle-owned caller.
+    *
+    * <p>{@link #completedOutcome(UUID, UUID)} deliberately supports legacy
+    * idempotency aliases. A Technique child cannot use that broader lookup:
+    * an action-id collision across generations or origins must never become a
+    * terminal receipt for a different opaque permit.
+    */
+   public Optional<ActionOutcome> completedOutcomeExact(ActionEnvelope expected) {
+      this.assertOwnerThread();
+      ActionEnvelope required = Objects.requireNonNull(expected, "expected");
+      Optional<ActionEnvelope> canonical = this.ledger.canonicalEnvelope(
+         required.botId(), required.actionId()
+      );
+      if (canonical.isEmpty() || !required.equals(canonical.orElseThrow())) {
+         return Optional.empty();
+      }
+      return this.ledger.completedOutcome(required.botId(), required.actionId());
    }
 
    public List<ActionTransition> transitionHistory(int var1) {

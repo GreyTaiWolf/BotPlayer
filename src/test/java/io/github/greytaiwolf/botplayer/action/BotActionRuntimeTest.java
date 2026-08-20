@@ -205,6 +205,100 @@ class BotActionRuntimeTest {
    }
 
    @Test
+   void fullEnvelopeContainmentDoesNotRetractAPrecedingSameTripleCollision() {
+      BotActionRuntimeTest.ScriptedBackend backend =
+         new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime runtime = runtime(backend);
+      ActionEnvelope competing = envelope(
+         FIRST_BOT, 1L, 711L, "full-exact-competing",
+         new LookAtAction(1.0, 2.0, 3.0), 100L, 20
+      );
+      ActionEnvelope expected = envelope(
+         FIRST_BOT, 1L, 711L, "full-exact-target",
+         new StopAction(), 100L, 20
+      );
+      ActionMailbox.Submission competingSubmission = runtime.submit(
+         competing, ActionPriority.OWNER_TASK
+      );
+      ActionMailbox.Submission expectedSubmission = runtime.submit(
+         expected, ActionPriority.OWNER_TASK
+      );
+
+      BotActionRuntime.CancellationContainmentResult result =
+         runtime.cancelOrContainExact(expected, ActionCancellationReason.REQUESTED,
+            1L);
+
+      Assertions.assertTrue(result.safelyRetracted());
+      Assertions.assertEquals(ActionState.CANCELLED,
+         outcome(expectedSubmission).state());
+      runtime.tick(1L);
+      Assertions.assertEquals(ActionState.CANCELLED,
+         runtime.completedOutcomeExact(expected).orElseThrow().state());
+      Assertions.assertEquals(0, backend.startCount(expected.actionId()));
+      Assertions.assertTrue(future(competingSubmission).toCompletableFuture()
+         .isDone(), "the competing collision must not remain eligible to start");
+   }
+
+   @Test
+   void fullEnvelopeContainmentFailsClosedWhenTheSameTripleIsAlreadyCanonical() {
+      BotActionRuntimeTest.ScriptedBackend backend =
+         new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime runtime = runtime(backend);
+      ActionEnvelope canonical = envelope(
+         FIRST_BOT, 1L, 712L, "full-exact-canonical",
+         new StopAction(), 100L, 20
+      );
+      runtime.submit(canonical, ActionPriority.OWNER_TASK);
+      runtime.tick(1L);
+      ActionEnvelope expected = envelope(
+         FIRST_BOT, 1L, 712L, "full-exact-other",
+         new LookAtAction(4.0, 5.0, 6.0), 100L, 20
+      );
+
+      BotActionRuntime.CancellationContainmentResult result =
+         runtime.cancelOrContainExact(expected, ActionCancellationReason.REQUESTED,
+            2L);
+
+      Assertions.assertFalse(result.safelyRetracted());
+      Assertions.assertEquals(ActionCancellationReceipt.Disposition.UNKNOWN,
+         result.receipt().disposition());
+      Assertions.assertFalse(runtime.isGenerationSafe(FIRST_BOT, 1L));
+   }
+
+   @Test
+   void fullEnvelopeContainmentFailsClosedWhenAnotherEnvelopeIsActiveBeforeStart() {
+      BotActionRuntimeTest.ScriptedBackend backend =
+         new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime runtime = runtime(backend);
+      ActionEnvelope active = envelope(
+         FIRST_BOT, 1L, 713L, "full-exact-active",
+         new StopAction(), 100L, 20
+      );
+      ActionEnvelope expected = envelope(
+         FIRST_BOT, 1L, 713L, "full-exact-active-other",
+         new LookAtAction(7.0, 8.0, 9.0), 100L, 20
+      );
+      AtomicReference<BotActionRuntime.CancellationContainmentResult> receipt =
+         new AtomicReference<>();
+      backend.onValidate(active.actionId(), () -> receipt.set(
+         runtime.cancelOrContainExact(expected, ActionCancellationReason.REQUESTED,
+            1L)
+      ));
+      ActionMailbox.Submission submission = runtime.submit(active,
+         ActionPriority.OWNER_TASK);
+
+      runtime.tick(1L);
+
+      Assertions.assertEquals(ActionCancellationReceipt.Disposition.UNKNOWN,
+         receipt.get().receipt().disposition());
+      Assertions.assertFalse(receipt.get().safelyRetracted());
+      Assertions.assertEquals(0, backend.startCount(active.actionId()));
+      Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE,
+         outcome(submission).failureCode());
+      Assertions.assertFalse(runtime.isGenerationSafe(FIRST_BOT, 1L));
+   }
+
+   @Test
    void cancelOrContainFencesAnExactActiveTicketBeforeBackendStart() {
       BotActionRuntimeTest.ScriptedBackend backend = new BotActionRuntimeTest.ScriptedBackend();
       BotActionRuntime runtime = runtime(backend);
