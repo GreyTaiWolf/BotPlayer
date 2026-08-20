@@ -7,6 +7,14 @@
 
 ### 新增
 
+- 新增 ADR-0035 的 P5D-A3 pure Java candidate construction-site survey/assessment Contract：一个 exact
+  `ConstructionSiteBinding` 的所有真实 Blueprint target 必须恰好一次 canonical observation，`UNKNOWN`、
+  `EMPTY` 与带 fingerprint 的 `OCCUPIED` 严格配对；assessment 只能从 complete survey 重算，已知 occupied
+  mismatch 优先于 unknown，并按 preserve/temporary-ownership/human-confirmation policy fail-closed。
+  `ACCEPTED_CANDIDATE` 只表示 caller-supplied 有界 evidence 的结构兼容，不是 loaded-world fact、accepted
+  site、lease、ownership proof、human confirmation 或执行权限；它不读 Minecraft、检查保护/危险、预留材料、
+  placement、Technique、Action、Skill、checkpoint 或红石，P5D 仍未实现，当前 Java 21 CI 与 Minecraft 实机
+  验证仍待完成；
 - 新增 ADR-0034 的 P6-A1b 受限 physical-retry hook：`RetryingAiProvider` 新增显式
   `completeBudgeted(...)`，只接受完整可信 `AiRetryAttemptBudgetContext`，并在每次真实
   `delegate.complete(...)` 前 fresh reserve、final cancel/deadline/circuit check 与 settle。只有

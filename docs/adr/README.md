@@ -53,6 +53,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0032](0032-physical-retry-attempt-budget-context.md) | 物理重试尝试预算上下文 | Accepted | P6-A1a 固定完整 trusted budget context 与 upstream/retry/TTL 最早 deadline；ADR-0034 的 opt-in hook 使用它，仍无 production Scheduler/client bridge |
 | [ADR-0033](0033-candidate-construction-site-binding-contract.md) | 候选施工站点绑定 | Accepted | P5D-A2 只将 exact WorkPlan/Blueprint 绑定到 dimension+anchor 的派生 bounds 与已知 cell target；不 survey/accepted/lease/material/placement/world，P5D 仍未实现 |
 | [ADR-0034](0034-budgeted-physical-retry-hook.md) | 受限物理重试预算调用点 | Accepted | P6-A1b 只为显式 `RetryingAiProvider.completeBudgeted(...)` 在每个 physical delegate retry 前 reserve/settle；普通 SPI、Scheduler、client bridge、真实计费与 P6 总完成仍未接线 |
+| [ADR-0035](0035-bounded-construction-site-survey-assessment-contract.md) | 有界候选施工站点调查与评估 | Accepted | P5D-A3 只对 caller-supplied exact target evidence 作 fail-closed 纯 Java assessment；`ACCEPTED_CANDIDATE` 不是 world read、accepted site、lease、ownership/human proof 或 placement，P5D 仍未实现 |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
@@ -147,6 +148,11 @@ billing、聊天或 AI→Skill/world execution。
 ADR-0033 只为 P5D future survey/lease/placement 增加 candidate `building.site` DTO：完整 WorkPlan
 与 dimension+anchor 派生 exact bounds，target 只允许 Blueprint 中真实存在的 offset。它不是 site survey、
 accepted area、material reservation、checkpoint、Technique、Action、Skill 或世界写入。
+
+ADR-0035 只在 ADR-0033 exact binding 上增加 complete canonical target evidence 的纯 Java survey 与
+derived-only assessment：`UNKNOWN` 不会被猜成 empty，known occupied mismatch 高于 unknown，三类 Blueprint
+replace policy 都产生 fail-closed finding。`ACCEPTED_CANDIDATE` 只表示 supplied evidence 与 Blueprint
+结构相容，不是 loaded world、accepted site、lease、ownership/human confirmation 或真实施工许可。
 
 ## 新 ADR 文件规则
 
