@@ -416,6 +416,14 @@ public final class P5WheatFarmingGameTests {
                             ActionCancellationReason reason) {
                         bot.manager().cancelAction(botId, actionId, reason);
                     }
+
+                    @Override
+                    public void cancelStrictNaturalUse(
+                            ActionEnvelope envelope,
+                            ActionCancellationReason reason) {
+                        throw new AssertionError(
+                                "Wheat fixture must not cancel a strict natural item use");
+                    }
                 };
         MinecraftWheatFarmingSkillNodeHandler.Resolver resolver =
                 (botId, generation) -> bot.player().getUUID().equals(botId)

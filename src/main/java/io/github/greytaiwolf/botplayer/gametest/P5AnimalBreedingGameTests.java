@@ -460,6 +460,14 @@ public final class P5AnimalBreedingGameTests {
                     ActionCancellationReason reason) {
                 bot.manager().cancelAction(botId, actionId, reason);
             }
+
+            @Override
+            public void cancelStrictNaturalUse(
+                    ActionEnvelope envelope,
+                    ActionCancellationReason reason) {
+                throw new AssertionError(
+                        "Animal fixture must not cancel a strict natural item use");
+            }
         };
     }
 

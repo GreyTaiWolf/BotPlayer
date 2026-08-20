@@ -1203,6 +1203,14 @@ class MinecraftProductionSkillNodeHandlerTest {
             // 该测试不触发取消；handler 的取消边界由 ActionBacked 单独覆盖。
         }
 
+        @Override
+        public void cancelStrictNaturalUse(
+                ActionEnvelope envelope,
+                ActionCancellationReason reason) {
+            throw new AssertionError(
+                    "Production test gateway must not cancel a strict natural item use");
+        }
+
         private void completeSuccess() {
             completeSuccess(List.of(new ActionEvidence("production.receipt",
                     "ok")));
@@ -1248,6 +1256,14 @@ class MinecraftProductionSkillNodeHandlerTest {
                 UUID actionId,
                 ActionCancellationReason reason) {
             cancelledActionIds.add(actionId);
+        }
+
+        @Override
+        public void cancelStrictNaturalUse(
+                ActionEnvelope envelope,
+                ActionCancellationReason reason) {
+            throw new AssertionError(
+                    "Production test gateway must not cancel a strict natural item use");
         }
 
         private void completeNextSuccess(List<ActionEvidence> evidence) {

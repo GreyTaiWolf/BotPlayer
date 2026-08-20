@@ -742,6 +742,14 @@ public final class BotLifecycleManager {
                             ActionCancellationReason reason) {
                         cancelAction(botId, actionId, reason);
                     }
+
+                    @Override
+                    public void cancelStrictNaturalUse(
+                            ActionEnvelope envelope,
+                            ActionCancellationReason reason) {
+                        BotLifecycleManager.this.cancelStrictNaturalUse(
+                                envelope, reason);
+                    }
                 };
         registerP5ANodeHandler(
                 SurvivalSkillService.EQUIP_BASIC_ARMOR,
@@ -1421,6 +1429,119 @@ public final class BotLifecycleManager {
     public ActionMailbox.Cancellation cancelAction(
             UUID botId, UUID actionId, ActionCancellationReason reason) {
         return actionRuntime.cancel(botId, actionId, reason);
+    }
+
+    /**
+     * Cancels one strict natural {@code UseItem} action through its full
+     * immutable envelope and exposes it to the pre-consumption mixin.
+     *
+     * <p>The ordinary action mailbox drains after bot {@code doTick()}, so an
+     * accepted cancellation alone is too late for the final use tick. This is
+     * intentionally not a general action cancellation API: the full envelope
+     * is required to reject idempotent aliases, and only a strict natural
+     * {@code UseItem} may arm the native-use fence. If fence matching or
+     * cancellation ingress is unsafe, the whole generation is synchronously
+     * quarantined before this method returns.
+     */
+    public ActionMailbox.Cancellation cancelStrictNaturalUse(
+            ActionEnvelope expected,
+            ActionCancellationReason reason) {
+        requireServerThread();
+        ActionEnvelope required = Objects.requireNonNull(expected, "expected");
+        Objects.requireNonNull(reason, "reason");
+        requireStrictNaturalUseEnvelope(required);
+
+        MinecraftActionBackend.StrictUseCancellationFenceStatus fenceStatus;
+        try {
+            fenceStatus = minecraftActionBackend
+                    .fenceStrictNativeItemUseCancellation(required);
+        } catch (RuntimeException exception) {
+            quarantineRejectedSkillCancellation(required,
+                    "strict native-use fence threw", exception);
+            throw exception;
+        }
+        if (fenceStatus
+                == MinecraftActionBackend.StrictUseCancellationFenceStatus
+                        .ACTIVE_STRICT_USE_MISMATCH) {
+            quarantineRejectedSkillCancellation(required,
+                    "active strict native-use envelope mismatched");
+        }
+
+        ActionMailbox.Cancellation cancellation;
+        try {
+            cancellation = actionRuntime.cancelExact(required, reason);
+        } catch (RuntimeException exception) {
+            quarantineRejectedSkillCancellation(required,
+                    "exact cancellation threw", exception);
+            throw exception;
+        }
+        if (cancellation.status()
+                != ActionMailbox.CancellationStatus.ENQUEUED) {
+            quarantineRejectedSkillCancellation(required,
+                    "exact cancellation was rejected: "
+                            + cancellation.status());
+        }
+        return cancellation;
+    }
+
+    private static void requireStrictNaturalUseEnvelope(
+            ActionEnvelope envelope) {
+        if (!(envelope.action() instanceof WorldInteractionAction action)
+                || !(action.spec() instanceof WorldInteractionActionSpec
+                        .UseItem useItem)
+                || useItem.mode()
+                        != WorldInteractionActionSpec.ItemUseMode
+                                .FINISH_NATURALLY
+                || useItem.strictPreconditions().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Strict native-use cancellation requires a strict natural UseItem envelope");
+        }
+    }
+
+    private void quarantineRejectedSkillCancellation(
+            ActionEnvelope envelope,
+            String reason) {
+        quarantineRejectedSkillCancellation(envelope, reason, null);
+    }
+
+    private void quarantineRejectedSkillCancellation(
+            ActionEnvelope envelope,
+            String reason,
+            RuntimeException cause) {
+        ActionEnvelope required = Objects.requireNonNull(envelope, "envelope");
+        quarantineRejectedSkillCancellation(required.botId(),
+                required.botGeneration(), required.actionId(), reason, cause);
+    }
+
+    private void quarantineRejectedSkillCancellation(
+            UUID botId,
+            long botGeneration,
+            UUID actionId,
+            String reason) {
+        quarantineRejectedSkillCancellation(botId, botGeneration, actionId,
+                reason, null);
+    }
+
+    private void quarantineRejectedSkillCancellation(
+            UUID botId,
+            long botGeneration,
+            UUID actionId,
+            String reason,
+            RuntimeException cause) {
+        try {
+            BotActionRuntime.GenerationQuarantineResult result = actionRuntime
+                    .quarantineBotGenerationNow(botId, botGeneration,
+                            server.getTickCount());
+            if (!result.containmentConfirmed()) {
+                BotPlayer.LOGGER.error(
+                        "Skill cancellation containment is unsafe for bot {} generation {} action {}: {}",
+                        botId, botGeneration, actionId, reason, cause);
+            }
+        } catch (RuntimeException quarantineFailure) {
+            BotPlayer.LOGGER.error(
+                    "Skill cancellation quarantine threw for bot {} generation {} action {}: {}",
+                    botId, botGeneration, actionId, reason, quarantineFailure);
+        }
     }
 
     public void recordSafetyDamage(

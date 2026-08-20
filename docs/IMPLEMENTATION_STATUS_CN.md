@@ -50,6 +50,13 @@ Build #362 已自动覆盖基线中的 P5A/P5B/P5C 受限生产 DAG、白名单�
 末影箱只隔离每个 Bot 的私有账本，同一物理方块仍按坐标串行；跨 menu 通用事务、任意配方/
 作物/交易、工具/副手、广泛战斗、独立专用服和多 Bot soak 仍未完成或未验证。
 
+当前分支另把 strict `UseItem` 的 Skill 取消延伸到原版消费边界：完整不可变
+`ActionEnvelope` 的取消会在 Action mailbox 的晚期 drain 前标记活动物品使用，Mixin 在
+`updateUsingItem` HEAD fail-closed；同 generation idempotent alias、围栏不匹配或取消 ingress
+失败都会同步隔离同一 generation，且已接受取消不会与快照漂移共用失败标记。新增正常和取消
+lane 饱和的最后一 Tick `PlayerTickEvent.Pre` 取消牛奶 GameTest 源码回归，但本增量尚未获得
+Java 21 CI 或 Minecraft 实机运行结果。
+
 主动进食当前只接受无剩余容器、无声明有害效果且无自定义完成逻辑的原版基础 `Item`
 食物；可疑炖菜、紫颂果、蜂蜜瓶和模组食物保守拒绝，不能据此宣称通用食物支持。
 业务成功由 `UseItem` 验证完成当刻冻结的 item count / food level 证据判定，不依赖下一
@@ -349,7 +356,7 @@ screen、独立专用服和长时间 soak 是明确保留的专项验证，不�
 | P3 | 感知、语义事件、世界模型、玩家活动理解 | 自动化退出门已通过；客户端、独立专用服与 soak 未验证 |
 | P4 | 导航、安全反射、动态重规划、玩家规则兼容 | 自动化退出门已通过；复杂移动、专用服、保护模组与 soak 未验证 |
 | P5A | 技能 FSM、首条生存闭环、最小原版世界容器驱动 | Build #362 已自动验证受限资源—制作—存放 DAG、保存围栏和两阶段重启；跨 menu 通用事务、工具/副手与独立专用服仍未完成或未验证 |
-| P5B | 广泛原版容器/工作站、制作、生产和日常生活 | Build #362 已自动验证严格白名单容器、工作站边界、Bot 私有末影箱、受限 wheat/甘蔗收获、牛繁殖、单笔村民交易和牛奶解毒纵切；末影箱只承诺账本隔离与守恒取消，不承诺逐槽回滚或同方块跨 Bot 并行。这不等于通用容器、任意配方/作物/交易或自动药物策略，真实客户端与专用服仍待验证 |
+| P5B | 广泛原版容器/工作站、制作、生产和日常生活 | Build #362 已自动验证严格白名单容器、工作站边界、Bot 私有末影箱、受限 wheat/甘蔗收获、牛繁殖、单笔村民交易和牛奶解毒纵切；末影箱只承诺账本隔离与守恒取消，不承诺逐槽回滚或同方块跨 Bot 并行。当前分支的 strict `UseItem` 完整-envelope 最后 Tick 取消围栏已有正常/取消 lane 饱和的源码 GameTest 回归，但仍待 Java 21 CI。这不等于通用容器、任意配方/作物/交易或自动药物策略，真实客户端与专用服仍待验证 |
 | P5C | 运输、游戏进程和高级战斗 | Build #362 已自动验证旧有的、有限自卫会话授权的单次 `MELEE_ATTACK` 窄 bridge；当前分支已把该路由迁入单个 owner-thread `TechniqueLifecycleCoordinator` 的 Contract，并让 self-defense terminal 查询与取消都按完整 immutable `ActionEnvelope` 收口（同三元组的 foreign envelope 不能成为 child evidence 或安全回执），但这些增量仍待 Java 21 CI。目标选择、移动、装备、重试、连击、泛化 Technique 路由和其余 P5C 能力仍未实现 |
 | P5D | 建筑与红石 | 未实现；ADR-0025 已有纯 Java `TechniqueActionPermit`/Port 与未注册的 `LifecycleTechniqueActionPort` adapter Contract：已注册 route 必须在精确活动 child dispatch 中冻结 run/ticket/revision、Action origin/kind/channel/deadline/idempotency 和低于 L0 的 priority；adapter 只转调既有 `BotActionRuntime` 的入队、exact-envelope terminal drain 与 exact cancel-or-contain，拒绝 ingress 使用本地 fenced receipt，且同步 close/preempt 后复核 exact active child。其来自 P2 的 cancellation receipt 仅随 live opaque permit binding 保留，terminal/reap release 会一并清除，历史回执不能淘汰 live safety proof；只有从未入 P2 的 rejected-ingress fenced receipt 可按 opaque permit 有界保留。ADR-0029 另加入 1–256 cell、有界 offset/span、重复拒绝、canonical content hash 与按 blockId/permanent-temporary 聚合的纯 Java `Blueprint` Contract；它是无 modules/`PostPlacementSemantic` 的窄 schema-v1，不把 blockId 映射为背包 item，且没有 NBT、材料预留、site/work package、placement candidate、checkpoint/human override、真实方块放置或红石。route kind allowlist 与 route-bound one-shot permit 防止泛化/重复 ingress；当前增量仍待 Java 21 CI |
 | P6 | DeepSeek、聊天、Tool Firewall、预算 | 部分编码：Provider/故障边界、codec/firewall、上下文、session 修复与 R1 固定只读审阅往返已由 Build #362 自动验证；R1 绝不执行世界动作。ADR-0022 的通用 binding 账本及 ADR-0024 的 owner-thread gate+ledger 协调器（全局上限、精确 close、有界安全 terminal mailbox）已编码；P6-C2 另增加默认 no-op 的客户端本地安全 terminal-observation Contract，并由 ADR-0026 保证已登记 session 的 trusted `Error` 会先精确清理、锁外投影一次已决定的安全 terminal status（setup/再校验/handoff Error 为 `FAILED`；cleanup Error 不覆盖已决定的 `SUCCEEDED|CANCELLED`）。`whenComplete` 正常返回前的 callback 只暂存，不能发布 provisional proposal；同步 setup 或由 `accept` 激活的 inline signal Error 会重抛，attachment 返回后才到达的 callback 则只保留 `CompletionStage` 的 exceptional-stage 语义，controller 不承诺其 host-level fatal propagation。ADR-0027 还把 `ProposalHandoff` 内同线程完成另一 session 的间接 completion 失败关闭：嵌套 session 不会在外层 lock 内 handoff/token/observe，外层与嵌套 session 均为 `FAILED`，外层 queue lease 失效并在锁外收口。ADR-0028 已在该未接线 coordinator 内增加完整 immutable correlation 的 ledger-first proposal review、gate terminal 后 exact ledger close 与分歧 fail-closed；其接受结果仍是未执行 DTO，未接 Network、Lifecycle、Client、Scheduler 或 R1。上述当前增量提交仍待 Java 21 CI。通用 client-sponsored bridge、聊天/模型策略与 AI→技能计划/世界执行仍未实现，真实客户端/Provider E2E 仍待验证 |

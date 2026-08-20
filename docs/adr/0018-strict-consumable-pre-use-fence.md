@@ -24,6 +24,12 @@
   `MinecraftWorldInteractionBackend` 复核冻结条件；真人和普通/旧版 `UseItem` 保持原版路径；
 - 若使用中的 hand、物品指纹、精确原生背包菜单、游标、41 槽快照或批准效果集合漂移，先走
   既有原版 `RELEASE_USE_ITEM`/`stopUsingItem()` 清理，再取消本次 `updateUsingItem`；
+- Skill-backed Action 的取消必须携带完整不可变 `ActionEnvelope`。生命周期会在较晚的 Action
+  mailbox drain 前，只为同一活动 strict `UseItem` 记录一次消费前拒绝标记；同 generation 的
+  idempotent alias 绝不回退为 canonical，而是 fail-closed。该标记由 Mixin 在原版边界读取并走同一
+  release/stop 路径；已接受取消与快照漂移分别记录，避免 command budget 使前者误判为
+  `PRECONDITION_FAILED`。围栏异常、不匹配或 exact cancellation ingress 未能入队时，同 generation
+  必须同步 quarantine，不能把 Skill 的已取消终态与仍在执行的物理动作视为一致；
 - 围栏无 manager、线程或检查异常时，停止 Bot 的原生使用并取消该次更新，绝不继续消费；
 - Mixin 只阻止这一次原版物品消费；不会直接写库存、效果、方块或 Skill 状态，终态仍由既有
   Action runtime 在 Post tick 读取已记录的失败证据。
@@ -65,5 +71,5 @@
 
 - 纯 Java：`UseItemPreconditions` 的 canonical effect、菜单、游标和 inventory 限界测试；
 - NeoForge GameTest：成功、排队取消、发包前效果/游标漂移、使用中效果/游标漂移，以及最后
-  一次使用 Tick 的 `PlayerTickEvent.Pre` 注入未批准效果；
+  一次使用 Tick 的 `PlayerTickEvent.Pre` 注入未批准效果或取消；
 - 干净 Java 21/NeoForge 构建必须验证精确 Mixin 注入并确保真人玩家路径没有变化。

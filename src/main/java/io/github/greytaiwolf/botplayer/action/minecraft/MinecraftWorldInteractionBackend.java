@@ -208,15 +208,21 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     || useItem.strictPreconditions().isEmpty()) {
                 continue;
             }
-            if (strictUseStillMatches(player, useItem)) {
+            if (state.strictUseStopReason == StrictUseStopReason.NONE
+                    && strictUseStillMatches(player, useItem)) {
                 continue;
             }
             /*
-             * Record the failure before native cleanup. The next ordinary
-             * action-runtime tick must not reinterpret stopUsingItem() as a
-             * successful natural completion.
+             * Record strict observation drift before native cleanup. A
+             * cancellation-fenced state was marked earlier by lifecycle code
+             * and must stay distinct: the action runtime still needs to drain
+             * its accepted cancellation rather than reinterpret this stop as
+             * a precondition failure.
              */
-            state.strictUsePreflightRejected = true;
+            if (state.strictUseStopReason == StrictUseStopReason.NONE) {
+                state.strictUseStopReason =
+                        StrictUseStopReason.PRECONDITION_DRIFT;
+            }
             try {
                 interruptStrictUse(player, state);
             } catch (RuntimeException exception) {
@@ -229,6 +235,58 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             interrupted = true;
         }
         return interrupted;
+    }
+
+    /**
+     * Marks one already-active strict use so the native-use mixin rejects it
+     * before the next vanilla update.
+     *
+     * <p>This intentionally only records an exact active
+     * {@link WorldInteractionActionSpec.UseItem} key. It does not guess from a
+     * bot id, touch a queued action, mutate inventory/effects, or stop a
+     * non-strict legacy use. The marker is consumed by
+     * {@link #beforeNativeItemUseUpdate(BotServerPlayer)} at the actual native
+     * consumption boundary.
+     */
+    MinecraftActionBackend.StrictUseCancellationFenceStatus
+            fenceStrictNativeItemUseCancellation(
+                    ActionEnvelope expected) {
+        ActionEnvelope required = Objects.requireNonNull(expected,
+                "expected");
+        InteractionState state = active.get(ActionKey.from(required));
+        if (isActiveStrictNaturalUse(state)) {
+            if (!required.equals(state.envelope)) {
+                return MinecraftActionBackend
+                        .StrictUseCancellationFenceStatus
+                        .ACTIVE_STRICT_USE_MISMATCH;
+            }
+            state.strictUseStopReason =
+                    StrictUseStopReason.CANCELLATION_FENCED;
+            return MinecraftActionBackend.StrictUseCancellationFenceStatus
+                    .MARKED;
+        }
+        boolean otherStrictUseActive = active.values().stream().anyMatch(
+                candidate -> candidate.botId.equals(required.botId())
+                        && candidate.botGeneration
+                                == required.botGeneration()
+                        && isActiveStrictNaturalUse(candidate));
+        return otherStrictUseActive
+                ? MinecraftActionBackend.StrictUseCancellationFenceStatus
+                        .ACTIVE_STRICT_USE_MISMATCH
+                : MinecraftActionBackend.StrictUseCancellationFenceStatus
+                        .NO_ACTIVE_STRICT_USE;
+    }
+
+    private static boolean isActiveStrictNaturalUse(
+            InteractionState state) {
+        return state != null
+                && state.startedUsing
+                && state.spec instanceof WorldInteractionActionSpec.UseItem
+                        useItem
+                && useItem.mode()
+                        == WorldInteractionActionSpec.ItemUseMode
+                                .FINISH_NATURALLY
+                && useItem.strictPreconditions().isPresent();
     }
 
     @Override
@@ -326,7 +384,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         action.spec(),
                         currentTick,
                         envelope.botId(),
-                        envelope.botGeneration());
+                        envelope.botGeneration(),
+                        envelope);
         if (active.putIfAbsent(key, state) != null) {
             return failure(
                     envelope,
@@ -5002,11 +5061,22 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             InteractionState state,
             WorldInteractionActionSpec.UseItem useItem,
             long currentTick) {
-        if (state.strictUsePreflightRejected) {
+        if (state.strictUseStopReason
+                == StrictUseStopReason.PRECONDITION_DRIFT) {
             return failure(
                     envelope,
                     ActionFailureCode.PRECONDITION_FAILED,
                     "Strict item-use preflight changed before native consumption");
+        }
+        if (state.strictUseStopReason
+                == StrictUseStopReason.CANCELLATION_FENCED) {
+            /*
+             * The Mixin has stopped vanilla use, but the accepted exact
+             * cancellation may still be behind earlier mailbox commands. Keep
+             * this action live until that command drains; otherwise a low
+             * command budget would turn cancellation into PRECONDITION_FAILED.
+             */
+            return BackendResult.running(envelope);
         }
         if (!state.startedUsing
                 && useItem.mode()
@@ -7122,7 +7192,21 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         }
     }
 
+    /**
+     * Why a strict natural item use was stopped before native completion.
+     *
+     * <p>Cancellation is deliberately distinct from observation drift: a
+     * cancellation command can be accepted by the lifecycle layer yet remain
+     * behind earlier mailbox work, while native use must be fenced immediately.
+     */
+    private enum StrictUseStopReason {
+        NONE,
+        PRECONDITION_DRIFT,
+        CANCELLATION_FENCED
+    }
+
     private static final class InteractionState {
+        private final ActionEnvelope envelope;
         private final UUID botId;
         private final long botGeneration;
         private final WorldInteractionActionSpec spec;
@@ -7141,7 +7225,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         private boolean sideEffectDispatched;
         private boolean startedUsing;
         private boolean releaseSent;
-        private boolean strictUsePreflightRejected;
+        private StrictUseStopReason strictUseStopReason =
+                StrictUseStopReason.NONE;
         private boolean breakStopSent;
         private boolean aimAndPlaceFinalFencePassed;
         private double aimAndPlaceBeforeAimError = Double.NaN;
@@ -7177,6 +7262,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 UUID botId,
                 long botGeneration,
                 WorldInteractionActionSpec spec,
+                ActionEnvelope envelope,
                 long startedTick,
                 ItemStackFingerprint heldBefore,
                 String inventoryBefore,
@@ -7196,7 +7282,16 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         "botGeneration must be positive");
             }
             this.botGeneration = botGeneration;
-            this.spec = spec;
+            this.spec = Objects.requireNonNull(spec, "spec");
+            this.envelope = Objects.requireNonNull(envelope, "envelope");
+            if (!botId.equals(envelope.botId())
+                    || botGeneration != envelope.botGeneration()
+                    || !(envelope.action()
+                            instanceof WorldInteractionAction action)
+                    || !spec.equals(action.spec())) {
+                throw new IllegalArgumentException(
+                        "interaction state does not match its action envelope");
+            }
             this.startedTick = startedTick;
             this.heldBefore = heldBefore;
             this.inventoryBefore = inventoryBefore;
@@ -7227,7 +7322,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 WorldInteractionActionSpec spec,
                 long startedTick,
                 UUID botId,
-                long botGeneration) {
+                long botGeneration,
+                ActionEnvelope envelope) {
             InteractionHand hand = switch (spec) {
                 case WorldInteractionActionSpec.UseItem useItem ->
                         MinecraftInteractionView.hand(useItem.hand());
@@ -7349,6 +7445,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     botId,
                     botGeneration,
                     spec,
+                    envelope,
                     startedTick,
                     heldBefore,
                     MinecraftInteractionView.inventoryDigest(player),

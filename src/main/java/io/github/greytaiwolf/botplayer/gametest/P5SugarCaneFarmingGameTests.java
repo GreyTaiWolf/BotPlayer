@@ -460,6 +460,14 @@ public final class P5SugarCaneFarmingGameTests {
                             ActionCancellationReason reason) {
                         bot.manager().cancelAction(botId, actionId, reason);
                     }
+
+                    @Override
+                    public void cancelStrictNaturalUse(
+                            ActionEnvelope envelope,
+                            ActionCancellationReason reason) {
+                        throw new AssertionError(
+                                "Sugar-cane fixture must not cancel a strict natural item use");
+                    }
                 };
         MinecraftSugarCaneFarmingSkillNodeHandler.Resolver resolver =
                 (botId, generation) -> bot.player().getUUID().equals(botId)

@@ -140,17 +140,214 @@ class BotActionRuntimeTest {
    }
 
    @Test
-   void cancellationAtomicallyRemovesAnActionThatIsStillQueued() {
+   void exactCancellationAtomicallyRemovesAnActionThatIsStillQueued() {
       BotActionRuntimeTest.ScriptedBackend var1 = new BotActionRuntimeTest.ScriptedBackend();
       BotActionRuntime var2 = runtime(var1);
       ActionEnvelope var3 = envelope(FIRST_BOT, 1L, "queued-cancel", new StopAction(), 100L, 10);
       ActionMailbox.Submission var4 = var2.submit(var3, ActionPriority.OWNER_CONTROL);
-      ActionMailbox.Cancellation var5 = var2.cancel(FIRST_BOT, var3.actionId(), ActionCancellationReason.REQUESTED);
+      ActionMailbox.Cancellation var5 = var2.cancelExact(
+         var3, ActionCancellationReason.REQUESTED
+      );
+      Assertions.assertTrue(var5.exactQueuedActionRemoved());
       var2.tick(1L);
       Assertions.assertEquals(ActionMailbox.CancellationStatus.CANCELLED, cancellationStatus(var5));
       Assertions.assertEquals(ActionState.CANCELLED, outcome(var4).state());
       Assertions.assertEquals(0, var1.startCount(var3.actionId()));
       Assertions.assertEquals(0, var1.cleanupCount(var3.actionId()));
+   }
+
+   @Test
+   void exactQueuedCancellationFailsClosedWhenAnIdempotentSiblingRemains() {
+      BotActionRuntimeTest.ScriptedBackend backend =
+         new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime runtime = runtime(backend);
+      ActionEnvelope canonical = envelope(
+         FIRST_BOT, 1L, 912L, "queued-strict-alias", new WaitAction(20), 100L, 20
+      );
+      ActionEnvelope alias = envelope(
+         FIRST_BOT, 1L, 913L, "queued-strict-alias", canonical.action(), 100L, 20
+      );
+      ActionMailbox.Submission canonicalSubmission = runtime.submit(
+         canonical, ActionPriority.OWNER_TASK
+      );
+      ActionMailbox.Submission aliasSubmission = runtime.submit(
+         alias, ActionPriority.OWNER_TASK
+      );
+      ActionMailbox.Cancellation cancellation = runtime.cancelExact(
+         alias, ActionCancellationReason.REQUESTED
+      );
+      Assertions.assertTrue(cancellation.exactQueuedActionRemoved());
+      runtime.tick(1L);
+
+      Assertions.assertAll(
+         () -> Assertions.assertEquals(ActionMailbox.CancellationStatus.NOT_FOUND,
+            cancellationStatus(cancellation)),
+         () -> Assertions.assertEquals(ActionState.FAILED,
+            outcome(canonicalSubmission).state()),
+         () -> Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE,
+            outcome(canonicalSubmission).failureCode()),
+         () -> Assertions.assertEquals(ActionState.FAILED,
+            outcome(aliasSubmission).state()),
+         () -> Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE,
+            outcome(aliasSubmission).failureCode()),
+         () -> Assertions.assertEquals(0, backend.startCount(canonical.actionId())),
+         () -> Assertions.assertEquals(ActionMailbox.SubmissionStatus
+               .BOT_GENERATION_CLOSED,
+            runtime.submit(
+               envelope(FIRST_BOT, 1L, 914L,
+                  "queued-strict-alias-quarantined", new StopAction(), 100L, 5),
+               ActionPriority.OWNER_CONTROL
+            ).status())
+      );
+   }
+
+   @Test
+   void exactCancellationDoesNotCancelAnActionFromAnotherGeneration() {
+      BotActionRuntimeTest.ScriptedBackend backend = new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime runtime = runtime(backend);
+      ActionEnvelope active = envelope(
+         FIRST_BOT, 1L, 907L, "generation-one-active", new WaitAction(20), 100L, 20
+      );
+      backend.runForever(active.actionId());
+      ActionMailbox.Submission activeSubmission = runtime.submit(
+         active, ActionPriority.OWNER_TASK
+      );
+      runtime.tick(1L);
+
+      ActionEnvelope foreign = envelope(
+         FIRST_BOT, 2L, active.actionId().getLeastSignificantBits(),
+         "generation-two-foreign", active.action(), 100L, 20
+      );
+      ActionMailbox.Cancellation foreignGeneration = runtime.cancelExact(
+         foreign, ActionCancellationReason.REQUESTED
+      );
+      Assertions.assertEquals(
+         ActionMailbox.CancellationStatus.ENQUEUED, foreignGeneration.status()
+      );
+      runtime.tick(2L);
+
+      Assertions.assertAll(
+         () -> Assertions.assertEquals(
+            ActionMailbox.CancellationStatus.NOT_FOUND,
+            cancellationStatus(foreignGeneration)
+         ),
+         () -> Assertions.assertFalse(
+            future(activeSubmission).toCompletableFuture().isDone()
+         ),
+         () -> Assertions.assertEquals(0, backend.cleanupCount(active.actionId())),
+         () -> Assertions.assertEquals(1, runtime.activeActionCount()),
+         () -> Assertions.assertEquals(
+            ActionMailbox.SubmissionStatus.BOT_GENERATION_CLOSED,
+            runtime.submit(
+               envelope(
+                  FIRST_BOT, 2L, 908L, "quarantined-foreign-generation",
+                  new StopAction(), 100L, 5
+               ),
+               ActionPriority.OWNER_CONTROL
+            ).status()
+         )
+      );
+   }
+
+   @Test
+   void exactCancellationRejectsASameGenerationIdempotentAlias() {
+      BotActionRuntimeTest.ScriptedBackend backend =
+         new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime runtime = runtime(backend);
+      ActionEnvelope canonical = envelope(
+         FIRST_BOT, 1L, 909L, "strict-alias", new WaitAction(20), 100L, 20
+      );
+      backend.runForever(canonical.actionId());
+      ActionMailbox.Submission canonicalSubmission = runtime.submit(
+         canonical, ActionPriority.OWNER_TASK
+      );
+      runtime.tick(1L);
+
+      ActionEnvelope alias = envelope(
+         FIRST_BOT, 1L, 910L, "strict-alias", canonical.action(), 100L, 20
+      );
+      ActionMailbox.Submission aliasSubmission = runtime.submit(
+         alias, ActionPriority.OWNER_TASK
+      );
+      runtime.tick(2L);
+      ActionMailbox.Cancellation cancellation = runtime.cancelExact(
+         alias, ActionCancellationReason.REQUESTED
+      );
+      Assertions.assertEquals(ActionMailbox.CancellationStatus.ENQUEUED,
+         cancellation.status());
+      runtime.tick(3L);
+
+      ActionOutcome canonicalOutcome = outcome(canonicalSubmission);
+      Assertions.assertAll(
+         () -> Assertions.assertEquals(ActionMailbox.CancellationStatus.NOT_FOUND,
+            cancellationStatus(cancellation)),
+         () -> Assertions.assertEquals(ActionState.FAILED,
+            canonicalOutcome.state()),
+         () -> Assertions.assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE,
+            canonicalOutcome.failureCode()),
+         () -> Assertions.assertNotEquals(ActionState.CANCELLED,
+            canonicalOutcome.state()),
+         () -> Assertions.assertSame(canonicalOutcome, outcome(aliasSubmission)),
+         () -> Assertions.assertEquals(1, backend.cleanupCount(canonical.actionId())),
+         () -> Assertions.assertEquals(0, runtime.activeActionCount()),
+         () -> Assertions.assertEquals(ActionMailbox.SubmissionStatus
+               .BOT_GENERATION_CLOSED,
+            runtime.submit(
+               envelope(FIRST_BOT, 1L, 911L, "strict-alias-quarantined",
+                  new StopAction(), 100L, 5),
+               ActionPriority.OWNER_CONTROL
+            ).status())
+      );
+   }
+
+   @Test
+   void acceptedExactCancellationCanWaitBehindBudgetWhileFencedActionStaysRunning() {
+      BotActionRuntimeTest.ScriptedBackend backend =
+         new BotActionRuntimeTest.ScriptedBackend();
+      BotActionRuntime runtime = new BotActionRuntime(backend, 16, 64, 1, 16);
+      ActionEnvelope active = envelope(
+         FIRST_BOT, 1L, 915L, "fenced-use", new WaitAction(20), 100L, 20
+      );
+      backend.runForever(active.actionId());
+      ActionMailbox.Submission submission = runtime.submit(
+         active, ActionPriority.OWNER_TASK
+      );
+      runtime.tick(1L);
+      backend.fence(active.actionId());
+
+      ActionMailbox.Cancellation filler = runtime.cancel(
+         FIRST_BOT, actionId(916L), ActionCancellationReason.REQUESTED
+      );
+      ActionMailbox.Cancellation target = runtime.cancelExact(
+         active, ActionCancellationReason.REQUESTED
+      );
+      Assertions.assertAll(
+         () -> Assertions.assertEquals(ActionMailbox.CancellationStatus.ENQUEUED,
+            filler.status()),
+         () -> Assertions.assertEquals(ActionMailbox.CancellationStatus.ENQUEUED,
+            target.status())
+      );
+      runtime.tick(2L);
+
+      Assertions.assertAll(
+         () -> Assertions.assertEquals(ActionMailbox.CancellationStatus.NOT_FOUND,
+            cancellationStatus(filler)),
+         () -> Assertions.assertFalse(
+            target.completion().orElseThrow().toCompletableFuture().isDone()),
+         () -> Assertions.assertFalse(
+            future(submission).toCompletableFuture().isDone()),
+         () -> Assertions.assertEquals(1, runtime.activeActionCount()),
+         () -> Assertions.assertEquals(1, backend.fencedTickCount(active.actionId()))
+      );
+      runtime.tick(3L);
+
+      Assertions.assertAll(
+         () -> Assertions.assertEquals(ActionMailbox.CancellationStatus.CANCELLED,
+            cancellationStatus(target)),
+         () -> Assertions.assertEquals(ActionState.CANCELLED,
+            outcome(submission).state()),
+         () -> Assertions.assertEquals(0, runtime.activeActionCount())
+      );
    }
 
    @Test
@@ -1813,6 +2010,8 @@ class BotActionRuntimeTest {
       private final Map<UUID, Integer> cleanups = new HashMap<>();
       private final Map<UUID, Long> startTicks = new HashMap<>();
       private final Set<UUID> cleanupFailures = new HashSet<>();
+      private final Set<UUID> fenced = new HashSet<>();
+      private final Map<UUID, Integer> fencedTicks = new HashMap<>();
       private final Map<UUID, Runnable> validationHooks = new HashMap<>();
       private final Map<UUID, Runnable> startHooks = new HashMap<>();
       private final Map<UUID, Runnable> cleanupHooks = new HashMap<>();
@@ -1852,6 +2051,10 @@ class BotActionRuntimeTest {
 
       @Override
       public ActionBackend.BackendResult tick(ActionEnvelope var1, long var2, long var4) {
+         if (this.fenced.contains(var1.actionId())) {
+            this.fencedTicks.merge(var1.actionId(), 1, Integer::sum);
+            return ActionBackend.BackendResult.running(var1);
+         }
          if (this.forever.contains(var1.actionId())) {
             return ActionBackend.BackendResult.running(var1);
          } else {
@@ -1891,6 +2094,14 @@ class BotActionRuntimeTest {
 
       private void runForever(UUID var1) {
          this.forever.add(var1);
+      }
+
+      private void fence(UUID var1) {
+         this.fenced.add(var1);
+      }
+
+      private int fencedTickCount(UUID var1) {
+         return this.fencedTicks.getOrDefault(var1, 0);
       }
 
       private void onStart(UUID var1, Runnable var2) {

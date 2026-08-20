@@ -140,7 +140,8 @@ public final class ActionBackedSkillNodeHandler
                 context.botGeneration(),
                 context.nextStateRevision(),
                 context.node().nodeId(),
-                operation);
+                operation,
+                envelope);
         pendingByRun.put(context.runId(), pending);
         submission.completion().orElseThrow().whenComplete(
                 (outcome, throwable) -> offerCompletion(
@@ -192,14 +193,33 @@ public final class ActionBackedSkillNodeHandler
             return;
         }
         try {
-            actions.cancel(
-                    pending.botId,
-                    pending.actionId,
-                    ActionCancellationReason.REQUESTED);
+            if (requiresStrictNaturalUseCancellation(pending.envelope)) {
+                actions.cancelStrictNaturalUse(
+                        pending.envelope, ActionCancellationReason.REQUESTED);
+            } else {
+                actions.cancel(
+                        pending.botId,
+                        pending.actionId,
+                        ActionCancellationReason.REQUESTED);
+            }
         } catch (RuntimeException ignored) {
-            // 生命周期 action runtime 仍会按 generation 关闭该票据；不能因回调异常
-            // 让通用运行时遗留 reservation 或接受迟到结果。
+            // Strict-natural-use implementations synchronously quarantine their
+            // generation before surfacing an ingress failure. SkillRuntime still
+            // releases its reservation and rejects late completions.
         }
+    }
+
+    private static boolean requiresStrictNaturalUseCancellation(
+            ActionEnvelope envelope) {
+        if (!(envelope.action() instanceof WorldInteractionAction action)
+                || !(action.spec() instanceof WorldInteractionActionSpec
+                        .UseItem useItem)) {
+            return false;
+        }
+        return useItem.mode()
+                        == WorldInteractionActionSpec.ItemUseMode
+                                .FINISH_NATURALLY
+                && useItem.strictPreconditions().isPresent();
     }
 
     /**
@@ -455,6 +475,18 @@ public final class ActionBackedSkillNodeHandler
                 UUID botId,
                 UUID actionId,
                 ActionCancellationReason reason);
+
+        /**
+         * Cancels one full-envelope strict natural {@code UseItem} action.
+         *
+         * <p>Only a strict {@code FINISH_NATURALLY} use reaches this method.
+         * Production lifecycle wiring must arm the exact native-use fence before
+         * vanilla consumes an item, and it must synchronously fail-close the
+         * generation when that fence or cancellation ingress is rejected.
+         */
+        void cancelStrictNaturalUse(
+                ActionEnvelope envelope,
+                ActionCancellationReason reason);
     }
 
     @FunctionalInterface
@@ -508,7 +540,8 @@ public final class ActionBackedSkillNodeHandler
             long generation,
             long runRevision,
             UUID nodeId,
-            Operation operation) {
+            Operation operation,
+            ActionEnvelope envelope) {
         private PendingAction {
             Objects.requireNonNull(actionId, "actionId");
             Objects.requireNonNull(completionSignalId, "completionSignalId");
@@ -519,6 +552,14 @@ public final class ActionBackedSkillNodeHandler
             }
             Objects.requireNonNull(nodeId, "nodeId");
             Objects.requireNonNull(operation, "operation");
+            envelope = Objects.requireNonNull(envelope, "envelope");
+            if (!actionId.equals(envelope.actionId())
+                    || !botId.equals(envelope.botId())
+                    || generation != envelope.botGeneration()
+                    || !operation.action().equals(envelope.action())) {
+                throw new IllegalArgumentException(
+                        "pending action identity does not match its envelope");
+            }
         }
     }
 

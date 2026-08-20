@@ -62,7 +62,25 @@ public final class ActionMailbox {
    }
 
    public synchronized ActionMailbox.Cancellation cancel(UUID var1, UUID var2, ActionCancellationReason var3) {
-      return this.cancel(var1, 0L, var2, var3);
+      return this.cancel(var1, 0L, var2, var3, Optional.empty());
+   }
+
+   /**
+    * Enqueues cancellation for one full immutable Action envelope.
+    *
+    * <p>This retains the ordinary mailbox completion protocol, but the runtime
+    * must not fall back to a same-generation idempotent alias. Lifecycle code
+    * uses it when a strict native-use fence must refer to the same physical
+    * action body before the next mailbox drain.
+    */
+   public synchronized ActionMailbox.Cancellation cancelExact(
+      ActionEnvelope expected, ActionCancellationReason reason
+   ) {
+      ActionEnvelope required = Objects.requireNonNull(expected, "expected");
+      return this.cancel(
+         required.botId(), required.botGeneration(), required.actionId(), reason,
+         Optional.of(required)
+      );
    }
 
    /**
@@ -131,11 +149,22 @@ public final class ActionMailbox {
 
    private synchronized ActionMailbox.Cancellation cancel(
       UUID botId, long containmentGeneration, UUID actionId,
-      ActionCancellationReason reason
+      ActionCancellationReason reason,
+      Optional<ActionEnvelope> expectedEnvelope
    ) {
       ActionEnvelope.requireNonZero(botId, "botId");
       ActionEnvelope.requireNonZero(actionId, "actionId");
       Objects.requireNonNull(reason, "reason");
+      Objects.requireNonNull(expectedEnvelope, "expectedEnvelope");
+      expectedEnvelope.ifPresent(expected -> {
+         if (!expected.botId().equals(botId)
+            || expected.botGeneration() != containmentGeneration
+            || !expected.actionId().equals(actionId)) {
+            throw new IllegalArgumentException(
+               "Exact cancellation envelope does not match its command identity"
+            );
+         }
+      });
       if (this.closed.get()) {
          return ActionMailbox.Cancellation.rejected(ActionMailbox.CancellationStatus.RUNTIME_CLOSED);
       } else {
@@ -147,19 +176,23 @@ public final class ActionMailbox {
             ActionMailbox.SubmitCommand exactSubmission = this.submissions
                .stream()
                .filter(
-                  submission -> submission.envelope().botId().equals(botId)
-                     && submission.envelope().actionId().equals(actionId)
-                     && (containmentGeneration == 0L
-                        || submission.envelope().botGeneration()
-                           == containmentGeneration)
+                  submission -> expectedEnvelope
+                     .map(expected -> submission.envelope().equals(expected))
+                     .orElseGet(
+                        () -> submission.envelope().botId().equals(botId)
+                           && submission.envelope().actionId().equals(actionId)
+                           && (containmentGeneration == 0L
+                              || submission.envelope().botGeneration()
+                                 == containmentGeneration)
+                     )
                )
                .findFirst()
                .orElse(null);
             /*
-             * P5C's stronger path must remove the requested submission
-             * itself. The legacy cancellation path retains canonical-alias
-             * coalescing, but treating a sibling alias as proof would leave
-             * this exact envelope eligible to start later.
+             * A full-envelope cancellation removes only its requested
+             * submission. Legacy cancellation retains canonical-alias
+             * coalescing, while an exact path carries any retained sibling to
+             * the runtime so it can fail closed rather than cancel an alias.
              */
             ActionMailbox.SubmitCommand queuedSubmission = containmentGeneration > 0L
                ? exactSubmission
@@ -176,9 +209,19 @@ public final class ActionMailbox {
                      )
                      .findFirst()
                      .orElseThrow();
+            boolean retainedIdempotentSibling = expectedEnvelope.isPresent()
+               && exactSubmission != null
+               && this.submissions.stream().anyMatch(
+                  submission -> submission != exactSubmission
+                     && expectedEnvelope.orElseThrow().idempotencyKey()
+                        .equals(submission.envelope().idempotencyKey())
+                     && expectedEnvelope.orElseThrow()
+                        .hasSameIdempotentOperation(submission.envelope())
+               );
             ActionMailbox.CancelCommand cancellation = new ActionMailbox.CancelCommand(
                botId, actionId, reason, Optional.ofNullable(queuedSubmission),
-               containmentGeneration, completion
+               containmentGeneration, expectedEnvelope,
+               retainedIdempotentSibling, completion
             );
             if (!this.cancellations.offer(cancellation)) {
                this.completionDispatcher.releaseUnusedReservation(completion);
@@ -328,30 +371,60 @@ public final class ActionMailbox {
       ActionCancellationReason reason,
       Optional<ActionMailbox.SubmitCommand> queuedSubmission,
       long containmentGeneration,
+      Optional<ActionEnvelope> expectedEnvelope,
+      boolean retainedIdempotentSibling,
       CompletionDispatcher.Completion<ActionMailbox.CancellationStatus> completion
    ) implements ActionMailbox.Command {
       CancelCommand(
          UUID botId,
          UUID actionId,
          ActionCancellationReason reason,
-         Optional<ActionMailbox.SubmitCommand> queuedSubmission,
-         long containmentGeneration,
-         CompletionDispatcher.Completion<ActionMailbox.CancellationStatus> completion
-      ) {
+      Optional<ActionMailbox.SubmitCommand> queuedSubmission,
+      long containmentGeneration,
+      Optional<ActionEnvelope> expectedEnvelope,
+      boolean retainedIdempotentSibling,
+      CompletionDispatcher.Completion<ActionMailbox.CancellationStatus> completion
+   ) {
          Objects.requireNonNull(queuedSubmission, "queuedSubmission");
+         Objects.requireNonNull(expectedEnvelope, "expectedEnvelope");
          if (containmentGeneration < 0L) {
             throw new IllegalArgumentException("containmentGeneration must not be negative");
+         }
+         if (retainedIdempotentSibling && expectedEnvelope.isEmpty()) {
+            throw new IllegalArgumentException(
+               "Only an exact cancellation can retain an idempotent sibling"
+            );
          }
          this.botId = botId;
          this.actionId = actionId;
          this.reason = reason;
          this.queuedSubmission = queuedSubmission;
          this.containmentGeneration = containmentGeneration;
+         expectedEnvelope.ifPresent(expected -> {
+            if (containmentGeneration <= 0L
+               || !expected.botId().equals(botId)
+               || expected.botGeneration() != containmentGeneration
+               || !expected.actionId().equals(actionId)) {
+               throw new IllegalArgumentException(
+                  "Exact cancellation envelope does not match its command identity"
+               );
+            }
+         });
+         this.expectedEnvelope = expectedEnvelope;
+         this.retainedIdempotentSibling = retainedIdempotentSibling;
          this.completion = completion;
       }
 
       boolean requiresGenerationContainment() {
          return this.containmentGeneration > 0L;
+      }
+
+      boolean requiresExactEnvelope() {
+         return this.expectedEnvelope.isPresent();
+      }
+
+      boolean hasRetainedIdempotentSibling() {
+         return this.retainedIdempotentSibling;
       }
    }
 

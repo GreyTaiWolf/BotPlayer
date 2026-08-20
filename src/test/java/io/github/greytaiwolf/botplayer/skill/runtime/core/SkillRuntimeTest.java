@@ -684,6 +684,14 @@ class SkillRuntimeTest {
             // This state-machine test only consumes a completed action receipt.
         }
 
+        @Override
+        public void cancelStrictNaturalUse(
+                ActionEnvelope envelope,
+                ActionCancellationReason reason) {
+            throw new AssertionError(
+                    "Skill runtime test must not cancel a strict natural item use");
+        }
+
         private void completeNextFailure() {
             ActionEnvelope envelope = submitted.get(nextCompletion);
             completions.get(nextCompletion++).complete(new ActionOutcome(

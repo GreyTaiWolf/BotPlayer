@@ -15,7 +15,9 @@ import io.github.greytaiwolf.botplayer.action.interaction.BlockStateFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.BlockTargetFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
+import io.github.greytaiwolf.botplayer.action.interaction.UseItemPreconditions;
 import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSnapshot;
 import io.github.greytaiwolf.botplayer.skill.core.SkillFailureCode;
 import io.github.greytaiwolf.botplayer.skill.core.SkillId;
 import io.github.greytaiwolf.botplayer.skill.core.SkillParameters;
@@ -135,6 +137,48 @@ class ActionBackedSkillNodeHandlerTest {
                 "the bridge itself permits at most one marked replan per node");
     }
 
+    @Test
+    void strictNaturalUseCancellationUsesTheDedicatedEnvelopeGateway() {
+        RecordingGateway actions = new RecordingGateway();
+        ActionBackedSkillNodeHandler handler = new ActionBackedSkillNodeHandler(
+                ignored -> Optional.of(strictNaturalUseOperation()), actions,
+                ignored -> SkillSignalInbox.OfferStatus.ENQUEUED);
+        SkillNodeContext context = context(0L, 0L);
+
+        Assertions.assertEquals(SkillNodeDirective.Kind.WAIT_ACTION,
+                handler.begin(context).kind());
+        handler.cancelled(context, "test cancellation");
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(actions.envelope,
+                        actions.strictNaturalUseEnvelope),
+                () -> Assertions.assertEquals(ActionCancellationReason.REQUESTED,
+                        actions.strictNaturalUseReason),
+                () -> Assertions.assertNull(actions.legacyCancelledBotId));
+    }
+
+    @Test
+    void nonStrictActionsKeepTheLegacyCancellationGateway() {
+        RecordingGateway actions = new RecordingGateway();
+        ActionBackedSkillNodeHandler handler = new ActionBackedSkillNodeHandler(
+                ignored -> Optional.of(operation()), actions,
+                ignored -> SkillSignalInbox.OfferStatus.ENQUEUED);
+        SkillNodeContext context = context(0L, 0L);
+
+        Assertions.assertEquals(SkillNodeDirective.Kind.WAIT_ACTION,
+                handler.begin(context).kind());
+        handler.cancelled(context, "test cancellation");
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(BOT,
+                        actions.legacyCancelledBotId),
+                () -> Assertions.assertEquals(actions.envelope.actionId(),
+                        actions.legacyCancelledActionId),
+                () -> Assertions.assertEquals(ActionCancellationReason.REQUESTED,
+                        actions.legacyCancellationReason),
+                () -> Assertions.assertNull(actions.strictNaturalUseEnvelope));
+    }
+
     private static ActionBackedSkillNodeHandler.Operation operation() {
         return new ActionBackedSkillNodeHandler.Operation(
                 "test-action",
@@ -145,6 +189,38 @@ class ActionBackedSkillNodeHandlerTest {
                 "等待测试动作",
                 (context, signal) -> SkillNodeDirective.complete(
                         "测试动作完成"));
+    }
+
+    private static ActionBackedSkillNodeHandler.Operation
+            strictNaturalUseOperation() {
+        ItemStackFingerprint milk = ItemStackFingerprint.of(
+                new ResourceId("minecraft:milk_bucket"), 1, 0,
+                "b".repeat(64));
+        List<ItemStackFingerprint> slots = new ArrayList<>();
+        for (int index = 0; index < 41; index++) {
+            slots.add(ItemStackFingerprint.empty());
+        }
+        slots.set(0, milk);
+        UseItemPreconditions preconditions = new UseItemPreconditions(
+                new InventoryMenuSnapshot(0, 0, 0,
+                        ItemStackFingerprint.empty(), slots),
+                List.of());
+        return new ActionBackedSkillNodeHandler.Operation(
+                "strict-natural-use",
+                new WorldInteractionAction(
+                        new WorldInteractionActionSpec.UseItem(
+                                WorldInteractionActionSpec.Hand.MAIN_HAND,
+                                milk,
+                                WorldInteractionActionSpec.ItemUseMode
+                                        .FINISH_NATURALLY,
+                                0,
+                                preconditions)),
+                ActionPriority.AUTONOMOUS,
+                2,
+                SkillNodeDirective.Kind.WAIT_ACTION,
+                "等待严格自然使用",
+                (context, signal) -> SkillNodeDirective.complete(
+                        "严格自然使用完成"));
     }
 
     private static WorldInteractionAction markedPlaceBlockAction() {
@@ -192,6 +268,11 @@ class ActionBackedSkillNodeHandlerTest {
             implements ActionBackedSkillNodeHandler.ActionGateway {
         private CompletableFuture<ActionOutcome> completion;
         private ActionEnvelope envelope;
+        private UUID legacyCancelledBotId;
+        private UUID legacyCancelledActionId;
+        private ActionCancellationReason legacyCancellationReason;
+        private ActionEnvelope strictNaturalUseEnvelope;
+        private ActionCancellationReason strictNaturalUseReason;
 
         @Override
         public ActionMailbox.Submission submit(
@@ -206,7 +287,17 @@ class ActionBackedSkillNodeHandlerTest {
         @Override
         public void cancel(
                 UUID botId, UUID actionId, ActionCancellationReason reason) {
-            // This identity test reaches one terminal completion before any cancellation.
+            legacyCancelledBotId = botId;
+            legacyCancelledActionId = actionId;
+            legacyCancellationReason = reason;
+        }
+
+        @Override
+        public void cancelStrictNaturalUse(
+                ActionEnvelope actionEnvelope,
+                ActionCancellationReason reason) {
+            strictNaturalUseEnvelope = actionEnvelope;
+            strictNaturalUseReason = reason;
         }
 
         private void completeFailure() {

@@ -4,7 +4,10 @@ import io.github.greytaiwolf.botplayer.BotPlayer;
 import io.github.greytaiwolf.botplayer.action.ActionCancellationReason;
 import io.github.greytaiwolf.botplayer.action.ActionEnvelope;
 import io.github.greytaiwolf.botplayer.action.ActionMailbox;
+import io.github.greytaiwolf.botplayer.action.ActionOrigin;
 import io.github.greytaiwolf.botplayer.action.ActionPriority;
+import io.github.greytaiwolf.botplayer.action.StopAction;
+import io.github.greytaiwolf.botplayer.config.BotPlayerConfig;
 import io.github.greytaiwolf.botplayer.gametest.P2GameTestSupport.TestBot;
 import io.github.greytaiwolf.botplayer.skill.builtin.recovery.VanillaMilkBucketRecovery;
 import io.github.greytaiwolf.botplayer.skill.core.SkillFailureCode;
@@ -23,6 +26,7 @@ import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRuntimeBudget;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuFamily;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
@@ -445,6 +449,184 @@ public final class P5MilkBucketRecoveryGameTests {
         }
     }
 
+    /**
+     * A cancellation issued by a normal PlayerTickEvent.Pre listener on the
+     * last natural-use tick must become visible to the native-use mixin before
+     * vanilla consumes milk. The ordinary action mailbox drains later in the
+     * lifecycle tick, so this specifically proves the exact pre-consumption
+     * cancellation fence rather than the older in-flight cancellation path.
+     */
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void finalTickCancellationStopsBeforeMilkConsumes(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        P5GameTestSupport.IsolatedFixture fixture =
+                P5GameTestSupport.isolatedFixture(helper,
+                        "milk_recovery_final_tick_cancel");
+        TestBot bot = fixture.spawn("medic");
+        P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
+        try {
+            preparePoisonedMilk(bot);
+            AtomicBoolean cancelled = new AtomicBoolean();
+            RecoveryRun run = startRun(bot);
+            cleanup.add(run.runtime()::close);
+            Consumer<PlayerTickEvent.Pre> listener = event -> {
+                if (event.getEntity() == bot.player()
+                        && bot.player().isUsingItem()
+                        && bot.player().getUseItemRemainingTicks() == 1
+                        && cancelled.compareAndSet(false, true)) {
+                    P2GameTestSupport.require(
+                            run.runtime().cancel(run.runId(), currentTick(bot),
+                                    "P5 final-tick milk cancellation")
+                                    == SkillRuntime.CancelStatus.CANCELLED,
+                            "Final-tick milk cancellation was not accepted");
+                    ActionMailbox.Cancellation cancellation = run
+                            .strictNaturalUseCancellation().get();
+                    P2GameTestSupport.require(cancellation != null
+                                    && cancellation.status()
+                                            == ActionMailbox
+                                                    .CancellationStatus
+                                                    .ENQUEUED,
+                            "Final-tick milk cancellation was not accepted by the strict action lane");
+                }
+            };
+            NeoForge.EVENT_BUS.addListener(listener);
+            cleanup.add(() -> NeoForge.EVENT_BUS.unregister(listener));
+            driveUntilTerminal(helper, bot, run, cleanup, 180, terminal -> {
+                P2GameTestSupport.require(cancelled.get(),
+                        "Final-tick cancellation fixture never reached native milk use");
+                P2GameTestSupport.require(
+                        terminal.state() == SkillRunState.CANCELLED
+                                && !bot.player().isUsingItem(),
+                        "Final-tick cancellation did not stop native milk use: "
+                                + terminal.safeSummary());
+                P2GameTestSupport.require(
+                        bot.player().hasEffect(MobEffects.POISON)
+                                && bot.player().getInventory().getItem(0)
+                                        .is(Items.MILK_BUCKET)
+                                && bot.player().getInventory().getItem(0)
+                                        .getCount() == 1,
+                        "Final-tick cancellation consumed milk or cleared poison");
+                requireNativeEmptyCursor(bot);
+            });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    /**
+     * A full cancellation lane must fail closed before the native final tick,
+     * rather than letting SkillRuntime's local terminal state claim safety.
+     */
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void finalTickCancellationRejectsClosedLaneBeforeMilkConsumes(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        P5GameTestSupport.IsolatedFixture fixture =
+                P5GameTestSupport.isolatedFixture(helper,
+                        "milk_recovery_final_tick_cancel_closed_lane");
+        TestBot bot = fixture.spawn("medic");
+        P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
+        try {
+            preparePoisonedMilk(bot);
+            AtomicBoolean cancelled = new AtomicBoolean();
+            AtomicReference<ActionMailbox.CancellationStatus> laneRejection =
+                    new AtomicReference<>();
+            RecoveryRun run = startRun(bot);
+            cleanup.add(run.runtime()::close);
+            Consumer<PlayerTickEvent.Pre> listener = event -> {
+                if (event.getEntity() != bot.player()
+                        || !bot.player().isUsingItem()
+                        || bot.player().getUseItemRemainingTicks() != 1
+                        || !cancelled.compareAndSet(false, true)) {
+                    return;
+                }
+                int cancellationCapacity = Math.max(1,
+                        BotPlayerConfig.ACTION_MAILBOX_CAPACITY.get() / 8);
+                for (int index = 0; index <= cancellationCapacity; index++) {
+                    ActionMailbox.Cancellation filler = bot.manager()
+                            .cancelAction(bot.player().getUUID(),
+                                    new UUID(0L, 20_000L + index),
+                                    ActionCancellationReason.REQUESTED);
+                    if (filler.status()
+                            != ActionMailbox.CancellationStatus.ENQUEUED) {
+                        laneRejection.set(filler.status());
+                        break;
+                    }
+                }
+                ActionMailbox.CancellationStatus rejection = laneRejection.get();
+                P2GameTestSupport.require(rejection
+                                == ActionMailbox.CancellationStatus.MAILBOX_FULL
+                                || rejection
+                                        == ActionMailbox.CancellationStatus
+                                                .COMPLETION_BACKPRESSURE,
+                        "Final-tick fixture could not close the cancellation lane: "
+                                + rejection);
+                P2GameTestSupport.require(
+                        run.runtime().cancel(run.runId(), currentTick(bot),
+                                "P5 final-tick cancellation lane-full")
+                                        == SkillRuntime.CancelStatus.CANCELLED,
+                        "Lane-full milk cancellation was not accepted by SkillRuntime");
+                ActionMailbox.Cancellation target = run
+                        .strictNaturalUseCancellation().get();
+                P2GameTestSupport.require(target != null
+                                && (target.status()
+                                        == ActionMailbox.CancellationStatus
+                                                .MAILBOX_FULL
+                                        || target.status()
+                                                == ActionMailbox
+                                                        .CancellationStatus
+                                                        .COMPLETION_BACKPRESSURE),
+                        "Strict final-tick cancellation was not rejected by the closed lane");
+                ActionMailbox.Submission probe = bot.manager().submitAction(
+                        new ActionEnvelope(new UUID(0L, 30_001L),
+                                bot.player().getUUID(),
+                                bot.player().runtimeHandle().generation(),
+                                "p5-final-tick-cancellation-lane-probe",
+                                currentTick(bot) + 20L,
+                                1,
+                                new StopAction(),
+                                ActionOrigin.none()),
+                        ActionPriority.OWNER_CONTROL);
+                P2GameTestSupport.require(probe.status()
+                                == ActionMailbox.SubmissionStatus
+                                        .BOT_GENERATION_CLOSED,
+                        "Rejected strict cancellation did not quarantine its bot generation");
+            };
+            NeoForge.EVENT_BUS.addListener(listener);
+            cleanup.add(() -> NeoForge.EVENT_BUS.unregister(listener));
+            driveUntilTerminal(helper, bot, run, cleanup, 180, terminal -> {
+                P2GameTestSupport.require(cancelled.get(),
+                        "Lane-full final-tick fixture never reached native milk use");
+                P2GameTestSupport.require(laneRejection.get() != null,
+                        "Lane-full final-tick fixture did not observe a lane rejection");
+                P2GameTestSupport.require(
+                        terminal.state() == SkillRunState.CANCELLED
+                                && !bot.player().isUsingItem(),
+                        "Rejected final-tick cancellation left native milk use active: "
+                                + terminal.safeSummary());
+                P2GameTestSupport.require(
+                        bot.player().hasEffect(MobEffects.POISON)
+                                && bot.player().getInventory().getItem(0)
+                                        .is(Items.MILK_BUCKET)
+                                && bot.player().getInventory().getItem(0)
+                                        .getCount() == 1,
+                        "Rejected final-tick cancellation consumed milk or cleared poison");
+                requireNativeEmptyCursor(bot);
+            });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
     private static RecoveryRun startRun(TestBot bot) {
         SkillRegistry registry = new SkillRegistry();
         P2GameTestSupport.require(
@@ -456,10 +638,12 @@ public final class P5MilkBucketRecoveryGameTests {
                 new SkillPlanValidator(registry, SkillPlanLimits.defaults()),
                 new ResourceReservationService(8, 240),
                 new SkillRuntimeBudget(1, 4, 8, 240));
+        AtomicReference<ActionMailbox.Cancellation> strictNaturalUseCancellation =
+                new AtomicReference<>();
         MinecraftMilkBucketRecoverySkillNodeHandler handler =
                 new MinecraftMilkBucketRecoverySkillNodeHandler(
                         bot.manager()::resolveActive,
-                        actionGateway(bot),
+                        actionGateway(bot, strictNaturalUseCancellation),
                         runtime::offerSignal);
         P2GameTestSupport.require(
                 runtime.registerHandler(VanillaMilkBucketRecovery.ID,
@@ -478,11 +662,14 @@ public final class P5MilkBucketRecoveryGameTests {
                 submission.status() == SkillRunSubmission.Status.ACCEPTED,
                 "Standalone milk recovery plan was not accepted: "
                         + submission.safeSummary());
-        return new RecoveryRun(runtime, submission.runId().orElseThrow());
+        return new RecoveryRun(runtime, submission.runId().orElseThrow(),
+                strictNaturalUseCancellation);
     }
 
     private static ActionBackedSkillNodeHandler.ActionGateway actionGateway(
-            TestBot bot) {
+            TestBot bot,
+            AtomicReference<ActionMailbox.Cancellation>
+                    strictNaturalUseCancellation) {
         return new ActionBackedSkillNodeHandler.ActionGateway() {
             @Override
             public ActionMailbox.Submission submit(
@@ -496,6 +683,14 @@ public final class P5MilkBucketRecoveryGameTests {
                     UUID actionId,
                     ActionCancellationReason reason) {
                 bot.manager().cancelAction(botId, actionId, reason);
+            }
+
+            @Override
+            public void cancelStrictNaturalUse(
+                    ActionEnvelope envelope,
+                    ActionCancellationReason reason) {
+                strictNaturalUseCancellation.set(bot.manager()
+                        .cancelStrictNaturalUse(envelope, reason));
             }
         };
     }
@@ -594,7 +789,11 @@ public final class P5MilkBucketRecoveryGameTests {
                 : exception.getMessage();
     }
 
-    private record RecoveryRun(SkillRuntime runtime, UUID runId) {
+    private record RecoveryRun(
+            SkillRuntime runtime,
+            UUID runId,
+            AtomicReference<ActionMailbox.Cancellation>
+                    strictNaturalUseCancellation) {
         private SkillRunView view() {
             return runtime.inspectRun(runId).orElseThrow(() ->
                     new IllegalStateException(

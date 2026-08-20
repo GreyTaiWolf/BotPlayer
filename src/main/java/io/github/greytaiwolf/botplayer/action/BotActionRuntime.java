@@ -101,6 +101,20 @@ public final class BotActionRuntime {
    }
 
    /**
+    * Enqueues cancellation for one full immutable Action envelope.
+    *
+    * <p>Unlike the legacy overload, this path never resolves a same-generation
+    * idempotent alias. It is still asynchronous: callers that must stop an
+    * already-active native consumable before vanilla's next use update also
+    * need the narrow lifecycle fence owned by the Minecraft backend.
+    */
+   public ActionMailbox.Cancellation cancelExact(
+      ActionEnvelope expected, ActionCancellationReason reason
+   ) {
+      return this.mailbox.cancelExact(expected, reason);
+   }
+
+   /**
     * Cancels one exact self-defense Action with a target-specific receipt.
     *
     * <p>Do not promote generation quarantine to a safe cancellation result:
@@ -1381,11 +1395,16 @@ public final class BotActionRuntime {
          BotActionRuntime.ActionKey var4 = new BotActionRuntime.ActionKey(var1.botId(), var1.actionId());
          BotActionRuntime.Ticket var5 = this.active.get(var4);
          if (var5 != null
+            && var1.requiresExactEnvelope()
+            && !var1.expectedEnvelope().orElseThrow().equals(var5.envelope)) {
+            var5 = null;
+         }
+         if (var5 != null
             && var1.requiresGenerationContainment()
             && var5.envelope.botGeneration() != var1.containmentGeneration()) {
             var5 = null;
          }
-         if (var5 == null) {
+         if (var5 == null && !var1.requiresExactEnvelope()) {
             var5 = this.ledger
                .canonicalActionId(var1.botId(), var1.actionId())
                .map(var2x -> this.active.get(new BotActionRuntime.ActionKey(var1.botId(), var2x)))
@@ -1442,10 +1461,19 @@ public final class BotActionRuntime {
                this.completeCancellation(var1, var7, var2);
             }
          } else {
-            ActionMailbox.CancellationStatus var6 = this.ledger.completedOutcome(var1.botId(), var1.actionId()).isPresent()
+            boolean var6 = var1.requiresExactEnvelope()
+               ? this.ledger.canonicalEnvelope(var1.botId(), var1.actionId())
+                  .filter(var1.expectedEnvelope().orElseThrow()::equals)
+                  .flatMap(ignored -> this.ledger.completedOutcome(
+                     var1.botId(), var1.actionId()
+                  ))
+                  .isPresent()
+               : this.ledger.completedOutcome(var1.botId(), var1.actionId())
+                  .isPresent();
+            ActionMailbox.CancellationStatus var7 = var6
                ? ActionMailbox.CancellationStatus.ALREADY_TERMINAL
                : ActionMailbox.CancellationStatus.NOT_FOUND;
-            this.completeCancellation(var1, var6, var2);
+            this.completeCancellation(var1, var7, var2);
          }
       } catch (RuntimeException exception) {
          this.containCancellationFailure(var1, var2);
@@ -2225,7 +2253,36 @@ public final class BotActionRuntime {
       ActionMailbox.CancelCommand var5
    ) {
       ActionEnvelope var6 = var1.envelope();
+      if (var5 != null
+         && var5.requiresExactEnvelope()
+         && var5.hasRetainedIdempotentSibling()) {
+         this.publish(
+            var1.completion(),
+            this.rejectedOutcome(
+               var6,
+               var2,
+               ActionFailureCode.UNSAFE_CONTROL_STATE,
+               "Exact cancellation found a retained queued idempotent alias"
+            )
+         );
+         return ActionMailbox.CancellationStatus.NOT_FOUND;
+      }
       ActionLedger.BeginResult var7 = this.ledger.begin(var6);
+
+      if (var5 != null
+         && var5.requiresExactEnvelope()
+         && var7.status() != ActionLedger.BeginStatus.STARTED) {
+         this.publish(
+            var1.completion(),
+            this.rejectedOutcome(
+               var6,
+               var2,
+               ActionFailureCode.UNSAFE_CONTROL_STATE,
+               "Exact cancellation found a retained alias or terminal action"
+            )
+         );
+         return ActionMailbox.CancellationStatus.NOT_FOUND;
+      }
 
       return switch (var7.status()) {
          case STARTED -> {

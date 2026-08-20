@@ -135,6 +135,14 @@ class MinecraftVillagerTradeSkillNodeHandlerTest {
                             ActionCancellationReason reason) {
                         throw new AssertionError("reservation test must not cancel an action");
                     }
+
+                    @Override
+                    public void cancelStrictNaturalUse(
+                            ActionEnvelope envelope,
+                            ActionCancellationReason reason) {
+                        throw new AssertionError(
+                                "reservation test must not cancel a strict natural item use");
+                    }
                 },
                 signal -> {
                     throw new AssertionError("reservation test must not emit a signal");

@@ -55,6 +55,16 @@ public final class MinecraftActionBackend implements ActionBackend {
             worldInteractionBackend;
     private final Map<StateKey, BackendState> states = new HashMap<>();
 
+    /** Outcome of one exact strict-natural-use cancellation preflight. */
+    public enum StrictUseCancellationFenceStatus {
+        /** The exact active natural use was marked for the native Mixin. */
+        MARKED,
+        /** No strict natural item use is active for the requested generation. */
+        NO_ACTIVE_STRICT_USE,
+        /** A different strict natural use is active in the requested generation. */
+        ACTIVE_STRICT_USE_MISMATCH
+    }
+
     public MinecraftActionBackend(
             BotLifecycleManager lifecycleManager,
             PlayerInputController inputController) {
@@ -134,6 +144,19 @@ public final class MinecraftActionBackend implements ActionBackend {
      */
     public boolean beforeNativeItemUseUpdate(BotServerPlayer player) {
         return worldInteractionBackend.beforeNativeItemUseUpdate(player);
+    }
+
+    /**
+     * Arms the exact strict-use fence before a queued lifecycle cancellation
+     * can be drained. The marker itself performs no inventory or world write;
+     * {@code LivingEntityUseItemMixin} consumes it immediately before native
+     * item use advances.
+     */
+    public StrictUseCancellationFenceStatus
+            fenceStrictNativeItemUseCancellation(
+                    ActionEnvelope expected) {
+        return worldInteractionBackend.fenceStrictNativeItemUseCancellation(
+                expected);
     }
 
     @Override
