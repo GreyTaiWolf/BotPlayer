@@ -39,10 +39,15 @@ adapter 只保存它亲自成功申请且所有 entry 都是 fresh `ACQUIRED` �
 漂移返回 `BINDING_MISMATCH`。如果共享表已经被外部相同 owner 占用、但 adapter 没有自己的 exact cache，则返回
 `RESERVATION_STATE_UNTRACKED`，不把 raw token 猜成这一 binding 的许可。
 
-每个 `isCurrent(...)`、`release(...)` 与后续正常 `acquire(...)` 都在 owner thread 懒检查所有底层 token。TTL
-过期，或外部 P5 runtime 调用已有 `releaseRun(...)`/`closeGeneration(...)` 后，cache 会被移除；它不能凭 cache
-继续授予使用权。TTL、capacity、token ID、renew/release、run 与 generation 清理仍由
-`ResourceReservationService` 决定，本 adapter 不增加 persistence 或新的 lifecycle hook。
+每个 `isCurrent(...)`、`release(...)`、`renew(...)` 与后续正常 `acquire(...)` 都在 owner thread 懒检查所有
+底层 token。TTL 过期，或外部 P5 runtime 调用已有 `releaseRun(...)`/`closeGeneration(...)` 后，cache 会被移除；
+它不能凭 cache 继续授予使用权。只有 issuing adapter 的 exact-binding `renew(...)` 可以把其当前 cache 中的全部
+token 交给 `ResourceReservationService.renew(...)`：所有底层 renewal 成功后才发布 replacement opaque lease，旧
+lease 立即 stale。foreign/stale lease 或 binding drift 会在任何 raw renewal 前拒绝；若其他调用者绕过 adapter
+直接 raw renew，旧 token 与 cache 不再相等，adapter 会懒失效并拒绝采用或再次 renew 那个 replacement。任何
+unexpected raw renewal state 也只会丢弃 adapter cache，不会猜测或重建 binding。TTL、capacity、token ID、raw
+renew/release、run 与 generation 清理仍由 `ResourceReservationService` 决定，本 adapter 不增加 persistence 或新的
+lifecycle hook。
 
 ### 3. 这不是施工执行许可
 
@@ -98,7 +103,8 @@ checkpoint 数据。
 
 - JUnit/isolated pure-Java model tests 覆盖同维度重叠、负坐标 fixed tile、最大 8 tile、dimension 隔离、原子冲突
   无半租约、exact idempotence/identity drift、overlong dimension、TTL、external `releaseRun`/
-  `closeGeneration` lazy invalidation、foreign/stale/untracked lease 和 wrong-thread rejection；
+  `closeGeneration` lazy invalidation、exact-binding renewal 的 replacement/旧 lease fencing、foreign/stale/drift
+  不触发 raw renewal、out-of-band raw renewal 的 lazy fail-closed，以及 wrong-thread/monotonic-tick rejection；
 - 静态复核确认 adapter 只依赖 immutable site DTO 与现有 `skill.reservation`，不引用 Minecraft、Action、Technique、
   Skill、lifecycle 或 P6；
 - 对应提交仍须在 Java 21 环境通过 `clean build`；不需要 GameTest（没有 Minecraft API），但未来真实 construction

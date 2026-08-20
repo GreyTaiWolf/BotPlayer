@@ -20,6 +20,7 @@ import io.github.greytaiwolf.botplayer.building.construction.ConstructionWorkPla
 import io.github.greytaiwolf.botplayer.skill.reservation.ReservationKey;
 import io.github.greytaiwolf.botplayer.skill.reservation.ReservationMode;
 import io.github.greytaiwolf.botplayer.skill.reservation.ReservationRequest;
+import io.github.greytaiwolf.botplayer.skill.reservation.ReservationToken;
 import io.github.greytaiwolf.botplayer.skill.reservation.ResourceReservationService;
 import java.util.List;
 import java.util.Map;
@@ -148,6 +149,79 @@ class ConstructionSiteLeaseServiceTest {
     }
 
     @Test
+    void renewalPublishesReplacementLeaseAndImmediatelyFencesThePriorLease() {
+        ResourceReservationService reservations = new ResourceReservationService(16, 100);
+        ConstructionSiteLeaseService service = new ConstructionSiteLeaseService(reservations);
+        ConstructionSiteBinding binding = binding(FIRST_SITE, OVERWORLD, 0, 64, 0,
+                new BlueprintOffset(0, 0, 0));
+        ConstructionSiteLease original = requireAcquired(service, FIRST_BOT, 1L, FIRST_RUN,
+                binding, 10L, 20);
+
+        ConstructionSiteLeaseService.RenewResult result = service.renew(
+                original, binding, 12L, 30);
+        ConstructionSiteLease replacement = result.lease().orElseThrow();
+        ReservationToken replacementToken = replacement.tokens().get(0);
+
+        assertEquals(ConstructionSiteLeaseService.RenewStatus.RENEWED, result.status());
+        assertFalse(original == replacement);
+        assertEquals(original.binding(), replacement.binding());
+        assertEquals(original.acquiredTick(), replacement.acquiredTick());
+        assertEquals(42L, replacement.expiresTick());
+        assertFalse(service.isCurrent(original, binding, 12L));
+        assertTrue(service.isCurrent(replacement, binding, 12L));
+        assertEquals(ConstructionSiteLeaseService.RenewStatus.FOREIGN_OR_STALE,
+                service.renew(original, binding, 12L, 40).status());
+        assertEquals(List.of(replacementToken), reservations.inspect(replacementToken.key(), 12L));
+    }
+
+    @Test
+    void renewalRejectsForeignAndBindingDriftBeforeRawRenewal() {
+        ResourceReservationService reservations = new ResourceReservationService(16, 100);
+        ConstructionSiteLeaseService service = new ConstructionSiteLeaseService(reservations);
+        ConstructionSiteLeaseService foreignService = new ConstructionSiteLeaseService(reservations);
+        ConstructionSiteBinding binding = binding(FIRST_SITE, OVERWORLD, 0, 64, 0,
+                new BlueprintOffset(0, 0, 0));
+        ConstructionSiteBinding drifted = binding(SECOND_SITE, OVERWORLD, 0, 64, 0,
+                new BlueprintOffset(0, 0, 0));
+        ConstructionSiteLease lease = requireAcquired(service, FIRST_BOT, 1L, FIRST_RUN,
+                binding, 10L, 20);
+        ReservationToken originalToken = lease.tokens().get(0);
+
+        assertEquals(ConstructionSiteLeaseService.RenewStatus.FOREIGN_OR_STALE,
+                foreignService.renew(lease, binding, 11L, 40).status());
+        assertEquals(List.of(originalToken), reservations.inspect(originalToken.key(), 11L));
+        assertEquals(ConstructionSiteLeaseService.RenewStatus.BINDING_MISMATCH,
+                service.renew(lease, drifted, 11L, 40).status());
+        assertEquals(List.of(originalToken), reservations.inspect(originalToken.key(), 11L));
+        assertTrue(service.isCurrent(lease, binding, 11L));
+    }
+
+    @Test
+    void outOfBandRawRenewalInvalidatesTheCacheAndCannotBeAdopted() {
+        ResourceReservationService reservations = new ResourceReservationService(16, 100);
+        ConstructionSiteLeaseService service = new ConstructionSiteLeaseService(reservations);
+        ConstructionSiteBinding binding = binding(FIRST_SITE, OVERWORLD, 0, 64, 0,
+                new BlueprintOffset(0, 0, 0));
+        ConstructionSiteLease lease = requireAcquired(service, FIRST_BOT, 1L, FIRST_RUN,
+                binding, 10L, 20);
+        ReservationToken originalToken = lease.tokens().get(0);
+        ReservationToken rawReplacement = reservations.renew(originalToken, 12L, 20)
+                .token()
+                .orElseThrow();
+
+        ConstructionSiteLeaseService.RenewResult result = service.renew(
+                lease, binding, 12L, 60);
+
+        assertEquals(ConstructionSiteLeaseService.RenewStatus.FOREIGN_OR_STALE, result.status());
+        assertTrue(result.lease().isEmpty());
+        assertFalse(service.isCurrent(lease, binding, 12L));
+        assertEquals(32L, rawReplacement.expiresTick());
+        assertEquals(List.of(rawReplacement), reservations.inspect(rawReplacement.key(), 12L));
+        assertEquals(ConstructionSiteLeaseService.AcquireStatus.RESERVATION_STATE_UNTRACKED,
+                service.acquire(FIRST_BOT, 1L, FIRST_RUN, binding, 12L, 20).status());
+    }
+
+    @Test
     void overlongDimensionFailsClosedWithoutTruncationOrAReservation() {
         ResourceReservationService reservations = new ResourceReservationService(16, 100);
         ConstructionSiteLeaseService service = new ConstructionSiteLeaseService(reservations);
@@ -252,6 +326,21 @@ class ConstructionSiteLeaseServiceTest {
         assertInstanceOf(IllegalStateException.class, failure.get());
         ConstructionSiteLease lease = requireAcquired(service, FIRST_BOT, 1L, FIRST_RUN,
                 binding, 9L, 20);
+        AtomicReference<Throwable> renewalFailure = new AtomicReference<>();
+        Thread renewalThread = new Thread(() -> {
+            try {
+                service.renew(lease, binding, 10L, 20);
+            } catch (Throwable throwable) {
+                renewalFailure.set(throwable);
+            }
+        });
+
+        renewalThread.start();
+        renewalThread.join();
+
+        assertInstanceOf(IllegalStateException.class, renewalFailure.get());
+        assertThrows(IllegalArgumentException.class,
+                () -> service.renew(lease, binding, 8L, 20));
         assertTrue(service.isCurrent(lease, binding, 9L));
         assertEquals(1, reservations.activeLeaseCount(9L));
     }

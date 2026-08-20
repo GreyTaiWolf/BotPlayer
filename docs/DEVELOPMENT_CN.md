@@ -49,7 +49,7 @@ P2 已加入生命周期、移动、交互和库存 GameTest；P3 加入有限�
 GameTest（各 1 项）。P5 总退出门和 P6 总退出门仍未关闭；真实客户端、专用服和多 bot soak
 不由此替代。Build #362 是当前 P5A 修复、P5C lifecycle Contract、P6 会话协调器、本地
 ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget、P6-B0 server-owned
-physical-attempt handshake 与 P5D-A0/A1/A2/A3/A4/A5 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item/loaded-world survey 数据增量提交之前的自动化基线；这些提交仍须各自通过 Java 21 CI。涉及
+physical-attempt handshake 与 P5D-A0/A1/A2/A3/A4/A5/A6 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item/loaded-world survey/spatial-lease 数据增量提交之前的自动化基线；这些提交仍须各自通过 Java 21 CI。涉及
 Minecraft 行为的提交必须运行：
 
 ```bash

@@ -127,6 +127,59 @@ public final class ConstructionSiteLeaseService {
     }
 
     /**
+     * Renews one current opaque lease only for its complete value-equal binding.
+     *
+     * <p>Every underlying token is renewed by the existing reservation authority, then this
+     * adapter publishes one replacement opaque lease. The supplied lease is immediately stale on
+     * success. Foreign, stale, or binding-drifted leases are rejected before any raw renewal is
+     * attempted. An out-of-band raw renewal similarly makes the cached token set stale, so this
+     * adapter will not adopt or renew that replacement without a new tracked acquisition.
+     */
+    public RenewResult renew(ConstructionSiteLease lease,
+            ConstructionSiteBinding binding, long currentTick, int leaseTicks) {
+        requireOwnerThread();
+        observeTick(currentTick);
+        ConstructionSiteLease checkedLease = Objects.requireNonNull(lease, "lease");
+        ConstructionSiteBinding checkedBinding = Objects.requireNonNull(binding, "binding");
+        reapStaleLeases(currentTick);
+        LeaseOwner owner = LeaseOwner.from(checkedLease);
+        if (leasesByOwner.get(owner) != checkedLease) {
+            return RenewResult.rejected(RenewStatus.FOREIGN_OR_STALE);
+        }
+        if (!checkedLease.hasExactBinding(checkedBinding)) {
+            return RenewResult.rejected(RenewStatus.BINDING_MISMATCH);
+        }
+
+        List<ReservationToken> replacementTokens = new ArrayList<>(checkedLease.tileCount());
+        try {
+            for (ReservationToken token : checkedLease.tokens()) {
+                ResourceReservationService.RenewResult result = reservations.renew(
+                        token, currentTick, leaseTicks);
+                if (result.status() != ResourceReservationService.RenewStatus.RENEWED) {
+                    invalidate(owner, checkedLease);
+                    return RenewResult.rejected(RenewStatus.RESERVATION_STATE_UNTRACKED);
+                }
+                replacementTokens.add(result.token().orElseThrow(() -> new IllegalStateException(
+                        "renewed reservation token was unexpectedly absent")));
+            }
+
+            ConstructionSiteLease replacement = new ConstructionSiteLease(
+                    checkedLease.botId(), checkedLease.botGeneration(), checkedLease.skillRunId(),
+                    checkedBinding, replacementTokens);
+            if (!leasesByOwner.replace(owner, checkedLease, replacement)) {
+                invalidate(owner, checkedLease);
+                return RenewResult.rejected(RenewStatus.RESERVATION_STATE_UNTRACKED);
+            }
+            return new RenewResult(RenewStatus.RENEWED, Optional.of(replacement));
+        } catch (RuntimeException exception) {
+            if (!replacementTokens.isEmpty() || exception instanceof IllegalStateException) {
+                invalidate(owner, checkedLease);
+            }
+            throw exception;
+        }
+    }
+
+    /**
      * Releases all tiles held by one current opaque lease. A foreign, expired, externally released,
      * or already-released lease is never forwarded as an arbitrary raw reservation-token release.
      */
@@ -209,6 +262,10 @@ public final class ConstructionSiteLeaseService {
             }
         }
         return true;
+    }
+
+    private void invalidate(LeaseOwner owner, ConstructionSiteLease lease) {
+        leasesByOwner.remove(owner, lease);
     }
 
     private static boolean matchesFreshExclusiveTileAcquisition(
@@ -356,5 +413,32 @@ public final class ConstructionSiteLeaseService {
     public enum ReleaseStatus {
         RELEASED,
         FOREIGN_OR_STALE
+    }
+
+    public enum RenewStatus {
+        RENEWED,
+        BINDING_MISMATCH,
+        FOREIGN_OR_STALE,
+        RESERVATION_STATE_UNTRACKED
+    }
+
+    /** Successful renewal returns the replacement lease; the supplied lease is no longer current. */
+    public record RenewResult(RenewStatus status, Optional<ConstructionSiteLease> lease) {
+        public RenewResult {
+            status = Objects.requireNonNull(status, "status");
+            lease = Objects.requireNonNull(lease, "lease");
+            if (lease.isPresent() != (status == RenewStatus.RENEWED)) {
+                throw new IllegalArgumentException(
+                        "construction site lease renewal result did not match its status");
+            }
+        }
+
+        public boolean renewed() {
+            return status == RenewStatus.RENEWED;
+        }
+
+        private static RenewResult rejected(RenewStatus status) {
+            return new RenewResult(status, Optional.empty());
+        }
     }
 }
