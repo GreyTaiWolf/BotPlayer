@@ -154,6 +154,23 @@ public final class AiClientSponsoredRequestLedger {
         return requestsById.size();
     }
 
+    /**
+     * Package-private coordination view used only to preserve the same-bot/global-capacity
+     * admission invariant before a gate may replace an older envelope.
+     *
+     * <p>The returned binding is still immutable and must only be closed through its complete
+     * {@link AiRequestDispatchReceipt}; callers must not derive a broad cancellation from this
+     * lookup.
+     */
+    Optional<AiClientSponsoredRequest> findActiveForBot(UUID botId) {
+        return Optional.ofNullable(currentForBot(requireNonZero(botId, "botId")));
+    }
+
+    /** Package-private non-content admission check for the server-thread coordinator. */
+    boolean hasActiveRequestForBot(UUID botId) {
+        return findActiveForBot(botId).isPresent();
+    }
+
     /** The diagnostic intentionally exposes no request correlation or client content. */
     @Override
     public String toString() {

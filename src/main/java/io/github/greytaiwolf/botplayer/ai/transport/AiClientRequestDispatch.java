@@ -239,12 +239,38 @@ public record AiClientRequestDispatch(
             String providerId,
             AiRequest requestTemplate,
             int ttlTicks) {
+        long ttlMillis = Math.multiplyExact(ttlTicks, 50L);
+        requireDispatchableTemplate(
+                purpose,
+                providerId,
+                requestTemplate,
+                ttlTicks,
+                0L,
+                ttlMillis);
+    }
+
+    /**
+     * Validates a purpose-bound template and the client wall-clock deadline before a server gate
+     * can replace an older request.
+     *
+     * <p>Using the real epoch bounds here is intentional: a coordinator must reject a malformed
+     * replacement before {@link AiProposalSessionGate#openReplacing(UUID, UUID, UUID, long, long,
+     * long, int, AiRequestPurpose, boolean, io.github.greytaiwolf.botplayer.ai.tool.ToolFirewallPolicy)}
+     * removes the old envelope. The placeholders below exercise only identity fields that are
+     * later supplied by that gate.
+     */
+    public static void requireDispatchableTemplate(
+            AiRequestPurpose purpose,
+            String providerId,
+            AiRequest requestTemplate,
+            int ttlTicks,
+            long issuedAtEpochMillis,
+            long expiresAtEpochMillis) {
         AiRequest request = Objects.requireNonNull(requestTemplate, "requestTemplate");
         AiRequestPurpose checkedPurpose = Objects.requireNonNull(purpose, "purpose");
         if (ttlTicks < 1 || ttlTicks > AiProposalSessionLimits.MAX_REQUEST_TTL_TICKS) {
             throw new IllegalArgumentException("ttlTicks is outside the allowed range");
         }
-        long ttlMillis = Math.multiplyExact(ttlTicks, 50L);
         new AiClientRequestDispatch(
                 new UUID(0L, 1L),
                 new UUID(0L, 2L),
@@ -257,8 +283,8 @@ public record AiClientRequestDispatch(
                 checkedPurpose,
                 0L,
                 ttlTicks,
-                0L,
-                ttlMillis,
+                issuedAtEpochMillis,
+                expiresAtEpochMillis,
                 providerId,
                 request.model(),
                 request.messages(),

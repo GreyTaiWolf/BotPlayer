@@ -350,7 +350,7 @@ screen、独立专用服和长时间 soak 是明确保留的专项验证，不�
 | P5B | 广泛原版容器/工作站、制作、生产和日常生活 | Build #362 已自动验证严格白名单容器、工作站边界、Bot 私有末影箱、受限 wheat/甘蔗收获、牛繁殖、单笔村民交易和牛奶解毒纵切；末影箱只承诺账本隔离与守恒取消，不承诺逐槽回滚或同方块跨 Bot 并行。这不等于通用容器、任意配方/作物/交易或自动药物策略，真实客户端与专用服仍待验证 |
 | P5C | 运输、游戏进程和高级战斗 | Build #362 已自动验证已有有限自卫会话授权的单次 `MELEE_ATTACK` 窄 bridge；目标选择、移动、装备、重试、连击、泛化 Technique 路由和其余 P5C 能力仍未实现 |
 | P5D | 建筑与红石 | 未实现 |
-| P6 | DeepSeek、聊天、Tool Firewall、预算 | 部分编码：Provider/故障边界、codec/firewall、上下文、session 修复与 R1 固定只读审阅往返已由 Build #362 自动验证；R1 绝不执行世界动作。ADR-0022 的 server-thread 通用 binding 账本已编码，但 Lifecycle、Network、Client 与 Scheduler 均未接线；通用 client-sponsored bridge、聊天/模型策略与 AI→技能计划/世界执行仍未实现，真实客户端/Provider E2E 仍待验证 |
+| P6 | DeepSeek、聊天、Tool Firewall、预算 | 部分编码：Provider/故障边界、codec/firewall、上下文、session 修复与 R1 固定只读审阅往返已由 Build #362 自动验证；R1 绝不执行世界动作。ADR-0022 的通用 binding 账本及 ADR-0024 的 owner-thread gate+ledger 协调器（全局上限、精确 close、有界安全 terminal mailbox）已编码；当前新增协调器仍待其提交的 Java 21 CI 验证，且 Lifecycle、Network、Client 与 Scheduler 均未接线。通用 client-sponsored bridge、聊天/模型策略与 AI→技能计划/世界执行仍未实现，真实客户端/Provider E2E 仍待验证 |
 | P7 | 长期记忆、目标、承诺和恢复 | 未实现 |
 | P8 | 模组 C0–C3、标准容器与自定义 menu 适配 | 未实现 |
 | P9 | 多 bot 协作 | 未实现 |
