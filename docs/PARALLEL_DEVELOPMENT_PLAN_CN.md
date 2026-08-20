@@ -7,6 +7,8 @@
 > 但仍未实现 P5D 建筑/红石，也不放宽本文件的 P6/Technique 并行边界。
 > ADR-0028 另在未接线的 P6 coordinator 内固定 ledger-first proposal review 与 exact terminal
 > ledger close；它不接入 R1、network、client、scheduler 或 P5，亦不改变本文件的并行前置条件。
+> ADR-0029 另有 P5D-A0 的纯 Java 有界 `building/blueprint` 数据合同；它不接 Action、Technique、
+> 物品预留、Minecraft/world 或建筑 route，P5D 仍未实现。
 >
 > 更新日期：2026-08-07
 >

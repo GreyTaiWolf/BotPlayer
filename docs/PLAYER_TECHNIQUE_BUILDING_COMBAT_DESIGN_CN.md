@@ -1142,6 +1142,10 @@ technique/building/CrouchEdgePlaceTechnique.java
 
 ### 14.5 `PT4-A`：小屋工作包
 
+当前仅已落地 `P5D-A0` 的 `building/blueprint/` 纯 Java 数据边界：它限制 Blueprint cell/offset/span、
+重复坐标与 content hash，并只给出计划 block requirement，**不**映射背包物品、不接 NBT、选址、
+modules/`PostPlacementSemantic`、施工图、work package、Technique 或真实世界放置。以下仍是后续 PT4-A 目标：
+
 新增：
 
 ```text

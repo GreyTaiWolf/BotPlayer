@@ -47,8 +47,8 @@ P2 已加入生命周期、移动、交互和库存 GameTest；P3 加入有限�
 [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) 已通过 Java 21
 `clean build`、Gradle `test`、161 项常规 GameTest 和 phase-one/phase-two 重启
 GameTest（各 1 项）。P5 总退出门和 P6 总退出门仍未关闭；真实客户端、专用服和多 bot soak
-不由此替代。Build #362 是当前 P5A 修复、P5C lifecycle Contract、P6 会话协调器与本地
-ledger-first proposal review 增量提交之前的自动化基线；这些提交仍须各自通过 Java 21 CI。涉及
+不由此替代。Build #362 是当前 P5A 修复、P5C lifecycle Contract、P6 会话协调器、本地
+ledger-first proposal review 与 P5D-A0 有界蓝图数据增量提交之前的自动化基线；这些提交仍须各自通过 Java 21 CI。涉及
 Minecraft 行为的提交必须运行：
 
 ```bash
@@ -77,6 +77,7 @@ src/main/java/io/github/greytaiwolf/botplayer/
   safety/                        P4 每 Tick SafetyFrame、incident FSM、威胁探针与抢占
   skill/                         P5 有界 Skill 契约、DAG、资源预留与当前生存纵切
   technique/                     短生命周期玩家 Technique；当前一个 lifecycle coordinator + 有限自卫单次近战 route
+  building/blueprint/            P5D-A0 有界纯 Java Blueprint、计划方块需求与内容 hash；不接 Minecraft/Action/Technique/world
   worldmodel/                    scoped revision、短期事实与确定性活动推断
   gametest/                      P2–P5 NeoForge GameTest
   network/                       界面打开与 agentId 绑定 payload；永不传 Key

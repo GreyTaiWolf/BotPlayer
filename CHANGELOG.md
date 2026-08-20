@@ -7,6 +7,11 @@
 
 ### 新增
 
+- 新增 ADR-0029 的 P5D-A0 有界纯 Java Blueprint 数据 Contract：schema-v1 只接受 1–256 个唯一、
+  canonical cell，限制 relative offset/span，派生确定性 SHA-256 content hash，并按目标 blockId 与
+  permanent/temporary 聚合计划方块需求。它不含 BlockEntity NBT、不把 blockId 映射为 inventory item，
+  也不接 site、材料预留、work package、Technique、Action、Minecraft 世界、建筑或红石；P5D 仍未实现，
+  当前提交的 Java 21 CI 与 Minecraft 实机验证仍待完成；
 - 新增 ADR-0028 的 P6-C3 owner-thread 通用 proposal review transaction：完整 immutable C2S
   correlation 必须先由 coordinator ledger 预检，漂移/replay/replacement 的 payload 不进入 gate；gate
   terminal receipt 必须 exact-close 同一 ledger binding，gate/ledger 分歧只精确清理已预检 binding 并

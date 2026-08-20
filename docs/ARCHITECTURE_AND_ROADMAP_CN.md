@@ -1482,6 +1482,11 @@ L0 只能调用白名单安全技能，并有冷却和循环检测，防止反�
 
 `Blueprint` 必须是可版本化的数据结构，方块状态、方块实体数据和替换策略分开。普通放置仍走玩家 use 入口。只对管理员明确允许的世界生成/修复工具开放直接方块写入，且不属于普通 bot 游戏能力。
 
+ADR-0029 当前只落实了不接线的 schema-v1 `building.blueprint` 数据边界：1–256 个 canonical cell、
+有界 relative offset/span、确定性 content hash 与计划方块需求。它不携带 BlockEntity NBT，不把
+block id 推导成 inventory item，也不含 modules/`PostPlacementSemantic`，更不意味着选址、材料预留、
+施工、真实放置或 P5D 已完成。
+
 施工中记录：
 
 - 蓝图 hash；
