@@ -7,16 +7,14 @@
 
 ### 新增
 
-- 新增 ADR-0041 的 P6-B1 R1 physical-attempt transport Contract：atomic S2C offer 将已有受限
-  dispatch 与完整 redacted attempt identity 一起编码，C2S prepare ACK 与 S2C start grant 只携带 exact
-  identity；codec round-trip 和 diagnostics 覆盖 owner/nonce/prompt 不泄露及 dispatch/identity drift 拒绝。
-  R1 另有一个尚未接入 lifecycle 的 owner-thread pure holder：它只为 canonical dispatch 派生固定保守
-  admission、按 `(owner,bot,agent)` scope 建有界 ledger，并把 exact receipt identity 保存在 B0
-  coordinator 旁；ticket/gate 的非终态 exact lookup 不会按 botId 猜测。客户端 controller 已仅为
-  canonical R1 offer 本地建 factory/gate 并在 exact grant 的一次性 claim 成功后紧邻启动一次 Provider；
-  offer、rebind、cancel 与物理 deadline 均不能提前启动。当前仍未注册 v3 packet、认证 sender、构造
-  production owner/reaper 或 lifecycle bridge，因此不表示真实 bridge、budget settle、HTTP、billing/usage
-  或 P6 完成；
+- 接入 ADR-0041 的 P6-B1 R1 physical-attempt production bridge：protocol v3 注册 atomic S2C offer、
+  C2S prepare ACK 与 S2C start grant，并删除旧 raw dispatch 生产入口。lifecycle 只在认证当前 owner、
+  runtime/generation/agent、gate/ticket/nonce/identity 与 tick TTL 全部 exact 时 settle；grant 前 proposal
+  保持 non-terminal 拒绝，direct R1 `accept(...)` 也被拒绝。client 仅 stage 后发送 ACK，唯一 Provider
+  start 是 exact grant 的一次 claim，TTL、terminal、unbind、logout、death、retirement、shutdown 与 reaper
+  都按 exact identity close；offer 可释放、settled grant 永不退款。当前增量仍待 Java 21 CI、NeoForge
+  GameTest 与真实客户端/独立服丢包乱序 soak；它不是通用 AI bridge、真实 billing/usage reconciliation、
+  聊天或 AI→世界执行，也不表示 P6 总退出门完成；
 - 新增 ADR-0040 的 strict consumable 原版提交边界：活动 `BotServerPlayer` 的 strict natural
   `UseItem` 除 `updateUsingItem` HEAD 外，会在精确 `completeUsingItem()` invocation 前再次复核；
   通过后进入不可逆提交相位。Finish 或 `PlayerTickEvent.Post` 才到达的取消不会以 mailbox

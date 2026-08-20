@@ -139,15 +139,31 @@ class ClientAiRequestSessionControllerTest {
     }
 
     @Test
-    void fixedReviewLoopbackDropsProviderProseAndForwardsOnlyTheEmptyReviewTool() {
+    void canonicalReviewDirectAdmissionRequiresAGrantAndNeverStartsAProvider() {
+        ControlledProvider provider = new ControlledProvider();
+        ClientAiRequestSessionController controller = controller(
+                OWNER_ID, List.of(provider), new ArrayList<>());
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.PHYSICAL_GRANT_REQUIRED,
+                controller.accept(reviewDispatch()));
+        Assertions.assertEquals(0, provider.calls.get());
+        Assertions.assertEquals(0, controller.activeRequestCount());
+    }
+
+    @Test
+    void fixedReviewGrantHandoffDropsProviderProseAndForwardsOnlyTheEmptyReviewTool() {
         ControlledProvider provider = new ControlledProvider();
         List<AiProposalPayload> returned = new ArrayList<>();
         ClientAiRequestSessionController controller = controller(
                 OWNER_ID, List.of(provider), returned);
         AiClientRequestDispatch dispatch = reviewDispatch();
+        AiPhysicalAttemptOffer offer = physicalAttemptOffer(dispatch);
 
-        Assertions.assertEquals(ClientAiRequestDispatchStatus.STARTED,
-                controller.accept(dispatch));
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.PREPARED,
+                controller.preparePhysicalAttempt(offer, dispatch).status());
+        Assertions.assertEquals(AiPhysicalAttemptClientGrantStatus.HANDED_OFF,
+                controller.acceptPhysicalAttemptStartGrant(
+                        new AiPhysicalAttemptStartGrant(offer.identity())));
         provider.completion.complete(new AiResponse(
                 dispatch.requestId(),
                 dispatch.providerId(),
@@ -249,6 +265,33 @@ class ClientAiRequestSessionControllerTest {
                 expired.acceptPhysicalAttemptStartGrant(new AiPhysicalAttemptStartGrant(
                         expiredOffer.identity())));
         Assertions.assertEquals(0, expiredProvider.calls.get());
+    }
+
+    @Test
+    void preparedAttemptQueryFailsClosedBeforeAQueuedAckCanSettleAfterLocalChange() {
+        ControlledProvider provider = new ControlledProvider();
+        ClientAiRequestSessionController controller = controller(
+                OWNER_ID, List.of(provider), new ArrayList<>());
+        AiClientRequestDispatch dispatch = reviewDispatch();
+        AiPhysicalAttemptOffer offer = physicalAttemptOffer(dispatch);
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.PREPARED,
+                controller.preparePhysicalAttempt(offer, dispatch).status());
+        Assertions.assertTrue(controller.isCurrentPreparedPhysicalAttempt(offer.identity()));
+
+        controller.advanceBindingEpoch(dispatch.botId());
+        Assertions.assertFalse(controller.isCurrentPreparedPhysicalAttempt(offer.identity()));
+
+        AiClientRequestDispatch replacementDispatch = reviewDispatch(UUID.fromString(
+                "00000000-0000-0000-0000-000000000306"));
+        AiPhysicalAttemptOffer replacement = physicalAttemptOffer(replacementDispatch);
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.PREPARED,
+                controller.preparePhysicalAttempt(replacement, replacementDispatch).status());
+        Assertions.assertTrue(controller.isCurrentPreparedPhysicalAttempt(replacement.identity()));
+
+        Assertions.assertTrue(controller.cancelRequest(replacementDispatch.requestId()));
+        Assertions.assertFalse(controller.isCurrentPreparedPhysicalAttempt(replacement.identity()));
+        Assertions.assertEquals(0, provider.calls.get());
     }
 
     @Test

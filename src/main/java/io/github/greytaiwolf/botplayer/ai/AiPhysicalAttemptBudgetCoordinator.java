@@ -10,6 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
 
@@ -219,6 +220,35 @@ public final class AiPhysicalAttemptBudgetCoordinator {
         }
         active.startGrant = new AiPhysicalAttemptStartGrant(active.identity);
         return AiPhysicalAttemptPrepareResult.granted(active.startGrant);
+    }
+
+    /**
+     * Returns the committed start grant only while this exact identity is active and still within
+     * its physical-start deadline.
+     *
+     * <p>This is a non-settling trusted-owner query. It deliberately cannot settle an offer,
+     * recreate a grant after teardown, or turn a partial receipt into authority. It also observes
+     * the same monotonic server clock as {@link #acknowledge(AiPhysicalAttemptPrepareAck)} so a
+     * proposal cannot use a grant in the interval after its physical-start deadline but before a
+     * periodic reaper removes the entry. A lifecycle bridge uses it to ensure a review response
+     * cannot consume its proposal ticket before the corresponding server-side physical-attempt
+     * settlement has completed.
+     */
+    public Optional<AiPhysicalAttemptStartGrant> findGrantedExact(
+            AiPhysicalAttemptIdentity identity) {
+        requireOwnerThread();
+        AiPhysicalAttemptIdentity checked = Objects.requireNonNull(identity, "identity");
+        Instant now = observeCurrentInstant();
+        long nowEpochMillis = now == null ? Long.MAX_VALUE : epochMillis(now);
+        if (now == null
+                || nowEpochMillis >= checked.clientNotAfterEpochMillis()
+                || nowEpochMillis >= checked.physicalStartNotAfterEpochMillis()) {
+            return Optional.empty();
+        }
+        ActiveAttempt active = attemptsById.get(checked.attemptId());
+        return active != null && active.identity.equals(checked)
+                ? Optional.ofNullable(active.startGrant)
+                : Optional.empty();
     }
 
     /**

@@ -439,6 +439,29 @@ public final class AiProposalSessionGate {
     }
 
     /**
+     * Reads a live request only when an inbound proposal repeats every client-visible correlation
+     * field exactly.
+     *
+     * <p>This lookup is non-terminal and performs no syntax or Firewall review. It exists for the
+     * R1 lifecycle bridge to verify that a proposal is the current response for a physical
+     * attempt before it asks its server-owned attempt ledger whether a start grant exists. A
+     * partial request id, stale nonce, or drifted revision deliberately returns empty.
+     */
+    public Optional<AiProposalRequestEnvelope> findExactForProposal(
+            AiProposalPayload payload) {
+        AiProposalPayload checked = Objects.requireNonNull(payload, "payload");
+        AiProposalRequestEnvelope envelope = requestsById.get(checked.requestId());
+        return envelope != null
+                && envelope.botId().equals(checked.botId())
+                && envelope.agentId().equals(checked.agentId())
+                && envelope.generation() == checked.generation()
+                && envelope.nonce().equals(checked.nonce())
+                && envelope.revision() == checked.revision()
+                ? Optional.of(envelope)
+                : Optional.empty();
+    }
+
+    /**
      * Drops all transient request associations during server shutdown and returns the exact
      * correlations that may still have client HTTP work in flight.
      */

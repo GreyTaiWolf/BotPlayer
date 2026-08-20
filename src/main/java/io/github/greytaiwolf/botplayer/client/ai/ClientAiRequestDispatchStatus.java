@@ -6,6 +6,8 @@ public enum ClientAiRequestDispatchStatus {
     PREPARED,
     /** The local provider call was admitted and is now cancellable. */
     STARTED,
+    /** Canonical R1 may start only through its exact offer → grant physical-attempt fence. */
+    PHYSICAL_GRANT_REQUIRED,
     /** The dispatch owner is not the currently connected local player. */
     NOT_LOCAL_OWNER,
     /** The server-issued client deadline has already elapsed. */

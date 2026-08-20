@@ -18,6 +18,8 @@ public enum AiProposalReviewStatus {
     GENERATION_MISMATCH,
     NONCE_MISMATCH,
     REVISION_MISMATCH,
+    /** A current R1 proposal arrived before its exact server-side physical attempt was granted. */
+    PHYSICAL_ATTEMPT_NOT_GRANTED,
     /** The server-selected REVIEW_ONLY_V1 reply shape was not the one fixed acknowledgement. */
     REVIEW_CONTRACT_REJECTED,
     TOOL_CALLS_NOT_ALLOWED,

@@ -50,6 +50,27 @@ class AiReviewOnlyPhysicalAttemptOwnerTest {
     }
 
     @Test
+    void exactGrantLookupCannotSettleAnOfferAndVanishesWithItsExactTicket() {
+        AiReviewOnlyPhysicalAttemptOwner owner = new AiReviewOnlyPhysicalAttemptOwner(OWNER_ID);
+        try {
+            AiPhysicalAttemptOffer offered = owner.offer(dispatch()).offer().orElseThrow();
+
+            Assertions.assertTrue(owner.findGrantedExact(offered.identity()).isEmpty());
+            var grant = owner.acknowledge(offered.prepareAck()).grant().orElseThrow();
+
+            Assertions.assertAll(
+                    () -> Assertions.assertEquals(grant,
+                            owner.findGrantedExact(offered.identity()).orElseThrow()),
+                    () -> Assertions.assertEquals(AiPhysicalAttemptCloseStatus.CLOSED_COMMITTED,
+                            owner.closeExact(offered.identity()).orElseThrow().status()),
+                    () -> Assertions.assertTrue(owner.findGrantedExact(
+                            offered.identity()).isEmpty()));
+        } finally {
+            owner.close();
+        }
+    }
+
+    @Test
     void closeBeforeAckReleasesOnlyTheExactIndexedOffer() {
         AiReviewOnlyPhysicalAttemptOwner owner = new AiReviewOnlyPhysicalAttemptOwner(OWNER_ID);
         try {
@@ -118,6 +139,27 @@ class AiReviewOnlyPhysicalAttemptOwnerTest {
                             offered.identity().dispatchReceipt()).orElseThrow()),
                     () -> Assertions.assertEquals(AiPhysicalAttemptCloseStatus.CLOSED_UNSTARTED,
                             owner.closeExact(offered.identity()).orElseThrow().status()));
+        } finally {
+            owner.close();
+        }
+    }
+
+    @Test
+    void endedBindingScopeClosesOnlyAfterItsExactAttemptIsGone() {
+        AiReviewOnlyPhysicalAttemptOwner owner = new AiReviewOnlyPhysicalAttemptOwner(OWNER_ID);
+        try {
+            AiClientRequestDispatch dispatch = dispatch();
+            AiPhysicalAttemptOffer offered = owner.offer(dispatch).offer().orElseThrow();
+
+            Assertions.assertAll(
+                    () -> Assertions.assertFalse(owner.closeScope(
+                            dispatch.botId(), dispatch.agentId())),
+                    () -> Assertions.assertEquals(AiPhysicalAttemptCloseStatus.CLOSED_UNSTARTED,
+                            owner.closeExact(offered.identity()).orElseThrow().status()),
+                    () -> Assertions.assertTrue(owner.closeScope(
+                            dispatch.botId(), dispatch.agentId())),
+                    () -> Assertions.assertFalse(owner.closeScope(
+                            dispatch.botId(), dispatch.agentId())));
         } finally {
             owner.close();
         }

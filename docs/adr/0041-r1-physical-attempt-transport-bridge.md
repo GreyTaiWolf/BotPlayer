@@ -6,8 +6,8 @@
 
 ## 背景
 
-ADR-0037 已定义纯 Java 的 server-owned `offer → exact ACK → settle → start grant` 状态机，
-但现有 P6-R1 生产路径仍直接发送 `AiRequestDispatchPayload`。客户端收到该 dispatch 后，
+ADR-0037 已定义纯 Java 的 server-owned `offer → exact ACK → settle → start grant` 状态机。
+本 ADR 立项时，P6-R1 生产路径仍直接发送 `AiRequestDispatchPayload`；客户端收到该 dispatch 后，
 `ClientAiRequestSessionController.accept(...)` 会在本地 binding 检查后直接调用
 `provider.complete(...)`。因此把 ACK 接在 proposal 回传、Provider 调用或响应之后，都不能
 证明 server budget 是在实际物理 start 之前结算的。
@@ -38,16 +38,17 @@ offer 将完整已受限的 `AiClientRequestDispatch` 与相同 identity 原子�
 not-after deadline；不携带 credential、endpoint、prompt/schema、response、token 数量、usage、
 billing 或 HTTP 事实。所有 payload 的 `toString()` 必须保持 redacted。
 
-当前实现已落地这三种 payload/codec 和它们的 round-trip/redaction 测试，并提供未接 lifecycle 的
-R1 owner-thread pure holder：它只对 canonical dispatch 派生固定 conservative admission、按 exact
-scope 建 bounded ledger 并关联 receipt identity。客户端 controller 也已实现 R1-only local stage：仅
-canonical `REVIEW_ONLY_V1` offer 能创建 local Provider/fence 并返回 ACK，grant/one-claim 成功前
-`provider.complete(...)` 必为零。该 controller 尚未由 network registrar 或 lifecycle 调用；在三者
-同时接线前，这些部件不得注册为生产入口，也不得称为 Provider bridge。
+当前实现已将这三种 payload/codec 接入 protocol v3 registrar，并移除了旧 raw dispatch 的生产
+注册。`BotLifecycleManager` 为每个真实 owner 维护 R1 专用 attempt owner、exact ticket identity 与
+reaper：只有认证过的当前 owner ACK 才会 settle 并发送 grant；TTL、terminal、unbind、logout、death、
+retirement 与 shutdown 都只按 exact identity close。客户端只会先 stage，发送 ACK 前再次确认 local
+connection/session/binding/deadline；canonical `REVIEW_ONLY_V1` 的 direct `accept(...)` 被拒绝，唯一
+Provider start 只能经 exact grant 的 one-claim。proposal 在尚未存在同一 exact settled grant 时会
+non-terminal 地拒绝，保留随后合法 ACK/grant 的机会，不能提前消费 review ticket。
 
 ### 2. 服务端保持 R1 专用 owner 与精确 lifecycle 清理
 
-后续接线在 `BotLifecycleManager` 的既有 R1 gate/ticket 旁维护 R1 专用 owner state，而不使用
+当前 bridge 在 `BotLifecycleManager` 的既有 R1 gate/ticket 旁维护 R1 专用 owner state，而不使用
 `AiClientSponsoredRequestCoordinator`：每个 owner 有一个 owner-thread
 `AiPhysicalAttemptBudgetCoordinator`，并按 `(ownerId, botId, agentId)` scope 保存有界
 `AiTokenBudgetLedger`。`AiReviewOnlyTicket` 必须携带与其完整 receipt 相等的 physical identity，
@@ -64,6 +65,12 @@ R1 的 server admission 是固定而显式的：仅 canonical `REVIEW_ONLY_V1` d
 shape 的保守输入上界与 `MAXIMUM_OUTPUT_TOKENS=256` 组成 accepted admission；其 token policy、scope
 lifetime 和上限必须由 server code/配置拥有，绝不复用 client local model capability、provider usage 或
 客户端时钟。它是 conservative reservation accounting，不是 billing/usage reconciliation。
+
+任何 R1 proposal 在进入 generic review gate 前，还必须与同一 live envelope、ticket、attempt map 和
+owner coordinator 的 exact identity 对齐，并确认 coordinator 已持有该 identity 的 settled、未过
+physical-start deadline 的 grant；查询在每次 admission 以单调 server clock 重验该 deadline，不能等待
+下一次 reaper。缺失 grant、deadline 已过或任一内部关联分歧只返回无敏感数据的 non-terminal 拒绝，不能提前消费 gate/ticket，也不能由
+receipt、bot id 或客户端数据推断/关闭 replacement。
 
 ### 3. 客户端只在 grant 后紧邻实际 Provider start
 
@@ -114,9 +121,10 @@ Provider、成功或返回可执行结果。
 ## 验证方式
 
 - codec：offer/ACK/grant exact round-trip、identity drift/非法字段拒绝、diagnostic redaction；
-- server：authenticated sender、gate/ticket/runtime drift、duplicate ACK、send failure、TTL/reaper、
-  logout/rebind/terminal exact close 与 no-refund；
+- server：authenticated sender、gate/ticket/runtime drift、duplicate ACK、send failure、pre-grant
+  proposal non-terminal rejection、TTL/reaper、logout/rebind/terminal exact close 与 no-refund；
 - client：offer 前 Provider 调用为 0，grant/claim 后恰为 1，duplicate/rebind/expiry/cancel 的未 claim
-  lease 为 0，`tryClaimPhysicalStart()` 与 `provider.complete(...)` 的直接相邻性；
+  lease 为 0，direct R1 admission 为 0，`tryClaimPhysicalStart()` 与 `provider.complete(...)` 的直接
+  相邻性；
 - Java 21 `clean build`、JUnit 与 `runGameTestServer`，再加真实客户端、独立专用服、断线/reconnect、
   丢包/乱序和多 bot soak 验收。以上实机验收不能由 DTO 或纯 Java 测试替代。

@@ -10,6 +10,7 @@ import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptOfferRequest;
 import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptOfferResult;
 import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptPrepareAck;
 import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptPrepareResult;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptStartGrant;
 import io.github.greytaiwolf.botplayer.ai.AiRetryAttemptBudgetContext;
 import io.github.greytaiwolf.botplayer.ai.AiTokenBudgetLedger;
 import io.github.greytaiwolf.botplayer.ai.AiTokenBudgetPolicy;
@@ -119,6 +120,25 @@ public final class AiReviewOnlyPhysicalAttemptOwner implements AutoCloseable {
         return coordinator.acknowledge(Objects.requireNonNull(prepareAck, "prepareAck"));
     }
 
+    /**
+     * Returns an already-settled grant only when the owner index and B0 coordinator still agree
+     * on the complete physical-attempt identity.
+     *
+     * <p>The query is intentionally non-settling. It cannot settle an offer or keep a grant alive
+     * after its exact lifecycle ticket has been removed or its physical-start deadline has
+     * elapsed.
+     */
+    public Optional<AiPhysicalAttemptStartGrant> findGrantedExact(
+            AiPhysicalAttemptIdentity identity) {
+        requireOwnerThread();
+        requireOpen();
+        AiPhysicalAttemptIdentity checked = Objects.requireNonNull(identity, "identity");
+        if (!checked.equals(identitiesByReceipt.get(checked.dispatchReceipt()))) {
+            return Optional.empty();
+        }
+        return coordinator.findGrantedExact(checked);
+    }
+
     /** Finds only the exact active identity belonging to one safe dispatch receipt. */
     public Optional<AiPhysicalAttemptIdentity> findIdentity(
             AiRequestDispatchReceipt receipt) {
@@ -187,6 +207,36 @@ public final class AiReviewOnlyPhysicalAttemptOwner implements AutoCloseable {
     public int indexedAttemptCount() {
         requireOwnerThread();
         return identitiesByReceipt.size();
+    }
+
+    /**
+     * Drops one ended owner/bot/agent ledger scope after every exact attempt for that scope closed.
+     *
+     * <p>This is deliberately not a request-terminal operation: the active binding keeps its
+     * committed R1 budget until lifecycle unbind, retirement, logout, or shutdown. Returning
+     * {@code false} means either there was no retained ledger or an exact attempt still protects
+     * it, so the caller must not pretend the binding cleanup completed.
+     */
+    public boolean closeScope(UUID botId, UUID agentId) {
+        requireOwnerThread();
+        requireOpen();
+        AiTokenBudgetScope scope = new AiTokenBudgetScope(
+                ownerId,
+                requireNonZero(botId, "botId"),
+                requireNonZero(agentId, "agentId"));
+        boolean activeAttemptRemains = identitiesByReceipt.values().stream()
+                .map(AiPhysicalAttemptIdentity::dispatchReceipt)
+                .anyMatch(receipt -> receipt.botId().equals(scope.botId())
+                        && receipt.agentId().equals(scope.agentId()));
+        if (activeAttemptRemains) {
+            return false;
+        }
+        AiTokenBudgetLedger ledger = ledgersByScope.remove(scope);
+        if (ledger == null) {
+            return false;
+        }
+        ledger.close();
+        return true;
     }
 
     /**

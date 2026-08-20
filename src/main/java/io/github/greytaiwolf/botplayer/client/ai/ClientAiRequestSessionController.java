@@ -3,6 +3,7 @@ package io.github.greytaiwolf.botplayer.client.ai;
 import io.github.greytaiwolf.botplayer.ai.AiFinishReason;
 import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptClientGrantGate;
 import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptClientGrantStatus;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptIdentity;
 import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptOffer;
 import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptStartGrant;
 import io.github.greytaiwolf.botplayer.ai.AiProvider;
@@ -291,17 +292,21 @@ public final class ClientAiRequestSessionController {
     }
 
     /**
-     * Starts one local Provider request only after exact local binding checks.
+     * Starts one non-R1 local Provider request only after exact local binding checks.
      *
-     * <p>Duplicate request ids never execute twice. A newer request for the same bot retires and
-     * cancels the older local request before the newer Provider call begins.
+     * <p>Canonical {@code REVIEW_ONLY_V1} is deliberately rejected here: its production route
+     * must use {@link #preparePhysicalAttempt(AiPhysicalAttemptOffer,
+     * AiClientRequestDispatch)} and receive an exact server start grant before it can invoke a
+     * Provider. Duplicate request ids never execute twice. A newer request for the same bot
+     * retires and cancels the older local request before the newer Provider call begins.
      */
     public ClientAiRequestDispatchStatus accept(AiClientRequestDispatch dispatch) {
         rejectProposalHandoffReentrancy();
         AiClientRequestDispatch checked = Objects.requireNonNull(dispatch, "dispatch");
-        if (checked.purpose() == AiRequestPurpose.REVIEW_ONLY_V1
-                && !AiReviewOnlyContract.isCanonicalDispatch(checked)) {
-            return ClientAiRequestDispatchStatus.REVIEW_CONTRACT_REJECTED;
+        if (checked.purpose() == AiRequestPurpose.REVIEW_ONLY_V1) {
+            return AiReviewOnlyContract.isCanonicalDispatch(checked)
+                    ? ClientAiRequestDispatchStatus.PHYSICAL_GRANT_REQUIRED
+                    : ClientAiRequestDispatchStatus.REVIEW_CONTRACT_REJECTED;
         }
         long now = readCurrentEpochMillisSafely();
         if (now < 0L) {
@@ -585,6 +590,35 @@ public final class ClientAiRequestSessionController {
             cancelSession(session);
         }
         return status;
+    }
+
+    /**
+     * Returns whether an exact offer remains locally staged and ACK-safe at this instant.
+     *
+     * <p>This exposes no Provider, credential, request text, or mutable lease. The physical
+     * client uses it immediately before sending a prepare ACK so a queued ingress cannot settle a
+     * server reservation after local cancellation, rebind, owner change, connection loss, or
+     * deadline expiry won the race.
+     */
+    public boolean isCurrentPreparedPhysicalAttempt(AiPhysicalAttemptIdentity identity) {
+        rejectProposalHandoffReentrancy();
+        AiPhysicalAttemptIdentity checked = Objects.requireNonNull(identity, "identity");
+        long now = readCurrentEpochMillisSafely();
+        if (now < 0L) {
+            return false;
+        }
+        expireThrough(now);
+        synchronized (lock) {
+            ActiveSession session = sessionsByRequest.get(
+                    checked.dispatchReceipt().requestId());
+            return session != null
+                    && session.matchesPhysicalAttemptIdentity(checked)
+                    && isCurrentLocked(session)
+                    && !session.cancellation.isCancellationRequested()
+                    && isBindingEpochCurrentLocked(session)
+                    && localStatusLocked(session.dispatch, now)
+                            == ClientAiRequestDispatchStatus.STARTED;
+        }
     }
 
     /** Runs under the grant-gate handoff and owns the one actual Provider-start boundary. */
@@ -1414,7 +1448,7 @@ public final class ClientAiRequestSessionController {
     /**
      * Defers an externally invoked completion callback until its {@code whenComplete} attachment
      * returned normally. A stage is therefore unable to publish a provisional proposal before an
-     * attachment failure is reported to {@link #accept(AiClientRequestDispatch)}.
+     * attachment failure is reported to the direct non-R1 admission path.
      */
     private static final class CompletionAttachment {
         private CompletionAttachmentState state = CompletionAttachmentState.ATTACHING;

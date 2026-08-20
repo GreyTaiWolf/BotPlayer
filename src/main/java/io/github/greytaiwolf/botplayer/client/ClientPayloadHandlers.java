@@ -2,8 +2,9 @@ package io.github.greytaiwolf.botplayer.client;
 
 import io.github.greytaiwolf.botplayer.network.payload.AgentBindingResultPayload;
 import io.github.greytaiwolf.botplayer.network.payload.AgentBindingStatus;
+import io.github.greytaiwolf.botplayer.network.payload.AiPhysicalAttemptOfferPayload;
+import io.github.greytaiwolf.botplayer.network.payload.AiPhysicalAttemptStartGrantPayload;
 import io.github.greytaiwolf.botplayer.network.payload.AiRequestCancellationPayload;
-import io.github.greytaiwolf.botplayer.network.payload.AiRequestDispatchPayload;
 import io.github.greytaiwolf.botplayer.network.payload.OpenCredentialScreenPayload;
 import java.util.Objects;
 import net.minecraft.ChatFormatting;
@@ -26,7 +27,11 @@ public final class ClientPayloadHandlers {
         public void showBindingResult(AgentBindingResultPayload payload) {}
 
         @Override
-        public void handleAiRequestDispatch(AiRequestDispatchPayload payload) {}
+        public void handleAiPhysicalAttemptOffer(AiPhysicalAttemptOfferPayload payload) {}
+
+        @Override
+        public void handleAiPhysicalAttemptStartGrant(
+                AiPhysicalAttemptStartGrantPayload payload) {}
 
         @Override
         public void handleAiRequestCancellation(AiRequestCancellationPayload payload) {}
@@ -51,12 +56,18 @@ public final class ClientPayloadHandlers {
     }
 
     /**
-     * Delivers a server-generated, secret-free request only to the physical-client session
-     * controller. The common facade never invokes a Provider or touches local credentials.
+     * Delivers a server-generated, secret-free offer only to the physical-client staging path.
+     * The common facade never invokes a Provider or touches local credentials.
      */
-    public static void handleAiRequestDispatch(
-            AiRequestDispatchPayload payload, IPayloadContext context) {
-        sink.handleAiRequestDispatch(payload);
+    public static void handleAiPhysicalAttemptOffer(
+            AiPhysicalAttemptOfferPayload payload, IPayloadContext context) {
+        sink.handleAiPhysicalAttemptOffer(payload);
+    }
+
+    /** Delivers one settled start grant to the physical client grant gate. */
+    public static void handleAiPhysicalAttemptStartGrant(
+            AiPhysicalAttemptStartGrantPayload payload, IPayloadContext context) {
+        sink.handleAiPhysicalAttemptStartGrant(payload);
     }
 
     /** Delivers a correlation-only server cancellation to the physical client session controller. */
@@ -108,7 +119,9 @@ public final class ClientPayloadHandlers {
 
         void showBindingResult(AgentBindingResultPayload payload);
 
-        void handleAiRequestDispatch(AiRequestDispatchPayload payload);
+        void handleAiPhysicalAttemptOffer(AiPhysicalAttemptOfferPayload payload);
+
+        void handleAiPhysicalAttemptStartGrant(AiPhysicalAttemptStartGrantPayload payload);
 
         void handleAiRequestCancellation(AiRequestCancellationPayload payload);
     }

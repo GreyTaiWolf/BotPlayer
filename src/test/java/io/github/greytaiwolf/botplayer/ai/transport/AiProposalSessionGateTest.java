@@ -485,6 +485,41 @@ class AiProposalSessionGateTest {
     }
 
     @Test
+    void exactProposalLookupIsNonTerminalAndRequiresEveryPayloadCorrelationField() {
+        AiProposalSessionGate gate = new AiProposalSessionGate();
+        AiProposalRequestEnvelope request = reviewOnlyRequest(gate, 7L);
+        AiProposalPayload exact = payload(request, "safe", List.of(safeToolCall()));
+        AiProposalPayload driftedNonce = new AiProposalPayload(
+                request.botId(),
+                request.agentId(),
+                request.generation(),
+                request.requestId(),
+                UUID.fromString("00000000-0000-0000-0000-000000000401"),
+                request.revision(),
+                "safe",
+                List.of(safeToolCall()));
+        AiProposalPayload driftedRevision = new AiProposalPayload(
+                request.botId(),
+                request.agentId(),
+                request.generation(),
+                request.requestId(),
+                request.nonce(),
+                request.revision() + 1L,
+                "safe",
+                List.of(safeToolCall()));
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(request,
+                        gate.findExactForProposal(exact).orElseThrow()),
+                () -> Assertions.assertTrue(gate.findExactForProposal(driftedNonce).isEmpty()),
+                () -> Assertions.assertTrue(gate.findExactForProposal(driftedRevision).isEmpty()),
+                () -> Assertions.assertEquals(1, gate.activeRequestCount()),
+                () -> Assertions.assertEquals(request,
+                        gate.closeExact(AiRequestDispatchReceipt.fromEnvelope(request))
+                                .orElseThrow()));
+    }
+
+    @Test
     void closeOperationsReturnTheExactOutstandingEnvelopeForClientCancellation() {
         AiProposalSessionGate gate = new AiProposalSessionGate();
         AiProposalRequestEnvelope first = gate.open(

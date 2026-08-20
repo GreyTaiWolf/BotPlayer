@@ -4,6 +4,10 @@ import io.github.greytaiwolf.botplayer.ai.AiCapabilities;
 import io.github.greytaiwolf.botplayer.ai.AiCapability;
 import io.github.greytaiwolf.botplayer.ai.AiFinishReason;
 import io.github.greytaiwolf.botplayer.ai.AiModelCapabilities;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptClientGrantStatus;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptIdentity;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptOffer;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptStartGrant;
 import io.github.greytaiwolf.botplayer.ai.AiProvider;
 import io.github.greytaiwolf.botplayer.ai.AiRawToolCall;
 import io.github.greytaiwolf.botplayer.ai.AiResponse;
@@ -186,8 +190,12 @@ class ReviewOnlyClientSettingsControllerTest {
             runtime.sessions = sessions;
 
             AiClientRequestDispatch dispatch = reviewDispatch();
-            Assertions.assertEquals(ClientAiRequestDispatchStatus.STARTED,
-                    sessions.accept(dispatch));
+            AiPhysicalAttemptOffer offer = physicalAttemptOffer(dispatch);
+            Assertions.assertEquals(ClientAiRequestDispatchStatus.PREPARED,
+                    sessions.preparePhysicalAttempt(offer, dispatch).status());
+            Assertions.assertEquals(AiPhysicalAttemptClientGrantStatus.HANDED_OFF,
+                    sessions.acceptPhysicalAttemptStartGrant(
+                            new AiPhysicalAttemptStartGrant(offer.identity())));
             Assertions.assertEquals(1, provider.calls.get());
 
             long epochBeforeReload = runtime.connection.epoch();
@@ -253,8 +261,12 @@ class ReviewOnlyClientSettingsControllerTest {
                     (dispatch, proposal) -> c2sProposals.add(proposal));
             runtime.sessions = sessions;
             AiClientRequestDispatch dispatch = reviewDispatch();
-            Assertions.assertEquals(ClientAiRequestDispatchStatus.STARTED,
-                    sessions.accept(dispatch));
+            AiPhysicalAttemptOffer offer = physicalAttemptOffer(dispatch);
+            Assertions.assertEquals(ClientAiRequestDispatchStatus.PREPARED,
+                    sessions.preparePhysicalAttempt(offer, dispatch).status());
+            Assertions.assertEquals(AiPhysicalAttemptClientGrantStatus.HANDED_OFF,
+                    sessions.acceptPhysicalAttemptStartGrant(
+                            new AiPhysicalAttemptStartGrant(offer.identity())));
             Assertions.assertEquals(1, provider.calls.get());
 
             Files.writeString(
@@ -281,6 +293,14 @@ class ReviewOnlyClientSettingsControllerTest {
 
     private static AiClientRequestDispatch reviewDispatch() {
         return dispatch(AiRequestPurpose.REVIEW_ONLY_V1);
+    }
+
+    private static AiPhysicalAttemptOffer physicalAttemptOffer(
+            AiClientRequestDispatch dispatch) {
+        return new AiPhysicalAttemptOffer(AiPhysicalAttemptIdentity.fromDispatch(
+                dispatch,
+                UUID.fromString("00000000-0000-0000-0000-000000000501"),
+                dispatch.expiresAtEpochMillis() - 1L));
     }
 
     private static AiClientRequestDispatch dispatch(AiRequestPurpose purpose) {

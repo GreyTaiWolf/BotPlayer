@@ -1,9 +1,11 @@
 package io.github.greytaiwolf.botplayer.client;
 
 import io.github.greytaiwolf.botplayer.BotPlayer;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptClientGrantStatus;
 import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyContract;
 import io.github.greytaiwolf.botplayer.ai.transport.AiClientRequestDispatch;
 import io.github.greytaiwolf.botplayer.ai.transport.AiReviewOnlyProposalShape;
+import io.github.greytaiwolf.botplayer.client.ai.ClientAiPhysicalAttemptPreparation;
 import io.github.greytaiwolf.botplayer.client.ai.ClientAiRequestDispatchStatus;
 import io.github.greytaiwolf.botplayer.client.ai.ClientAiRequestSessionController;
 import io.github.greytaiwolf.botplayer.client.ai.ReviewOnlyClientAiProviderFactory;
@@ -14,9 +16,11 @@ import io.github.greytaiwolf.botplayer.client.credential.ClientCredentialStore;
 import io.github.greytaiwolf.botplayer.client.credential.CredentialStoreException;
 import io.github.greytaiwolf.botplayer.client.screen.BotInventoryScreen;
 import io.github.greytaiwolf.botplayer.inventory.BotPlayerMenus;
+import io.github.greytaiwolf.botplayer.network.payload.AiPhysicalAttemptOfferPayload;
+import io.github.greytaiwolf.botplayer.network.payload.AiPhysicalAttemptPrepareAckPayload;
+import io.github.greytaiwolf.botplayer.network.payload.AiPhysicalAttemptStartGrantPayload;
 import io.github.greytaiwolf.botplayer.network.payload.AiProposalPayload;
 import io.github.greytaiwolf.botplayer.network.payload.AiRequestCancellationPayload;
-import io.github.greytaiwolf.botplayer.network.payload.AiRequestDispatchPayload;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.Optional;
@@ -109,32 +113,29 @@ public final class BotPlayerClient {
     }
 
     /**
-     * Physical-client endpoint for the registered server-to-client request payload.
-     *
-     * <p>No provider is started until a local factory has explicitly been installed. This is a
-     * fail-closed configuration state rather than a fallback that could send a local credential to
-     * a server-selected endpoint or model.
+     * Stages one registered P6 physical-attempt offer and sends its exact ACK only while that
+     * staged local session remains current. Receiving an offer never starts a Provider.
      */
-    public static ClientAiRequestDispatchStatus handleAiRequestDispatch(
-            AiRequestDispatchPayload payload, UUID localOwnerId) {
-        return handleAiRequestDispatch(
+    public static ClientAiRequestDispatchStatus handleAiPhysicalAttemptOffer(
+            AiPhysicalAttemptOfferPayload payload, UUID localOwnerId) {
+        return handleAiPhysicalAttemptOffer(
                 payload, localOwnerId, currentAiConnectionEpoch());
     }
 
     /**
-     * Handles a payload that was received while {@code expectedConnectionEpoch}
-     * was current. The physical network sink captures that epoch before it
-     * queues work onto the Minecraft thread, so a packet retained by an old
-     * connection can never start provider work after logout/reconnect.
+     * Handles an offer received while {@code expectedConnectionEpoch} was current. The physical
+     * network sink captures the epoch before queuing to the Minecraft thread, so an old ingress
+     * cannot settle a server reservation after logout/reconnect.
      */
-    static ClientAiRequestDispatchStatus handleAiRequestDispatch(
-            AiRequestDispatchPayload payload, UUID localOwnerId,
+    static ClientAiRequestDispatchStatus handleAiPhysicalAttemptOffer(
+            AiPhysicalAttemptOfferPayload payload, UUID localOwnerId,
             long expectedConnectionEpoch) {
-        AiRequestDispatchPayload checkedPayload = Optional.ofNullable(payload).orElseThrow(
+        AiPhysicalAttemptOfferPayload checkedPayload = Optional.ofNullable(payload).orElseThrow(
                 () -> new NullPointerException("payload"));
         UUID checkedOwnerId = Optional.ofNullable(localOwnerId).orElseThrow(
                 () -> new NullPointerException("localOwnerId"));
-        if (!AiReviewOnlyContract.isCanonicalDispatch(checkedPayload.dispatch())) {
+        if (!checkedPayload.offer().identity().matches(checkedPayload.dispatch())
+                || !AiReviewOnlyContract.isCanonicalDispatch(checkedPayload.dispatch())) {
             return ClientAiRequestDispatchStatus.REVIEW_CONTRACT_REJECTED;
         }
         ClientAiRequestSessionController controller;
@@ -175,7 +176,62 @@ public final class BotPlayerClient {
             controller = aiRequestSessions;
         }
         controller.updateLocalOwner(checkedOwnerId);
-        return controller.accept(checkedPayload.dispatch());
+        ClientAiPhysicalAttemptPreparation preparation = controller.preparePhysicalAttempt(
+                checkedPayload.offer(), checkedPayload.dispatch());
+        if (preparation.status() != ClientAiRequestDispatchStatus.PREPARED) {
+            return preparation.status();
+        }
+
+        boolean acknowledged = false;
+        try {
+            synchronized (BotPlayerClient.class) {
+                if (aiConnection.acceptsIngress(expectedConnectionEpoch)
+                        && aiRequestSessions == controller
+                        && checkedOwnerId.equals(checkedPayload.dispatch().ownerId())
+                        && controller.isCurrentPreparedPhysicalAttempt(
+                                preparation.prepareAck().orElseThrow().identity())) {
+                    PacketDistributor.sendToServer(new AiPhysicalAttemptPrepareAckPayload(
+                            preparation.prepareAck().orElseThrow()));
+                    acknowledged = true;
+                }
+            }
+        } catch (RuntimeException exception) {
+            /* A failed handoff must not retain a future provider start permission. */
+        }
+        if (!acknowledged) {
+            controller.cancelRequest(checkedPayload.dispatch().requestId());
+            return ClientAiRequestDispatchStatus.CANCELLED;
+        }
+        return ClientAiRequestDispatchStatus.PREPARED;
+    }
+
+    /** Delivers one registered grant only to the exact locally staged owner session. */
+    public static AiPhysicalAttemptClientGrantStatus handleAiPhysicalAttemptStartGrant(
+            AiPhysicalAttemptStartGrantPayload payload, UUID localOwnerId) {
+        return handleAiPhysicalAttemptStartGrant(
+                payload, localOwnerId, currentAiConnectionEpoch());
+    }
+
+    /** Applies a queued grant only while its captured physical connection remains current. */
+    static AiPhysicalAttemptClientGrantStatus handleAiPhysicalAttemptStartGrant(
+            AiPhysicalAttemptStartGrantPayload payload, UUID localOwnerId,
+            long expectedConnectionEpoch) {
+        AiPhysicalAttemptStartGrantPayload checkedPayload = Optional.ofNullable(payload)
+                .orElseThrow(() -> new NullPointerException("payload"));
+        UUID checkedOwnerId = Optional.ofNullable(localOwnerId)
+                .orElseThrow(() -> new NullPointerException("localOwnerId"));
+        if (!checkedOwnerId.equals(checkedPayload.startGrant().identity().ownerId())) {
+            return AiPhysicalAttemptClientGrantStatus.LOCAL_SESSION_INACTIVE;
+        }
+        ClientAiRequestSessionController controller;
+        synchronized (BotPlayerClient.class) {
+            if (!aiConnection.acceptsIngress(expectedConnectionEpoch)
+                    || aiRequestSessions == null) {
+                return AiPhysicalAttemptClientGrantStatus.LOCAL_SESSION_INACTIVE;
+            }
+            controller = aiRequestSessions;
+        }
+        return controller.acceptPhysicalAttemptStartGrant(checkedPayload.startGrant());
     }
 
     /**

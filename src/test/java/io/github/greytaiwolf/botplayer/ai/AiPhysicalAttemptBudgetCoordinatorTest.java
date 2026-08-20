@@ -92,6 +92,45 @@ class AiPhysicalAttemptBudgetCoordinatorTest {
     }
 
     @Test
+    void exactGrantLookupNeverSettlesAnOfferAndDisappearsAfterExactClose() {
+        Harness harness = harness(new AiPhysicalAttemptBudgetCoordinator.Limits(2, 4));
+        AiPhysicalAttemptOffer offer = harness.offer(START.plusSeconds(5L))
+                .offer().orElseThrow();
+
+        Assertions.assertAll(
+                () -> Assertions.assertTrue(harness.coordinator.findGrantedExact(
+                        offer.identity()).isEmpty()),
+                () -> Assertions.assertEquals(new AiPhysicalAttemptBudgetSnapshot(1, 0, 0),
+                        harness.coordinator.snapshot()));
+
+        AiPhysicalAttemptStartGrant grant = harness.coordinator.acknowledge(
+                offer.prepareAck()).grant().orElseThrow();
+
+        Assertions.assertEquals(grant,
+                harness.coordinator.findGrantedExact(offer.identity()).orElseThrow());
+        harness.coordinator.closeExact(offer.identity());
+
+        Assertions.assertTrue(harness.coordinator.findGrantedExact(offer.identity()).isEmpty());
+    }
+
+    @Test
+    void exactGrantLookupFailsClosedAtPhysicalStartDeadlineBeforePeriodicReaping() {
+        Harness harness = harness(new AiPhysicalAttemptBudgetCoordinator.Limits(2, 4));
+        AiPhysicalAttemptOffer offer = harness.offer(START.plusSeconds(5L))
+                .offer().orElseThrow();
+        harness.coordinator.acknowledge(offer.prepareAck()).grant().orElseThrow();
+
+        harness.clock.set(START.plusSeconds(5L));
+
+        Assertions.assertAll(
+                () -> Assertions.assertTrue(harness.coordinator.findGrantedExact(
+                        offer.identity()).isEmpty()),
+                () -> Assertions.assertEquals(new AiPhysicalAttemptBudgetSnapshot(0, 1, 0),
+                        harness.coordinator.snapshot()),
+                () -> Assertions.assertEquals(30L, harness.ledger.snapshot().committedTokens()));
+    }
+
+    @Test
     void driftAndReplayRejectWithoutMutatingReservationOrAttemptIndexes() {
         Harness harness = harness(new AiPhysicalAttemptBudgetCoordinator.Limits(2, 4));
         AiPhysicalAttemptOffer offer = harness.offer(START.plusSeconds(5L))

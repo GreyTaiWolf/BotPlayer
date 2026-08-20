@@ -27,11 +27,17 @@ import io.github.greytaiwolf.botplayer.action.interaction.menu.PlayerInventoryMe
 import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftActionBackend;
 import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftActionSnapshot;
 import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftPlayerInputAdapter;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptCloseResult;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptCloseStatus;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptIdentity;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptOffer;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptPrepareResult;
 import io.github.greytaiwolf.botplayer.ai.AiRequest;
 import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyContract;
 import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyDispatchReceipt;
 import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyDispatchStatus;
 import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyProposalSummary;
+import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyPhysicalAttemptOwner;
 import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyReviewReceipt;
 import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyReviewStatus;
 import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlySnapshotProjection;
@@ -41,6 +47,7 @@ import io.github.greytaiwolf.botplayer.ai.transport.AiClientRequestDispatch;
 import io.github.greytaiwolf.botplayer.ai.transport.AiProposalAuthority;
 import io.github.greytaiwolf.botplayer.ai.transport.AiProposalRequestEnvelope;
 import io.github.greytaiwolf.botplayer.ai.transport.AiProposalReviewReceipt;
+import io.github.greytaiwolf.botplayer.ai.transport.AiProposalReviewStatus;
 import io.github.greytaiwolf.botplayer.ai.transport.AiProposalSessionGate;
 import io.github.greytaiwolf.botplayer.ai.transport.AiRequestDispatchReceipt;
 import io.github.greytaiwolf.botplayer.config.BotPlayerConfig;
@@ -69,9 +76,11 @@ import io.github.greytaiwolf.botplayer.lifecycle.retirement.GenerationRetirement
 import io.github.greytaiwolf.botplayer.lifecycle.retirement.GenerationRetirementStatus;
 import io.github.greytaiwolf.botplayer.lifecycle.retirement.GenerationRetirementTicket;
 import io.github.greytaiwolf.botplayer.network.payload.AgentBindingStatus;
+import io.github.greytaiwolf.botplayer.network.payload.AiPhysicalAttemptOfferPayload;
+import io.github.greytaiwolf.botplayer.network.payload.AiPhysicalAttemptPrepareAckPayload;
+import io.github.greytaiwolf.botplayer.network.payload.AiPhysicalAttemptStartGrantPayload;
 import io.github.greytaiwolf.botplayer.network.payload.AiProposalPayload;
 import io.github.greytaiwolf.botplayer.network.payload.AiRequestCancellationPayload;
-import io.github.greytaiwolf.botplayer.network.payload.AiRequestDispatchPayload;
 import io.github.greytaiwolf.botplayer.network.payload.OpenCredentialScreenPayload;
 import io.github.greytaiwolf.botplayer.navigation.GridPoint;
 import io.github.greytaiwolf.botplayer.navigation.NavigationGoal;
@@ -314,6 +323,12 @@ public final class BotLifecycleManager {
     /** Exact P6-R1 snapshot correlation; it never stores model prose or a proposed SkillPlan. */
     private final AiReviewOnlyTicketBook aiReviewOnlyTickets =
             new AiReviewOnlyTicketBook();
+    /** Server-thread owner of the bounded B1 accounting state for each real player. */
+    private final Map<UUID, AiReviewOnlyPhysicalAttemptOwner>
+            aiReviewOnlyPhysicalAttemptOwners = new LinkedHashMap<>();
+    /** One exact, currently live physical-attempt identity per active review bot. */
+    private final Map<UUID, AiPhysicalAttemptIdentity> aiReviewOnlyPhysicalAttemptsByBot =
+            new LinkedHashMap<>();
     private final Map<UUID, Long> skillCheckpointRevisions =
             new LinkedHashMap<>();
     /**
@@ -3044,13 +3059,105 @@ public final class BotLifecycleManager {
                 throw new IllegalArgumentException("review dispatch is not canonical");
             }
             AiRequestDispatchReceipt receipt = AiRequestDispatchReceipt.fromEnvelope(envelope);
-            aiReviewOnlyTickets.open(new AiReviewOnlyTicket(receipt, projection));
-            PacketDistributor.sendToPlayer(owner, new AiRequestDispatchPayload(dispatch));
+            AiReviewOnlyPhysicalAttemptOwner physicalAttemptOwner =
+                    aiReviewOnlyPhysicalAttemptOwners.computeIfAbsent(
+                            ownerId, AiReviewOnlyPhysicalAttemptOwner::new);
+            AiPhysicalAttemptOffer offer = physicalAttemptOwner.offer(dispatch)
+                    .offer()
+                    .orElseThrow(() -> new IllegalStateException(
+                            "review physical attempt offer was rejected"));
+            AiPhysicalAttemptIdentity identity = offer.identity();
+            AiPhysicalAttemptIdentity priorIdentity = aiReviewOnlyPhysicalAttemptsByBot
+                    .putIfAbsent(botId, identity);
+            if (priorIdentity != null) {
+                physicalAttemptOwner.closeExact(identity);
+                throw new IllegalStateException(
+                        "review bot already retains a physical attempt identity");
+            }
+            aiReviewOnlyTickets.open(new AiReviewOnlyTicket(
+                    receipt, projection, identity)).ifPresent(this::closePhysicalAttemptForTicket);
+            PacketDistributor.sendToPlayer(owner,
+                    new AiPhysicalAttemptOfferPayload(dispatch, offer));
             return receipt;
         } catch (RuntimeException exception) {
             // A packet that was not safely packaged/handed off retains neither gate nor ticket.
             closeAiProposalRequestForBot(botId);
             throw exception;
+        }
+    }
+
+    /**
+     * Authenticates one exact client preparation ACK before settling any server-owned attempt
+     * budget and sending the corresponding start grant.
+     *
+     * <p>Malformed, stale, cross-owner, cross-generation, or already-closed acknowledgements are
+     * intentionally ignored. Only a fully correlated current ticket may terminally close itself
+     * on a failed settlement or a failed grant handoff; a forged old receipt must never clear a
+     * newer bot request.
+     */
+    public void acknowledgeAiPhysicalAttempt(
+            ServerPlayer sender, AiPhysicalAttemptPrepareAckPayload payload) {
+        requireServerThread();
+        Objects.requireNonNull(sender, "sender");
+        Objects.requireNonNull(payload, "payload");
+        AiPhysicalAttemptIdentity identity = payload.prepareAck().identity();
+        AiRequestDispatchReceipt receipt = identity.dispatchReceipt();
+        if (stopping
+                || sender instanceof BotServerPlayer
+                || !roster.serverInstanceId().equals(identity.serverInstanceId())
+                || !sender.getUUID().equals(identity.ownerId())
+                || receipt.purpose() != AiReviewOnlyContract.PURPOSE) {
+            return;
+        }
+
+        RuntimeEntry runtime = runtimes.get(receipt.botId());
+        if (runtime == null
+                || runtime.state != BotLifecycleState.ACTIVE
+                || runtime.handle.generation() != receipt.generation()
+                || !roster.findById(receipt.botId())
+                        .flatMap(BotProfile::ownerId)
+                        .filter(sender.getUUID()::equals)
+                        .isPresent()
+                || !receipt.agentId().equals(activeAgentByBot.get(receipt.botId()))
+                || !receipt.botId().equals(botByActiveAgent.get(receipt.agentId()))) {
+            return;
+        }
+
+        AiProposalRequestEnvelope envelope = aiProposalSessionGate.findExact(receipt)
+                .orElse(null);
+        AiReviewOnlyTicket ticket = aiReviewOnlyTickets.findExact(receipt).orElse(null);
+        AiReviewOnlyPhysicalAttemptOwner physicalAttemptOwner =
+                aiReviewOnlyPhysicalAttemptOwners.get(identity.ownerId());
+        if (envelope == null
+                || ticket == null
+                || physicalAttemptOwner == null
+                || !identity.ownerId().equals(envelope.ownerId())
+                || !identity.nonce().equals(envelope.nonce())
+                || envelope.purpose() != AiReviewOnlyContract.PURPOSE
+                || !ticket.physicalAttemptIdentity().filter(identity::equals).isPresent()
+                || !identity.equals(aiReviewOnlyPhysicalAttemptsByBot.get(receipt.botId()))
+                || !physicalAttemptOwner.findIdentity(receipt).filter(identity::equals)
+                        .isPresent()) {
+            return;
+        }
+        if (server.getTickCount() >= receipt.expiresAtTick()) {
+            closeAiProposalRequestExact(receipt);
+            return;
+        }
+
+        AiPhysicalAttemptPrepareResult prepared = physicalAttemptOwner.acknowledge(
+                payload.prepareAck());
+        if (!prepared.granted()
+                || !identity.equals(prepared.grant().orElseThrow().identity())) {
+            closeAiProposalRequestExact(receipt);
+            return;
+        }
+        try {
+            PacketDistributor.sendToPlayer(sender,
+                    new AiPhysicalAttemptStartGrantPayload(prepared.grant().orElseThrow()));
+        } catch (RuntimeException exception) {
+            /* A settled grant may not be refunded; exact closure only tombstones it. */
+            closeAiProposalRequestExact(receipt);
         }
     }
 
@@ -3081,6 +3188,20 @@ public final class BotLifecycleManager {
                 && runtime.handle.generation() > 0L
                 ? OptionalLong.of(runtime.handle.generation())
                 : OptionalLong.empty();
+        long currentTick = server.getTickCount();
+        if (isCurrentReviewOnlyProposalAwaitingPhysicalGrant(
+                payload,
+                botActive,
+                senderIsPersistentOwner,
+                persistentOwnerId,
+                activeAgentId,
+                activeGeneration,
+                currentTick)) {
+            /* Keep the exact ticket live: the same owner may still ACK and receive its grant. */
+            return AiReviewOnlyReviewReceipt.rejected(
+                    AiReviewOnlyReviewStatus.GATE_REJECTED,
+                    AiProposalReviewStatus.PHYSICAL_ATTEMPT_NOT_GRANTED);
+        }
         AiProposalReviewReceipt gateReceipt = aiProposalSessionGate.reviewWithReceipt(
                 payload,
                 new AiProposalAuthority(
@@ -3089,10 +3210,12 @@ public final class BotLifecycleManager {
                         persistentOwnerId,
                         activeAgentId,
                         activeGeneration),
-                server.getTickCount());
+                currentTick);
 
         Optional<AiReviewOnlyTicket> ticket = gateReceipt.terminalDispatch()
                 .flatMap(aiReviewOnlyTickets::close);
+        ticket.ifPresent(this::closePhysicalAttemptForTicket);
+        gateReceipt.terminalDispatch().ifPresent(this::closePhysicalAttemptForReceipt);
         if (gateReceipt.terminalDispatch().isEmpty()) {
             return AiReviewOnlyReviewReceipt.rejected(
                     AiReviewOnlyReviewStatus.GATE_REJECTED,
@@ -3128,6 +3251,59 @@ public final class BotLifecycleManager {
     }
 
     /**
+     * Returns true only for a live, fully correlated R1 proposal whose owner-local physical
+     * attempt has not reached the server-side settled grant state.
+     *
+     * <p>The preliminary checks deliberately mirror the non-terminal gate checks. A malformed,
+     * stale, cross-owner, or expired proposal still reaches {@link AiProposalSessionGate} so its
+     * existing exact terminal/diagnostic semantics remain intact. This method never settles,
+     * closes, or broadens a request: an owner that sent a response too early can still send the
+     * exact ACK and then a post-grant response before the normal TTL.
+     */
+    private boolean isCurrentReviewOnlyProposalAwaitingPhysicalGrant(
+            AiProposalPayload payload,
+            boolean botActive,
+            boolean senderIsPersistentOwner,
+            Optional<UUID> persistentOwnerId,
+            Optional<UUID> activeAgentId,
+            OptionalLong activeGeneration,
+            long currentTick) {
+        if (!botActive
+                || !senderIsPersistentOwner
+                || persistentOwnerId.isEmpty()
+                || activeAgentId.isEmpty()
+                || !activeAgentId.orElseThrow().equals(payload.agentId())
+                || activeGeneration.isEmpty()
+                || activeGeneration.getAsLong() != payload.generation()) {
+            return false;
+        }
+        AiProposalRequestEnvelope envelope = aiProposalSessionGate.findExactForProposal(payload)
+                .orElse(null);
+        if (envelope == null
+                || envelope.purpose() != AiReviewOnlyContract.PURPOSE
+                || currentTick >= envelope.expiresAtTick()
+                || !persistentOwnerId.orElseThrow().equals(envelope.ownerId())) {
+            return false;
+        }
+        AiRequestDispatchReceipt receipt = AiRequestDispatchReceipt.fromEnvelope(envelope);
+        AiReviewOnlyTicket ticket = aiReviewOnlyTickets.findExact(receipt).orElse(null);
+        AiPhysicalAttemptIdentity identity = ticket == null
+                ? null
+                : ticket.physicalAttemptIdentity().orElse(null);
+        if (identity == null
+                || !roster.serverInstanceId().equals(identity.serverInstanceId())
+                || !envelope.ownerId().equals(identity.ownerId())
+                || !envelope.nonce().equals(identity.nonce())
+                || !identity.equals(aiReviewOnlyPhysicalAttemptsByBot.get(receipt.botId()))) {
+            return true;
+        }
+        AiReviewOnlyPhysicalAttemptOwner physicalAttemptOwner =
+                aiReviewOnlyPhysicalAttemptOwners.get(identity.ownerId());
+        return physicalAttemptOwner == null
+                || physicalAttemptOwner.findGrantedExact(identity).isEmpty();
+    }
+
+    /**
      * Clears transient bindings sponsored by a real player when that player disconnects.
      */
     public void onRealPlayerLogout(ServerPlayer player) {
@@ -3151,6 +3327,8 @@ public final class BotLifecycleManager {
                 })
                 .toList();
         ownedBotIds.forEach(this::clearAgentBinding);
+        /* Covers any defensive gate/binding divergence left outside activeAgentByBot. */
+        closePhysicalAttemptsForOwner(ownerId);
     }
 
     public void onRealPlayerChangedDimension(ServerPlayer player) {
@@ -4065,12 +4243,21 @@ public final class BotLifecycleManager {
         int currentTick = server.getTickCount();
         aiProposalSessionGate.closeExpiredThrough(currentTick)
                 .forEach(envelope -> {
-                    aiReviewOnlyTickets.close(
-                            AiRequestDispatchReceipt.fromEnvelope(envelope));
+                    AiRequestDispatchReceipt receipt = AiRequestDispatchReceipt.fromEnvelope(
+                            envelope);
+                    aiReviewOnlyTickets.close(receipt)
+                            .ifPresent(this::closePhysicalAttemptForTicket);
+                    closePhysicalAttemptForReceipt(receipt);
                     sendAiRequestCancellation(envelope);
                 });
         /* Defensive orphan cleanup: a ticket never outlives its dispatch TTL. */
-        aiReviewOnlyTickets.closeExpiredThrough(currentTick);
+        aiReviewOnlyTickets.closeExpiredThrough(currentTick).forEach(ticket -> {
+            closePhysicalAttemptForTicket(ticket);
+            closePhysicalAttemptForReceipt(ticket.dispatch());
+            aiProposalSessionGate.closeExact(ticket.dispatch())
+                    .ifPresent(this::sendAiRequestCancellation);
+        });
+        expireAiPhysicalAttempts();
         taskSensorService.beginTick(currentTick);
         for (RuntimeEntry runtime : List.copyOf(runtimes.values())) {
             if (hasRequestedListenerDisconnect(
@@ -8760,26 +8947,159 @@ public final class BotLifecycleManager {
     }
 
     /**
-     * Closes the server gate first, then best-effort notifies the exact owner client so it can
-     * cancel local HTTP work. The returned gate envelope is the sole source of the correlation;
-     * this method deliberately never reconstructs a broad bot-level cancellation.
+     * Closes one exact current correlation and best-effort notifies only the owner captured by
+     * that gate. It never reconstructs a request from a broad bot id or a client-provided nonce.
      */
-    private void closeAiProposalRequestForBot(UUID botId) {
-        aiProposalSessionGate.closeBot(botId).ifPresent(envelope -> {
-            aiReviewOnlyTickets.close(AiRequestDispatchReceipt.fromEnvelope(envelope));
-            sendAiRequestCancellation(envelope);
-        });
-        /* Handles only a defensive gate/ticket divergence; no broad request-id reconstruction. */
-        aiReviewOnlyTickets.closeBot(botId);
+    private void closeAiProposalRequestExact(AiRequestDispatchReceipt receipt) {
+        AiRequestDispatchReceipt checked = Objects.requireNonNull(receipt, "receipt");
+        Optional<AiProposalRequestEnvelope> envelope = aiProposalSessionGate.closeExact(checked);
+        aiReviewOnlyTickets.close(checked).ifPresent(this::closePhysicalAttemptForTicket);
+        closePhysicalAttemptForReceipt(checked);
+        envelope.ifPresent(this::sendAiRequestCancellation);
     }
 
-    /** Sends shutdown cancellations for every still-open owner-client request. */
-    private void closeAllAiProposalRequests() {
-        aiProposalSessionGate.closeAll().forEach(envelope -> {
-            aiReviewOnlyTickets.close(AiRequestDispatchReceipt.fromEnvelope(envelope));
+    /**
+     * Closes the server gate first, then best-effort notifies the exact owner client so it can
+     * cancel local HTTP work. The gate supplies the correlation; the final physical close still
+     * uses the stored exact identity rather than treating the bot id as a request credential.
+     */
+    private void closeAiProposalRequestForBot(UUID botId) {
+        UUID checkedBotId = Objects.requireNonNull(botId, "botId");
+        aiProposalSessionGate.closeBot(checkedBotId).ifPresent(envelope -> {
+            AiRequestDispatchReceipt receipt = AiRequestDispatchReceipt.fromEnvelope(envelope);
+            aiReviewOnlyTickets.close(receipt).ifPresent(this::closePhysicalAttemptForTicket);
+            closePhysicalAttemptForReceipt(receipt);
             sendAiRequestCancellation(envelope);
         });
-        aiReviewOnlyTickets.closeAll();
+        /* Handles only a defensive gate/ticket divergence; no request-id reconstruction occurs. */
+        aiReviewOnlyTickets.closeBot(checkedBotId).ifPresent(this::closePhysicalAttemptForTicket);
+        closePhysicalAttemptForBot(checkedBotId);
+    }
+
+    /** Sends shutdown cancellations and tombstones every still-open physical client permission. */
+    private void closeAllAiProposalRequests() {
+        aiProposalSessionGate.closeAll().forEach(envelope -> {
+            AiRequestDispatchReceipt receipt = AiRequestDispatchReceipt.fromEnvelope(envelope);
+            aiReviewOnlyTickets.close(receipt).ifPresent(this::closePhysicalAttemptForTicket);
+            closePhysicalAttemptForReceipt(receipt);
+            sendAiRequestCancellation(envelope);
+        });
+        aiReviewOnlyTickets.closeAll().forEach(this::closePhysicalAttemptForTicket);
+        List.copyOf(aiReviewOnlyPhysicalAttemptsByBot.values())
+                .forEach(this::closePhysicalAttemptExact);
+        List.copyOf(aiReviewOnlyPhysicalAttemptOwners.values())
+                .forEach(AiReviewOnlyPhysicalAttemptOwner::close);
+        aiReviewOnlyPhysicalAttemptOwners.clear();
+        aiReviewOnlyPhysicalAttemptsByBot.clear();
+    }
+
+    /** Uses a ticket-bound identity only; a ticket without B1 state owns no physical cleanup. */
+    private void closePhysicalAttemptForTicket(AiReviewOnlyTicket ticket) {
+        Objects.requireNonNull(ticket, "ticket").physicalAttemptIdentity()
+                .ifPresent(this::closePhysicalAttemptExact);
+    }
+
+    /** Closes the stored identity only when this exact safe receipt still names the active bot. */
+    private void closePhysicalAttemptForReceipt(AiRequestDispatchReceipt receipt) {
+        AiRequestDispatchReceipt checked = Objects.requireNonNull(receipt, "receipt");
+        AiPhysicalAttemptIdentity identity = aiReviewOnlyPhysicalAttemptsByBot.get(
+                checked.botId());
+        if (identity != null && checked.equals(identity.dispatchReceipt())) {
+            closePhysicalAttemptExact(identity);
+        }
+    }
+
+    /** Defensive bot teardown still consumes a concrete server-stored identity, never client data. */
+    private void closePhysicalAttemptForBot(UUID botId) {
+        AiPhysicalAttemptIdentity identity = aiReviewOnlyPhysicalAttemptsByBot.get(
+                Objects.requireNonNull(botId, "botId"));
+        if (identity != null) {
+            closePhysicalAttemptExact(identity);
+        }
+    }
+
+    /**
+     * Closes a physical attempt only when the owner index and coordinator still agree on its full
+     * identity. An internal mismatch remains fail-closed and blocks replacement rather than
+     * silently dropping a possibly live reservation.
+     */
+    private void closePhysicalAttemptExact(AiPhysicalAttemptIdentity identity) {
+        AiPhysicalAttemptIdentity checked = Objects.requireNonNull(identity, "identity");
+        AiReviewOnlyPhysicalAttemptOwner owner = aiReviewOnlyPhysicalAttemptOwners.get(
+                checked.ownerId());
+        if (owner == null) {
+            aiReviewOnlyPhysicalAttemptsByBot.remove(
+                    checked.dispatchReceipt().botId(), checked);
+            return;
+        }
+        Optional<AiPhysicalAttemptCloseResult> closed = owner.closeExact(checked);
+        if (closed.isPresent()
+                && closed.orElseThrow().status()
+                        != AiPhysicalAttemptCloseStatus.IDENTITY_MISMATCH) {
+            aiReviewOnlyPhysicalAttemptsByBot.remove(
+                    checked.dispatchReceipt().botId(), checked);
+            return;
+        }
+        if (closed.isEmpty()
+                && owner.findIdentity(checked.dispatchReceipt()).isEmpty()) {
+            /* The trusted owner reaper already removed this exact index. */
+            aiReviewOnlyPhysicalAttemptsByBot.remove(
+                    checked.dispatchReceipt().botId(), checked);
+        }
+    }
+
+    /**
+     * Reaps wall-clock reservation/grant deadlines that may precede the tick-based proposal TTL.
+     * A clock/invariant failure is fail-closed for only that real owner; it never affects another
+     * owner's review session.
+     */
+    private void expireAiPhysicalAttempts() {
+        for (UUID ownerId : List.copyOf(aiReviewOnlyPhysicalAttemptOwners.keySet())) {
+            AiReviewOnlyPhysicalAttemptOwner owner = aiReviewOnlyPhysicalAttemptOwners.get(ownerId);
+            if (owner == null) {
+                continue;
+            }
+            try {
+                owner.expireDueAttemptIdentities().forEach(identity ->
+                        closeAiProposalRequestExact(identity.dispatchReceipt()));
+            } catch (RuntimeException exception) {
+                closePhysicalAttemptsForOwner(ownerId);
+            }
+        }
+    }
+
+    /** Exact logout/failure teardown for one owner, including any map/gate defensive residue. */
+    private void closePhysicalAttemptsForOwner(UUID ownerId) {
+        UUID checkedOwnerId = Objects.requireNonNull(ownerId, "ownerId");
+        List<AiPhysicalAttemptIdentity> identities = aiReviewOnlyPhysicalAttemptsByBot.values()
+                .stream()
+                .filter(identity -> checkedOwnerId.equals(identity.ownerId()))
+                .toList();
+        identities.forEach(identity -> {
+            closeAiProposalRequestExact(identity.dispatchReceipt());
+            closePhysicalAttemptExact(identity);
+        });
+        AiReviewOnlyPhysicalAttemptOwner owner = aiReviewOnlyPhysicalAttemptOwners.remove(
+                checkedOwnerId);
+        if (owner != null) {
+            owner.close();
+        }
+        identities.forEach(identity -> aiReviewOnlyPhysicalAttemptsByBot.remove(
+                identity.dispatchReceipt().botId(), identity));
+    }
+
+    /** Drops a ended agent binding's ledger only after its exact active attempt has already closed. */
+    private void closePhysicalAttemptScope(UUID botId, UUID agentId) {
+        UUID ownerId = roster.findById(Objects.requireNonNull(botId, "botId"))
+                .flatMap(BotProfile::ownerId)
+                .orElse(null);
+        if (ownerId == null) {
+            return;
+        }
+        AiReviewOnlyPhysicalAttemptOwner owner = aiReviewOnlyPhysicalAttemptOwners.get(ownerId);
+        if (owner != null) {
+            owner.closeScope(botId, Objects.requireNonNull(agentId, "agentId"));
+        }
     }
 
     private void sendAiRequestCancellation(AiProposalRequestEnvelope envelope) {
@@ -8806,8 +9126,10 @@ public final class BotLifecycleManager {
 
     private void clearAgentBinding(UUID botId) {
         closeAiProposalRequestForBot(botId);
-        UUID agentId = activeAgentByBot.remove(botId);
+        UUID agentId = activeAgentByBot.get(botId);
         if (agentId != null) {
+            closePhysicalAttemptScope(botId, agentId);
+            activeAgentByBot.remove(botId, agentId);
             botByActiveAgent.remove(agentId, botId);
         }
     }
