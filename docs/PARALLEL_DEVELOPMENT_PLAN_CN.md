@@ -1,6 +1,9 @@
 # BotPlayer P5A 暂停期间并行开发规划
 
-> 状态：开发流程历史基线 v0.1；当前 P5/P6 进度以实施状态页和连续集成分支为准
+> 状态：开发流程历史基线 v0.1；当前 P5/P6 进度以实施状态页和连续集成分支为准。当前
+> `agent/p5-p6-next` 上的单 `TechniqueLifecycleCoordinator` 仅是 ADR-0017 的共享 Contract：
+> 它把已有有限自卫窄 route 迁到一个 lifecycle-owned runtime，未实现 P5D 建筑/红石，也不
+> 放宽本文件的 P6/Technique 并行边界。
 >
 > 更新日期：2026-08-07
 >

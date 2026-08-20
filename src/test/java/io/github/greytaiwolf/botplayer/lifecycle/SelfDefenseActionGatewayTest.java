@@ -42,6 +42,7 @@ import io.github.greytaiwolf.botplayer.skill.runtime.SelfDefenseSkillService;
 import io.github.greytaiwolf.botplayer.skill.runtime.SelfDefenseSkillService.AuthorizedActionDispatch;
 import io.github.greytaiwolf.botplayer.skill.runtime.SelfDefenseSkillService.ClaimedActionDispatch;
 import io.github.greytaiwolf.botplayer.technique.bridge.SelfDefenseTechniqueBridge;
+import io.github.greytaiwolf.botplayer.technique.bridge.TechniqueLifecycleCoordinator;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -78,8 +79,10 @@ class SelfDefenseActionGatewayTest {
         SelfDefenseActionGateway physicalGateway = new SelfDefenseActionGateway(
                 runtime);
         ReentrantGateway gateway = new ReentrantGateway(physicalGateway);
+        TechniqueLifecycleCoordinator coordinator =
+                new TechniqueLifecycleCoordinator();
         SelfDefenseTechniqueBridge bridge = new SelfDefenseTechniqueBridge(
-                gateway, () -> 0L);
+                coordinator, gateway, () -> 0L);
         AtomicReference<SelfDefenseSkillService> serviceReference =
                 new AtomicReference<>();
         SelfDefenseSkillService service = new SelfDefenseSkillService(
@@ -211,8 +214,10 @@ class SelfDefenseActionGatewayTest {
         SelfDefenseActionGateway physicalGateway = new SelfDefenseActionGateway(
                 runtime);
         ReentrantGateway gateway = new ReentrantGateway(physicalGateway);
+        TechniqueLifecycleCoordinator coordinator =
+                new TechniqueLifecycleCoordinator();
         SelfDefenseTechniqueBridge bridge = new SelfDefenseTechniqueBridge(
-                gateway, () -> 1L);
+                coordinator, gateway, () -> 1L);
         AtomicReference<SelfDefenseSkillService> serviceReference =
                 new AtomicReference<>();
         SelfDefenseSkillService service = new SelfDefenseSkillService(
@@ -232,9 +237,9 @@ class SelfDefenseActionGatewayTest {
         ActionEnvelope attack = gateway.singleEnvelope();
         ActionMailbox.Submission submission = gateway.singleSubmission();
 
-        bridge.tick(1L);
+        coordinator.tick(1L);
         runtime.tick(1L);
-        bridge.drainCompletedActions(1L);
+        coordinator.drainCompletedChildren(1L);
 
         assertEquals(1, backend.startCount(attack.actionId()));
         assertEquals(ActionState.FAILED, outcome(submission).state());
@@ -255,8 +260,10 @@ class SelfDefenseActionGatewayTest {
         SelfDefenseActionGateway physicalGateway = new SelfDefenseActionGateway(
                 runtime);
         ReentrantGateway gateway = new ReentrantGateway(physicalGateway);
+        TechniqueLifecycleCoordinator coordinator =
+                new TechniqueLifecycleCoordinator();
         SelfDefenseTechniqueBridge bridge = new SelfDefenseTechniqueBridge(
-                gateway, () -> 1L);
+                coordinator, gateway, () -> 1L);
         AtomicReference<SelfDefenseSkillService> serviceReference =
                 new AtomicReference<>();
         SelfDefenseSkillService service = new SelfDefenseSkillService(
@@ -276,9 +283,9 @@ class SelfDefenseActionGatewayTest {
         ActionEnvelope attack = gateway.singleEnvelope();
         ActionMailbox.Submission submission = gateway.singleSubmission();
 
-        bridge.tick(1L);
+        coordinator.tick(1L);
         runtime.tick(1L);
-        bridge.drainCompletedActions(1L);
+        coordinator.drainCompletedChildren(1L);
 
         assertEquals(1, backend.startCount(attack.actionId()));
         assertEquals(ActionFailureCode.UNSAFE_CONTROL_STATE,

@@ -37,6 +37,8 @@ import io.github.greytaiwolf.botplayer.skill.runtime.SelfDefenseSkillService;
 import io.github.greytaiwolf.botplayer.skill.runtime.SelfDefenseSkillService.AuthorizedActionDispatch;
 import io.github.greytaiwolf.botplayer.technique.combat.SingleMeleeStrikeTechnique;
 import io.github.greytaiwolf.botplayer.technique.core.TechniqueFailureCode;
+import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueChildDispatcher;
+import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueChildTicket;
 import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueState;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
@@ -50,6 +52,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.function.LongSupplier;
 import org.junit.jupiter.api.Test;
 
 class SelfDefenseTechniqueBridgeTest {
@@ -82,27 +85,27 @@ class SelfDefenseTechniqueBridgeTest {
                         ((WorldInteractionAction) envelope.action()).spec();
         assertEquals(TARGET, attack.target().entityId());
         assertEquals(SingleMeleeStrikeTechnique.ID,
-                harness.bridge.inspect(BOT).orElseThrow().techniqueId());
+                harness.coordinator.inspect(BOT).orElseThrow().techniqueId());
         assertEquals(TechniqueState.WAITING_CHILDREN,
-                harness.bridge.inspect(BOT).orElseThrow().state());
+                harness.coordinator.inspect(BOT).orElseThrow().state());
 
-        harness.bridge.finishTick(0L);
+        harness.coordinator.finishTick(0L);
         harness.tick.value = 1L;
-        harness.bridge.tick(1L);
+        harness.coordinator.tick(1L);
         harness.gateway.complete(success(actionId, 1L));
-        harness.bridge.drainCompletedActions(1L);
+        harness.coordinator.drainCompletedChildren(1L);
         assertEquals(TechniqueState.RUNNING,
-                harness.bridge.inspect(BOT).orElseThrow().state());
+                harness.coordinator.inspect(BOT).orElseThrow().state());
 
         harness.service.tick(1L);
         assertEquals(SelfDefenseSkillService.RunStatus.COMPLETED,
                 harness.service.latestView(BOT).orElseThrow().status());
-        harness.bridge.finishTick(1L);
+        harness.coordinator.finishTick(1L);
         harness.tick.value = 2L;
-        harness.bridge.tick(2L);
-        assertTrue(harness.bridge.inspect(BOT).isEmpty());
+        harness.coordinator.tick(2L);
+        assertTrue(harness.coordinator.inspect(BOT).isEmpty());
         assertEquals(TechniqueFailureCode.NONE,
-                harness.bridge.latestOutcome(BOT).orElseThrow().failureCode());
+                harness.coordinator.latestOutcome(BOT).orElseThrow().failureCode());
     }
 
     @Test
@@ -125,6 +128,16 @@ class SelfDefenseTechniqueBridgeTest {
                 method.getParameterCount() == 1
                         && method.getParameterTypes()[0].getName().endsWith(
                                 "$ActionDispatch")));
+        assertFalse(Arrays.stream(publicSubmitMethods).anyMatch(method ->
+                Arrays.equals(method.getParameterTypes(),
+                        new Class<?>[] {TechniqueChildTicket.class})));
+        assertFalse(TechniqueChildDispatcher.class.isAssignableFrom(
+                SelfDefenseTechniqueBridge.class));
+        assertFalse(Arrays.stream(SelfDefenseTechniqueBridge.class
+                .getConstructors()).anyMatch(constructor -> Arrays.equals(
+                        constructor.getParameterTypes(), new Class<?>[] {
+                                SelfDefenseTechniqueBridge.ActionGateway.class,
+                                LongSupplier.class})));
         for (Constructor<?> constructor :
                 AuthorizedActionDispatch.class.getDeclaredConstructors()) {
             assertTrue(Modifier.isPrivate(constructor.getModifiers()),
@@ -151,7 +164,7 @@ class SelfDefenseTechniqueBridgeTest {
 
         assertTrue(harness.gateway.submitted.isEmpty());
         assertTrue(harness.gateway.cancellations.isEmpty());
-        assertTrue(harness.bridge.isGenerationSafe(BOT, 1L));
+        assertTrue(harness.coordinator.isGenerationSafe(BOT, 1L));
         assertEquals(SelfDefenseSkillService.RunStatus.FAILED,
                 harness.service.latestView(BOT).orElseThrow().status());
         assertEquals(SelfDefenseSkillService.Failure.ACTION_SUBMISSION_REJECTED,
@@ -165,20 +178,20 @@ class SelfDefenseTechniqueBridgeTest {
     void generationCloseRetractsALateSuccessfulServiceRoutedChild() {
         Harness harness = new Harness();
         harness.start();
-        harness.bridge.finishTick(0L);
+        harness.coordinator.finishTick(0L);
 
         harness.tick.value = 1L;
-        harness.bridge.closeGeneration(BOT, 1L, 1L);
+        harness.coordinator.closeGeneration(BOT, 1L, 1L);
         assertTrue(harness.service.closeGeneration(BOT, 1L, 1L));
         assertEquals(ActionCancellationReason.LIFECYCLE,
                 harness.gateway.cancellations.get(0).reason());
 
         harness.gateway.complete(success(harness.singleActionId(), 1L));
-        harness.bridge.drainCompletedActions(1L);
+        harness.coordinator.drainCompletedChildren(1L);
         assertEquals(ActionState.CANCELLED,
                 harness.submittedCompletion.toCompletableFuture().join().state());
         assertEquals(TechniqueFailureCode.GENERATION_CHANGED,
-                harness.bridge.latestOutcome(BOT).orElseThrow().failureCode());
+                harness.coordinator.latestOutcome(BOT).orElseThrow().failureCode());
         assertEquals(SelfDefenseSkillService.RunStatus.CLOSED,
                 harness.service.latestView(BOT).orElseThrow().status());
         assertEquals(SelfDefenseSkillService.AuthorizationRevocation.GENERATION_CLOSED,
@@ -207,7 +220,7 @@ class SelfDefenseTechniqueBridgeTest {
     void safetyPreemptionRetractsALateSuccessWithoutDuplicateCancellation() {
         Harness harness = new Harness();
         harness.start();
-        harness.bridge.finishTick(0L);
+        harness.coordinator.finishTick(0L);
 
         harness.tick.value = 1L;
         assertTrue(harness.service.preempt(BOT, 1L, 1L));
@@ -217,12 +230,12 @@ class SelfDefenseTechniqueBridgeTest {
                 harness.gateway.cancellations.get(0).reason());
 
         harness.gateway.complete(success(harness.singleActionId(), 1L));
-        harness.bridge.drainCompletedActions(1L);
+        harness.coordinator.drainCompletedChildren(1L);
 
         assertEquals(ActionState.PREEMPTED,
                 harness.submittedCompletion.toCompletableFuture().join().state());
         assertEquals(TechniqueFailureCode.SAFETY_PREEMPTED,
-                harness.bridge.latestOutcome(BOT).orElseThrow().failureCode());
+                harness.coordinator.latestOutcome(BOT).orElseThrow().failureCode());
         assertEquals(SelfDefenseSkillService.RunStatus.PREEMPTED,
                 harness.service.latestView(BOT).orElseThrow().status());
     }
@@ -231,20 +244,20 @@ class SelfDefenseTechniqueBridgeTest {
     void bridgeShutdownRetractsALateSuccessAfterTheTickBoundary() {
         Harness harness = new Harness();
         harness.start();
-        harness.bridge.finishTick(0L);
+        harness.coordinator.finishTick(0L);
 
-        harness.bridge.shutdown(0L);
+        harness.coordinator.shutdown(0L);
 
         assertEquals(ActionCancellationReason.RUNTIME_SHUTDOWN,
                 harness.gateway.cancellations.get(0).reason());
         harness.gateway.complete(success(harness.singleActionId(), 0L));
-        harness.bridge.drainCompletedActions(0L);
+        harness.coordinator.drainCompletedChildren(0L);
 
         assertEquals(ActionState.CANCELLED,
                 harness.submittedCompletion.toCompletableFuture().join().state());
         assertEquals(TechniqueFailureCode.ACTION_CLEANUP_UNSAFE,
-                harness.bridge.latestOutcome(BOT).orElseThrow().failureCode());
-        assertFalse(harness.bridge.isGenerationSafe(BOT, 1L));
+                harness.coordinator.latestOutcome(BOT).orElseThrow().failureCode());
+        assertFalse(harness.coordinator.isGenerationSafe(BOT, 1L));
     }
 
     @Test
@@ -265,7 +278,7 @@ class SelfDefenseTechniqueBridgeTest {
         assertEquals(SelfDefenseSkillService.RunStatus.PREEMPTED,
                 harness.service.latestView(BOT).orElseThrow().status());
         harness.gateway.complete(success(actionId, 0L));
-        harness.bridge.drainCompletedActions(0L);
+        harness.coordinator.drainCompletedChildren(0L);
         assertFalse(harness.service.latestView(BOT).orElseThrow().status()
                 == SelfDefenseSkillService.RunStatus.COMPLETED);
     }
@@ -274,7 +287,7 @@ class SelfDefenseTechniqueBridgeTest {
     void reentrantGenerationCloseDuringGatewaySubmissionCancelsTheExactNewAction() {
         Harness harness = new Harness();
         harness.gateway.beforeSubmit = () -> {
-            harness.bridge.closeGeneration(BOT, 1L, harness.tick.value);
+            harness.coordinator.closeGeneration(BOT, 1L, harness.tick.value);
             assertTrue(harness.service.closeGeneration(BOT, 1L,
                     harness.tick.value));
         };
@@ -289,7 +302,7 @@ class SelfDefenseTechniqueBridgeTest {
         assertEquals(SelfDefenseSkillService.RunStatus.CLOSED,
                 harness.service.latestView(BOT).orElseThrow().status());
         harness.gateway.complete(success(actionId, 0L));
-        harness.bridge.drainCompletedActions(0L);
+        harness.coordinator.drainCompletedChildren(0L);
         assertFalse(harness.service.latestView(BOT).orElseThrow().status()
                 == SelfDefenseSkillService.RunStatus.COMPLETED);
     }
@@ -314,7 +327,7 @@ class SelfDefenseTechniqueBridgeTest {
         assertEquals(SelfDefenseSkillService.Failure.UNSAFE_CONTROL_STATE,
                 harness.service.latestView(BOT).orElseThrow().failure()
                         .orElseThrow());
-        assertFalse(harness.bridge.isGenerationSafe(BOT, 1L));
+        assertFalse(harness.coordinator.isGenerationSafe(BOT, 1L));
     }
 
     @Test
@@ -336,7 +349,7 @@ class SelfDefenseTechniqueBridgeTest {
         assertEquals(SelfDefenseSkillService.Failure.UNSAFE_CONTROL_STATE,
                 harness.service.latestView(BOT).orElseThrow().failure()
                         .orElseThrow());
-        assertFalse(harness.bridge.isGenerationSafe(BOT, 1L));
+        assertFalse(harness.coordinator.isGenerationSafe(BOT, 1L));
     }
 
     private static ActionOutcome success(UUID actionId, long tick) {
@@ -365,6 +378,7 @@ class SelfDefenseTechniqueBridgeTest {
     private static final class Harness {
         private final MutableTick tick = new MutableTick();
         private final RecordingGateway gateway = new RecordingGateway();
+        private final TechniqueLifecycleCoordinator coordinator;
         private final SelfDefenseTechniqueBridge bridge;
         private final SelfDefenseSkillService service;
         private AuthorizedActionDispatch submittedAuthorization;
@@ -375,7 +389,8 @@ class SelfDefenseTechniqueBridgeTest {
         }
 
         private Harness(UUID actionTarget) {
-            bridge = new SelfDefenseTechniqueBridge(gateway, tick);
+            coordinator = new TechniqueLifecycleCoordinator();
+            bridge = new SelfDefenseTechniqueBridge(coordinator, gateway, tick);
             service = new SelfDefenseSkillService(
                     new SelfDefenseSkillService.TargetResolver() {
                         @Override

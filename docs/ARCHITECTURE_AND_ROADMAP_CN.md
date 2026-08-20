@@ -2754,8 +2754,10 @@ P5A-0 的冻结合同、Safety handoff、统一 menu 事务、checkpoint schema�
 #### P5C：运输、探索、进程与高级战斗
 
 当前只有一个未验收的窄实现切片：已有有限自卫已经授权的一次 `MELEE_ATTACK` 可经
-不可变 `AttackEntity` 绑定进入单 child Technique，并在 owner-thread 回收 Action 结果。
-它不含目标选择、移动、装备、重试、连击或泛化战斗路由，不能关闭本节任一任务或退出门。
+不可变 `AttackEntity` 绑定进入单 child Technique，并在 owner-thread 的单一
+`TechniqueLifecycleCoordinator` 回收 Action 结果。当前有限自卫 bridge 只是该协调器的一条
+受限路由，不拥有第二个 runtime；它不含目标选择、移动、装备、重试、连击或泛化战斗路由，
+不能关闭本节任一任务或退出门。
 
 任务与验收：
 

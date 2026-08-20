@@ -7,6 +7,11 @@
 
 ### 新增
 
+- 新增 ADR-0017 的窄 Contract：服务器生命周期以一个 owner-thread
+  `TechniqueLifecycleCoordinator` 管理所有已注册 Technique；已有有限自卫单击 bridge 迁为
+  一条受限 Action 路由，保留精确 child ticket、generation 关闭与 L0 抢占的失败关闭清理。
+  该 Contract 不新增任何 P5D 建筑/红石、通用 Technique 路由或 AI 世界执行，当前提交的
+  Java 21 CI 与 Minecraft 实机验证仍待完成；
 - 新增 P6-R1 owner 手动只读审阅往返本地 consent，已通过
   [Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111) Java 21 自动基线：
   物理客户端仅从

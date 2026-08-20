@@ -19,16 +19,14 @@ import io.github.greytaiwolf.botplayer.skill.runtime.SelfDefenseSkillService.Aut
 import io.github.greytaiwolf.botplayer.skill.runtime.SelfDefenseSkillService.ClaimedActionDispatch;
 import io.github.greytaiwolf.botplayer.technique.combat.SingleMeleeStrikeTechnique;
 import io.github.greytaiwolf.botplayer.technique.core.TechniqueFailureCode;
-import io.github.greytaiwolf.botplayer.technique.core.TechniqueOutcome;
 import io.github.greytaiwolf.botplayer.technique.core.TechniqueParameters;
 import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueCancelReason;
 import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueCancellationStatus;
 import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueChildDispatcher;
 import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueChildState;
 import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueChildTicket;
-import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueRegistrationStatus;
+import io.github.greytaiwolf.botplayer.technique.runtime.PlayerTechnique;
 import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueRunView;
-import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueRuntime;
 import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueSignal;
 import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueSignalStatus;
 import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueStartRequest;
@@ -49,8 +47,9 @@ import java.util.function.LongSupplier;
  *
  * <p>It accepts exactly one already-authorized {@code MELEE_ATTACK} dispatch,
  * binds it immutably to one {@link WorldInteractionActionSpec.AttackEntity},
- * and is the sole child dispatcher for {@link SingleMeleeStrikeTechnique}.
- * There is deliberately no generic technique-to-world route: no caller can
+ * and is the only approved child route for {@link SingleMeleeStrikeTechnique}
+ * inside the lifecycle-owned coordinator. There is deliberately no generic
+ * technique-to-world route: no caller can
  * provide a target, move, equip, retry, or schedule any action through this
  * class.
  *
@@ -59,12 +58,12 @@ import java.util.function.LongSupplier;
  * those callbacks and polls retained terminal outcomes at a server-tick
  * boundary before it releases the original self-defense completion.
  */
-public final class SelfDefenseTechniqueBridge
-        implements TechniqueChildDispatcher {
+public final class SelfDefenseTechniqueBridge extends TechniqueRoute {
     private static final int MAX_RETAINED_CANCELLATION_RECEIPTS = 256;
+    private final TechniqueLifecycleCoordinator coordinator;
+    private final SingleMeleeStrikeTechnique technique;
     private final ActionGateway actions;
     private final LongSupplier currentTickSupplier;
-    private final TechniqueRuntime runtime;
     private final Thread ownerThread;
     private final Map<UUID, ActionBinding> actionBindingsByActionId =
             new LinkedHashMap<>();
@@ -93,20 +92,15 @@ public final class SelfDefenseTechniqueBridge
     private boolean cancellationContainmentUnsafe;
     private boolean closed;
 
-    public SelfDefenseTechniqueBridge(ActionGateway actions,
-            LongSupplier currentTickSupplier) {
+    public SelfDefenseTechniqueBridge(TechniqueLifecycleCoordinator coordinator,
+            ActionGateway actions, LongSupplier currentTickSupplier) {
+        this.coordinator = Objects.requireNonNull(coordinator, "coordinator");
+        technique = new SingleMeleeStrikeTechnique();
         this.actions = Objects.requireNonNull(actions, "actions");
         this.currentTickSupplier = Objects.requireNonNull(currentTickSupplier,
                 "currentTickSupplier");
         ownerThread = Thread.currentThread();
-        runtime = new TechniqueRuntime(this);
-        TechniqueRegistrationStatus registration = runtime.register(
-                new SingleMeleeStrikeTechnique());
-        if (registration != TechniqueRegistrationStatus.REGISTERED) {
-            throw new IllegalStateException(
-                    "Could not register single melee technique: "
-                            + registration);
-        }
+        this.coordinator.register(this);
     }
 
     /**
@@ -157,7 +151,7 @@ public final class SelfDefenseTechniqueBridge
                 currentTick);
         pendingStart = pending;
         try {
-            TechniqueSubmission submission = runtime.start(
+            TechniqueSubmission submission = coordinator.start(this,
                     new TechniqueStartRequest(claimed.selfDefenseRunId(),
                             claimed.botId(), claimed.botGeneration(),
                             SingleMeleeStrikeTechnique.ID,
@@ -197,21 +191,9 @@ public final class SelfDefenseTechniqueBridge
         return reply.view();
     }
 
-    /** Advances every live self-defense technique before the self-defense FSM. */
-    public void tick(long currentTick) {
-        requireOwnerThread();
-        observeTick(currentTick);
-        for (RunBinding binding : List.copyOf(runsByTechniqueId.values())) {
-            TechniqueRunView view = runtime.inspectRun(
-                    binding.techniqueRunId()).orElse(null);
-            if (view == null) {
-                removeRun(binding);
-                continue;
-            }
-            requireExactRunView(binding, view);
-            runtime.tick(binding.botId(), binding.botGeneration(), currentTick);
-        }
-        reapTerminalRuns();
+    @Override
+    PlayerTechnique technique() {
+        return technique;
     }
 
     /**
@@ -220,9 +202,12 @@ public final class SelfDefenseTechniqueBridge
      * released, so self-defense cannot issue a second attack while the first
      * technique has not observed its child terminal state.
      */
-    public void drainCompletedActions(long currentTick) {
+    @Override
+    void drainCompletedChildren(long currentTick,
+            TechniqueLifecycleCoordinator.SignalSink signals) {
         requireOwnerThread();
-        observeTick(currentTick);
+        TechniqueLifecycleCoordinator.SignalSink requiredSignals =
+                Objects.requireNonNull(signals, "signals");
         for (ActionBinding binding : List.copyOf(
                 actionBindingsByActionId.values())) {
             ActionOutcome outcome;
@@ -231,7 +216,8 @@ public final class SelfDefenseTechniqueBridge
                         binding.claim().actionId()).orElse(null);
             } catch (RuntimeException exception) {
                 settleInvalidCompletion(binding, currentTick,
-                        "Self-defense action outcome lookup failed");
+                        "Self-defense action outcome lookup failed",
+                        requiredSignals);
                 continue;
             }
             if (outcome == null) {
@@ -240,13 +226,14 @@ public final class SelfDefenseTechniqueBridge
             if (!binding.claim().actionId().equals(outcome.actionId())
                     || !outcome.state().isTerminal()) {
                 settleInvalidCompletion(binding, currentTick,
-                        "Self-defense action outcome identity was invalid");
+                        "Self-defense action outcome identity was invalid",
+                        requiredSignals);
                 continue;
             }
             TechniqueSignalStatus signalStatus;
             try {
-                signalStatus = runtime.offerSignal(signalFor(binding, outcome),
-                        currentTick);
+                signalStatus = requiredSignals.offer(this,
+                        signalFor(binding, outcome), currentTick);
             } catch (RuntimeException exception) {
                 signalStatus = TechniqueSignalStatus.RUN_NOT_FOUND;
             }
@@ -262,7 +249,7 @@ public final class SelfDefenseTechniqueBridge
             }
             removeActionBinding(binding);
             if (signalStatus != TechniqueSignalStatus.ACCEPTED) {
-                runtime.closeGeneration(binding.run().botId(),
+                coordinator.closeGeneration(binding.run().botId(),
                         binding.run().botGeneration(), currentTick);
             }
             if (cancellationContainmentUnsafe) {
@@ -281,25 +268,6 @@ public final class SelfDefenseTechniqueBridge
                         "Self-defense action outcome could not be acknowledged"));
             }
         }
-        reapTerminalRuns();
-    }
-
-    /** Completes the owner-thread signal boundary after every Action outcome. */
-    public void finishTick(long currentTick) {
-        requireOwnerThread();
-        observeTick(currentTick);
-        for (RunBinding binding : List.copyOf(runsByTechniqueId.values())) {
-            TechniqueRunView view = runtime.inspectRun(
-                    binding.techniqueRunId()).orElse(null);
-            if (view == null) {
-                removeRun(binding);
-                continue;
-            }
-            requireExactRunView(binding, view);
-            runtime.finishTick(binding.botId(), binding.botGeneration(),
-                    currentTick);
-        }
-        reapTerminalRuns();
     }
 
     /**
@@ -315,7 +283,7 @@ public final class SelfDefenseTechniqueBridge
         if (binding == null || binding.botGeneration() != botGeneration) {
             return false;
         }
-        TechniqueRunView view = runtime.inspectRun(
+        TechniqueRunView view = coordinator.inspectRun(
                 binding.techniqueRunId()).orElse(null);
         if (view == null) {
             removeRun(binding);
@@ -329,34 +297,10 @@ public final class SelfDefenseTechniqueBridge
          * never become a successful self-defense receipt.
          */
         markRetractionForRun(binding, Retraction.SAFETY);
-        TechniqueCancellationStatus status = runtime.preemptForSafety(
+        TechniqueCancellationStatus status = coordinator.preemptForSafety(this,
                 binding.techniqueRunId(), binding.botId(),
                 binding.botGeneration(), currentTick);
-        reapTerminalRuns();
         return status == TechniqueCancellationStatus.PREEMPTING;
-    }
-
-    /**
-     * Closes one exact body generation before the lifecycle closes or
-     * quarantines its Action ingress. The runtime requests child cancellation
-     * first, so the bridge never loses the immutable child-to-action binding.
-     */
-    public void closeGeneration(UUID botId, long botGeneration,
-            long currentTick) {
-        requireOwnerThread();
-        observeTick(currentTick);
-        UUID requiredBotId = Objects.requireNonNull(botId, "botId");
-        runtime.closeGeneration(requiredBotId, botGeneration, currentTick);
-        for (ActionBinding binding : List.copyOf(
-                actionBindingsByActionId.values())) {
-            if (binding.run().botId().equals(requiredBotId)
-                    && binding.run().botGeneration() == botGeneration
-                    && runtime.inspectRun(binding.run().techniqueRunId())
-                            .isEmpty()) {
-                cancelBinding(binding, ActionCancellationReason.LIFECYCLE);
-            }
-        }
-        reapTerminalRuns();
     }
 
     /**
@@ -390,60 +334,75 @@ public final class SelfDefenseTechniqueBridge
                                 ActionCancellationReceipt.Disposition.UNKNOWN));
     }
 
-    /**
-     * Closes future ingress and asks all children to stop. The lifecycle still
-     * drains Action outcomes after the Action runtime shutdown, allowing a
-     * non-sealed final tick to settle without an invented receipt.
-     */
-    public void shutdown(long currentTick) {
+    @Override
+    void onGenerationClosing(UUID botId, long botGeneration,
+            long currentTick) {
         requireOwnerThread();
-        observeTick(currentTick);
-        if (closed) {
-            return;
+        UUID requiredBotId = Objects.requireNonNull(botId, "botId");
+        for (ActionBinding binding : List.copyOf(
+                actionBindingsByActionId.values())) {
+            if (binding.run().botId().equals(requiredBotId)
+                    && binding.run().botGeneration() == botGeneration
+                    && coordinator.inspectRun(binding.run().techniqueRunId())
+                            .isEmpty()) {
+                cancelBinding(binding, ActionCancellationReason.LIFECYCLE);
+            }
         }
-        closed = true;
-        runtime.shutdown(currentTick);
-        reapTerminalRuns();
+        PendingStart pending = pendingStart;
+        if (pending != null && pending.binding != null
+                && pending.binding.run().botId().equals(requiredBotId)
+                && pending.binding.run().botGeneration() == botGeneration
+                && coordinator.inspectRun(pending.binding.run().techniqueRunId())
+                        .isEmpty()) {
+            cancelBinding(pending.binding, ActionCancellationReason.LIFECYCLE);
+        }
     }
 
-    /** True only when neither the technique nor an unpolled bound action remains. */
-    public boolean isGenerationSafe(UUID botId, long botGeneration) {
+    @Override
+    void closeIngress() {
+        requireOwnerThread();
+        closed = true;
+    }
+
+    @Override
+    boolean isRouteGenerationSafe(UUID botId, long botGeneration) {
         requireOwnerThread();
         UUID requiredBotId = Objects.requireNonNull(botId, "botId");
         if (cancellationContainmentUnsafe) {
             return false;
         }
-        if (!runtime.isGenerationSafe(requiredBotId, botGeneration)) {
-            return false;
-        }
-        return actionBindingsByActionId.values().stream().noneMatch(binding ->
-                binding.run().botId().equals(requiredBotId)
-                        && binding.run().botGeneration() == botGeneration)
+        boolean hasPendingBinding = pendingStart != null
+                && pendingStart.binding != null
+                && pendingStart.binding.run().botId().equals(requiredBotId)
+                && pendingStart.binding.run().botGeneration() == botGeneration;
+        return !hasPendingBinding
+                && actionBindingsByActionId.values().stream().noneMatch(binding ->
+                        binding.run().botId().equals(requiredBotId)
+                                && binding.run().botGeneration() == botGeneration)
                 && runsByTechniqueId.values().stream().noneMatch(binding ->
                         binding.botId().equals(requiredBotId)
                                 && binding.botGeneration() == botGeneration);
     }
 
-    public Optional<TechniqueRunView> inspect(UUID botId) {
+    @Override
+    void verifyRun(TechniqueRunView view) {
         requireOwnerThread();
-        return runtime.inspect(Objects.requireNonNull(botId, "botId"));
-    }
-
-    public Optional<TechniqueOutcome> latestOutcome(UUID botId) {
-        requireOwnerThread();
-        return runtime.latestOutcome(Objects.requireNonNull(botId, "botId"));
-    }
-
-    public int activeRunCount() {
-        requireOwnerThread();
-        return runsByTechniqueId.size();
+        TechniqueRunView required = Objects.requireNonNull(view, "run");
+        RunBinding binding = runsByTechniqueId.get(required.techniqueRunId());
+        if (binding == null) {
+            throw new IllegalStateException(
+                    "self-defense technique route lost its run binding");
+        }
+        requireExactRunView(binding, required);
     }
 
     @Override
-    public Submission submit(TechniqueChildTicket ticket) {
+    TechniqueChildDispatcher.Submission submitChild(TechniqueChildTicket ticket,
+            TechniqueRunView view) {
         requireOwnerThread();
         TechniqueChildTicket required = Objects.requireNonNull(ticket,
                 "ticket");
+        TechniqueRunView requiredView = Objects.requireNonNull(view, "run");
         PendingStart pending = pendingStart;
         if (pending == null || !isExactChildTicket(pending, required)) {
             if (pending != null) {
@@ -451,16 +410,16 @@ public final class SelfDefenseTechniqueBridge
                         pending.currentTick, ActionFailureCode.INTERNAL_ERROR,
                         "Self-defense technique child identity was invalid");
             }
-            return Submission.rejected(Status.REJECTED,
+            return TechniqueChildDispatcher.Submission.rejected(
+                    TechniqueChildDispatcher.Status.REJECTED,
                     "Self-defense technique child identity was rejected");
         }
-        TechniqueRunView view = runtime.inspectRun(required.techniqueRunId())
-                .orElse(null);
-        if (view == null || !isExactStartingRunView(pending, required, view)) {
+        if (!isExactStartingRunView(pending, required, requiredView)) {
             pending.failure = rejectedOutcome(pending.claim,
                     pending.currentTick, ActionFailureCode.INTERNAL_ERROR,
                     "Self-defense technique runtime binding was invalid");
-            return Submission.rejected(Status.REJECTED,
+            return TechniqueChildDispatcher.Submission.rejected(
+                    TechniqueChildDispatcher.Status.REJECTED,
                     "Self-defense technique runtime binding was rejected");
         }
         if (actionBindingsByActionId.containsKey(pending.claim.actionId())
@@ -470,7 +429,8 @@ public final class SelfDefenseTechniqueBridge
             pending.failure = rejectedOutcome(pending.claim,
                     pending.currentTick, ActionFailureCode.CHANNEL_BUSY,
                     "Self-defense technique binding was already occupied");
-            return Submission.rejected(Status.CHANNEL_BUSY,
+            return TechniqueChildDispatcher.Submission.rejected(
+                    TechniqueChildDispatcher.Status.CHANNEL_BUSY,
                     "Self-defense technique binding is occupied");
         }
 
@@ -489,7 +449,8 @@ public final class SelfDefenseTechniqueBridge
             pending.failure = rejectedOutcome(pending.claim,
                     pending.currentTick, ActionFailureCode.INTERNAL_ERROR,
                     "Self-defense melee binding could not be frozen");
-            return Submission.rejected(Status.REJECTED,
+            return TechniqueChildDispatcher.Submission.rejected(
+                    TechniqueChildDispatcher.Status.REJECTED,
                     "Self-defense melee binding could not be frozen");
         }
 
@@ -504,7 +465,8 @@ public final class SelfDefenseTechniqueBridge
             pending.failure = rejectedOutcome(pending.claim,
                     pending.currentTick, ActionFailureCode.INTERNAL_ERROR,
                     "Self-defense action submission failed");
-            return Submission.rejected(Status.REJECTED,
+            return TechniqueChildDispatcher.Submission.rejected(
+                    TechniqueChildDispatcher.Status.REJECTED,
                     "Self-defense action submission failed");
         }
         if (actionSubmission.status()
@@ -518,7 +480,8 @@ public final class SelfDefenseTechniqueBridge
                     pending.currentTick,
                     failureForActionSubmission(actionSubmission.status()),
                     "Self-defense action submission was rejected");
-            return Submission.rejected(statusForActionSubmission(
+            return TechniqueChildDispatcher.Submission.rejected(
+                    statusForActionSubmission(
                     actionSubmission.status()),
                     "Self-defense action submission was rejected");
         }
@@ -541,7 +504,8 @@ public final class SelfDefenseTechniqueBridge
                     : rejectedOutcome(pending.claim, pending.currentTick,
                             ActionFailureCode.UNSAFE_CONTROL_STATE,
                             "Self-defense cancellation could not prove physical containment");
-            return Submission.rejected(Status.REJECTED,
+            return TechniqueChildDispatcher.Submission.rejected(
+                    TechniqueChildDispatcher.Status.REJECTED,
                     "Self-defense action authorization was revoked during submission");
         }
 
@@ -549,29 +513,37 @@ public final class SelfDefenseTechniqueBridge
         actionBindingsByTicketId.put(required.ticketId(), binding);
         runsByTechniqueId.put(run.techniqueRunId(), run);
         runsByBotId.put(run.botId(), run);
-        return Submission.accepted("Self-defense melee child accepted");
+        return TechniqueChildDispatcher.Submission.accepted(
+                "Self-defense melee child accepted");
     }
 
     @Override
-    public void cancel(TechniqueChildTicket ticket,
+    void cancelChild(TechniqueChildTicket ticket,
             TechniqueCancelReason reason) {
         requireOwnerThread();
         TechniqueChildTicket required = Objects.requireNonNull(ticket,
                 "ticket");
         ActionBinding binding = actionBindingsByTicketId.get(
                 required.ticketId());
-        if (binding == null || !binding.ticket().equals(required)) {
+        if (binding != null && binding.ticket().equals(required)) {
+            cancelBinding(binding, actionCancellationReason(
+                    Objects.requireNonNull(reason, "reason")));
             return;
         }
-        cancelBinding(binding, actionCancellationReason(
-                Objects.requireNonNull(reason, "reason")));
+        PendingStart pending = pendingStart;
+        if (pending != null && pending.binding != null
+                && pending.binding.ticket().equals(required)) {
+            cancelBinding(pending.binding, actionCancellationReason(
+                    Objects.requireNonNull(reason, "reason")));
+        }
     }
 
     private void settleInvalidCompletion(ActionBinding binding,
-            long currentTick, String summary) {
+            long currentTick, String summary,
+            TechniqueLifecycleCoordinator.SignalSink signals) {
         TechniqueSignalStatus status;
         try {
-            status = runtime.offerSignal(new TechniqueSignal(
+            status = signals.offer(this, new TechniqueSignal(
                     binding.run().techniqueRunId(), binding.ticket().ticketId(),
                     binding.run().botId(), binding.run().botGeneration(),
                     binding.ticket().revision(), TechniqueChildState.FAILED,
@@ -582,7 +554,7 @@ public final class SelfDefenseTechniqueBridge
         cancelBinding(binding, ActionCancellationReason.LIFECYCLE);
         removeActionBinding(binding);
         if (status != TechniqueSignalStatus.ACCEPTED) {
-            runtime.closeGeneration(binding.run().botId(),
+            coordinator.closeGeneration(binding.run().botId(),
                     binding.run().botGeneration(), currentTick);
         }
         binding.reply().complete(rejectedOutcome(binding.claim(), currentTick,
@@ -694,11 +666,12 @@ public final class SelfDefenseTechniqueBridge
         runsByBotId.remove(binding.botId(), binding);
     }
 
-    private void reapTerminalRuns() {
-        for (RunBinding binding : List.copyOf(runsByTechniqueId.values())) {
-            if (runtime.inspectRun(binding.techniqueRunId()).isEmpty()) {
-                removeRun(binding);
-            }
+    @Override
+    void reapTerminalRun(UUID techniqueRunId) {
+        RunBinding binding = runsByTechniqueId.get(
+                Objects.requireNonNull(techniqueRunId, "techniqueRunId"));
+        if (binding != null) {
+            removeRun(binding);
         }
     }
 
@@ -830,12 +803,13 @@ public final class SelfDefenseTechniqueBridge
         };
     }
 
-    private static Status statusForActionSubmission(
+    private static TechniqueChildDispatcher.Status statusForActionSubmission(
             ActionMailbox.SubmissionStatus status) {
         return switch (status) {
             case MAILBOX_FULL, COMPLETION_BACKPRESSURE ->
-                    Status.CAPACITY_EXCEEDED;
-            case BOT_GENERATION_CLOSED, RUNTIME_CLOSED -> Status.REJECTED;
+                    TechniqueChildDispatcher.Status.CAPACITY_EXCEEDED;
+            case BOT_GENERATION_CLOSED, RUNTIME_CLOSED ->
+                    TechniqueChildDispatcher.Status.REJECTED;
             case ENQUEUED -> throw new IllegalArgumentException(
                     "enqueued Action submission cannot be rejected");
         };
@@ -991,7 +965,8 @@ public final class SelfDefenseTechniqueBridge
         return supplied;
     }
 
-    private void observeTick(long currentTick) {
+    @Override
+    void observeTick(long currentTick) {
         if (currentTick < 0L || currentTick < lastObservedTick) {
             throw new IllegalArgumentException(
                     "self-defense bridge tick must be monotonic and non-negative");

@@ -5,8 +5,9 @@
 BotPlayer 是面向 Minecraft Java 的真实服务端玩家 AI 框架。项目首先支持
 Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 
-> **当前状态：P2、P3 与 P4 自动化退出门已通过；当前连续集成分支上的受限 P5 纵切与
-> P6-R1 已通过自动验证；仍不是正式版本，P5/P6 总退出门均未关闭。**
+> **当前状态：P2、P3 与 P4 自动化退出门已通过；Build #362 已验证受限 P5 纵切与
+> P6-R1 的先前自动化基线。其后的 P5A 修复、单 `TechniqueLifecycleCoordinator` Contract 与
+> P6 会话协调器提交仍待各自 Java 21 CI；仍不是正式版本，P5/P6 总退出门均未关闭。**
 >
 > 当前代码已建立真实 `BotServerPlayer`、generation 隔离、确定性动作运行时、短程输入、
 > 基础世界交互和 bot 自身背包 GUI。P3 提供有限感知和短期世界事实；P4 提供有界导航与 L0
@@ -14,7 +15,8 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 > [`agent/p5-p6-next`](https://github.com/GreyTaiWolf/BotPlayer/tree/agent/p5-p6-next)；
 > [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) 已通过 Java 21
 > `clean build`、Gradle `test`、161 项常规 NeoForge GameTest 与 phase-one/phase-two
-> 重启 GameTest（各 1 项）。这不替代真实客户端、独立专用服或多 bot soak 验收。
+> 重启 GameTest（各 1 项）。这是当前分支增量提交之前的自动化基线；这不替代真实客户端、
+> 独立专用服或多 bot soak 验收。
 >
 > 当前候选自动覆盖受限 P5 资源—制作—存放、白名单容器/工作站（含 Bot 私有末影箱）、
 > 作物/交易/牛奶、有限自卫、保存围栏和两阶段重启路径；仍不代表通用容器、任意配方/作物/

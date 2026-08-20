@@ -47,7 +47,8 @@ P2 已加入生命周期、移动、交互和库存 GameTest；P3 加入有限�
 [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) 已通过 Java 21
 `clean build`、Gradle `test`、161 项常规 GameTest 和 phase-one/phase-two 重启
 GameTest（各 1 项）。P5 总退出门和 P6 总退出门仍未关闭；真实客户端、专用服和多 bot soak
-不由此替代。涉及
+不由此替代。Build #362 是当前 P5A 修复、P5C lifecycle Contract 与 P6 会话协调器增量提交
+之前的自动化基线；这些提交仍须各自通过 Java 21 CI。涉及
 Minecraft 行为的提交必须运行：
 
 ```bash
@@ -75,7 +76,7 @@ src/main/java/io/github/greytaiwolf/botplayer/
   navigation/                    P4 请求/session、运动快照、A*、follower 与 Terrain Assist
   safety/                        P4 每 Tick SafetyFrame、incident FSM、威胁探针与抢占
   skill/                         P5 有界 Skill 契约、DAG、资源预留与当前生存纵切
-  technique/                     短生命周期玩家 Technique；当前仅有限自卫单次近战 bridge
+  technique/                     短生命周期玩家 Technique；当前一个 lifecycle coordinator + 有限自卫单次近战 route
   worldmodel/                    scoped revision、短期事实与确定性活动推断
   gametest/                      P2–P5 NeoForge GameTest
   network/                       界面打开与 agentId 绑定 payload；永不传 Key
@@ -325,8 +326,10 @@ P5 当前源码建立有界 Skill 核心、确定性 DAG 校验、TTL 资源预�
 它们不能据此计入 P5 总退出门。
 P5C 的窄接线仅把已有有限自卫会话已经授权的一个
 `MELEE_ATTACK`，以不可变 `AttackEntity`/target/generation/ticket 绑定交给单 child
-Technique，再在服务器主线程取回精确 Action 终态。它不选择目标、不移动、不换装备、不
-重试或连击，也不提供任何通用 Technique→Action 路由。
+Technique。服务器生命周期只驱动一个 owner-thread `TechniqueLifecycleCoordinator`；当前
+有限自卫 bridge 只是其中一条受限 Action 路由，并不拥有第二个 runtime。它再在服务器主
+线程取回精确 Action 终态；不选择目标、不移动、不换装备、不重试或连击，也不提供任何
+通用 Technique→Action 路由，更不构成 P5D 建筑/红石能力。
 管理入口为：
 
 ```text
@@ -435,8 +438,9 @@ build 与 JAR upload，日志明确 `All 55 required tests passed`，其中 P4 �
 当前 P5/P6 远端证据为
 [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094)：Java 21
 `clean build`、Gradle `test`、161 项常规 GameTest 和 phase-one/phase-two 重启 GameTest
-均通过。真实进程崩溃/断电、死亡 handoff 的跨进程边界、Windows 或其他文件系统的目录刷盘、
-模组化 XP/掉落事件矩阵、独立专用服和多 Bot soak 仍需专项验证。
+均通过；它是当前 P5A/P5C/P6 增量提交之前的基线，不能代替这些提交待完成的 Java 21 CI。
+真实进程崩溃/断电、死亡 handoff 的跨进程边界、Windows 或其他文件系统的目录刷盘、模组化
+XP/掉落事件矩阵、独立专用服和多 Bot soak 仍需专项验证。
 
 早期 P5 基线证据为
 [Build #163](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/30897970406)：Java 21

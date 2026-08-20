@@ -35,7 +35,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0014](0014-bounded-navigation-and-safety-plane.md) | 有界导航快照、分段路径与独立 L0 安全平面 | Accepted | P4 自动化退出门已通过 |
 | [ADR-0015](0015-bounded-skill-runtime-and-menu-transactions.md) | 有界技能运行时与统一菜单事务 | Accepted | 当前连续集成分支的受限 P5 纵切已通过 Build #362 自动基线；P5 总退出门与跨 menu 通用事务仍未完成 |
 | [ADR-0016](0016-durable-vanilla-death-consumption-handoff.md) | 原版死亡消费的耐久交接与失败关闭 | Accepted | P5 死亡纵切已由 Build #163 验证 |
-| [ADR-0017](0017-bounded-player-technique-runtime.md) | `Action → Technique → Skill` 有界玩家技术动作层 | Accepted | Technique runtime 与已有有限自卫单击的窄 bridge 已通过 Build #362 自动基线；跳劈、真实施工和广泛战斗仍未实现 |
+| [ADR-0017](0017-bounded-player-technique-runtime.md) | `Action → Technique → Skill` 有界玩家技术动作层 | Accepted | 旧有 Technique runtime 与有限自卫单击窄 bridge 已通过 Build #362 自动基线；当前分支已迁为单 lifecycle coordinator Contract，仍待该提交 Java 21 CI；跳劈、真实施工和广泛战斗仍未实现 |
 | [ADR-0018](0018-strict-consumable-pre-use-fence.md) | 严格消耗品的原版使用前围栏 | Accepted | P5B 牛奶纵切已通过 Build #362 自动基线；真实客户端/专用服验证仍待 |
 | [ADR-0019](0019-owner-manual-review-only-ai-round-trip.md) | Owner 手动只读 AI 审阅往返 | Accepted | P6-R1 固定快照/本地 review-only Provider 纵切已通过 Build #362 自动基线；真实客户端/Provider E2E 仍待 |
 | [ADR-0020](0020-bounded-ai-scheduler-supervisor.md) | 有界 AI 调度监督器与 Provider-start 围栏 | Accepted | P6 纯 Java scheduler 的受信任有界 lane 合同已通过 Build #362 自动基线；尚未接入生产 lifecycle/client-sponsored bridge |
@@ -61,7 +61,8 @@ Navigation 和 menu 合同，允许在互不冲突的 `ActionChannel` 上持有�
 且始终受 generation、L0 安全、权限、世界 revision、cleanup 和真实结果证据约束。当前
 唯一生产接线仅接受已有有限自卫已经授权的一次 `MELEE_ATTACK`，并将其不可变地绑定到
 一个 `AttackEntity` child；它没有目标选择、移动、装备、重试、连击或泛化 Action 路由。
-因此即使该窄 bridge 已编码，也不表示任何战斗或建筑能力成熟度提升。
+当前 lifecycle 只驱动一个 `TechniqueRuntime`，有限自卫 bridge 作为其受限路由；因此即使
+该窄 bridge 已编码，也不表示任何战斗或建筑能力成熟度提升。
 
 ADR-0021 固定 client-sponsored 通用请求必须先由 server gate 生成唯一 requestId/nonce，再用
 同一绑定构造客户端 dispatch、Scheduler 请求和精确取消。该合同不开放通用聊天或 AI→世界
