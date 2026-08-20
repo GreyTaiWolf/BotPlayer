@@ -7,7 +7,8 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 
 > **当前状态：P2、P3 与 P4 自动化退出门已通过；Build #362 已验证受限 P5 纵切与
 > P6-R1 的先前自动化基线。其后的 P5A 修复、单 `TechniqueLifecycleCoordinator` Contract 与
-> P6 会话协调器及客户端安全 terminal-observation Contract 提交仍待各自 Java 21 CI；仍不是
+> P6 会话协调器、客户端安全 terminal-observation Contract 与受限 Technique→Action permit Contract
+> 提交仍待各自 Java 21 CI；仍不是
 > 正式版本，P5/P6 总退出门均未关闭。**
 >
 > 当前代码已建立真实 `BotServerPlayer`、generation 隔离、确定性动作运行时、短程输入、
@@ -23,6 +24,8 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 > 作物/交易/牛奶、有限自卫、保存围栏和两阶段重启路径；仍不代表通用容器、任意配方/作物/
 > 交易、广泛战斗或完整生存能力。末影箱只使用 Bot 自己的私有账本，不读取方块实体物品；
 > 同一物理方块跨 Bot 目前保守串行。
+> 当前 P5D 只新增精确 Technique child→Action 的 opaque permit Contract；尚未有 lifecycle adapter、
+> `GroundPlace`、蓝图、材料授权或任何真实建筑世界动作。
 > P6-R1 是默认关闭的固定本地只读审阅往返，只有真实 owner 本地 `reviewOnly.enabled=true`
 > 时才会尝试发起固定 Provider HTTPS；回传只形成安全摘要并丢弃，绝不进入 Skill、Action 或
 > 世界动作。通用 DeepSeek/chat、通用 client-sponsored bridge 与 AI→世界执行尚未实现；R1

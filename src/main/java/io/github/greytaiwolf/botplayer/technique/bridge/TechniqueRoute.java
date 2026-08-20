@@ -1,5 +1,6 @@
 package io.github.greytaiwolf.botplayer.technique.bridge;
 
+import io.github.greytaiwolf.botplayer.action.ActionKind;
 import io.github.greytaiwolf.botplayer.technique.runtime.PlayerTechnique;
 import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueCancelReason;
 import io.github.greytaiwolf.botplayer.technique.runtime.TechniqueChildDispatcher;
@@ -22,6 +23,15 @@ abstract class TechniqueRoute {
 
     abstract TechniqueChildDispatcher.Submission submitChild(
             TechniqueChildTicket ticket, TechniqueRunView run);
+
+    /**
+     * Safe-by-default Action-kind allowlist for a child which requests a
+     * {@link TechniqueActionPermit}.  Existing routes that do not opt in
+     * cannot issue a permit merely because they hold a child ticket.
+     */
+    boolean allowsActionKind(TechniqueChildTicket ticket, ActionKind kind) {
+        return false;
+    }
 
     abstract void cancelChild(TechniqueChildTicket ticket,
             TechniqueCancelReason reason);

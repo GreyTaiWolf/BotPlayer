@@ -43,6 +43,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0022](0022-client-sponsored-request-ledger.md) | 客户端赞助请求账本的精确生命周期 | Accepted | 通用 binding 的纯 Java 生命周期账本已编码；不发送网络包、不启动 Provider/Scheduler，通用 bridge 与世界执行仍未接线 |
 | [ADR-0023](0023-atomic-aim-and-place-action-contract.md) | 原子瞄准并放置方块动作合同 | Accepted | P2 共享动作合同已编码；尚未接入 Technique、Skill、蓝图、AI 或 P5D 建筑能力 |
 | [ADR-0024](0024-client-sponsored-request-coordinator.md) | 客户端赞助请求的 server-thread 协调器与有界终态邮箱 | Accepted | gate+ledger 的纯 Java owner-thread 协调器与默认 no-op 的客户端安全 terminal-observation Contract 已编码；不接 Lifecycle/Network/通用 Client bridge/Scheduler，世界执行仍未接线 |
+| [ADR-0025](0025-restricted-technique-action-prebinding-port.md) | 受限 Technique→Action 预绑定 Port | Accepted | 精确 child permit、Action provenance 与 L0 以下 priority 的纯 Java Contract 已编码；尚无 lifecycle adapter、approved construction route 或 P5D 世界能力 |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
@@ -81,6 +82,12 @@ ADR-0024 将 ADR-0022 的 gate 和 immutable binding 账本收敛到一个 serve
 观察；两类 observation 都没有自动 close 权力，也不含 response、Throwable、owner、nonce 或 prompt；
 该基础设施仍不发送网络包、不启动 Provider/Scheduler，不构成通用 client-sponsored bridge、聊天或
 AI→世界执行。
+
+ADR-0025 在 ADR-0017 的 child ticket 与 P2 Action 之间增加不透明的预绑定 permit：只有正在
+处理精确活动 child 的已注册 route 才能由 coordinator 取得它；permit 把 run/ticket/revision、
+bot generation、Action origin/channel/deadline/idempotency 和低于 L0 的 priority 一并冻结。它
+不开放 raw Action submission，不接现有 SafetyService，也不表示已有建筑 route、真实放置或 P5D
+能力。
 
 ## 新 ADR 文件规则
 

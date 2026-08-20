@@ -7,6 +7,14 @@
 
 ### 新增
 
+- 新增 ADR-0025 的受限 `Technique → Action` 预绑定 Contract：只有单一 lifecycle coordinator
+  正在分派的精确活动 child ticket 才能签发 opaque `TechniqueActionPermit`；permit 冻结
+  run/ticket/revision、generation、Action origin/kind/channel/deadline/idempotency 与低于 L0 的 priority，
+  route 默认拒绝未 allowlist 的 kind，且 route-bound Port 对 permit 只允许一次 ingress。它只允许
+  Port 按 permit 提交、读取 terminal evidence 或 exact cancel-or-contain，不公开 raw
+  Action/world DTO，不接现有 SafetyService 或 Action runtime adapter，不注册 construction route，
+  因而不表示 `GroundPlace`、蓝图、红石或 P5D 已实现；当前提交的 Java 21 CI 与 Minecraft 实机
+  验证仍待完成；
 - 新增 P6-C2 客户端本地终态观察 Contract：`ClientAiRequestSessionController` 可选注入、默认
   no-op 的 `ClientAiRequestTerminalObserver`，只在已登记 session 首次精确终结后交付
   `AiRequestDispatchReceipt + SUCCEEDED|FAILED|CANCELLED`。安全 receipt 不含 nonce、owner、

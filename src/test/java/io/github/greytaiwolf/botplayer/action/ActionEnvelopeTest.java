@@ -55,6 +55,25 @@ class ActionEnvelopeTest {
    }
 
    @Test
+   void techniqueChildOriginRequiresItsExactSkillAndCannotClaimAController() {
+      UUID var1 = new UUID(0L, 5L);
+      TechniqueChildOrigin var2 = new TechniqueChildOrigin(
+         new UUID(0L, 6L), new UUID(0L, 7L), 1L
+      );
+      ActionOrigin var3 = ActionOrigin.fromTechniqueChild(var1, var2);
+      Assertions.assertEquals(Optional.of(var1), var3.skillRunId());
+      Assertions.assertEquals(Optional.of(var2), var3.techniqueChild());
+      Assertions.assertFalse(var3.isUntracked());
+      Assertions.assertThrows(IllegalArgumentException.class,
+         () -> new ActionOrigin(Optional.empty(), Optional.empty(),
+            Optional.empty(), Optional.of(var2)));
+      Assertions.assertThrows(IllegalArgumentException.class,
+         () -> new ActionOrigin(Optional.empty(), Optional.of(var1),
+            Optional.of(new ControllerOrigin(ControllerKind.SAFETY,
+               new UUID(0L, 8L))), Optional.of(var2)));
+   }
+
+   @Test
    void stopOwnsEveryChannelThroughAnImmutableSet() {
       StopAction var1 = new StopAction();
       Assertions.assertEquals(ActionKind.STOP, var1.kind());

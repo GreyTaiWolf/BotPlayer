@@ -1,5 +1,7 @@
 package io.github.greytaiwolf.botplayer.technique.bridge;
 
+import io.github.greytaiwolf.botplayer.action.ActionEnvelope;
+import io.github.greytaiwolf.botplayer.action.ActionPriority;
 import io.github.greytaiwolf.botplayer.technique.core.TechniqueId;
 import io.github.greytaiwolf.botplayer.technique.core.TechniqueOutcome;
 import io.github.greytaiwolf.botplayer.technique.core.TechniqueVersion;
@@ -36,12 +38,24 @@ import java.util.UUID;
  * lifecycle integration before they can be registered.
  */
 public final class TechniqueLifecycleCoordinator {
+    /** An unforgeable package capability required to create an Action permit. */
+    static final class PermitIssuer {
+        private PermitIssuer() {
+        }
+    }
+
     private final Thread ownerThread;
     private final TechniqueRuntime runtime;
+    private final PermitIssuer permitIssuer = new PermitIssuer();
     private final Map<RouteKey, TechniqueRoute> routesByKey = new LinkedHashMap<>();
     private final Map<UUID, TechniqueRoute> routesByRunId = new LinkedHashMap<>();
     private final Map<UUID, TicketRoute> routesByTicketId = new LinkedHashMap<>();
     private TechniqueRoute pendingStartRoute;
+    /** A permit may be issued only during this exact coordinator child dispatch. */
+    private TechniqueRoute pendingChildSubmissionRoute;
+    private TechniqueChildTicket pendingChildSubmissionTicket;
+    /** One child may freeze exactly one Action identity before external ingress. */
+    private TechniqueActionPermit pendingChildPermit;
     private long lastObservedTick = -1L;
     private long advancedThroughTick = -1L;
 
@@ -285,6 +299,112 @@ public final class TechniqueLifecycleCoordinator {
         return status;
     }
 
+    /**
+     * Issues one opaque Action capability for the child currently dispatched to
+     * a registered route.
+     *
+     * <p>This is intentionally package-private: routes have no generic
+     * {@code submit(ActionEnvelope)} entry point.  The coordinator rechecks
+     * route, run and ticket identity while the child dispatcher is still
+     * unwinding, before the permit can reach an Action port.
+     */
+    TechniqueActionPermit prebindAction(TechniqueRoute route,
+            TechniqueRunView run, TechniqueChildTicket ticket,
+            ActionEnvelope envelope, ActionPriority priority) {
+        requireOwnerThread();
+        TechniqueRoute checkedRoute = requireRegisteredRoute(route);
+        TechniqueRunView checkedRun = Objects.requireNonNull(run, "run");
+        TechniqueChildTicket checkedTicket = Objects.requireNonNull(ticket,
+                "ticket");
+        if (pendingChildSubmissionRoute != checkedRoute
+                || !checkedTicket.equals(pendingChildSubmissionTicket)) {
+            throw new IllegalStateException(
+                    "Technique Action permits may only be issued during exact child dispatch");
+        }
+        if (pendingChildPermit != null) {
+            throw new IllegalStateException(
+                    "Technique child already owns a prebound Action permit");
+        }
+        TicketRoute ticketRoute = routesByTicketId.get(checkedTicket.ticketId());
+        if (ticketRoute == null || ticketRoute.route() != checkedRoute
+                || !ticketRoute.techniqueRunId().equals(
+                        checkedTicket.techniqueRunId())) {
+            throw new IllegalStateException(
+                    "Technique Action ticket was no longer routed to its owner");
+        }
+        TechniqueRunView current = runtime.inspectRun(
+                checkedTicket.techniqueRunId()).orElse(null);
+        if (current == null || !current.equals(checkedRun)) {
+            throw new IllegalStateException(
+                    "Technique Action run changed before permit issuance");
+        }
+        checkedRoute.verifyRun(current);
+        ActionEnvelope checkedEnvelope = Objects.requireNonNull(envelope,
+                "envelope");
+        if (!checkedRoute.allowsActionKind(checkedTicket,
+                checkedEnvelope.action().kind())) {
+            throw new IllegalArgumentException(
+                    "Technique route did not allow this Action kind for its child");
+        }
+        TechniqueActionPermit permit = TechniqueActionPermit.issue(permitIssuer,
+                checkedRoute, current, checkedTicket, checkedEnvelope,
+                Objects.requireNonNull(priority, "priority"));
+        pendingChildPermit = permit;
+        return permit;
+    }
+
+    /**
+     * Atomically claims a permit only while its original child dispatch is
+     * still live on this coordinator's owner thread.
+     *
+     * <p>A route therefore cannot retain a prebound permit and submit it after
+     * a generation close, L0 preemption, terminal child signal, or tick-boundary
+     * transition.  A future adapter must still exact-cancel an Action if its
+     * own external ingress synchronously re-enters lifecycle code.
+     */
+    boolean claimActionPermitForIngress(TechniqueRoute route,
+            TechniqueActionPermit permit) {
+        requireOwnerThread();
+        TechniqueRoute checkedRoute = requireRegisteredRoute(route);
+        TechniqueActionPermit checkedPermit = Objects.requireNonNull(permit,
+                "permit");
+        if (!checkedPermit.belongsTo(checkedRoute)
+                || pendingChildSubmissionRoute != checkedRoute
+                || pendingChildPermit != checkedPermit
+                || pendingChildSubmissionTicket == null
+                || !pendingChildSubmissionTicket.ticketId().equals(
+                        checkedPermit.techniqueChildTicketId())
+                || !pendingChildSubmissionTicket.techniqueRunId().equals(
+                        checkedPermit.techniqueRunId())
+                || pendingChildSubmissionTicket.revision()
+                        != checkedPermit.techniqueChildRevision()) {
+            return false;
+        }
+        TechniqueRunView current = runtime.inspectRun(
+                checkedPermit.techniqueRunId()).orElse(null);
+        if (current == null || current.state()
+                != io.github.greytaiwolf.botplayer.technique.runtime
+                        .TechniqueState.WAITING_CHILDREN
+                || !current.botId().equals(checkedPermit.botId())
+                || current.botGeneration() != checkedPermit.botGeneration()
+                || current.childTickets().stream().noneMatch(ticket ->
+                        ticket.ticketId().equals(
+                                checkedPermit.techniqueChildTicketId())
+                                && ticket.revision()
+                                        == checkedPermit.techniqueChildRevision()
+                                && ticket.state()
+                                        == io.github.greytaiwolf.botplayer.technique.runtime
+                                                .TechniqueChildState.ACTIVE)) {
+            return false;
+        }
+        return checkedPermit.claimForActionIngress();
+    }
+
+    /** Owner-thread fence shared by every permit port operation. */
+    void requireActionPortOwnerThread() {
+        requireOwnerThread();
+    }
+
     /** Package-private exact runtime view for route-side identity checks only. */
     Optional<TechniqueRunView> inspectRun(UUID techniqueRunId) {
         requireOwnerThread();
@@ -334,26 +454,42 @@ public final class TechniqueLifecycleCoordinator {
                     TechniqueChildDispatcher.Status.CHANNEL_BUSY,
                     "Technique child ticket was already routed");
         }
-        try {
-            TechniqueChildDispatcher.Submission submission = Objects.requireNonNull(
-                    route.submitChild(checked, run), "route child submission");
-            if (submission.status() != TechniqueChildDispatcher.Status.ACCEPTED) {
-                routesByTicketId.remove(checked.ticketId());
-            } else {
-                route.verifyRun(run);
-            }
-            return submission;
-        } catch (RuntimeException exception) {
+        if (pendingChildSubmissionRoute != null) {
             routesByTicketId.remove(checked.ticketId());
-            try {
-                route.cancelChild(checked,
-                        TechniqueCancelReason.GENERATION_CHANGED);
-            } catch (RuntimeException ignored) {
-                /* A route owns any external fail-closed containment proof. */
-            }
             return TechniqueChildDispatcher.Submission.rejected(
                     TechniqueChildDispatcher.Status.REJECTED,
-                    "Technique route threw while accepting a child");
+                    "Technique child dispatch must not re-enter another route");
+        }
+        pendingChildSubmissionRoute = route;
+        pendingChildSubmissionTicket = checked;
+        pendingChildPermit = null;
+        try {
+            try {
+                TechniqueChildDispatcher.Submission submission = Objects.requireNonNull(
+                        route.submitChild(checked, run), "route child submission");
+                if (submission.status()
+                        != TechniqueChildDispatcher.Status.ACCEPTED) {
+                    routesByTicketId.remove(checked.ticketId());
+                } else {
+                    route.verifyRun(run);
+                }
+                return submission;
+            } catch (RuntimeException exception) {
+                routesByTicketId.remove(checked.ticketId());
+                try {
+                    route.cancelChild(checked,
+                            TechniqueCancelReason.GENERATION_CHANGED);
+                } catch (RuntimeException ignored) {
+                    /* A route owns any external fail-closed containment proof. */
+                }
+                return TechniqueChildDispatcher.Submission.rejected(
+                        TechniqueChildDispatcher.Status.REJECTED,
+                        "Technique route threw while accepting a child");
+            }
+        } finally {
+            pendingChildSubmissionRoute = null;
+            pendingChildSubmissionTicket = null;
+            pendingChildPermit = null;
         }
     }
 
