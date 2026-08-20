@@ -48,7 +48,8 @@ P2 已加入生命周期、移动、交互和库存 GameTest；P3 加入有限�
 `clean build`、Gradle `test`、161 项常规 GameTest 和 phase-one/phase-two 重启
 GameTest（各 1 项）。P5 总退出门和 P6 总退出门仍未关闭；真实客户端、专用服和多 bot soak
 不由此替代。Build #362 是当前 P5A 修复、P5C lifecycle Contract、P6 会话协调器、本地
-ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget 与 P5D-A0/A1/A2/A3/A4 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item 数据增量提交之前的自动化基线；这些提交仍须各自通过 Java 21 CI。涉及
+ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget、P6-B0 server-owned
+physical-attempt handshake 与 P5D-A0/A1/A2/A3/A4 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item 数据增量提交之前的自动化基线；这些提交仍须各自通过 Java 21 CI。涉及
 Minecraft 行为的提交必须运行：
 
 ```bash
@@ -69,7 +70,7 @@ src/main/java/io/github/greytaiwolf/botplayer/
   kernel/                        ServerPlayer、连接、listener、runtime handle
   lifecycle/                     在线实例状态机、generation、动作/会话装配和管理器
   action/                        动作契约、FSM、mailbox/ledger/仲裁、输入与 Minecraft backend
-  ai/                            P6 纯 Java Provider DTO/策略/上下文、P6-A0 accounting、P6-A1a context 与 P6-A1b opt-in physical retry hook；不接 Scheduler/client generic bridge 或真实计费
+  ai/                            P6 纯 Java Provider DTO/策略/上下文、P6-A0 accounting、P6-A1a context、P6-A1b opt-in physical retry hook 与 P6-B0 server-owned offer/ACK/start-grant handshake + client-local one-claim gate；不接 Scheduler/network/client generic bridge、Provider/HTTP 或真实计费
   inventory/                     77 槽 menu、session、写锁与 mutation gate
   perception/                    P3 预算、快照、事件收集/投影与 generation 编排
     event/                       有界 AuthorityEvent/PerceivedEvent 双平面

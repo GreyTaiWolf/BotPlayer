@@ -55,6 +55,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0034](0034-budgeted-physical-retry-hook.md) | 受限物理重试预算调用点 | Accepted | P6-A1b 只为显式 `RetryingAiProvider.completeBudgeted(...)` 在每个 physical delegate retry 前 reserve/settle；普通 SPI、Scheduler、client bridge、真实计费与 P6 总完成仍未接线 |
 | [ADR-0035](0035-bounded-construction-site-survey-assessment-contract.md) | 有界候选施工站点调查与评估 | Accepted | P5D-A3 只对 caller-supplied exact target evidence 作 fail-closed 纯 Java assessment；`ACCEPTED_CANDIDATE` 不是 world read、accepted site、lease、ownership/human proof 或 placement，P5D 仍未实现 |
 | [ADR-0036](0036-bounded-blueprint-placeable-item-evidence.md) | 有界蓝图可放置物品声明 | Accepted | P5D-A4 只要求 full-state 的 explicit item declaration 并派生 declared quantity；不猜 blockId→itemId，也不是 registry proof、inventory/reservation、placement 或 P5D 完成 |
+| [ADR-0037](0037-server-owned-physical-attempt-handshake.md) | 服务器拥有的跨边界物理尝试握手 | Accepted | P6-B0 只增加有界 server-owned offer/ACK/settle/start-grant Contract 与 client-local one-claim fence；没有 network/session/Provider/HTTP/lifecycle bridge，也不是真实计费或 P6 完成 |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
@@ -158,6 +159,13 @@ replace policy 都产生 fail-closed finding。`ACCEPTED_CANDIDATE` 只表示 su
 ADR-0036 只在 immutable Blueprint 上增加 full `BlockStateFingerprint` 到显式 caller-supplied item ID 的
 exact-cover declaration，并按 itemId/material class 导出 bounded declared quantity。它不按同名 block/item 或
 properties 缺失猜 mapping，不查询 registry，也不代表 inventory availability、reservation、placement 或施工许可。
+
+ADR-0037 在 P6 只增加 server-owned distributed physical-attempt handshake：exact active dispatch 可先
+reserve，再由 exact prepare ACK 一次 settle 并返回 replay-stable grant；identity 同时绑定 server instance、owner、
+receipt、attempt、nonce、client-not-after 和更早的 physical-start-not-after。grant 是 no-refund 的可能 start
+承诺，不是 HTTP/Provider 事实；offer 可 release，grant/丢包/断线/expiry 只 tombstone，客户端须在实际 start
+边界原子 `tryClaimPhysicalStart()`。它仍没有 packet、authenticated session、client queue、Provider/HTTP、
+lifecycle/reaper 调用、billing 或 AI→世界执行。
 
 ## 新 ADR 文件规则
 

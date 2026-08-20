@@ -7,6 +7,15 @@
 
 ### 新增
 
+- 新增 ADR-0037 的 P6-B0 server-owned distributed physical-attempt handshake Contract：可信 server owner
+  先为 exact dispatch reserve，再仅由 exact prepare ACK settle 并返回 replay-stable start grant；identity 同时
+  绑定 server instance、owner、safe dispatch receipt、server attempt ID、nonce、client not-after 与更早的
+  physical-start deadline。offer 的 close/expiry 只 release 未开始 reservation；一旦 `SETTLED`，grant 丢失、
+  disconnect、terminal、close 与 periodic reaper 都只 tombstone、绝不退款。client-local gate 只 handoff 一次，
+  queued Provider/HTTP start 必须原子 `tryClaimPhysicalStart()`，同时复核 binding/session/deadline/clock，重复、
+  close/rebind、expiry 和 rollback 均失败关闭。它不发送 packet，不接 authenticated session、client queue、
+  lifecycle/reaper、Provider/HTTP、真实 billing/usage、Skill、Action 或 Minecraft；P6 总退出门、Java 21 CI 与
+  真实客户端/Provider E2E 仍待完成；
 - 新增 ADR-0036 的 P5D-A4 pure Java blueprint placeable-item declaration Contract：每一种完整 expected
   `BlockStateFingerprint` 必须有一条显式 caller-supplied `PlaceableItemEvidence`，缺项、foreign/duplicate
   state 或按 blockId 猜 itemId 都失败关闭；它只按显式 itemId 与 permanent/temporary 类别派生 canonical declared
