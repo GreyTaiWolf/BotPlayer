@@ -59,7 +59,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0038](0038-loaded-world-construction-site-survey-adapter.md) | 已加载世界候选施工站点调查适配器 | Accepted | P5D-A5 只在 server thread 对 exact binding 的已加载 cell 生成 immutable survey；不加载 chunk、不写世界，也不是 lease/placement/Technique/Action/Skill 或 P5D 完成 |
 | [ADR-0039](0039-construction-site-spatial-lease-adapter.md) | 施工站点空间租约适配器 | Accepted | P5D-A6 只将 exact binding 的 bounds 映射为最多 8 个 owner-thread `WORK_AREA` TTL tile lease；不预留材料/临时区，也不接 Action/Technique/Skill/world 或 P5D 完成 |
 | [ADR-0040](0040-strict-consumable-commit-boundary.md) | 严格消耗品的原版提交边界与精确终态优先级 | Accepted | strict `UseItem` 在 `HEAD` 与 `completeUsingItem()` 前双重围栏；Finish/Post 的已提交取消先核验 exact Action receipt。新增回归仍待 Java 21/NeoForge CI 与实机验证 |
-| [ADR-0041](0041-r1-physical-attempt-transport-bridge.md) | R1 物理尝试的有界传输桥接 | Accepted | P6-B1 已编码 atomic offer、prepare ACK、start grant payload 与未接 lifecycle 的 R1 conservative admission/ledger holder；尚未注册 network 或接入 lifecycle/client Provider，因此不构成 production bridge |
+| [ADR-0041](0041-r1-physical-attempt-transport-bridge.md) | R1 物理尝试的有界传输桥接 | Accepted | P6-B1 已编码 atomic offer、prepare ACK、start grant payload、未接 lifecycle 的 R1 conservative admission/ledger holder，以及只接受 canonical R1 offer 的 client local stage/one-claim Provider 边界；尚未注册 network 或接入 lifecycle，因此不构成 production bridge |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入

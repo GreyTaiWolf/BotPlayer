@@ -1,6 +1,10 @@
 package io.github.greytaiwolf.botplayer.client.ai;
 
 import io.github.greytaiwolf.botplayer.ai.AiFinishReason;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptClientGrantGate;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptClientGrantStatus;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptOffer;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptStartGrant;
 import io.github.greytaiwolf.botplayer.ai.AiProvider;
 import io.github.greytaiwolf.botplayer.ai.AiRawToolCall;
 import io.github.greytaiwolf.botplayer.ai.AiResponse;
@@ -413,6 +417,232 @@ public final class ClientAiRequestSessionController {
         return ClientAiRequestDispatchStatus.STARTED;
     }
 
+    /**
+     * Locally stages one exact physical-attempt offer without invoking its Provider.
+     *
+     * <p>Staging performs the same owner, binding, deadline, duplicate/tombstone, replacement,
+     * scheduler and factory checks as ordinary admission. It records the resulting local Provider
+     * and returns an ACK only after an {@link AiPhysicalAttemptClientGrantGate} is installed for
+     * the exact immutable offer. The later grant handoff alone may cross the real Provider-start
+     * boundary.
+     */
+    public ClientAiPhysicalAttemptPreparation preparePhysicalAttempt(
+            AiPhysicalAttemptOffer offer, AiClientRequestDispatch dispatch) {
+        rejectProposalHandoffReentrancy();
+        AiPhysicalAttemptOffer checkedOffer = Objects.requireNonNull(offer, "offer");
+        AiClientRequestDispatch checked = Objects.requireNonNull(dispatch, "dispatch");
+        if (!checkedOffer.identity().matches(checked)
+                || checked.purpose() != AiRequestPurpose.REVIEW_ONLY_V1
+                || !AiReviewOnlyContract.isCanonicalDispatch(checked)) {
+            return ClientAiPhysicalAttemptPreparation.rejected(
+                    ClientAiRequestDispatchStatus.REVIEW_CONTRACT_REJECTED);
+        }
+        long now = readCurrentEpochMillisSafely();
+        if (now < 0L) {
+            return ClientAiPhysicalAttemptPreparation.rejected(
+                    ClientAiRequestDispatchStatus.EXPIRED);
+        }
+        expireThrough(now);
+        List<ActiveSession> cancelled = new ArrayList<>();
+        ActiveSession session;
+        synchronized (lock) {
+            ClientAiRequestDispatchStatus localStatus = localStatusLocked(checked, now);
+            if (localStatus != ClientAiRequestDispatchStatus.STARTED) {
+                return ClientAiPhysicalAttemptPreparation.rejected(localStatus);
+            }
+            if (sessionsByRequest.containsKey(checked.requestId())
+                    || tombstoneExpiryByRequest.containsKey(checked.requestId())) {
+                return ClientAiPhysicalAttemptPreparation.rejected(
+                        ClientAiRequestDispatchStatus.DUPLICATE_REQUEST);
+            }
+            if (tombstoneExpiryByRequest.size() + sessionsByRequest.size()
+                    >= MAX_REQUEST_TOMBSTONES) {
+                return ClientAiPhysicalAttemptPreparation.rejected(
+                        ClientAiRequestDispatchStatus.TOMBSTONE_CAPACITY);
+            }
+            ActiveSession previous = sessionsByBot.get(checked.botId());
+            if (previous != null) {
+                detachLocked(previous);
+                cancelled.add(previous);
+            }
+            BotBindingEpoch bindingEpoch = bindingEpochForLocked(checked.botId());
+            bindingEpoch.activeSessions++;
+            session = new ActiveSession(checked, bindingEpoch, bindingEpoch.value);
+            sessionsByRequest.put(checked.requestId(), session);
+            sessionsByBot.put(checked.botId(), session);
+        }
+        try {
+            cancelAll(cancelled);
+        } catch (Throwable cancellationFailure) {
+            failReplacementAfterCancellationFailure(session, cancellationFailure);
+        }
+
+        long dispatchTtlMillis = checked.expiresAtEpochMillis()
+                - checked.issuedAtEpochMillis();
+        long delayMillis = Math.min(
+                checked.expiresAtEpochMillis() - now,
+                dispatchTtlMillis);
+        try {
+            ScheduledFuture<?> deadline = deadlineScheduler.schedule(
+                    () -> expireRequest(checked.requestId()),
+                    delayMillis,
+                    TimeUnit.MILLISECONDS);
+            session.setDeadline(deadline);
+        } catch (RuntimeException exception) {
+            failSession(session);
+            return ClientAiPhysicalAttemptPreparation.rejected(
+                    ClientAiRequestDispatchStatus.PROVIDER_UNAVAILABLE);
+        } catch (Error error) {
+            throw failSessionAfterPostAdmissionError(session, error);
+        }
+
+        AiProvider provider;
+        try {
+            if (!isCurrentAndLocallyAuthorized(
+                    session, readCurrentEpochMillisSafely())) {
+                cancelSession(session);
+                return ClientAiPhysicalAttemptPreparation.rejected(
+                        ClientAiRequestDispatchStatus.CANCELLED);
+            }
+            provider = Objects.requireNonNull(
+                    providerFactory.create(checked, credentialStore),
+                    "client provider factory result");
+        } catch (RuntimeException exception) {
+            failSession(session);
+            return ClientAiPhysicalAttemptPreparation.rejected(
+                    ClientAiRequestDispatchStatus.PROVIDER_UNAVAILABLE);
+        } catch (Error error) {
+            throw failSessionAfterPostAdmissionError(session, error);
+        }
+
+        try {
+            if (!isCurrentAndLocallyAuthorized(
+                    session, readCurrentEpochMillisSafely())) {
+                cancelSession(session);
+                return ClientAiPhysicalAttemptPreparation.rejected(
+                        ClientAiRequestDispatchStatus.CANCELLED);
+            }
+            AiPhysicalAttemptClientGrantGate gate = new AiPhysicalAttemptClientGrantGate(
+                    checkedOffer,
+                    checked,
+                    session.bindingEpochValue,
+                    () -> currentBindingEpochValue(session),
+                    currentEpochMillis,
+                    () -> isCurrentAndLocallyStaged(
+                            session, readCurrentEpochMillisSafely()),
+                    (grant, lease) -> startGrantedPhysicalAttempt(
+                            session, grant, lease));
+            if (!session.installPhysicalAttempt(provider, gate)) {
+                cancelSession(session);
+                return ClientAiPhysicalAttemptPreparation.rejected(
+                        ClientAiRequestDispatchStatus.CANCELLED);
+            }
+        } catch (RuntimeException exception) {
+            failSession(session);
+            return ClientAiPhysicalAttemptPreparation.rejected(
+                    ClientAiRequestDispatchStatus.PROVIDER_UNAVAILABLE);
+        } catch (Error error) {
+            throw failSessionAfterPostAdmissionError(session, error);
+        }
+        return ClientAiPhysicalAttemptPreparation.prepared(checkedOffer.prepareAck());
+    }
+
+    /**
+     * Delivers one server grant only to the exact local session that staged its matching offer.
+     *
+     * <p>A mismatched identity cannot retire another live request. A local deadline, rebind,
+     * disconnect or cancellation result is fail-closed and retires this session before a later
+     * replay can reach its Provider.
+     */
+    public AiPhysicalAttemptClientGrantStatus acceptPhysicalAttemptStartGrant(
+            AiPhysicalAttemptStartGrant grant) {
+        rejectProposalHandoffReentrancy();
+        AiPhysicalAttemptStartGrant checked = Objects.requireNonNull(grant, "grant");
+        ActiveSession session;
+        synchronized (lock) {
+            session = sessionsByRequest.get(
+                    checked.identity().dispatchReceipt().requestId());
+        }
+        if (session == null) {
+            return AiPhysicalAttemptClientGrantStatus.LOCAL_SESSION_INACTIVE;
+        }
+        AiPhysicalAttemptClientGrantGate gate = session.physicalAttemptGate();
+        if (gate == null || !gate.expectedIdentity().equals(checked.identity())) {
+            return AiPhysicalAttemptClientGrantStatus.IDENTITY_MISMATCH;
+        }
+        final AiPhysicalAttemptClientGrantStatus status;
+        try {
+            status = gate.accept(checked);
+        } catch (RuntimeException exception) {
+            failSession(session);
+            return AiPhysicalAttemptClientGrantStatus.CLOSED;
+        } catch (Error error) {
+            throw failSessionAfterPostAdmissionError(session, error);
+        }
+        if (status != AiPhysicalAttemptClientGrantStatus.HANDED_OFF
+                && status != AiPhysicalAttemptClientGrantStatus.ALREADY_HANDED_OFF
+                && status != AiPhysicalAttemptClientGrantStatus.IDENTITY_MISMATCH) {
+            cancelSession(session);
+        }
+        return status;
+    }
+
+    /** Runs under the grant-gate handoff and owns the one actual Provider-start boundary. */
+    private void startGrantedPhysicalAttempt(
+            ActiveSession session,
+            AiPhysicalAttemptStartGrant grant,
+            AiPhysicalAttemptClientGrantGate.LocalStartLease lease) {
+        if (!session.matchesPhysicalAttemptIdentity(grant.identity())
+                || !isCurrentAndLocallyAuthorized(
+                        session, readCurrentEpochMillisSafely())) {
+            lease.release();
+            cancelSession(session);
+            return;
+        }
+        AiProvider provider = session.preparedProvider();
+        if (provider == null) {
+            lease.release();
+            failSession(session);
+            return;
+        }
+
+        CompletionStage<AiResponse> completion;
+        try {
+            if (!lease.tryClaimPhysicalStart()) {
+                cancelSession(session);
+                return;
+            }
+            completion = provider.complete(
+                    session.dispatch.toAiRequest(), session.cancellation.token());
+            if (completion == null) {
+                throw new NullPointerException("AiProvider completion");
+            }
+        } catch (RuntimeException exception) {
+            failSession(session);
+            return;
+        } catch (Error error) {
+            throw failSessionAfterPostAdmissionError(session, error);
+        }
+
+        CompletionAttachment attachment = new CompletionAttachment();
+        try {
+            completion.whenComplete((response, failure) ->
+                    completeBufferedCompletion(
+                            attachment, session, response, failure));
+        } catch (RuntimeException exception) {
+            attachment.discard();
+            failSession(session);
+            return;
+        } catch (Error error) {
+            attachment.discard();
+            throw failSessionAfterPostAdmissionError(session, error);
+        }
+        CompletionSignal buffered = attachment.activateAfterAttachment();
+        if (buffered != null) {
+            completeSession(session, buffered.response(), buffered.failure());
+        }
+    }
+
     private void completeBufferedCompletion(
             CompletionAttachment attachment,
             ActiveSession session,
@@ -756,6 +986,22 @@ public final class ClientAiRequestSessionController {
         }
     }
 
+    /**
+     * Preserves the grant gate's distinct binding-epoch failure result.
+     *
+     * <p>Credential, owner, deadline, connection, and current-session checks remain active here.
+     * The epoch itself is intentionally left to the gate's separate exact epoch comparison so a
+     * rebind cannot be misreported as a generic inactive local session.
+     */
+    private boolean isCurrentAndLocallyStaged(ActiveSession session, long now) {
+        synchronized (lock) {
+            return isCurrentLocked(session)
+                    && !session.cancellation.isCancellationRequested()
+                    && localStatusLocked(session.dispatch, now)
+                    == ClientAiRequestDispatchStatus.STARTED;
+        }
+    }
+
     private void cancelSession(ActiveSession session) {
         retireSession(session, AiClientSponsoredTerminalStatus.CANCELLED);
     }
@@ -1079,6 +1325,13 @@ public final class ClientAiRequestSessionController {
                 && session.bindingEpoch.value == session.bindingEpochValue;
     }
 
+    private long currentBindingEpochValue(ActiveSession session) {
+        synchronized (lock) {
+            BotBindingEpoch current = bindingEpochsByBot.get(session.dispatch.botId());
+            return current == session.bindingEpoch ? current.value : Long.MIN_VALUE;
+        }
+    }
+
     private BindingEpochHandoff createBindingEpochHandoffLocked(ActiveSession session) {
         session.bindingEpoch.queuedHandoffs++;
         return new ActiveBindingEpochHandoff(
@@ -1149,7 +1402,7 @@ public final class ClientAiRequestSessionController {
     }
 
     private static final class BotBindingEpoch {
-        private long value;
+        private long value = 1L;
         private int activeSessions;
         private int queuedHandoffs;
 
@@ -1269,6 +1522,8 @@ public final class ClientAiRequestSessionController {
         private final long bindingEpochValue;
         private final CancellationTokenSource cancellation = new CancellationTokenSource();
         private ScheduledFuture<?> deadline;
+        private AiProvider preparedProvider;
+        private AiPhysicalAttemptClientGrantGate physicalAttemptGate;
         private Throwable cancellationCleanupFailure;
         /* Guarded by this session monitor; closes late deadline installation before token notify. */
         private boolean cancellationStarted;
@@ -1317,8 +1572,13 @@ public final class ClientAiRequestSessionController {
         }
 
         private void cancel() {
+            AiPhysicalAttemptClientGrantGate gate;
             synchronized (this) {
                 cancellationStarted = true;
+                gate = physicalAttemptGate;
+            }
+            if (gate != null) {
+                gate.close();
             }
             cancelDeadline();
             try {
@@ -1348,6 +1608,39 @@ public final class ClientAiRequestSessionController {
             }
             terminalObservationClaimed = true;
             return true;
+        }
+
+        private boolean installPhysicalAttempt(
+                AiProvider provider, AiPhysicalAttemptClientGrantGate gate) {
+            AiProvider checkedProvider = Objects.requireNonNull(provider, "provider");
+            AiPhysicalAttemptClientGrantGate checkedGate = Objects.requireNonNull(gate, "gate");
+            boolean installed;
+            synchronized (this) {
+                installed = !cancellationStarted && physicalAttemptGate == null;
+                if (installed) {
+                    preparedProvider = checkedProvider;
+                    physicalAttemptGate = checkedGate;
+                }
+            }
+            if (!installed) {
+                checkedGate.close();
+            }
+            return installed;
+        }
+
+        private synchronized AiProvider preparedProvider() {
+            return preparedProvider;
+        }
+
+        private synchronized AiPhysicalAttemptClientGrantGate physicalAttemptGate() {
+            return physicalAttemptGate;
+        }
+
+        private synchronized boolean matchesPhysicalAttemptIdentity(
+                io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptIdentity identity) {
+            return physicalAttemptGate != null
+                    && physicalAttemptGate.expectedIdentity().equals(
+                            Objects.requireNonNull(identity, "identity"));
         }
     }
 }

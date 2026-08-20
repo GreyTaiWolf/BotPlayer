@@ -12,9 +12,11 @@
   identity；codec round-trip 和 diagnostics 覆盖 owner/nonce/prompt 不泄露及 dispatch/identity drift 拒绝。
   R1 另有一个尚未接入 lifecycle 的 owner-thread pure holder：它只为 canonical dispatch 派生固定保守
   admission、按 `(owner,bot,agent)` scope 建有界 ledger，并把 exact receipt identity 保存在 B0
-  coordinator 旁；ticket/gate 的非终态 exact lookup 不会按 botId 猜测。当前仍未注册 v3 packet、认证
-  sender、构造 production owner/reaper 或 client Provider start，因此不表示真实 bridge、budget settle、
-  HTTP、billing/usage 或 P6 完成；
+  coordinator 旁；ticket/gate 的非终态 exact lookup 不会按 botId 猜测。客户端 controller 已仅为
+  canonical R1 offer 本地建 factory/gate 并在 exact grant 的一次性 claim 成功后紧邻启动一次 Provider；
+  offer、rebind、cancel 与物理 deadline 均不能提前启动。当前仍未注册 v3 packet、认证 sender、构造
+  production owner/reaper 或 lifecycle bridge，因此不表示真实 bridge、budget settle、HTTP、billing/usage
+  或 P6 完成；
 - 新增 ADR-0040 的 strict consumable 原版提交边界：活动 `BotServerPlayer` 的 strict natural
   `UseItem` 除 `updateUsingItem` HEAD 外，会在精确 `completeUsingItem()` invocation 前再次复核；
   通过后进入不可逆提交相位。Finish 或 `PlayerTickEvent.Post` 才到达的取消不会以 mailbox

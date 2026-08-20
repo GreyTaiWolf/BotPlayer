@@ -2,6 +2,8 @@ package io.github.greytaiwolf.botplayer.client.ai;
 
 /** Safe local outcome of receiving one server-to-client AI request dispatch. */
 public enum ClientAiRequestDispatchStatus {
+    /** A physical-attempt offer passed local staging; only its exact prepare ACK may be sent. */
+    PREPARED,
     /** The local provider call was admitted and is now cancellable. */
     STARTED,
     /** The dispatch owner is not the currently connected local player. */

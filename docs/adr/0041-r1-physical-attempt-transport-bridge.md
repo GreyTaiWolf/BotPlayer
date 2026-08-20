@@ -40,8 +40,10 @@ billing 或 HTTP 事实。所有 payload 的 `toString()` 必须保持 redacted�
 
 当前实现已落地这三种 payload/codec 和它们的 round-trip/redaction 测试，并提供未接 lifecycle 的
 R1 owner-thread pure holder：它只对 canonical dispatch 派生固定 conservative admission、按 exact
-scope 建 bounded ledger 并关联 receipt identity。在 network registrar、生命周期和客户端同时接线前，
-这些部件不得注册为生产入口，也不得称为 Provider bridge。
+scope 建 bounded ledger 并关联 receipt identity。客户端 controller 也已实现 R1-only local stage：仅
+canonical `REVIEW_ONLY_V1` offer 能创建 local Provider/fence 并返回 ACK，grant/one-claim 成功前
+`provider.complete(...)` 必为零。该 controller 尚未由 network registrar 或 lifecycle 调用；在三者
+同时接线前，这些部件不得注册为生产入口，也不得称为 Provider bridge。
 
 ### 2. 服务端保持 R1 专用 owner 与精确 lifecycle 清理
 

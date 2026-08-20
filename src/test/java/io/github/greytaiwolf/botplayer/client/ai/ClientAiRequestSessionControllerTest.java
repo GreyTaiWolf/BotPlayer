@@ -4,6 +4,10 @@ import io.github.greytaiwolf.botplayer.ai.AiCapabilities;
 import io.github.greytaiwolf.botplayer.ai.AiFinishReason;
 import io.github.greytaiwolf.botplayer.ai.AiMessage;
 import io.github.greytaiwolf.botplayer.ai.AiMessageRole;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptClientGrantStatus;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptIdentity;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptOffer;
+import io.github.greytaiwolf.botplayer.ai.AiPhysicalAttemptStartGrant;
 import io.github.greytaiwolf.botplayer.ai.AiProvider;
 import io.github.greytaiwolf.botplayer.ai.AiRawToolCall;
 import io.github.greytaiwolf.botplayer.ai.AiRequest;
@@ -164,6 +168,128 @@ class ClientAiRequestSessionControllerTest {
                 proposal.toolCalls().getFirst().name());
         Assertions.assertEquals("{}", proposal.toolCalls().getFirst().argumentsJson());
         Assertions.assertTrue(provider.token.get().isCancellationRequested());
+    }
+
+    @Test
+    void physicalAttemptStagesBeforeGrantAndStartsProviderExactlyOnceAfterClaim() {
+        ControlledProvider provider = new ControlledProvider();
+        List<AiProposalPayload> returned = new ArrayList<>();
+        ClientAiRequestSessionController controller = controller(
+                OWNER_ID, List.of(provider), returned);
+        AiClientRequestDispatch dispatch = reviewDispatch();
+        AiPhysicalAttemptOffer offer = physicalAttemptOffer(dispatch);
+
+        ClientAiPhysicalAttemptPreparation preparation = controller.preparePhysicalAttempt(
+                offer, dispatch);
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.PREPARED,
+                preparation.status());
+        Assertions.assertEquals(offer.prepareAck(), preparation.prepareAck().orElseThrow());
+        Assertions.assertEquals(0, provider.calls.get());
+        Assertions.assertEquals(1, controller.activeRequestCount());
+
+        AiPhysicalAttemptStartGrant grant = new AiPhysicalAttemptStartGrant(offer.identity());
+        Assertions.assertEquals(AiPhysicalAttemptClientGrantStatus.HANDED_OFF,
+                controller.acceptPhysicalAttemptStartGrant(grant));
+        Assertions.assertEquals(1, provider.calls.get());
+        Assertions.assertEquals(AiPhysicalAttemptClientGrantStatus.ALREADY_HANDED_OFF,
+                controller.acceptPhysicalAttemptStartGrant(grant));
+        Assertions.assertEquals(1, provider.calls.get());
+
+        provider.completion.complete(reviewToolResponse(dispatch));
+
+        Assertions.assertEquals(1, returned.size());
+        Assertions.assertEquals(0, controller.activeRequestCount());
+        Assertions.assertTrue(provider.token.get().isCancellationRequested());
+    }
+
+    @Test
+    void physicalAttemptNeverStartsProviderAfterCancellationRebindOrPhysicalDeadline() {
+        ControlledProvider cancelledProvider = new ControlledProvider();
+        ClientAiRequestSessionController cancelled = controller(
+                OWNER_ID, List.of(cancelledProvider), new ArrayList<>());
+        AiClientRequestDispatch cancelledDispatch = reviewDispatch();
+        AiPhysicalAttemptOffer cancelledOffer = physicalAttemptOffer(cancelledDispatch);
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.PREPARED,
+                cancelled.preparePhysicalAttempt(cancelledOffer, cancelledDispatch).status());
+        Assertions.assertTrue(cancelled.cancelRequest(cancelledDispatch.requestId()));
+        Assertions.assertEquals(AiPhysicalAttemptClientGrantStatus.LOCAL_SESSION_INACTIVE,
+                cancelled.acceptPhysicalAttemptStartGrant(new AiPhysicalAttemptStartGrant(
+                        cancelledOffer.identity())));
+        Assertions.assertEquals(0, cancelledProvider.calls.get());
+
+        ControlledProvider reboundProvider = new ControlledProvider();
+        ClientAiRequestSessionController rebound = controller(
+                OWNER_ID, List.of(reboundProvider), new ArrayList<>());
+        AiClientRequestDispatch reboundDispatch = reviewDispatch(UUID.fromString(
+                "00000000-0000-0000-0000-000000000302"));
+        AiPhysicalAttemptOffer reboundOffer = physicalAttemptOffer(reboundDispatch);
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.PREPARED,
+                rebound.preparePhysicalAttempt(reboundOffer, reboundDispatch).status());
+        rebound.advanceBindingEpoch(BOT_ID);
+        Assertions.assertEquals(AiPhysicalAttemptClientGrantStatus.LOCAL_BINDING_EPOCH_MISMATCH,
+                rebound.acceptPhysicalAttemptStartGrant(new AiPhysicalAttemptStartGrant(
+                        reboundOffer.identity())));
+        Assertions.assertEquals(0, reboundProvider.calls.get());
+
+        ControlledProvider expiredProvider = new ControlledProvider();
+        ClientAiRequestSessionController expired = controller(
+                OWNER_ID, List.of(expiredProvider), new ArrayList<>());
+        AiClientRequestDispatch expiredDispatch = reviewDispatch(UUID.fromString(
+                "00000000-0000-0000-0000-000000000303"));
+        AiPhysicalAttemptOffer expiredOffer = physicalAttemptOffer(expiredDispatch);
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.PREPARED,
+                expired.preparePhysicalAttempt(expiredOffer, expiredDispatch).status());
+        clock.set(expiredOffer.identity().physicalStartNotAfterEpochMillis());
+        Assertions.assertEquals(
+                AiPhysicalAttemptClientGrantStatus.PHYSICAL_START_NOT_AFTER_EXPIRED,
+                expired.acceptPhysicalAttemptStartGrant(new AiPhysicalAttemptStartGrant(
+                        expiredOffer.identity())));
+        Assertions.assertEquals(0, expiredProvider.calls.get());
+    }
+
+    @Test
+    void physicalAttemptRejectsMismatchedOrNonR1OffersBeforeProviderConstruction() {
+        ControlledProvider provider = new ControlledProvider();
+        AtomicInteger factoryCalls = new AtomicInteger();
+        ClientAiRequestSessionController controller = new ClientAiRequestSessionController(
+                credentialStore,
+                OWNER_ID,
+                (ignored, store) -> {
+                    factoryCalls.incrementAndGet();
+                    return provider;
+                },
+                clock::get,
+                scheduler,
+                (ignored, proposal) -> {});
+        AiClientRequestDispatch dispatch = reviewDispatch();
+        AiPhysicalAttemptOffer mismatchedOffer = physicalAttemptOffer(reviewDispatch(UUID.fromString(
+                "00000000-0000-0000-0000-000000000304")));
+
+        ClientAiPhysicalAttemptPreparation preparation = controller.preparePhysicalAttempt(
+                mismatchedOffer, dispatch);
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.REVIEW_CONTRACT_REJECTED,
+                preparation.status());
+        Assertions.assertTrue(preparation.prepareAck().isEmpty());
+        Assertions.assertEquals(0, factoryCalls.get());
+        Assertions.assertEquals(0, provider.calls.get());
+        Assertions.assertEquals(0, controller.activeRequestCount());
+
+        AiClientRequestDispatch nonR1Dispatch = dispatch(UUID.fromString(
+                "00000000-0000-0000-0000-000000000305"), AGENT_ID, 2_000L);
+        ClientAiPhysicalAttemptPreparation nonR1Preparation = controller.preparePhysicalAttempt(
+                physicalAttemptOffer(nonR1Dispatch), nonR1Dispatch);
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.REVIEW_CONTRACT_REJECTED,
+                nonR1Preparation.status());
+        Assertions.assertTrue(nonR1Preparation.prepareAck().isEmpty());
+        Assertions.assertEquals(0, factoryCalls.get());
+        Assertions.assertEquals(0, provider.calls.get());
+        Assertions.assertEquals(0, controller.activeRequestCount());
     }
 
     @Test
@@ -1616,6 +1742,10 @@ class ClientAiRequestSessionControllerTest {
     }
 
     private static AiClientRequestDispatch reviewDispatch() {
+        return reviewDispatch(REQUEST_ID);
+    }
+
+    private static AiClientRequestDispatch reviewDispatch(UUID requestId) {
         AiReviewOnlySnapshotProjection projection = new AiReviewOnlySnapshotProjection(
                 BOT_ID,
                 2L,
@@ -1633,7 +1763,7 @@ class ClientAiRequestSessionControllerTest {
                 OWNER_ID,
                 AGENT_ID,
                 2L,
-                REQUEST_ID,
+                requestId,
                 UUID.fromString("00000000-0000-0000-0000-000000000401"),
                 projection.snapshotId(),
                 AiRequestPurpose.REVIEW_ONLY_V1,
@@ -1646,6 +1776,14 @@ class ClientAiRequestSessionControllerTest {
                 template.messages(),
                 template.options(),
                 Optional.empty());
+    }
+
+    private static AiPhysicalAttemptOffer physicalAttemptOffer(
+            AiClientRequestDispatch dispatch) {
+        return new AiPhysicalAttemptOffer(AiPhysicalAttemptIdentity.fromDispatch(
+                dispatch,
+                UUID.fromString("00000000-0000-0000-0000-000000000501"),
+                dispatch.expiresAtEpochMillis() - 1L));
     }
 
     private static AiRequestCancellationPayload cancellation(
@@ -1672,6 +1810,20 @@ class ClientAiRequestSessionControllerTest {
                 Optional.empty(),
                 List.of(new AiRawToolCall(
                         "call_1", "safe_tool", "{\"value\":\"tool_argument_sentinel\"}")),
+                AiTokenUsage.empty());
+    }
+
+    private static AiResponse reviewToolResponse(AiClientRequestDispatch dispatch) {
+        return new AiResponse(
+                dispatch.requestId(),
+                dispatch.providerId(),
+                dispatch.model(),
+                AiFinishReason.TOOL_CALLS,
+                "",
+                Optional.empty(),
+                Optional.empty(),
+                List.of(new AiRawToolCall(
+                        "call_1", AiReviewOnlyContract.TOOL_NAME, "{}")),
                 AiTokenUsage.empty());
     }
 
