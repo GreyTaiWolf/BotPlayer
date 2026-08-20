@@ -244,6 +244,22 @@ public final class SkillRuntime implements AutoCloseable {
             if (activeByRun.get(run.runId) != run) {
                 continue;
             }
+            if (run.deferredCancellation != null) {
+                /*
+                 * An Action completion is produced by the lifecycle action
+                 * runtime after this SkillRuntime's normal tick and is first
+                 * observable here on the next tick.  When that next tick is
+                 * also the plan deadline (or a reservation renewal would
+                 * fail), the exact committed receipt must still win before
+                 * the ordinary maintenance path can terminalize the run.
+                 */
+                boolean processedDeferredSignal = processSignals(
+                        run, currentTick);
+                if (activeByRun.get(run.runId) != run
+                        || processedDeferredSignal) {
+                    continue;
+                }
+            }
             if (currentTick >= run.deadlineTick) {
                 finishFailed(
                         run,
@@ -268,6 +284,14 @@ public final class SkillRuntime implements AutoCloseable {
                     || processedSignal) {
                 continue;
             }
+            if (run.deferredCancellation != null) {
+                /*
+                 * A strict native action has crossed its completion boundary.
+                 * It owns the one remaining exact receipt; do not progress to
+                 * another node while waiting to settle it.
+                 */
+                continue;
+            }
             progress(run, currentTick);
         }
     }
@@ -281,7 +305,16 @@ public final class SkillRuntime implements AutoCloseable {
         if (run == null) {
             return CancelStatus.NOT_ACTIVE;
         }
-        notifyCancelled(run, safeReason, currentTick);
+        if (run.deferredCancellation != null) {
+            return CancelStatus.CANCELLATION_PENDING;
+        }
+        if (requestCancellation(run, safeReason, currentTick)
+                == SkillNodeHandler.CancellationAdmission
+                        .AWAIT_EXACT_ACTION_TERMINAL) {
+            deferCancellation(run, DeferredCancellationTerminal.CANCELLED,
+                    safeReason, currentTick);
+            return CancelStatus.CANCELLATION_PENDING;
+        }
         finish(run, SkillRunState.CANCELLED, null, safeReason, currentTick);
         return CancelStatus.CANCELLED;
     }
@@ -295,7 +328,16 @@ public final class SkillRuntime implements AutoCloseable {
         if (run == null) {
             return CancelStatus.NOT_ACTIVE;
         }
-        notifyCancelled(run, safeReason, currentTick);
+        if (run.deferredCancellation != null) {
+            return CancelStatus.CANCELLATION_PENDING;
+        }
+        if (requestCancellation(run, safeReason, currentTick)
+                == SkillNodeHandler.CancellationAdmission
+                        .AWAIT_EXACT_ACTION_TERMINAL) {
+            deferCancellation(run, DeferredCancellationTerminal.PREEMPTED,
+                    safeReason, currentTick);
+            return CancelStatus.CANCELLATION_PENDING;
+        }
         finish(run, SkillRunState.PREEMPTED, null, safeReason, currentTick);
         return CancelStatus.PREEMPTED;
     }
@@ -328,8 +370,17 @@ public final class SkillRuntime implements AutoCloseable {
         if (!run.state.canTransitionTo(SkillRunState.PAUSING)) {
             return PauseStatus.NOT_PAUSABLE;
         }
+        if (run.deferredCancellation != null) {
+            return PauseStatus.CANCELLATION_PENDING;
+        }
+        if (requestCancellation(run, safeReason, currentTick)
+                == SkillNodeHandler.CancellationAdmission
+                        .AWAIT_EXACT_ACTION_TERMINAL) {
+            deferCancellation(run, DeferredCancellationTerminal.PAUSED,
+                    safeReason, currentTick);
+            return PauseStatus.CANCELLATION_PENDING;
+        }
         transition(run, SkillRunState.PAUSING, currentTick, safeReason);
-        notifyCancelled(run, safeReason, currentTick);
         releaseReservations(run);
         transition(run, SkillRunState.PAUSED, currentTick,
                 "L0 安全暂停清理完成，等待重新观察后恢复");
@@ -439,6 +490,10 @@ public final class SkillRuntime implements AutoCloseable {
             }
             processed = true;
             try {
+                if (run.deferredCancellation != null) {
+                    settleDeferredCancellation(run, signal, currentTick);
+                    continue;
+                }
                 switch (signal.status()) {
                     case SUCCEEDED -> apply(
                             run,
@@ -499,6 +554,83 @@ public final class SkillRuntime implements AutoCloseable {
             }
         }
         return processed;
+    }
+
+    /**
+     * Settles a cancellation that arrived after a strict native use entered
+     * {@code completeUsingItem()}. The action receipt always wins first: a
+     * successful receipt is passed through the node verifier, while a failed
+     * or stale receipt remains a real failure and is never rewritten as a
+     * cancellation.
+     */
+    private void settleDeferredCancellation(
+            ActiveRun run, SkillSignal signal, long currentTick) {
+        DeferredCancellation deferred = Objects.requireNonNull(
+                run.deferredCancellation, "deferredCancellation");
+        SkillNodeDirective receipt = handler(run).signal(
+                context(run, currentTick), signal);
+        switch (signal.status()) {
+            case SUCCEEDED -> {
+                if (receipt.kind() == SkillNodeDirective.Kind.FAIL) {
+                    finishFailed(run,
+                            receipt.failureCode().orElseThrow(),
+                            receipt.safeSummary(), currentTick);
+                    return;
+                }
+                if (receipt.kind() != SkillNodeDirective.Kind.COMPLETE) {
+                    finishFailed(run, SkillFailureCode.INTERNAL_ERROR,
+                            "已提交原版动作的回执未形成可验证终态", currentTick);
+                    return;
+                }
+                settleDeferredTerminal(run, deferred, currentTick);
+            }
+            case FAILED -> finishFailed(run,
+                    signal.failureCode() == SkillFailureCode.NONE
+                            ? SkillFailureCode.INTERNAL_ERROR
+                            : signal.failureCode(),
+                    signal.safeSummary(), currentTick);
+            case CANCELLED, PREEMPTED -> settleDeferredTerminal(
+                    run, deferred, currentTick);
+            case STALE -> finishFailed(run, SkillFailureCode.WORLD_CHANGED,
+                    "已提交原版动作的异步回执失效，拒绝覆盖物理终态", currentTick);
+        }
+    }
+
+    private void settleDeferredTerminal(
+            ActiveRun run,
+            DeferredCancellation deferred,
+            long currentTick) {
+        run.deferredCancellation = null;
+        switch (deferred.terminal()) {
+            case CANCELLED -> finish(run, SkillRunState.CANCELLED, null,
+                    "取消请求晚于已提交的原版动作；精确动作回执已先核验",
+                    currentTick);
+            case PREEMPTED -> finish(run, SkillRunState.PREEMPTED, null,
+                    "抢占请求晚于已提交的原版动作；精确动作回执已先核验",
+                    currentTick);
+            case PAUSED -> {
+                releaseReservations(run);
+                transition(run, SkillRunState.PAUSING, currentTick,
+                        "暂停请求晚于已提交的原版动作；精确动作回执已先核验");
+                transition(run, SkillRunState.PAUSED, currentTick,
+                        "L0 安全暂停清理完成，等待重新观察后恢复");
+            }
+        }
+    }
+
+    private void deferCancellation(
+            ActiveRun run,
+            DeferredCancellationTerminal terminal,
+            String safeReason,
+            long currentTick) {
+        if (run.deferredCancellation != null) {
+            return;
+        }
+        run.deferredCancellation = new DeferredCancellation(
+                terminal, requireSummary(safeReason));
+        updateSummary(run,
+                "取消请求到达时原版动作已越过提交边界；等待精确动作回执",
+                currentTick);
     }
 
     private void progress(ActiveRun run, long currentTick) {
@@ -777,6 +909,21 @@ public final class SkillRuntime implements AutoCloseable {
         }
     }
 
+    private SkillNodeHandler.CancellationAdmission requestCancellation(
+            ActiveRun run, String reason, long currentTick) {
+        if (run.nodeIndex >= run.order.size()) {
+            return SkillNodeHandler.CancellationAdmission.IMMEDIATE;
+        }
+        try {
+            return handler(run).requestCancellation(
+                    context(run, currentTick), requireSummary(reason));
+        } catch (RuntimeException ignored) {
+            // A rejected strict ingress is synchronously contained by its
+            // lifecycle gateway; preserve the ordinary immediate fallback.
+            return SkillNodeHandler.CancellationAdmission.IMMEDIATE;
+        }
+    }
+
     private void transition(
             ActiveRun run,
             SkillRunState next,
@@ -986,6 +1133,7 @@ public final class SkillRuntime implements AutoCloseable {
         private long updatedTick;
         private int nodeIndex;
         private boolean nodeStarted;
+        private DeferredCancellation deferredCancellation;
         private final Map<ReservationKey, ReservationToken>
                 reservationsByKey = new LinkedHashMap<>();
         private SkillFailureCode failureCode;
@@ -1024,6 +1172,8 @@ public final class SkillRuntime implements AutoCloseable {
     public enum CancelStatus {
         CANCELLED,
         PREEMPTED,
+        /** A strict native action is settling its exact committed outcome. */
+        CANCELLATION_PENDING,
         NOT_ACTIVE
     }
 
@@ -1038,7 +1188,24 @@ public final class SkillRuntime implements AutoCloseable {
         PAUSED,
         ALREADY_PAUSED,
         PAUSING,
+        /** A strict native action is settling before the requested pause. */
+        CANCELLATION_PENDING,
         NOT_ACTIVE,
         NOT_PAUSABLE
+    }
+
+    private enum DeferredCancellationTerminal {
+        CANCELLED,
+        PREEMPTED,
+        PAUSED
+    }
+
+    private record DeferredCancellation(
+            DeferredCancellationTerminal terminal,
+            String safeReason) {
+        private DeferredCancellation {
+            terminal = Objects.requireNonNull(terminal, "terminal");
+            safeReason = requireSummary(safeReason);
+        }
     }
 }

@@ -56,6 +56,27 @@ public interface SkillNodeHandler {
     }
 
     /**
+     * Requests cancellation before the runtime commits its own terminal state.
+     *
+     * <p>The default preserves the existing one-step cancellation contract.
+     * An action-backed strict natural use may instead report that native
+     * completion has already been entered; the runtime then keeps the exact
+     * action receipt live and settles it before deciding the Skill terminal.
+     */
+    default CancellationAdmission requestCancellation(
+            SkillNodeContext context, String reason) {
+        cancelled(context, reason);
+        return CancellationAdmission.IMMEDIATE;
+    }
+
+    enum CancellationAdmission {
+        /** The handler safely accepted ordinary immediate cancellation. */
+        IMMEDIATE,
+        /** A strict native action has already crossed its completion boundary. */
+        AWAIT_EXACT_ACTION_TERMINAL
+    }
+
+    /**
      * A sealed failed-signal result.  Handlers cannot fabricate a replan: the
      * only replan implementation is minted after an action bridge consumes its
      * exact terminal completion capability.

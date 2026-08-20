@@ -132,6 +132,209 @@ class SkillRuntimeTest {
     }
 
     @Test
+    void lateStrictCancellationWaitsForVerifiedReceiptBeforeCancelling() {
+        TestHandler handler = new TestHandler();
+        handler.awaitExactActionReceipt = true;
+        SkillRuntime runtime = runtime(handler, 40);
+        UUID runId = runtime.submit(request(twoNodePlan(), 0L))
+                .runId().orElseThrow();
+
+        runtime.tick(0L);
+        SkillRunView waiting = runtime.inspectRun(runId).orElseThrow();
+        Assertions.assertEquals(SkillRunState.WAITING_ACTION,
+                waiting.state());
+
+        Assertions.assertEquals(SkillRuntime.CancelStatus.CANCELLATION_PENDING,
+                runtime.cancel(runId, 1L, "原版完成边界后的取消请求"));
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.WAITING_ACTION,
+                        runtime.inspectRun(runId).orElseThrow().state(),
+                        "延迟取消不能在精确动作回执前终止 Skill"),
+                () -> Assertions.assertEquals(1, runtime.activeRunCount()),
+                () -> Assertions.assertEquals(List.of(NODE_ONE),
+                        handler.startedNodes),
+                () -> Assertions.assertEquals(1,
+                        handler.deferredCancellationRequests));
+
+        runtime.tick(1L);
+        Assertions.assertEquals(List.of(NODE_ONE), handler.startedNodes,
+                "等待已提交动作的精确回执时不得开始下一个 DAG 节点");
+
+        Assertions.assertEquals(
+                io.github.greytaiwolf.botplayer.skill.core.SkillSignalInbox
+                        .OfferStatus.ENQUEUED,
+                runtime.offerSignal(signal(
+                        runId, waiting.stateRevision(), 2L)));
+        runtime.tick(2L);
+
+        SkillRunView cancelled = runtime.inspectRun(runId).orElseThrow();
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.CANCELLED,
+                        cancelled.state()),
+                () -> Assertions.assertEquals(0, runtime.activeRunCount()),
+                () -> Assertions.assertEquals(List.of(SkillSignalStatus.SUCCEEDED),
+                        handler.receivedSignalStatuses),
+                () -> Assertions.assertEquals(1,
+                        handler.exactReceiptVerificationCount,
+                        "成功回执必须先通过节点处理器的精确验证"),
+                () -> Assertions.assertEquals(List.of(NODE_ONE),
+                        handler.startedNodes,
+                        "成功回执已核验后取消 Skill，仍不得推进第二节点"));
+    }
+
+    @Test
+    void lateStrictCancellationAtDeadlineSettlesQueuedReceiptBeforeTimeout() {
+        TestHandler handler = new TestHandler();
+        handler.awaitExactActionReceipt = true;
+        SkillRuntime runtime = runtime(handler, 2);
+        UUID runId = runtime.submit(request(twoNodePlan(), 0L))
+                .runId().orElseThrow();
+
+        runtime.tick(0L);
+        SkillRunView waiting = runtime.inspectRun(runId).orElseThrow();
+        Assertions.assertEquals(2L, waiting.deadlineTick());
+        Assertions.assertEquals(SkillRuntime.CancelStatus.CANCELLATION_PENDING,
+                runtime.cancel(runId, 1L, "截止 tick 的完成边界取消请求"));
+        Assertions.assertEquals(
+                io.github.greytaiwolf.botplayer.skill.core.SkillSignalInbox
+                        .OfferStatus.ENQUEUED,
+                runtime.offerSignal(signal(
+                        runId, waiting.stateRevision(), 2L)));
+
+        runtime.tick(2L);
+
+        SkillRunView cancelled = runtime.inspectRun(runId).orElseThrow();
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.CANCELLED,
+                        cancelled.state(),
+                        "已入队的精确回执必须优先于同 tick 的 plan deadline"),
+                () -> Assertions.assertTrue(cancelled.failureCode().isEmpty()),
+                () -> Assertions.assertEquals(0, runtime.activeRunCount()),
+                () -> Assertions.assertEquals(1,
+                        handler.exactReceiptVerificationCount),
+                () -> Assertions.assertEquals(List.of(NODE_ONE),
+                        handler.startedNodes,
+                        "deadline 边界上的结算不得推进后续 DAG 节点"));
+    }
+
+    @Test
+    void lateStrictCancellationDoesNotRewriteFailedOrStaleReceipts() {
+        TestHandler failedHandler = new TestHandler();
+        failedHandler.awaitExactActionReceipt = true;
+        SkillRuntime failedRuntime = runtime(failedHandler, 40);
+        UUID failedRunId = failedRuntime.submit(request(oneNodePlan(), 0L))
+                .runId().orElseThrow();
+        failedRuntime.tick(0L);
+        SkillRunView failedWaiting = failedRuntime.inspectRun(failedRunId)
+                .orElseThrow();
+
+        Assertions.assertEquals(SkillRuntime.CancelStatus.CANCELLATION_PENDING,
+                failedRuntime.cancel(failedRunId, 1L, "完成边界后的取消请求"));
+        Assertions.assertEquals(
+                io.github.greytaiwolf.botplayer.skill.core.SkillSignalInbox
+                        .OfferStatus.ENQUEUED,
+                failedRuntime.offerSignal(failedSignal(
+                        failedRunId, failedWaiting.stateRevision(), 2L)));
+        failedRuntime.tick(2L);
+
+        SkillRunView failed = failedRuntime.inspectRun(failedRunId)
+                .orElseThrow();
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.FAILED,
+                        failed.state()),
+                () -> Assertions.assertEquals(SkillFailureCode.WORLD_CHANGED,
+                        failed.failureCode().orElseThrow()),
+                () -> Assertions.assertEquals(List.of(SkillSignalStatus.FAILED),
+                        failedHandler.receivedSignalStatuses),
+                () -> Assertions.assertEquals(0,
+                        failedHandler.exactReceiptVerificationCount));
+
+        TestHandler staleHandler = new TestHandler();
+        staleHandler.awaitExactActionReceipt = true;
+        SkillRuntime staleRuntime = runtime(staleHandler, 40);
+        UUID staleRunId = staleRuntime.submit(request(oneNodePlan(), 0L))
+                .runId().orElseThrow();
+        staleRuntime.tick(0L);
+        SkillRunView staleWaiting = staleRuntime.inspectRun(staleRunId)
+                .orElseThrow();
+
+        Assertions.assertEquals(SkillRuntime.CancelStatus.CANCELLATION_PENDING,
+                staleRuntime.cancel(staleRunId, 1L, "完成边界后的取消请求"));
+        Assertions.assertEquals(
+                io.github.greytaiwolf.botplayer.skill.core.SkillSignalInbox
+                        .OfferStatus.ENQUEUED,
+                staleRuntime.offerSignal(staleSignal(
+                        staleRunId, staleWaiting.stateRevision(), 2L)));
+        staleRuntime.tick(2L);
+
+        SkillRunView stale = staleRuntime.inspectRun(staleRunId)
+                .orElseThrow();
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.FAILED,
+                        stale.state()),
+                () -> Assertions.assertEquals(SkillFailureCode.WORLD_CHANGED,
+                        stale.failureCode().orElseThrow()),
+                () -> Assertions.assertEquals(List.of(SkillSignalStatus.STALE),
+                        staleHandler.receivedSignalStatuses),
+                () -> Assertions.assertEquals(0,
+                        staleHandler.exactReceiptVerificationCount));
+    }
+
+    @Test
+    void lateStrictSafetyPauseWaitsForReceiptThenRemainsResumable() {
+        TestHandler handler = new TestHandler();
+        handler.awaitExactActionReceipt = true;
+        handler.reserve = true;
+        SkillRuntime runtime = runtime(handler, 40);
+        UUID runId = runtime.submit(request(oneNodePlan(), 0L))
+                .runId().orElseThrow();
+
+        runtime.tick(0L);
+        SkillRunView waiting = runtime.inspectRun(runId).orElseThrow();
+        Assertions.assertEquals(1, handler.reservations.activeLeaseCount(0L));
+
+        Assertions.assertEquals(
+                SkillRuntime.PauseStatus.CANCELLATION_PENDING,
+                runtime.pauseForSafety(
+                        runId, 1L, "原版完成边界后的 L0 安全暂停"));
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.WAITING_ACTION,
+                        runtime.inspectRun(runId).orElseThrow().state(),
+                        "精确回执前不得把运行直接标记为 PAUSED"),
+                () -> Assertions.assertEquals(1, runtime.activeRunCount()),
+                () -> Assertions.assertEquals(1,
+                        handler.reservations.activeLeaseCount(1L)));
+
+        Assertions.assertEquals(
+                io.github.greytaiwolf.botplayer.skill.core.SkillSignalInbox
+                        .OfferStatus.ENQUEUED,
+                runtime.offerSignal(signal(
+                        runId, waiting.stateRevision(), 2L)));
+        runtime.tick(2L);
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.PAUSED,
+                        runtime.inspectRun(runId).orElseThrow().state()),
+                () -> Assertions.assertEquals(1, runtime.activeRunCount()),
+                () -> Assertions.assertEquals(0,
+                        handler.reservations.activeLeaseCount(2L)),
+                () -> Assertions.assertEquals(1,
+                        handler.exactReceiptVerificationCount));
+
+        Assertions.assertEquals(SkillRuntime.ResumeStatus.RESUMING,
+                runtime.resume(runId, 3L));
+        runtime.tick(3L);
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.WAITING_ACTION,
+                        runtime.inspectRun(runId).orElseThrow().state()),
+                () -> Assertions.assertEquals(List.of(NODE_ONE, NODE_ONE),
+                        handler.startedNodes,
+                        "恢复必须为同一节点建立新的观察与动作等待"),
+                () -> Assertions.assertEquals(1,
+                        handler.reservations.activeLeaseCount(3L)));
+    }
+
+    @Test
     void boundedNoSideEffectFailureReplansTheCurrentActionNode() {
         TestHandler handler = new TestHandler();
         handler.reserve = true;
@@ -531,6 +734,23 @@ class SkillRuntimeTest {
                 tick);
     }
 
+    private static SkillSignal staleSignal(
+            UUID runId, long revision, long tick) {
+        return new SkillSignal(
+                new UUID(0L, 500L + tick),
+                runId,
+                BOT,
+                1L,
+                revision,
+                new UUID(0L, 600L + tick),
+                SkillSignalType.ACTION,
+                SkillSignalStatus.STALE,
+                SkillFailureCode.WORLD_CHANGED,
+                List.of(),
+                "测试精确动作回执已失效",
+                tick);
+    }
+
     private static WorldInteractionAction markedPlaceBlockAction() {
         BlockTargetFingerprint anchor = new BlockTargetFingerprint(
                 new ResourceId("minecraft:overworld"),
@@ -558,9 +778,14 @@ class SkillRuntimeTest {
         private boolean reserve;
         private boolean pauseFirstBegin;
         private boolean paused;
+        private boolean awaitExactActionReceipt;
         private ActionBackedSkillNodeHandler verifiedReplanDelegate;
         private VerifiedReplanGateway verifiedReplanActions;
         private final List<SkillSignal> verifiedReplanSignals = new ArrayList<>();
+        private final List<SkillSignalStatus> receivedSignalStatuses =
+                new ArrayList<>();
+        private int deferredCancellationRequests;
+        private int exactReceiptVerificationCount;
         private int cancelledCount;
         private int failedCount;
 
@@ -596,10 +821,29 @@ class SkillRuntimeTest {
         @Override
         public SkillNodeDirective signal(
                 SkillNodeContext context, SkillSignal signal) {
+            receivedSignalStatuses.add(signal.status());
+            if (awaitExactActionReceipt
+                    && signal.status() == SkillSignalStatus.SUCCEEDED) {
+                exactReceiptVerificationCount++;
+                return SkillNodeDirective.complete(
+                        "测试精确动作回执已验证");
+            }
             if (verifiedReplanDelegate != null) {
                 return verifiedReplanDelegate.signal(context, signal);
             }
             return SkillNodeDirective.verify("测试动作已经进入验证");
+        }
+
+        @Override
+        public SkillNodeHandler.CancellationAdmission requestCancellation(
+                SkillNodeContext context, String reason) {
+            if (awaitExactActionReceipt) {
+                deferredCancellationRequests++;
+                return SkillNodeHandler.CancellationAdmission
+                        .AWAIT_EXACT_ACTION_TERMINAL;
+            }
+            cancelled(context, reason);
+            return SkillNodeHandler.CancellationAdmission.IMMEDIATE;
         }
 
         @Override

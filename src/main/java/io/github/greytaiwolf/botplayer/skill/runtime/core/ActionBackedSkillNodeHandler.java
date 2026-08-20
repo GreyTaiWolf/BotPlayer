@@ -9,6 +9,7 @@ import io.github.greytaiwolf.botplayer.action.ActionOutcome;
 import io.github.greytaiwolf.botplayer.action.ActionPriority;
 import io.github.greytaiwolf.botplayer.action.ActionRequest;
 import io.github.greytaiwolf.botplayer.action.ActionState;
+import io.github.greytaiwolf.botplayer.action.StrictNaturalUseCancellation;
 import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
 import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
 import io.github.greytaiwolf.botplayer.skill.core.SkillFailureCode;
@@ -184,18 +185,42 @@ public final class ActionBackedSkillNodeHandler
 
     @Override
     public void cancelled(SkillNodeContext context, String reason) {
+        cancelPendingAction(
+                Objects.requireNonNull(context, "context"), reason, false);
+    }
+
+    @Override
+    public SkillNodeHandler.CancellationAdmission requestCancellation(
+            SkillNodeContext context, String reason) {
+        return cancelPendingAction(
+                Objects.requireNonNull(context, "context"), reason, true);
+    }
+
+    private SkillNodeHandler.CancellationAdmission cancelPendingAction(
+            SkillNodeContext context,
+            String reason,
+            boolean awaitCommittedStrictAction) {
         requireOwnerThread();
-        Objects.requireNonNull(context, "context");
-        PendingAction pending = pendingByRun.remove(context.runId());
-        markedPlaceBlockReplans.remove(new RunNodeKey(
-                context.runId(), context.node().nodeId()));
+        Objects.requireNonNull(reason, "reason");
+        PendingAction pending = pendingByRun.get(context.runId());
         if (pending == null) {
-            return;
+            return SkillNodeHandler.CancellationAdmission.IMMEDIATE;
         }
         try {
             if (requiresStrictNaturalUseCancellation(pending.envelope)) {
-                actions.cancelStrictNaturalUse(
+                StrictNaturalUseCancellation cancellation =
+                        actions.requestStrictNaturalUseCancellation(
                         pending.envelope, ActionCancellationReason.REQUESTED);
+                if (awaitCommittedStrictAction
+                        && cancellation.awaitsExactActionOutcome()) {
+                    /*
+                     * Do not remove the exact completion identity. The
+                     * SkillRuntime must consume its real terminal receipt
+                     * before it decides the requested Skill cancellation.
+                     */
+                    return SkillNodeHandler.CancellationAdmission
+                            .AWAIT_EXACT_ACTION_TERMINAL;
+                }
             } else {
                 actions.cancel(
                         pending.botId,
@@ -207,6 +232,10 @@ public final class ActionBackedSkillNodeHandler
             // generation before surfacing an ingress failure. SkillRuntime still
             // releases its reservation and rejects late completions.
         }
+        pendingByRun.remove(context.runId(), pending);
+        markedPlaceBlockReplans.remove(new RunNodeKey(
+                context.runId(), context.node().nodeId()));
+        return SkillNodeHandler.CancellationAdmission.IMMEDIATE;
     }
 
     private static boolean requiresStrictNaturalUseCancellation(
@@ -487,6 +516,20 @@ public final class ActionBackedSkillNodeHandler
         void cancelStrictNaturalUse(
                 ActionEnvelope envelope,
                 ActionCancellationReason reason);
+
+        /**
+         * Narrow admission result used only by strict natural item uses.
+         * Legacy gateways retain their existing void cancellation contract;
+         * production overrides this method to expose the native completion
+         * boundary without making ordinary callers depend on Minecraft state.
+         */
+        default StrictNaturalUseCancellation
+                requestStrictNaturalUseCancellation(
+                        ActionEnvelope envelope,
+                        ActionCancellationReason reason) {
+            cancelStrictNaturalUse(envelope, reason);
+            return StrictNaturalUseCancellation.FENCED;
+        }
     }
 
     @FunctionalInterface

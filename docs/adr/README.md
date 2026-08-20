@@ -36,7 +36,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0015](0015-bounded-skill-runtime-and-menu-transactions.md) | 有界技能运行时与统一菜单事务 | Accepted | 当前连续集成分支的受限 P5 纵切已通过 Build #362 自动基线；P5 总退出门与跨 menu 通用事务仍未完成 |
 | [ADR-0016](0016-durable-vanilla-death-consumption-handoff.md) | 原版死亡消费的耐久交接与失败关闭 | Accepted | P5 死亡纵切已由 Build #163 验证 |
 | [ADR-0017](0017-bounded-player-technique-runtime.md) | `Action → Technique → Skill` 有界玩家技术动作层 | Accepted | 旧有 Technique runtime 与有限自卫单击窄 bridge 已通过 Build #362 自动基线；当前分支已迁为单 lifecycle coordinator Contract，仍待该提交 Java 21 CI；跳劈、真实施工和广泛战斗仍未实现 |
-| [ADR-0018](0018-strict-consumable-pre-use-fence.md) | 严格消耗品的原版使用前围栏 | Accepted | P5B 牛奶纵切已通过 Build #362 自动基线；真实客户端/专用服验证仍待 |
+| [ADR-0018](0018-strict-consumable-pre-use-fence.md) | 严格消耗品的原版使用前围栏 | Superseded | 被 ADR-0040 取代；其旧 P5B 牛奶纵切已通过 Build #362 自动基线 |
 | [ADR-0019](0019-owner-manual-review-only-ai-round-trip.md) | Owner 手动只读 AI 审阅往返 | Accepted | P6-R1 固定快照/本地 review-only Provider 纵切已通过 Build #362 自动基线；真实客户端/Provider E2E 仍待 |
 | [ADR-0020](0020-bounded-ai-scheduler-supervisor.md) | 有界 AI 调度监督器与 Provider-start 围栏 | Accepted | P6 纯 Java scheduler 的受信任有界 lane 合同已通过 Build #362 自动基线；尚未接入生产 lifecycle/client-sponsored bridge |
 | [ADR-0021](0021-client-sponsored-request-correlation.md) | 客户端赞助 AI 请求的单一关联身份 | Accepted | gate→dispatch→scheduler 的纯 DTO 绑定已编码；通用客户端 Provider bridge 与世界执行仍未接线 |
@@ -58,6 +58,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0037](0037-server-owned-physical-attempt-handshake.md) | 服务器拥有的跨边界物理尝试握手 | Accepted | P6-B0 只增加有界 server-owned offer/ACK/settle/start-grant Contract 与 client-local one-claim fence；没有 network/session/Provider/HTTP/lifecycle bridge，也不是真实计费或 P6 完成 |
 | [ADR-0038](0038-loaded-world-construction-site-survey-adapter.md) | 已加载世界候选施工站点调查适配器 | Accepted | P5D-A5 只在 server thread 对 exact binding 的已加载 cell 生成 immutable survey；不加载 chunk、不写世界，也不是 lease/placement/Technique/Action/Skill 或 P5D 完成 |
 | [ADR-0039](0039-construction-site-spatial-lease-adapter.md) | 施工站点空间租约适配器 | Accepted | P5D-A6 只将 exact binding 的 bounds 映射为最多 8 个 owner-thread `WORK_AREA` TTL tile lease；不预留材料/临时区，也不接 Action/Technique/Skill/world 或 P5D 完成 |
+| [ADR-0040](0040-strict-consumable-commit-boundary.md) | 严格消耗品的原版提交边界与精确终态优先级 | Accepted | strict `UseItem` 在 `HEAD` 与 `completeUsingItem()` 前双重围栏；Finish/Post 的已提交取消先核验 exact Action receipt。新增回归仍待 Java 21/NeoForge CI 与实机验证 |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
@@ -179,6 +180,11 @@ ADR-0039 只在该 immutable site binding 之外复用已有 `ResourceReservatio
 key scope；scope 放不下的 dimension 显式失败而不截断/hash。adapter cache 每次使用都重查底层 token，external
 `releaseRun`、`closeGeneration` 与 expiry 都会失效。它不是 accepted site、material/temporary reservation、placement
 candidate、Technique、Skill、Action 或 world permission。
+
+ADR-0040 取代 ADR-0018 的单一 pre-use 围栏：严格 natural `UseItem` 除 `HEAD` 外，还在精确
+`completeUsingItem()` invocation 前二次复核，并在放行时进入不可逆提交相位。Finish/Post 才到达的
+取消不再覆盖真实 Action receipt；success 先经 verifier 再结算请求的 Skill terminal，failed/stale 保持失败，
+已入队 receipt 在同 tick deadline 前优先处理。该补强仍只限 strict Bot 消耗，不开放一般 world 或 AI 路径。
 
 ## 新 ADR 文件规则
 

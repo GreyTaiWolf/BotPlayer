@@ -30,6 +30,30 @@ public abstract class LivingEntityUseItemMixin {
             require = 1)
     private void botplayer$beforeNativeItemUseUpdate(
             ItemStack stack, CallbackInfo callbackInfo) {
+        botplayer$rejectUnsafeNativeUse(callbackInfo, false);
+    }
+
+    /**
+     * NeoForge dispatches {@code LivingEntityUseItemEvent.Tick} after the
+     * updateUsingItem HEAD hook. Recheck at the exact vanilla completion
+     * invoke so a re-entrant listener or an item's on-use-tick code cannot
+     * commit an unapproved strict consumable.
+     */
+    @Inject(
+            method = "updateUsingItem(Lnet/minecraft/world/item/ItemStack;)V",
+            at = @At(
+                    value = "INVOKE",
+                    target = "Lnet/minecraft/world/entity/LivingEntity;completeUsingItem()V",
+                    shift = At.Shift.BEFORE),
+            cancellable = true,
+            require = 1)
+    private void botplayer$beforeNativeItemUseCompletion(
+            ItemStack stack, CallbackInfo callbackInfo) {
+        botplayer$rejectUnsafeNativeUse(callbackInfo, true);
+    }
+
+    private void botplayer$rejectUnsafeNativeUse(
+            CallbackInfo callbackInfo, boolean completing) {
         if (!((Object) this instanceof BotServerPlayer botPlayer)) {
             return;
         }
@@ -44,7 +68,9 @@ public abstract class LivingEntityUseItemMixin {
         }
         try {
             boolean reject = BotPlayerManagers.find(server)
-                    .map(manager -> manager.beforeNativeItemUseUpdate(botPlayer))
+                    .map(manager -> completing
+                            ? manager.beforeNativeItemUseCompletion(botPlayer)
+                            : manager.beforeNativeItemUseUpdate(botPlayer))
                     /* A Bot body without its server-owned action fence may not consume. */
                     .orElse(true);
             if (reject) {

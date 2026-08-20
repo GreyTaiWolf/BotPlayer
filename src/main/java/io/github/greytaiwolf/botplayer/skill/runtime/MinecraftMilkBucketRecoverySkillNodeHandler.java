@@ -128,6 +128,14 @@ public final class MinecraftMilkBucketRecoverySkillNodeHandler
         actions.cancelled(Objects.requireNonNull(context, "context"), reason);
     }
 
+    @Override
+    public SkillNodeHandler.CancellationAdmission requestCancellation(
+            SkillNodeContext context, String reason) {
+        requireOwnerThread();
+        return actions.requestCancellation(
+                Objects.requireNonNull(context, "context"), reason);
+    }
+
     private Optional<ActionBackedSkillNodeHandler.Operation> planAction(
             SkillNodeContext context) {
         Prepared prepared = prepare(context);

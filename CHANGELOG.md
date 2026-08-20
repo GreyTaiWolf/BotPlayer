@@ -7,6 +7,13 @@
 
 ### 新增
 
+- 新增 ADR-0040 的 strict consumable 原版提交边界：活动 `BotServerPlayer` 的 strict natural
+  `UseItem` 除 `updateUsingItem` HEAD 外，会在精确 `completeUsingItem()` invocation 前再次复核；
+  通过后进入不可逆提交相位。Finish 或 `PlayerTickEvent.Post` 才到达的取消不会以 mailbox
+  优先级覆盖已经消费的牛奶：Skill 保留 exact action receipt，success 先经 verifier 再结算请求的
+  cancel/preempt/pause，failed/stale 保持失败；已入 inbox 的 receipt 在同 tick deadline 前优先处理。
+  Tick-event 漂移/取消、Finish/Post 取消、L0 pause/resume 与 deadline 边界均有源码回归；本增量仍待
+  Java 21 CI、NeoForge GameTest 与 Minecraft 实机验证，不代表 P5 总退出门完成；
 - 新增 ADR-0038 的 P5D-A5 loaded-world construction-site survey adapter：只在 authoritative server thread
   对 exact `ConstructionSiteBinding` 的 canonical Blueprint cells（最多 256）读取当前 tick 的已加载 state；先过
   build-height/`isLoaded` guard，unloaded/out-of-height/codec failure 为 `UNKNOWN`，air 为 `EMPTY`，其他以 registry

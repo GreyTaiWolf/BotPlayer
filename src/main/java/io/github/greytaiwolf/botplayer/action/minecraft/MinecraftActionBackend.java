@@ -59,6 +59,12 @@ public final class MinecraftActionBackend implements ActionBackend {
     public enum StrictUseCancellationFenceStatus {
         /** The exact active natural use was marked for the native Mixin. */
         MARKED,
+        /**
+         * Vanilla {@code completeUsingItem()} has already been entered for
+         * the exact action. A cancellation can no longer safely claim that it
+         * retracted the physical use.
+         */
+        NATIVE_COMPLETION_ENTERED,
         /** No strict natural item use is active for the requested generation. */
         NO_ACTIVE_STRICT_USE,
         /** A different strict natural use is active in the requested generation. */
@@ -144,6 +150,16 @@ public final class MinecraftActionBackend implements ActionBackend {
      */
     public boolean beforeNativeItemUseUpdate(BotServerPlayer player) {
         return worldInteractionBackend.beforeNativeItemUseUpdate(player);
+    }
+
+    /**
+     * Rechecks a strict natural use and enters its one-way native completion
+     * boundary immediately before vanilla calls {@code completeUsingItem()}.
+     *
+     * @return whether vanilla must skip the pending completion call
+     */
+    public boolean beforeNativeItemUseCompletion(BotServerPlayer player) {
+        return worldInteractionBackend.beforeNativeItemUseCompletion(player);
     }
 
     /**

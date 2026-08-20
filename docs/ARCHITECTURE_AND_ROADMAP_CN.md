@@ -439,13 +439,13 @@ challenge 的原版 handler。连续在线、独立专用服和多 bot soak 尚�
 `LivingDeathEvent` 同优先级监听器顺序造成“死亡已取消但 bot 被标记 DEAD”的竞态。该
 Mixin 不修改死亡结果，只在原版死亡完整结束后通知生命周期管理器。
 
-严格消耗品使用另有第四个窄行为围栏，详见 ADR-0018：`LivingEntity.updateUsingItem(ItemStack)`
-的精确 1.21.1 `HEAD` 注入只服务活动 `BotServerPlayer` 的严格 `UseItem`。普通 Post tick 和
-`PlayerTickEvent.Pre` 都无法保证位于所有第三方 effect 修改之后、原版牛奶等消耗之前；因此
-围栏在内层原版消费入口复核 hand、物品、原生 inventory menu/cursor/41 槽快照和批准效果。
-漂移只走既有原版 release/stop 并取消本次消费，终态仍由 Action runtime 证据处理；真人和
-旧版非严格 `UseItem` 保持原版路径。该注入固定方法 descriptor 且 `require = 1`，需要目标
-NeoForge 版本的干净 GameTest 验证。
+严格消耗品使用另有第四个窄行为围栏，详见 ADR-0040：`LivingEntity.updateUsingItem(ItemStack)`
+的精确 1.21.1 `HEAD` 注入先服务活动 `BotServerPlayer` 的严格 `UseItem`，并在同一方法对
+`completeUsingItem()` 的精确调用前二次复核。普通 Post tick 和 `PlayerTickEvent.Pre` 都无法保证
+位于所有第三方 effect 修改之后、原版牛奶等消耗之前；而 Finish/Post 取消又可能已晚于物理提交。
+因此第二点通过后 state 单向进入提交相位：漂移只走既有原版 release/stop 并取消本次消费，已提交
+动作的取消则等待 exact Action receipt 先核验。真人和旧版非严格 `UseItem` 保持原版路径。两个注入
+固定方法/invocation descriptor 且 `require = 1`，需要目标 NeoForge 版本的干净 GameTest 验证。
 
 若后续确实需要新的行为注入点，必须新增 ADR，说明无法通过事件、子类或访问转换解决的原因。
 
