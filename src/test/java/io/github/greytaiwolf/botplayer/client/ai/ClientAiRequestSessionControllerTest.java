@@ -60,6 +60,8 @@ class ClientAiRequestSessionControllerTest {
             "00000000-0000-0000-0000-000000000001");
     private static final UUID BOT_ID = UUID.fromString(
             "00000000-0000-0000-0000-000000000101");
+    private static final UUID SECOND_BOT_ID = UUID.fromString(
+            "00000000-0000-0000-0000-000000000102");
     private static final UUID OWNER_ID = UUID.fromString(
             "00000000-0000-0000-0000-000000000151");
     private static final UUID OTHER_OWNER_ID = UUID.fromString(
@@ -1216,6 +1218,177 @@ class ClientAiRequestSessionControllerTest {
     }
 
     @Test
+    void indirectProposalHandoffCompletionFailsBothSessionsOutsideTheLock() throws Exception {
+        credentialStore.bind(
+                SERVER_ID,
+                OWNER_ID,
+                SECOND_BOT_ID,
+                ClientCredentialStore.DEFAULT_PROFILE_ID,
+                "",
+                Optional.of(OTHER_AGENT_ID));
+        ControlledProvider firstProvider = new ControlledProvider();
+        ControlledProvider secondProvider = new ControlledProvider();
+        AiClientRequestDispatch first = dispatch(REQUEST_ID, AGENT_ID, 2_000L);
+        AiClientRequestDispatch second = dispatchForBot(
+                SECOND_BOT_ID,
+                UUID.fromString("00000000-0000-0000-0000-000000000302"),
+                OTHER_AGENT_ID,
+                2_000L);
+        AtomicReference<ClientAiRequestSessionController> controllerRef = new AtomicReference<>();
+        AtomicReference<ClientAiRequestSessionController.BindingEpochHandoff>
+                firstQueuedLease = new AtomicReference<>();
+        AtomicInteger firstHandoffs = new AtomicInteger();
+        AtomicInteger secondHandoffs = new AtomicInteger();
+        AtomicInteger observersOutsideTheLock = new AtomicInteger();
+        AtomicBoolean observerRanUnderTheLock = new AtomicBoolean();
+        List<AiClientSponsoredTerminalObservation> observations = new ArrayList<>();
+        ClientAiRequestSessionController controller = new ClientAiRequestSessionController(
+                credentialStore,
+                OWNER_ID,
+                (dispatch, store) -> {
+                    if (dispatch.requestId().equals(first.requestId())) {
+                        return firstProvider;
+                    }
+                    if (dispatch.requestId().equals(second.requestId())) {
+                        return secondProvider;
+                    }
+                    throw new IllegalArgumentException("unexpected test dispatch");
+                },
+                clock::get,
+                scheduler,
+                () -> true,
+                (dispatch, proposal, bindingEpoch) -> {
+                    if (dispatch.requestId().equals(first.requestId())) {
+                        firstHandoffs.incrementAndGet();
+                        firstQueuedLease.set(bindingEpoch);
+                        Assertions.assertTrue(secondProvider.completion.complete(
+                                toolResponse(second)));
+                    } else if (dispatch.requestId().equals(second.requestId())) {
+                        secondHandoffs.incrementAndGet();
+                    } else {
+                        Assertions.fail("unexpected proposal handoff");
+                    }
+                },
+                observation -> {
+                    try {
+                        controllerRef.get().activeRequestCount();
+                        observersOutsideTheLock.incrementAndGet();
+                    } catch (IllegalStateException exception) {
+                        observerRanUnderTheLock.set(true);
+                    }
+                    observations.add(observation);
+                });
+        controllerRef.set(controller);
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.STARTED,
+                controller.accept(first));
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.STARTED,
+                controller.accept(second));
+        Assertions.assertTrue(firstProvider.completion.complete(toolResponse(first)));
+
+        Assertions.assertEquals(1, firstHandoffs.get());
+        Assertions.assertEquals(0, secondHandoffs.get(),
+                "the nested completion must never enter a second proposal handoff");
+        Assertions.assertNotNull(firstQueuedLease.get());
+        Assertions.assertFalse(firstQueuedLease.get().isCurrentFor(first.botId()),
+                "the outer queued proposal must be invalidated by the indirect completion");
+        Assertions.assertFalse(observerRanUnderTheLock.get());
+        Assertions.assertEquals(2, observersOutsideTheLock.get());
+        Assertions.assertEquals(List.of(
+                new AiClientSponsoredTerminalObservation(
+                        AiRequestDispatchReceipt.fromDispatch(first),
+                        AiClientSponsoredTerminalStatus.FAILED),
+                new AiClientSponsoredTerminalObservation(
+                        AiRequestDispatchReceipt.fromDispatch(second),
+                        AiClientSponsoredTerminalStatus.FAILED)), observations);
+        Assertions.assertEquals(0, controller.activeRequestCount());
+        Assertions.assertTrue(firstProvider.token.get().isCancellationRequested());
+        Assertions.assertTrue(secondProvider.token.get().isCancellationRequested());
+        Assertions.assertFalse(controller.cancelRequest(first.requestId()));
+        Assertions.assertFalse(controller.cancelRequest(second.requestId()));
+    }
+
+    @Test
+    void indirectCompletionCleanupKeepsTheOuterHandoffErrorPrimary() throws Exception {
+        credentialStore.bind(
+                SERVER_ID,
+                OWNER_ID,
+                SECOND_BOT_ID,
+                ClientCredentialStore.DEFAULT_PROFILE_ID,
+                "",
+                Optional.of(OTHER_AGENT_ID));
+        AiClientRequestDispatch first = dispatch(REQUEST_ID, AGENT_ID, 2_000L);
+        AiClientRequestDispatch second = dispatchForBot(
+                SECOND_BOT_ID,
+                UUID.fromString("00000000-0000-0000-0000-000000000302"),
+                OTHER_AGENT_ID,
+                2_000L);
+        SynchronousCallbackProvider firstProvider = new SynchronousCallbackProvider(
+                toolResponse(first));
+        ControlledProvider secondProvider = new ControlledProvider();
+        AtomicReference<ClientAiRequestSessionController.BindingEpochHandoff>
+                firstQueuedLease = new AtomicReference<>();
+        AtomicInteger secondHandoffs = new AtomicInteger();
+        List<AiClientSponsoredTerminalObservation> observations = new ArrayList<>();
+        ClientAiRequestSessionController controller = new ClientAiRequestSessionController(
+                credentialStore,
+                OWNER_ID,
+                (dispatch, store) -> {
+                    if (dispatch.requestId().equals(first.requestId())) {
+                        return firstProvider;
+                    }
+                    if (dispatch.requestId().equals(second.requestId())) {
+                        return secondProvider;
+                    }
+                    throw new IllegalArgumentException("unexpected test dispatch");
+                },
+                clock::get,
+                scheduler,
+                () -> true,
+                (dispatch, proposal, bindingEpoch) -> {
+                    if (dispatch.requestId().equals(first.requestId())) {
+                        firstQueuedLease.set(bindingEpoch);
+                        Assertions.assertTrue(secondProvider.completion.complete(
+                                toolResponse(second)));
+                        throw new AssertionError("handoff sentinel");
+                    }
+                    if (dispatch.requestId().equals(second.requestId())) {
+                        secondHandoffs.incrementAndGet();
+                        return;
+                    }
+                    Assertions.fail("unexpected proposal handoff");
+                },
+                observations::add);
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.STARTED,
+                controller.accept(second));
+        secondProvider.token.get().onCancellation(() -> {
+            throw new AssertionError("nested cleanup sentinel");
+        });
+
+        AssertionError handoffError = Assertions.assertThrows(
+                AssertionError.class, () -> controller.accept(first));
+
+        Assertions.assertEquals("handoff sentinel", handoffError.getMessage());
+        Assertions.assertEquals(1, handoffError.getSuppressed().length);
+        Assertions.assertEquals("nested cleanup sentinel",
+                handoffError.getSuppressed()[0].getMessage());
+        Assertions.assertNotNull(firstQueuedLease.get());
+        Assertions.assertFalse(firstQueuedLease.get().isCurrentFor(first.botId()));
+        Assertions.assertEquals(0, secondHandoffs.get());
+        Assertions.assertEquals(List.of(
+                new AiClientSponsoredTerminalObservation(
+                        AiRequestDispatchReceipt.fromDispatch(first),
+                        AiClientSponsoredTerminalStatus.FAILED),
+                new AiClientSponsoredTerminalObservation(
+                        AiRequestDispatchReceipt.fromDispatch(second),
+                        AiClientSponsoredTerminalStatus.FAILED)), observations);
+        Assertions.assertEquals(0, controller.activeRequestCount());
+        Assertions.assertTrue(firstProvider.token.get().isCancellationRequested());
+        Assertions.assertTrue(secondProvider.token.get().isCancellationRequested());
+    }
+
+    @Test
     void cancellationListenerErrorStillPublishesTheTerminalObservation() {
         ControlledProvider provider = new ControlledProvider();
         List<AiClientSponsoredTerminalObservation> observations = new ArrayList<>();
@@ -1370,9 +1543,27 @@ class ClientAiRequestSessionControllerTest {
             UUID agentId,
             long issuedAtEpochMillis,
             long expiresAtEpochMillis) {
+        return dispatchForBot(
+                BOT_ID, requestId, agentId, issuedAtEpochMillis, expiresAtEpochMillis);
+    }
+
+    private static AiClientRequestDispatch dispatchForBot(
+            UUID botId,
+            UUID requestId,
+            UUID agentId,
+            long expiresAtEpochMillis) {
+        return dispatchForBot(botId, requestId, agentId, 1_000L, expiresAtEpochMillis);
+    }
+
+    private static AiClientRequestDispatch dispatchForBot(
+            UUID botId,
+            UUID requestId,
+            UUID agentId,
+            long issuedAtEpochMillis,
+            long expiresAtEpochMillis) {
         return new AiClientRequestDispatch(
                 SERVER_ID,
-                BOT_ID,
+                botId,
                 OWNER_ID,
                 agentId,
                 2L,

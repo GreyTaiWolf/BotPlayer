@@ -79,13 +79,14 @@ Minecraft queue 已发送、C2S 到达、server gate 接受、计划提交或世
 
 观察器必须非阻塞；其 `RuntimeException` 被隔离，token listener 或观察器的 `Error` 会在已尝试本地
 取消和 observation 后重新抛出。为保持最终 cancellation-before-queue 原子检查，`ProposalHandoff`
-在 controller lock 内运行。直接重入 controller public API 会按本地 handoff `FAILED` 失败关闭；
-同步完成另一个 controller-owned stage 的间接重入当前仍是调用方必须遵守的 no-reentry 前置条件，
-不能把它描述为已经实现的内部失败关闭。ADR-0026 另要求登记后的 trusted `Error` 必须先做精确清理
-和锁外的已决定 terminal observation（setup/再校验/handoff Error 为 `FAILED`；cleanup Error 不覆盖
-已决定的 `SUCCEEDED|CANCELLED`）；同步 setup 边界重抛，后续 completion callback 只遵循
-`CompletionStage` 的 exceptional-stage 语义；attachment 中同步暂存并由 `accept` 激活的 completion
-Error 同样会在清理后重抛。P6-C2 不把 observation 接到 coordinator mailbox、network、
+在 controller lock 内运行。直接重入 controller public API 会按本地 handoff `FAILED` 失败关闭；ADR-0027
+再将“handoff 内同步完成另一个 controller-owned stage”的间接重入失败关闭：嵌套 session 只在锁内精确
+摘除，外层与嵌套 session 均为 `FAILED`，外层 queue lease release，token/observer 统一在锁外收口。
+这不能撤销 handoff 若在返回前已违反 queue/lease 契约而同步直发的 payload。ADR-0026 另要求登记后的
+trusted `Error` 必须先做精确清理和锁外的已决定 terminal observation（setup/再校验/handoff Error 为
+`FAILED`；cleanup Error 不覆盖已决定的 `SUCCEEDED|CANCELLED`）；同步 setup 边界重抛，后续 completion
+callback 只遵循 `CompletionStage` 的 exceptional-stage 语义；attachment 中同步暂存并由 `accept` 激活的
+completion Error 同样会在清理后重抛。P6-C2 不把 observation 接到 coordinator mailbox、network、
 Lifecycle、Scheduler 或 R1，所以它仍不是 generic client-sponsored bridge。
 
 ### 5. 本阶段明确不接线的边界
@@ -141,7 +142,8 @@ dispatch、client/Scheduler terminal reporting、C2S gate review、snapshot/revi
 - Java 21 自动基线：本 ADR 对应提交必须通过 GitHub Actions 的完整 Gradle `clean build`、JUnit 与
   NeoForge GameTest；提交前不得把本地缺少 Java 21/Gradle 的静态检查当作该结论。
 - P6-C2 纯 Java：覆盖 success/failure/cancellation、provider setup failure、replacement、精确
-  completion-vs-cancel race、direct handoff reentrancy 拒绝、observer runtime failure、token listener
-  Error、ADR-0026 的登记后 Error cleanup 与 safe `toString()` redaction；当前提交仍待 Java 21 CI。
+  completion-vs-cancel race、direct handoff reentrancy 拒绝、ADR-0027 的双 bot 同线程间接 completion
+  失败关闭/lease 失效/锁外 observer、observer runtime failure、token listener Error、ADR-0026 的登记后
+  Error cleanup 与 safe `toString()` redaction；当前提交仍待 Java 21 CI。
 - 后续集成：真实 client、Provider/Scheduler lane、owner 退出、断线、死亡、TTL 与迟到 C2S 仍必须
   验证只影响同一完整 binding；在此之前通用 bridge、聊天和 AI 世界执行均未实现。

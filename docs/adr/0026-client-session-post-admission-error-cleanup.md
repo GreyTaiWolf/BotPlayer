@@ -71,9 +71,10 @@ completion 的 `failure` 参数仍是不可信 Provider 结果，不因为其中
 C2S proposal、SkillPlan 或 Minecraft 世界动作。terminal observation 仍只是 receipt 加
 `SUCCEEDED|FAILED|CANCELLED` 的本地安全投影，不能关闭 server gate 或表示发送/执行成功。
 
-当前 direct public-method reentry 仍会被 controller 拒绝；`ProposalHandoff` 内同步完成另一 session 的
-**间接** completion reentry 仍是明确的 non-blocking/no-reentry 调用方前置条件，尚未被本 ADR 变成
-内部状态机保证。它必须在独立的 owner-lock 状态机切片中处理，不能借本次 Error cleanup 宣称完成。
+当前 direct public-method reentry 仍会被 controller 拒绝。ADR-0027 已另行把 `ProposalHandoff` 内同步
+完成另一 session 的**间接** completion reentry 失败关闭：scope 内只结构摘除嵌套 session，外层和嵌套
+session 均为 `FAILED`、外层 lease release，token/observer 在 lock 外统一完成；它不能撤销违反 queue/lease
+契约而已经同步直发的 payload。该状态机不扩展本 ADR 的 network 或 AI 权限边界。
 
 ## 被否决方案
 
@@ -100,6 +101,7 @@ C2S proposal、SkillPlan 或 Minecraft 世界动作。terminal observation 仍�
   `CANCELLED` observation 后报告该 Error，stale completion 不得消费或吞掉它；
 - scheduler 返回 deadline 与终态取消交错：已开始取消的 session 必须直接取消这个迟到 future，不能把它
   重新装入 session 或再次取消；
-- 保留 C2 的 observer Runtime/Error、replacement、expiry、cancel race 与 direct reentry 回归；
+- 保留 C2 的 observer Runtime/Error、replacement、expiry、cancel race、direct reentry 与 ADR-0027
+  双 bot 间接 completion/lease 失效/锁外 observer 回归；
 - 当前提交仍需 Java 21 GitHub `clean build`、JUnit 与 NeoForge GameTest。真实客户端/Provider E2E、
   通用 client-sponsored bridge 和 AI→世界执行不属于本 ADR。

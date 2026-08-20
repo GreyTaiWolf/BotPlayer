@@ -66,8 +66,12 @@ public final class ClientAiRequestSessionController {
      * <p>An asynchronous handoff must call {@link BindingEpochHandoff#release()} exactly once
      * after it sends or drops the proposal. The lease remains valid only while the same bot's
      * local credential binding epoch is unchanged. The handoff is invoked while this controller
-     * serializes the final cancellation-before-queue check, so it must not synchronously re-enter
-     * this controller directly or indirectly, including by completing a controller-owned stage.
+     * serializes the final cancellation-before-queue check, so it must not synchronously call a
+     * controller public API. A synchronous completion of another controller-owned stage is
+     * detected and failed closed: both local sessions are structurally detached under the lock,
+     * their token/terminal cleanup runs after it is released, and the outer handoff's lease is
+     * invalidated. A handoff must still queue rather than transmit a payload before it returns,
+     * because a payload transmitted before its lease is checked cannot be recalled.
      */
     @FunctionalInterface
     public interface ProposalHandoff {
@@ -99,6 +103,9 @@ public final class ClientAiRequestSessionController {
     private final Map<UUID, Long> tombstoneExpiryByRequest = new LinkedHashMap<>();
     /* Entries exist only while a session or queued physical-client handoff retains them. */
     private final Map<UUID, BotBindingEpoch> bindingEpochsByBot = new LinkedHashMap<>();
+
+    /* Guarded by lock; non-null only while ProposalHandoff.accept is executing. */
+    private ProposalHandoffScope activeProposalHandoff;
 
     private UUID localOwnerId;
 
@@ -539,10 +546,37 @@ public final class ClientAiRequestSessionController {
 
     private void completeSession(
             ActiveSession session, AiResponse response, Throwable failure) {
+        if (deferProposalHandoffReentrantCompletion(session)) {
+            return;
+        }
         try {
             completeSessionSafely(session, response, failure);
         } catch (Error error) {
             throw failSessionAfterPostAdmissionError(session, error);
+        }
+    }
+
+    /**
+     * Fences a same-thread completion reached from the external proposal handoff.
+     *
+     * <p>The outer handoff owns {@link #lock}; another thread cannot enter this method until it
+     * has released the monitor and cleared the scope. A non-null scope therefore represents only
+     * monitor reentrancy from that handoff. This branch only detaches exact indexes and records
+     * the required failure cleanup. Token cancellation and terminal observation stay outside the
+     * outer handoff's monitor scope.
+     */
+    private boolean deferProposalHandoffReentrantCompletion(ActiveSession session) {
+        synchronized (lock) {
+            ProposalHandoffScope scope = activeProposalHandoff;
+            if (scope == null) {
+                return false;
+            }
+            AiClientSponsoredTerminalStatus terminalStatus =
+                    detachIfCurrentLocked(session)
+                            ? AiClientSponsoredTerminalStatus.FAILED
+                            : null;
+            scope.defer(session, terminalStatus);
+            return true;
         }
     }
 
@@ -581,9 +615,11 @@ public final class ClientAiRequestSessionController {
 
         /*
          * Keep the session current until the non-blocking physical-client handoff has been made.
-         * This makes a concurrent cancellation/owner change win before the C2S proposal is queued.
+         * This makes a concurrent cancellation/owner change win before the C2S proposal is
+         * queued.
          */
         AiClientSponsoredTerminalStatus terminalStatus = null;
+        List<DeferredSessionFinalization> deferredFinalizations = List.of();
         boolean primaryErrorOwnsCompletionCleanup = false;
         try {
             synchronized (lock) {
@@ -599,15 +635,19 @@ public final class ClientAiRequestSessionController {
                     }
                 } else {
                     BindingEpochHandoff bindingEpoch = createBindingEpochHandoffLocked(session);
+                    ProposalHandoffScope handoffScope = new ProposalHandoffScope();
                     boolean handedOff = false;
+                    activeProposalHandoff = handoffScope;
                     try {
                         proposalHandoff.accept(session.dispatch, proposal, bindingEpoch);
-                        handedOff = true;
+                        handedOff = !handoffScope.indirectCompletionSeen();
                     } catch (RuntimeException ignored) {
                         // A send handoff failure must not trigger a retry or reveal model output.
                     } finally {
+                        activeProposalHandoff = null;
+                        deferredFinalizations = handoffScope.close();
                         if (!handedOff) {
-                            /* A failed handoff never transfers its binding-epoch lease. */
+                            /* A failed or reentrant handoff never transfers its epoch lease. */
                             bindingEpoch.release();
                         }
                         if (detachIfCurrentLocked(session)) {
@@ -620,6 +660,7 @@ public final class ClientAiRequestSessionController {
             }
         } catch (Error primary) {
             primaryErrorOwnsCompletionCleanup = true;
+            Throwable cleanupFailure = null;
             try {
                 if (terminalStatus == null) {
                     /*
@@ -631,15 +672,62 @@ public final class ClientAiRequestSessionController {
                 } else {
                     finishCompletion(session, terminalStatus);
                 }
-            } catch (Throwable cleanupFailure) {
-                addSuppressedIfDistinct(primary, cleanupFailure);
+            } catch (Throwable currentFailure) {
+                cleanupFailure = currentFailure;
             }
+            cleanupFailure = appendCompletionFailure(
+                    cleanupFailure,
+                    finishDeferredCompletions(deferredFinalizations));
+            addSuppressedIfDistinct(primary, cleanupFailure);
             throw primary;
         } finally {
             if (!primaryErrorOwnsCompletionCleanup) {
-                finishCompletion(session, terminalStatus);
+                finishCompletionBatch(
+                        session, terminalStatus, deferredFinalizations);
             }
         }
+    }
+
+    /** Finishes every deferred session even when another terminal cleanup reports a failure. */
+    private void finishCompletionBatch(
+            ActiveSession session,
+            AiClientSponsoredTerminalStatus terminalStatus,
+            List<DeferredSessionFinalization> deferredFinalizations) {
+        Throwable cleanupFailure = null;
+        try {
+            finishCompletion(session, terminalStatus);
+        } catch (Throwable currentFailure) {
+            cleanupFailure = currentFailure;
+        }
+        cleanupFailure = appendCompletionFailure(
+                cleanupFailure,
+                finishDeferredCompletions(deferredFinalizations));
+        if (cleanupFailure != null) {
+            rethrowTerminalFailure(cleanupFailure);
+        }
+    }
+
+    private Throwable finishDeferredCompletions(
+            List<DeferredSessionFinalization> deferredFinalizations) {
+        Throwable cleanupFailure = null;
+        for (DeferredSessionFinalization deferred : deferredFinalizations) {
+            try {
+                finishCompletion(deferred.session(), deferred.terminalStatus());
+            } catch (Throwable currentFailure) {
+                cleanupFailure = appendCompletionFailure(
+                        cleanupFailure, currentFailure);
+            }
+        }
+        return cleanupFailure;
+    }
+
+    private static Throwable appendCompletionFailure(
+            Throwable primary, Throwable supplemental) {
+        if (primary == null) {
+            return supplemental;
+        }
+        addSuppressedIfDistinct(primary, supplemental);
+        return primary;
     }
 
     private void finishCompletion(
@@ -1118,6 +1206,62 @@ public final class ClientAiRequestSessionController {
     }
 
     private record CompletionSignal(AiResponse response, Throwable failure) {}
+
+    /** Lock-confined evidence that an external handoff synchronously completed another session. */
+    private static final class ProposalHandoffScope {
+        private final List<DeferredSessionFinalization> deferredFinalizations = new ArrayList<>();
+        private boolean indirectCompletionSeen;
+        private boolean closed;
+
+        private void defer(
+                ActiveSession session,
+                AiClientSponsoredTerminalStatus terminalStatus) {
+            if (closed) {
+                throw new IllegalStateException("proposal handoff scope is already closed");
+            }
+            indirectCompletionSeen = true;
+            for (DeferredSessionFinalization deferred : deferredFinalizations) {
+                if (deferred.session() == session) {
+                    return;
+                }
+            }
+            deferredFinalizations.add(new DeferredSessionFinalization(
+                    session, terminalStatus));
+        }
+
+        private boolean indirectCompletionSeen() {
+            return indirectCompletionSeen;
+        }
+
+        private List<DeferredSessionFinalization> close() {
+            if (closed) {
+                throw new IllegalStateException("proposal handoff scope is already closed");
+            }
+            closed = true;
+            return List.copyOf(deferredFinalizations);
+        }
+    }
+
+    /** A structurally detached nested completion whose external cleanup must run after unlock. */
+    private static final class DeferredSessionFinalization {
+        private final ActiveSession session;
+        private final AiClientSponsoredTerminalStatus terminalStatus;
+
+        private DeferredSessionFinalization(
+                ActiveSession session,
+                AiClientSponsoredTerminalStatus terminalStatus) {
+            this.session = Objects.requireNonNull(session, "session");
+            this.terminalStatus = terminalStatus;
+        }
+
+        private ActiveSession session() {
+            return session;
+        }
+
+        private AiClientSponsoredTerminalStatus terminalStatus() {
+            return terminalStatus;
+        }
+    }
 
     private static final class ActiveSession {
         private final AiClientRequestDispatch dispatch;

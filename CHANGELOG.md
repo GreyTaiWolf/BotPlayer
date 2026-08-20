@@ -14,9 +14,10 @@
   completion Error 会随后重抛，attachment 返回后才到达的 callback 则只遵循 `CompletionStage` 的
   exceptional-stage 语义（本地 controller 不承诺其 host-level fatal propagation）。
   callback 在 `whenComplete` 正常返回前只暂存，防止“先 callback、后 attachment Error”发布不可撤回的
-  provisional proposal。不发送 packet、不接 Lifecycle 或通用 client-sponsored bridge。间接 completion
-  reentry 仍是调用方 no-reentry 前置条件，尚待独立状态机硬化；当前提交 Java 21 CI 与 Minecraft 实机验证
-  仍待完成；
+  provisional proposal。ADR-0027 另将 `ProposalHandoff` 内同步完成另一 session 的间接 completion
+  失败关闭：嵌套 session 不会在外层 lock 内再次 handoff/token/observe，外层与嵌套 session 都为
+  `FAILED`，外层 queue lease 立即失效，随后统一在锁外清理。不发送 packet、不接 Lifecycle 或通用
+  client-sponsored bridge；当前提交 Java 21 CI 与 Minecraft 实机验证仍待完成；
 - 新增 ADR-0025 的受限 `Technique → Action` 预绑定 Contract：只有单一 lifecycle coordinator
   正在分派的精确活动 child ticket 才能签发 opaque `TechniqueActionPermit`；permit 冻结
   run/ticket/revision、generation、Action origin/kind/channel/deadline/idempotency 与低于 L0 的 priority，
