@@ -700,6 +700,11 @@ Blueprint
 item 是可放置物、可用、已预留或能在真实交互中产出该状态；因此不是本节的 `BillOfMaterials` availability、
 材料背包、reservation 或施工许可。
 
+`P5D-A6` 现只为 construction area 增加一项更窄的 owner-thread 空间 lease：同一 exact site binding 的
+32-block bounded bounds 保守映射为至多 8 个 TTL `WORK_AREA` tile，防止相交施工区并发；它不证明材料可用或
+已预留，也不覆盖临时结构区，且没有任何 placement/Technique/Skill 接线。因此它不是本节的 material reservation
+或真实施工许可。
+
 ### 7.6 施工依赖图
 
 ```text

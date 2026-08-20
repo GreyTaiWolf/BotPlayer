@@ -1,5 +1,5 @@
-Warning: truncated output (original token count: 35975)
-Total output lines: 3367
+Warning: truncated output (original token count: 36158)
+Total output lines: 3374
 
 # BotPlayer：NeoForge 1.21.1 完整架构、编码规范与 P0–P10 路线图
 
@@ -1423,7 +1423,7 @@ navigation/
 - 方块破坏时间、工具耐久；
 - 放置/搭桥材料；
 - 熔岩、火、仙人掌、粉雪、深水、窒息、悬崖；
-- 敌对实体威胁…5975 tokens truncated…BotIntegrationContext context);
+- 敌对实体威胁…6158 tokens truncated…BotIntegrationContext context);
 }
 ```
 

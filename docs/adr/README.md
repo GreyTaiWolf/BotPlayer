@@ -57,6 +57,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0036](0036-bounded-blueprint-placeable-item-evidence.md) | 有界蓝图可放置物品声明 | Accepted | P5D-A4 只要求 full-state 的 explicit item declaration 并派生 declared quantity；不猜 blockId→itemId，也不是 registry proof、inventory/reservation、placement 或 P5D 完成 |
 | [ADR-0037](0037-server-owned-physical-attempt-handshake.md) | 服务器拥有的跨边界物理尝试握手 | Accepted | P6-B0 只增加有界 server-owned offer/ACK/settle/start-grant Contract 与 client-local one-claim fence；没有 network/session/Provider/HTTP/lifecycle bridge，也不是真实计费或 P6 完成 |
 | [ADR-0038](0038-loaded-world-construction-site-survey-adapter.md) | 已加载世界候选施工站点调查适配器 | Accepted | P5D-A5 只在 server thread 对 exact binding 的已加载 cell 生成 immutable survey；不加载 chunk、不写世界，也不是 lease/placement/Technique/Action/Skill 或 P5D 完成 |
+| [ADR-0039](0039-construction-site-spatial-lease-adapter.md) | 施工站点空间租约适配器 | Accepted | P5D-A6 只将 exact binding 的 bounds 映射为最多 8 个 owner-thread `WORK_AREA` TTL tile lease；不预留材料/临时区，也不接 Action/Technique/Skill/world 或 P5D 完成 |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
@@ -172,6 +173,12 @@ ADR-0038 只把 ADR-0035 的 caller-supplied survey 接到一个 stateless serve
 binding 的 canonical Blueprint cell，在 build-height 和 `isLoaded` guard 后读取 native `BlockState`，以完整
 serialized properties 产生 `EMPTY|OCCUPIED`，未加载/越界/codec failure 一律 `UNKNOWN`。它不加载 chunk、不写
 world，也不构成 accepted site、lease、material proof、placement、Technique、Action、Skill 或 P5D 建造路径。
+
+ADR-0039 只在该 immutable site binding 之外复用已有 `ResourceReservationService` 的 TTL authority：它用
+`Math.floorDiv` 将最多 32-block axis span 映射为最多 8 个 exclusive `WORK_AREA` tile，并把 full dimension 保留在
+key scope；scope 放不下的 dimension 显式失败而不截断/hash。adapter cache 每次使用都重查底层 token，external
+`releaseRun`、`closeGeneration` 与 expiry 都会失效。它不是 accepted site、material/temporary reservation、placement
+candidate、Technique、Skill、Action 或 world permission。
 
 ## 新 ADR 文件规则
 

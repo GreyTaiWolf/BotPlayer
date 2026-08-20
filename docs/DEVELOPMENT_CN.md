@@ -81,7 +81,7 @@ src/main/java/io/github/greytaiwolf/botplayer/
   technique/                     短生命周期玩家 Technique；当前一个 lifecycle coordinator + 有限自卫单次近战 route
   building/blueprint/            P5D-A0 有界纯 Java Blueprint、计划方块需求与内容 hash；不接 Minecraft/Action/Technique/world
   building/construction/         P5D-A1 有界纯 Java work-package exact-cover/DAG 数据合同；不接 site/material/Technique/Action/world
-  building/site/                 P5D-A2 candidate anchor/derived-bounds/work-plan binding，A3 caller-supplied exact target evidence 的 fail-closed assessment；A5 `minecraft/` 只在 server thread 将 binding 的已加载 canonical target state 转为 immutable survey；不创建 lease/许可/material/placement/Technique/Action
+  building/site/                 P5D-A2 candidate anchor/derived-bounds/work-plan binding，A3 caller-supplied exact target evidence 的 fail-closed assessment；A5 `minecraft/` 只在 server thread 将 binding 的已加载 canonical target state 转为 immutable survey；A6 只复用现有 TTL reservation 将 exact bounds 映射为最多 8 个 conservative spatial tile lease；不创建材料/临时区 reservation、许可、placement/Technique/Action
   building/material/             P5D-A4 full-state explicit item declaration 与 declared quantity；不猜 blockId→itemId，不读 registry/inventory/world，也不表示 reservation/placement/许可
   worldmodel/                    scoped revision、短期事实与确定性活动推断
   gametest/                      P2–P5 NeoForge GameTest
