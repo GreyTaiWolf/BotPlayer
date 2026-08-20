@@ -35,6 +35,8 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Delayed;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -46,6 +48,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -756,6 +759,415 @@ class ClientAiRequestSessionControllerTest {
     }
 
     @Test
+    void postAdmissionErrorsFromExternalSetupBoundariesFailClosedBeforeRethrow() {
+        scheduler.shutdownNow();
+        scheduler = new ErroringDeadlineScheduler();
+        AtomicInteger schedulerFactoryCalls = new AtomicInteger();
+        List<AiClientSponsoredTerminalObservation> schedulerObservations =
+                new ArrayList<>();
+        ClientAiRequestSessionController schedulerController =
+                new ClientAiRequestSessionController(
+                        credentialStore,
+                        OWNER_ID,
+                        (dispatch, store) -> {
+                            schedulerFactoryCalls.incrementAndGet();
+                            return new ControlledProvider();
+                        },
+                        clock::get,
+                        scheduler,
+                        (dispatch, proposal) -> Assertions.fail(
+                                "scheduler failure must not hand off a proposal"),
+                        schedulerObservations::add);
+        AiClientRequestDispatch schedulerDispatch = dispatch(
+                REQUEST_ID, AGENT_ID, 2_000L);
+
+        Assertions.assertThrows(AssertionError.class,
+                () -> schedulerController.accept(schedulerDispatch));
+        Assertions.assertEquals(0, schedulerFactoryCalls.get());
+        assertFailedTerminal(schedulerController, schedulerObservations,
+                schedulerDispatch);
+
+        scheduler.shutdownNow();
+        scheduler = new ErroringCancellationDeadlineScheduler();
+        List<AiClientSponsoredTerminalObservation> factoryObservations =
+                new ArrayList<>();
+        ClientAiRequestSessionController factoryController =
+                new ClientAiRequestSessionController(
+                        credentialStore,
+                        OWNER_ID,
+                        (dispatch, store) -> {
+                            throw new AssertionError("factory sentinel");
+                        },
+                        clock::get,
+                        scheduler,
+                        (dispatch, proposal) -> Assertions.fail(
+                                "factory failure must not hand off a proposal"),
+                        factoryObservations::add);
+        AiClientRequestDispatch factoryDispatch = dispatch(
+                UUID.fromString("00000000-0000-0000-0000-000000000302"),
+                AGENT_ID, 2_000L);
+
+        AssertionError factoryError = Assertions.assertThrows(AssertionError.class,
+                () -> factoryController.accept(factoryDispatch));
+        Assertions.assertEquals("factory sentinel", factoryError.getMessage());
+        Assertions.assertEquals(1, factoryError.getSuppressed().length);
+        Assertions.assertEquals("deadline cancellation sentinel",
+                factoryError.getSuppressed()[0].getMessage());
+        assertFailedTerminal(factoryController, factoryObservations,
+                factoryDispatch);
+
+        scheduler.shutdownNow();
+        scheduler = new ScheduledThreadPoolExecutor(1);
+        ThrowingCompleteProvider completeProvider =
+                new ThrowingCompleteProvider();
+        List<AiClientSponsoredTerminalObservation> completeObservations =
+                new ArrayList<>();
+        ClientAiRequestSessionController completeController =
+                new ClientAiRequestSessionController(
+                        credentialStore,
+                        OWNER_ID,
+                        (dispatch, store) -> completeProvider,
+                        clock::get,
+                        scheduler,
+                        (dispatch, proposal) -> Assertions.fail(
+                                "provider failure must not hand off a proposal"),
+                        completeObservations::add);
+        AiClientRequestDispatch completeDispatch = dispatch(
+                UUID.fromString("00000000-0000-0000-0000-000000000303"),
+                AGENT_ID, 2_000L);
+
+        Assertions.assertThrows(AssertionError.class,
+                () -> completeController.accept(completeDispatch));
+        Assertions.assertTrue(
+                completeProvider.token.get().isCancellationRequested());
+        assertFailedTerminal(completeController, completeObservations,
+                completeDispatch);
+
+        AttachmentErrorProvider attachmentProvider =
+                new AttachmentErrorProvider();
+        List<AiClientSponsoredTerminalObservation> attachmentObservations =
+                new ArrayList<>();
+        ClientAiRequestSessionController attachmentController =
+                new ClientAiRequestSessionController(
+                        credentialStore,
+                        OWNER_ID,
+                        (dispatch, store) -> attachmentProvider,
+                        clock::get,
+                        scheduler,
+                        (dispatch, proposal) -> Assertions.fail(
+                                "attachment failure must not hand off a proposal"),
+                        attachmentObservations::add);
+        AiClientRequestDispatch attachmentDispatch = dispatch(
+                UUID.fromString("00000000-0000-0000-0000-000000000304"),
+                AGENT_ID, 2_000L);
+
+        Assertions.assertThrows(AssertionError.class,
+                () -> attachmentController.accept(attachmentDispatch));
+        Assertions.assertTrue(
+                attachmentProvider.token.get().isCancellationRequested());
+        assertFailedTerminal(attachmentController, attachmentObservations,
+                attachmentDispatch);
+    }
+
+    @Test
+    void callbackThenAttachmentErrorCannotPublishAProvisionalSuccess() {
+        scheduler.shutdownNow();
+        scheduler = new ErroringCancellationDeadlineScheduler();
+        List<AiProposalPayload> proposals = new ArrayList<>();
+        List<AiClientSponsoredTerminalObservation> observations = new ArrayList<>();
+        AiClientRequestDispatch dispatch = dispatch(REQUEST_ID, AGENT_ID, 2_000L);
+        CallbackThenThrowAttachmentProvider provider =
+                new CallbackThenThrowAttachmentProvider(toolResponse(dispatch));
+        ClientAiRequestSessionController controller =
+                new ClientAiRequestSessionController(
+                        credentialStore,
+                        OWNER_ID,
+                        (checkedDispatch, store) -> provider,
+                        clock::get,
+                        scheduler,
+                        (checkedDispatch, proposal) -> proposals.add(proposal),
+                        observations::add);
+
+        AssertionError attachmentError = Assertions.assertThrows(
+                AssertionError.class, () -> controller.accept(dispatch));
+
+        Assertions.assertEquals("callback attachment sentinel", attachmentError.getMessage());
+        Assertions.assertEquals(1, attachmentError.getSuppressed().length);
+        Assertions.assertEquals("deadline cancellation sentinel",
+                attachmentError.getSuppressed()[0].getMessage());
+        Assertions.assertTrue(proposals.isEmpty());
+        Assertions.assertTrue(provider.token.get().isCancellationRequested());
+        assertFailedTerminal(controller, observations, dispatch);
+    }
+
+    @Test
+    void completionTimeClockErrorDetachesAndObservesTheRegisteredSession() {
+        ControlledProvider provider = new ControlledProvider();
+        AtomicInteger clockReads = new AtomicInteger();
+        List<AiClientSponsoredTerminalObservation> observations = new ArrayList<>();
+        ClientAiRequestSessionController controller =
+                new ClientAiRequestSessionController(
+                        credentialStore,
+                        OWNER_ID,
+                        (dispatch, store) -> provider,
+                        () -> {
+                            if (clockReads.incrementAndGet() >= 4) {
+                                throw new AssertionError("completion clock sentinel");
+                            }
+                            return 1_000L;
+                        },
+                        scheduler,
+                        (dispatch, proposal) -> Assertions.fail(
+                                "completion clock failure must not hand off a proposal"),
+                        observations::add);
+        AiClientRequestDispatch dispatch = dispatch(REQUEST_ID, AGENT_ID, 2_000L);
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.STARTED,
+                controller.accept(dispatch));
+        Assertions.assertTrue(provider.completion.complete(toolResponse(dispatch)));
+
+        Assertions.assertTrue(provider.token.get().isCancellationRequested());
+        assertFailedTerminal(controller, observations, dispatch);
+    }
+
+    @Test
+    void completionErrorDetachesBeforeItsCancellationListenerCanClaimCancelled() {
+        ControlledProvider provider = new ControlledProvider();
+        AtomicInteger clockReads = new AtomicInteger();
+        AtomicBoolean listenerCancelled = new AtomicBoolean();
+        List<AiClientSponsoredTerminalObservation> observations = new ArrayList<>();
+        ClientAiRequestSessionController controller =
+                new ClientAiRequestSessionController(
+                        credentialStore,
+                        OWNER_ID,
+                        (dispatch, store) -> provider,
+                        () -> {
+                            if (clockReads.incrementAndGet() >= 4) {
+                                throw new AssertionError("completion clock sentinel");
+                            }
+                            return 1_000L;
+                        },
+                        scheduler,
+                        (dispatch, proposal) -> Assertions.fail(
+                                "completion clock failure must not hand off a proposal"),
+                        observations::add);
+        AiClientRequestDispatch dispatch = dispatch(REQUEST_ID, AGENT_ID, 2_000L);
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.STARTED,
+                controller.accept(dispatch));
+        provider.token.get().onCancellation(() -> listenerCancelled.set(
+                controller.cancelRequest(dispatch.requestId())));
+        Assertions.assertTrue(provider.completion.complete(toolResponse(dispatch)));
+
+        Assertions.assertFalse(listenerCancelled.get());
+        Assertions.assertTrue(provider.token.get().isCancellationRequested());
+        assertFailedTerminal(controller, observations, dispatch);
+    }
+
+    @Test
+    void completionErrorRetainsItsPrimaryWhenDeadlineCancellationAlsoFails() {
+        scheduler.shutdownNow();
+        scheduler = new ErroringCancellationDeadlineScheduler();
+        AtomicInteger clockReads = new AtomicInteger();
+        List<AiClientSponsoredTerminalObservation> observations = new ArrayList<>();
+        AiClientRequestDispatch dispatch = dispatch(REQUEST_ID, AGENT_ID, 2_000L);
+        SynchronousCallbackProvider provider = new SynchronousCallbackProvider(
+                toolResponse(dispatch));
+        ClientAiRequestSessionController controller =
+                new ClientAiRequestSessionController(
+                        credentialStore,
+                        OWNER_ID,
+                        (checkedDispatch, store) -> provider,
+                        () -> {
+                            if (clockReads.incrementAndGet() >= 4) {
+                                throw new AssertionError("completion clock sentinel");
+                            }
+                            return 1_000L;
+                        },
+                        scheduler,
+                        (checkedDispatch, proposal) -> Assertions.fail(
+                                "completion clock failure must not hand off a proposal"),
+                        observations::add);
+
+        AssertionError completionError = Assertions.assertThrows(
+                AssertionError.class, () -> controller.accept(dispatch));
+
+        Assertions.assertEquals("completion clock sentinel", completionError.getMessage());
+        Assertions.assertEquals(1, completionError.getSuppressed().length);
+        Assertions.assertEquals("deadline cancellation sentinel",
+                completionError.getSuppressed()[0].getMessage());
+        Assertions.assertTrue(provider.token.get().isCancellationRequested());
+        assertFailedTerminal(controller, observations, dispatch);
+    }
+
+    @Test
+    void handoffErrorRetainsItsPrimaryWhenDeadlineCancellationAlsoFails() {
+        scheduler.shutdownNow();
+        scheduler = new ErroringCancellationDeadlineScheduler();
+        List<AiClientSponsoredTerminalObservation> observations = new ArrayList<>();
+        AiClientRequestDispatch dispatch = dispatch(REQUEST_ID, AGENT_ID, 2_000L);
+        SynchronousCallbackProvider provider = new SynchronousCallbackProvider(
+                toolResponse(dispatch));
+        ClientAiRequestSessionController controller =
+                new ClientAiRequestSessionController(
+                        credentialStore,
+                        OWNER_ID,
+                        (checkedDispatch, store) -> provider,
+                        clock::get,
+                        scheduler,
+                        () -> true,
+                        (checkedDispatch, proposal, bindingEpoch) -> {
+                            throw new AssertionError("handoff sentinel");
+                        },
+                        observations::add);
+
+        AssertionError handoffError = Assertions.assertThrows(
+                AssertionError.class, () -> controller.accept(dispatch));
+
+        Assertions.assertEquals("handoff sentinel", handoffError.getMessage());
+        Assertions.assertEquals(1, handoffError.getSuppressed().length);
+        Assertions.assertEquals("deadline cancellation sentinel",
+                handoffError.getSuppressed()[0].getMessage());
+        Assertions.assertTrue(provider.token.get().isCancellationRequested());
+        assertFailedTerminal(controller, observations, dispatch);
+    }
+
+    @Test
+    void deadlineCleanupErrorDoesNotRewriteAnAlreadySuccessfulTerminalStatus() {
+        scheduler.shutdownNow();
+        scheduler = new ErroringCancellationDeadlineScheduler();
+        List<AiProposalPayload> proposals = new ArrayList<>();
+        List<AiClientSponsoredTerminalObservation> observations = new ArrayList<>();
+        AiClientRequestDispatch dispatch = dispatch(REQUEST_ID, AGENT_ID, 2_000L);
+        SynchronousCallbackProvider provider = new SynchronousCallbackProvider(
+                toolResponse(dispatch));
+        ClientAiRequestSessionController controller =
+                new ClientAiRequestSessionController(
+                        credentialStore,
+                        OWNER_ID,
+                        (checkedDispatch, store) -> provider,
+                        clock::get,
+                        scheduler,
+                        (checkedDispatch, proposal) -> proposals.add(proposal),
+                        observations::add);
+
+        AssertionError cleanupError = Assertions.assertThrows(
+                AssertionError.class, () -> controller.accept(dispatch));
+
+        Assertions.assertEquals("deadline cancellation sentinel", cleanupError.getMessage());
+        Assertions.assertEquals(1, proposals.size());
+        Assertions.assertTrue(provider.token.get().isCancellationRequested());
+        Assertions.assertEquals(0, controller.activeRequestCount());
+        Assertions.assertEquals(List.of(new AiClientSponsoredTerminalObservation(
+                AiRequestDispatchReceipt.fromDispatch(dispatch),
+                AiClientSponsoredTerminalStatus.SUCCEEDED)), observations);
+    }
+
+    @Test
+    void terminalOwnerReportsDeferredDeadlineErrorAfterAStaleCompletionRaces() throws Exception {
+        scheduler.shutdownNow();
+        scheduler = new ErroringCancellationDeadlineScheduler();
+        ControlledProvider provider = new ControlledProvider();
+        List<AiClientSponsoredTerminalObservation> observations = new ArrayList<>();
+        ClientAiRequestSessionController controller =
+                new ClientAiRequestSessionController(
+                        credentialStore,
+                        OWNER_ID,
+                        (dispatch, store) -> provider,
+                        clock::get,
+                        scheduler,
+                        (dispatch, proposal) -> Assertions.fail(
+                                "stale completion must not hand off a proposal"),
+                        observations::add);
+        AiClientRequestDispatch dispatch = dispatch(REQUEST_ID, AGENT_ID, 2_000L);
+        CountDownLatch cancellationListenerEntered = new CountDownLatch(1);
+        CountDownLatch releaseCancellationListener = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Assertions.assertEquals(ClientAiRequestDispatchStatus.STARTED,
+                    controller.accept(dispatch));
+            provider.token.get().onCancellation(() -> {
+                cancellationListenerEntered.countDown();
+                try {
+                    if (!releaseCancellationListener.await(1L, TimeUnit.SECONDS)) {
+                        throw new AssertionError("cancellation listener release timed out");
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("cancellation listener was interrupted", exception);
+                }
+            });
+
+            Future<Boolean> cancellation = executor.submit(
+                    () -> controller.cancelRequest(dispatch.requestId()));
+            Assertions.assertTrue(cancellationListenerEntered.await(1L, TimeUnit.SECONDS));
+            Future<Boolean> completion = executor.submit(
+                    () -> provider.completion.complete(toolResponse(dispatch)));
+            Assertions.assertTrue(completion.get(1L, TimeUnit.SECONDS));
+
+            releaseCancellationListener.countDown();
+            ExecutionException cancellationFailure = Assertions.assertThrows(
+                    ExecutionException.class, () -> cancellation.get(1L, TimeUnit.SECONDS));
+            Assertions.assertInstanceOf(
+                    AssertionError.class, cancellationFailure.getCause());
+            Assertions.assertEquals("deadline cancellation sentinel",
+                    cancellationFailure.getCause().getMessage());
+            Assertions.assertEquals(List.of(new AiClientSponsoredTerminalObservation(
+                    AiRequestDispatchReceipt.fromDispatch(dispatch),
+                    AiClientSponsoredTerminalStatus.CANCELLED)), observations);
+            Assertions.assertEquals(0, controller.activeRequestCount());
+            Assertions.assertTrue(provider.token.get().isCancellationRequested());
+        } finally {
+            releaseCancellationListener.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void cancellationMarkerPreventsLateDeadlineInstallationAfterTerminalClosure()
+            throws Exception {
+        scheduler.shutdownNow();
+        BlockingDeadlineScheduler blockingScheduler = new BlockingDeadlineScheduler();
+        scheduler = blockingScheduler;
+        ControlledProvider provider = new ControlledProvider();
+        List<AiClientSponsoredTerminalObservation> observations = new ArrayList<>();
+        ClientAiRequestSessionController controller =
+                new ClientAiRequestSessionController(
+                        credentialStore,
+                        OWNER_ID,
+                        (dispatch, store) -> provider,
+                        clock::get,
+                        scheduler,
+                        (dispatch, proposal) -> Assertions.fail(
+                                "cancelled request must not hand off a proposal"),
+                        observations::add);
+        AiClientRequestDispatch dispatch = dispatch(REQUEST_ID, AGENT_ID, 2_000L);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<ClientAiRequestDispatchStatus> acceptance = executor.submit(
+                    () -> controller.accept(dispatch));
+            Assertions.assertTrue(blockingScheduler.scheduleEntered.await(
+                    1L, TimeUnit.SECONDS));
+
+            Assertions.assertTrue(controller.cancelRequest(dispatch.requestId()));
+            blockingScheduler.releaseSchedule.countDown();
+
+            Assertions.assertEquals(ClientAiRequestDispatchStatus.CANCELLED,
+                    acceptance.get(1L, TimeUnit.SECONDS));
+            Assertions.assertEquals(1,
+                    blockingScheduler.deadline.cancelCalls.get());
+            Assertions.assertEquals(0, provider.calls.get());
+            Assertions.assertEquals(0, controller.activeRequestCount());
+            Assertions.assertEquals(List.of(new AiClientSponsoredTerminalObservation(
+                    AiRequestDispatchReceipt.fromDispatch(dispatch),
+                    AiClientSponsoredTerminalStatus.CANCELLED)), observations);
+        } finally {
+            blockingScheduler.releaseSchedule.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
     void proposalHandoffReentrancyFailsClosedAndPublishesAfterTheLockIsReleased() {
         ControlledProvider provider = new ControlledProvider();
         AtomicReference<ClientAiRequestSessionController> controllerRef = new AtomicReference<>();
@@ -938,6 +1350,16 @@ class ClientAiRequestSessionControllerTest {
         }
     }
 
+    private static void assertFailedTerminal(
+            ClientAiRequestSessionController controller,
+            List<AiClientSponsoredTerminalObservation> observations,
+            AiClientRequestDispatch dispatch) {
+        Assertions.assertEquals(0, controller.activeRequestCount());
+        Assertions.assertEquals(List.of(new AiClientSponsoredTerminalObservation(
+                AiRequestDispatchReceipt.fromDispatch(dispatch),
+                AiClientSponsoredTerminalStatus.FAILED)), observations);
+    }
+
     private static AiClientRequestDispatch dispatch(
             UUID requestId, UUID agentId, long expiresAtEpochMillis) {
         return dispatch(requestId, agentId, 1_000L, expiresAtEpochMillis);
@@ -1093,6 +1515,145 @@ class ClientAiRequestSessionControllerTest {
         }
     }
 
+    private static final class ThrowingCompleteProvider implements AiProvider {
+        private final AtomicReference<CancellationToken> token =
+                new AtomicReference<>();
+
+        @Override
+        public CompletionStage<AiResponse> complete(
+                AiRequest request, CancellationToken token) {
+            this.token.set(token);
+            throw new AssertionError("provider completion sentinel");
+        }
+
+        @Override
+        public CompletionStage<AiCapabilities> probeCapabilities() {
+            return CompletableFuture.failedFuture(new UnsupportedOperationException());
+        }
+
+        @Override
+        public ProviderHealth health() {
+            return ProviderHealth.unknown("deepseek", Instant.EPOCH);
+        }
+    }
+
+    private static final class AttachmentErrorProvider implements AiProvider {
+        private final AtomicReference<CancellationToken> token =
+                new AtomicReference<>();
+
+        @Override
+        public CompletionStage<AiResponse> complete(
+                AiRequest request, CancellationToken token) {
+            this.token.set(token);
+            return new AttachmentErrorStage();
+        }
+
+        @Override
+        public CompletionStage<AiCapabilities> probeCapabilities() {
+            return CompletableFuture.failedFuture(new UnsupportedOperationException());
+        }
+
+        @Override
+        public ProviderHealth health() {
+            return ProviderHealth.unknown("deepseek", Instant.EPOCH);
+        }
+    }
+
+    private static final class CallbackThenThrowAttachmentProvider implements AiProvider {
+        private final AiResponse response;
+        private final AtomicReference<CancellationToken> token =
+                new AtomicReference<>();
+
+        private CallbackThenThrowAttachmentProvider(AiResponse response) {
+            this.response = response;
+        }
+
+        @Override
+        public CompletionStage<AiResponse> complete(
+                AiRequest request, CancellationToken token) {
+            this.token.set(token);
+            return new CallbackThenThrowAttachmentStage(response);
+        }
+
+        @Override
+        public CompletionStage<AiCapabilities> probeCapabilities() {
+            return CompletableFuture.failedFuture(new UnsupportedOperationException());
+        }
+
+        @Override
+        public ProviderHealth health() {
+            return ProviderHealth.unknown("deepseek", Instant.EPOCH);
+        }
+    }
+
+    private static final class SynchronousCallbackProvider implements AiProvider {
+        private final AiResponse response;
+        private final AtomicReference<CancellationToken> token =
+                new AtomicReference<>();
+
+        private SynchronousCallbackProvider(AiResponse response) {
+            this.response = response;
+        }
+
+        @Override
+        public CompletionStage<AiResponse> complete(
+                AiRequest request, CancellationToken token) {
+            this.token.set(token);
+            return new SynchronousCallbackStage(response);
+        }
+
+        @Override
+        public CompletionStage<AiCapabilities> probeCapabilities() {
+            return CompletableFuture.failedFuture(new UnsupportedOperationException());
+        }
+
+        @Override
+        public ProviderHealth health() {
+            return ProviderHealth.unknown("deepseek", Instant.EPOCH);
+        }
+    }
+
+    private static final class AttachmentErrorStage
+            extends CompletableFuture<AiResponse> {
+        @Override
+        public CompletableFuture<AiResponse> whenComplete(
+                BiConsumer<? super AiResponse, ? super Throwable> action) {
+            throw new AssertionError("completion attachment sentinel");
+        }
+    }
+
+    private static final class CallbackThenThrowAttachmentStage
+            extends CompletableFuture<AiResponse> {
+        private final AiResponse response;
+
+        private CallbackThenThrowAttachmentStage(AiResponse response) {
+            this.response = response;
+        }
+
+        @Override
+        public CompletableFuture<AiResponse> whenComplete(
+                BiConsumer<? super AiResponse, ? super Throwable> action) {
+            action.accept(response, null);
+            throw new AssertionError("callback attachment sentinel");
+        }
+    }
+
+    private static final class SynchronousCallbackStage
+            extends CompletableFuture<AiResponse> {
+        private final AiResponse response;
+
+        private SynchronousCallbackStage(AiResponse response) {
+            this.response = response;
+        }
+
+        @Override
+        public CompletableFuture<AiResponse> whenComplete(
+                BiConsumer<? super AiResponse, ? super Throwable> action) {
+            action.accept(response, null);
+            return this;
+        }
+    }
+
     private static final class CapturingDeadlineScheduler
             extends ScheduledThreadPoolExecutor {
         private final AtomicLong lastDelayMillis = new AtomicLong(-1L);
@@ -1106,6 +1667,140 @@ class ClientAiRequestSessionControllerTest {
                 Runnable command, long delay, TimeUnit unit) {
             lastDelayMillis.set(unit.toMillis(delay));
             return super.schedule(command, delay, unit);
+        }
+    }
+
+    private static final class ErroringDeadlineScheduler
+            extends ScheduledThreadPoolExecutor {
+        private ErroringDeadlineScheduler() {
+            super(1);
+        }
+
+        @Override
+        public ScheduledFuture<?> schedule(
+                Runnable command, long delay, TimeUnit unit) {
+            throw new AssertionError("deadline scheduler sentinel");
+        }
+    }
+
+    private static final class ErroringCancellationDeadlineScheduler
+            extends ScheduledThreadPoolExecutor {
+        private ErroringCancellationDeadlineScheduler() {
+            super(1);
+        }
+
+        @Override
+        public ScheduledFuture<?> schedule(
+                Runnable command, long delay, TimeUnit unit) {
+            return new ErroringCancellationDeadline();
+        }
+    }
+
+    private static final class ErroringCancellationDeadline
+            implements ScheduledFuture<Object> {
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            throw new AssertionError("deadline cancellation sentinel");
+        }
+
+        @Override
+        public boolean isCancelled() {
+            return false;
+        }
+
+        @Override
+        public boolean isDone() {
+            return false;
+        }
+
+        @Override
+        public Object get() {
+            return null;
+        }
+
+        @Override
+        public Object get(long timeout, TimeUnit unit) {
+            return null;
+        }
+
+        @Override
+        public long getDelay(TimeUnit unit) {
+            return Long.MAX_VALUE;
+        }
+
+        @Override
+        public int compareTo(Delayed other) {
+            return 0;
+        }
+    }
+
+    private static final class BlockingDeadlineScheduler
+            extends ScheduledThreadPoolExecutor {
+        private final CountDownLatch scheduleEntered = new CountDownLatch(1);
+        private final CountDownLatch releaseSchedule = new CountDownLatch(1);
+        private final FirstCancelSucceedsThenThrowsDeadline deadline =
+                new FirstCancelSucceedsThenThrowsDeadline();
+
+        private BlockingDeadlineScheduler() {
+            super(1);
+        }
+
+        @Override
+        public ScheduledFuture<?> schedule(
+                Runnable command, long delay, TimeUnit unit) {
+            scheduleEntered.countDown();
+            try {
+                if (!releaseSchedule.await(1L, TimeUnit.SECONDS)) {
+                    throw new AssertionError("deadline scheduler release timed out");
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("deadline scheduler was interrupted", exception);
+            }
+            return deadline;
+        }
+    }
+
+    private static final class FirstCancelSucceedsThenThrowsDeadline
+            implements ScheduledFuture<Object> {
+        private final AtomicInteger cancelCalls = new AtomicInteger();
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            if (cancelCalls.incrementAndGet() > 1) {
+                throw new AssertionError("late deadline was cancelled twice");
+            }
+            return true;
+        }
+
+        @Override
+        public boolean isCancelled() {
+            return cancelCalls.get() > 0;
+        }
+
+        @Override
+        public boolean isDone() {
+            return cancelCalls.get() > 0;
+        }
+
+        @Override
+        public Object get() {
+            return null;
+        }
+
+        @Override
+        public Object get(long timeout, TimeUnit unit) {
+            return null;
+        }
+
+        @Override
+        public long getDelay(TimeUnit unit) {
+            return Long.MAX_VALUE;
+        }
+
+        @Override
+        public int compareTo(Delayed other) {
+            return 0;
         }
     }
 }

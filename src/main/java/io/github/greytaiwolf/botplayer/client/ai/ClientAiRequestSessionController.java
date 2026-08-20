@@ -24,7 +24,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -346,12 +345,11 @@ public final class ClientAiRequestSessionController {
                     delayMillis,
                     TimeUnit.MILLISECONDS);
             session.setDeadline(deadline);
-        } catch (RejectedExecutionException exception) {
-            failSession(session);
-            return ClientAiRequestDispatchStatus.PROVIDER_UNAVAILABLE;
         } catch (RuntimeException exception) {
             failSession(session);
             return ClientAiRequestDispatchStatus.PROVIDER_UNAVAILABLE;
+        } catch (Error error) {
+            throw failSessionAfterPostAdmissionError(session, error);
         }
 
         AiProvider provider;
@@ -367,6 +365,8 @@ public final class ClientAiRequestSessionController {
         } catch (RuntimeException exception) {
             failSession(session);
             return ClientAiRequestDispatchStatus.PROVIDER_UNAVAILABLE;
+        } catch (Error error) {
+            throw failSessionAfterPostAdmissionError(session, error);
         }
 
         CompletionStage<AiResponse> completion;
@@ -382,16 +382,39 @@ public final class ClientAiRequestSessionController {
         } catch (RuntimeException exception) {
             failSession(session);
             return ClientAiRequestDispatchStatus.PROVIDER_UNAVAILABLE;
+        } catch (Error error) {
+            throw failSessionAfterPostAdmissionError(session, error);
         }
 
+        CompletionAttachment attachment = new CompletionAttachment();
         try {
             completion.whenComplete((response, failure) ->
-                    completeSession(session, response, failure));
+                    completeBufferedCompletion(
+                            attachment, session, response, failure));
         } catch (RuntimeException exception) {
+            attachment.discard();
             failSession(session);
             return ClientAiRequestDispatchStatus.PROVIDER_UNAVAILABLE;
+        } catch (Error error) {
+            attachment.discard();
+            throw failSessionAfterPostAdmissionError(session, error);
+        }
+        CompletionSignal buffered = attachment.activateAfterAttachment();
+        if (buffered != null) {
+            completeSession(session, buffered.response(), buffered.failure());
         }
         return ClientAiRequestDispatchStatus.STARTED;
+    }
+
+    private void completeBufferedCompletion(
+            CompletionAttachment attachment,
+            ActiveSession session,
+            AiResponse response,
+            Throwable failure) {
+        CompletionSignal signal = attachment.recordCallback(response, failure);
+        if (signal != null) {
+            completeSession(session, signal.response(), signal.failure());
+        }
     }
 
     /** Cancels a still-active local request by its server-generated request id. */
@@ -516,6 +539,22 @@ public final class ClientAiRequestSessionController {
 
     private void completeSession(
             ActiveSession session, AiResponse response, Throwable failure) {
+        try {
+            completeSessionSafely(session, response, failure);
+        } catch (Error error) {
+            throw failSessionAfterPostAdmissionError(session, error);
+        }
+    }
+
+    /**
+     * Handles one provider completion after a session has been admitted.
+     *
+     * <p>Any {@link Error} from a post-admission dependency is caught by the
+     * outer method so the exact session is detached and observed before the
+     * completion action reports that failure to its {@link CompletionStage}.
+     */
+    private void completeSessionSafely(
+            ActiveSession session, AiResponse response, Throwable failure) {
         if (failure != null
                 || response == null
                 || !isAcceptableResponse(session.dispatch, response)) {
@@ -545,6 +584,7 @@ public final class ClientAiRequestSessionController {
          * This makes a concurrent cancellation/owner change win before the C2S proposal is queued.
          */
         AiClientSponsoredTerminalStatus terminalStatus = null;
+        boolean primaryErrorOwnsCompletionCleanup = false;
         try {
             synchronized (lock) {
                 if (!isCurrentLocked(session)
@@ -578,19 +618,43 @@ public final class ClientAiRequestSessionController {
                     }
                 }
             }
-        } finally {
-            if (terminalStatus != null) {
-                /*
-                 * The provider has completed, but signalling the token still releases any
-                 * provider listener which races its terminal callback. This is idempotent for
-                 * the normal success path and ensures terminal sessions cannot retain a
-                 * cancellation registration or a transport-owned credential copy.
-                 */
-                cancelAndObserve(session, terminalStatus);
-            } else {
-                /* A concurrent replacement owns the observation but not this token cleanup. */
-                session.cancel();
+        } catch (Error primary) {
+            primaryErrorOwnsCompletionCleanup = true;
+            try {
+                if (terminalStatus == null) {
+                    /*
+                     * No terminal outcome has been chosen yet. Detach before cancelling the
+                     * provider token so a token listener cannot claim a competing CANCELLED
+                     * terminal while this trusted completion failure is being closed.
+                     */
+                    failSession(session);
+                } else {
+                    finishCompletion(session, terminalStatus);
+                }
+            } catch (Throwable cleanupFailure) {
+                addSuppressedIfDistinct(primary, cleanupFailure);
             }
+            throw primary;
+        } finally {
+            if (!primaryErrorOwnsCompletionCleanup) {
+                finishCompletion(session, terminalStatus);
+            }
+        }
+    }
+
+    private void finishCompletion(
+            ActiveSession session, AiClientSponsoredTerminalStatus terminalStatus) {
+        if (terminalStatus != null) {
+            /*
+             * The provider has completed, but signalling the token still releases any
+             * provider listener which races its terminal callback. This is idempotent for
+             * the normal success path and ensures terminal sessions cannot retain a
+             * cancellation registration or a transport-owned credential copy.
+             */
+            cancelAndObserve(session, terminalStatus);
+        } else {
+            /* A concurrent replacement owns the observation but not this token cleanup. */
+            session.cancel();
         }
     }
 
@@ -610,6 +674,29 @@ public final class ClientAiRequestSessionController {
 
     private void failSession(ActiveSession session) {
         retireSession(session, AiClientSponsoredTerminalStatus.FAILED);
+    }
+
+    /**
+     * Closes a session before rethrowing an {@link Error} from a dependency
+     * reached after that session was placed in the active indexes.
+     */
+    private Error failSessionAfterPostAdmissionError(
+            ActiveSession session, Error primary) {
+        Throwable cleanupFailure = null;
+        try {
+            failSession(session);
+        } catch (Throwable currentFailure) {
+            cleanupFailure = currentFailure;
+        }
+        addSuppressedIfDistinct(primary, cleanupFailure);
+        return primary;
+    }
+
+    private static void addSuppressedIfDistinct(
+            Throwable primary, Throwable supplemental) {
+        if (supplemental != null && supplemental != primary) {
+            primary.addSuppressed(supplemental);
+        }
     }
 
     private void retireSession(
@@ -813,26 +900,40 @@ public final class ClientAiRequestSessionController {
         deliverTerminalObservation(observation);
     }
 
-    /** Ensures an observer runtime failure cannot prevent cancellation-token cleanup. */
+    /**
+     * Runs for the exact detacher after {@link #lock} is released.
+     *
+     * <p>It alone consumes retained cancellation cleanup failures, after token cancellation and
+     * terminal observation. A stale completion may still request token cancellation, but cannot
+     * steal the terminal owner's failure report.
+     */
     private void cancelAndObserve(
             ActiveSession session, AiClientSponsoredTerminalStatus terminalStatus) {
-        Throwable failure = null;
+        Throwable cancellationInvocationFailure = null;
         try {
             session.cancel();
         } catch (Throwable currentFailure) {
-            failure = currentFailure;
+            cancellationInvocationFailure = currentFailure;
         }
+        Throwable observationFailure = null;
         try {
             observeTerminal(session, terminalStatus);
         } catch (Throwable currentFailure) {
-            if (failure == null) {
-                failure = currentFailure;
-            } else if (currentFailure != failure) {
-                failure.addSuppressed(currentFailure);
-            }
+            observationFailure = currentFailure;
         }
-        if (failure != null) {
-            rethrowTerminalFailure(failure);
+        Throwable cancellationFailure = session.takeCancellationCleanupFailure();
+        if (cancellationFailure == null) {
+            cancellationFailure = cancellationInvocationFailure;
+        } else {
+            addSuppressedIfDistinct(
+                    cancellationFailure, cancellationInvocationFailure);
+        }
+        if (cancellationFailure != null) {
+            addSuppressedIfDistinct(cancellationFailure, observationFailure);
+            rethrowTerminalFailure(cancellationFailure);
+        }
+        if (observationFailure != null) {
+            rethrowTerminalFailure(observationFailure);
         }
     }
 
@@ -969,12 +1070,64 @@ public final class ClientAiRequestSessionController {
         }
     }
 
+    /**
+     * Defers an externally invoked completion callback until its {@code whenComplete} attachment
+     * returned normally. A stage is therefore unable to publish a provisional proposal before an
+     * attachment failure is reported to {@link #accept(AiClientRequestDispatch)}.
+     */
+    private static final class CompletionAttachment {
+        private CompletionAttachmentState state = CompletionAttachmentState.ATTACHING;
+        private CompletionSignal signal;
+        private boolean callbackObserved;
+
+        private synchronized CompletionSignal recordCallback(
+                AiResponse response, Throwable failure) {
+            if (state == CompletionAttachmentState.DISCARDED || callbackObserved) {
+                return null;
+            }
+            callbackObserved = true;
+            signal = new CompletionSignal(response, failure);
+            if (state != CompletionAttachmentState.ACTIVE) {
+                return null;
+            }
+            CompletionSignal committed = signal;
+            signal = null;
+            return committed;
+        }
+
+        private synchronized CompletionSignal activateAfterAttachment() {
+            if (state != CompletionAttachmentState.ATTACHING) {
+                throw new IllegalStateException("completion attachment lost its provisional state");
+            }
+            state = CompletionAttachmentState.ACTIVE;
+            CompletionSignal committed = signal;
+            signal = null;
+            return committed;
+        }
+
+        private synchronized void discard() {
+            state = CompletionAttachmentState.DISCARDED;
+            signal = null;
+        }
+    }
+
+    private enum CompletionAttachmentState {
+        ATTACHING,
+        ACTIVE,
+        DISCARDED
+    }
+
+    private record CompletionSignal(AiResponse response, Throwable failure) {}
+
     private static final class ActiveSession {
         private final AiClientRequestDispatch dispatch;
         private final BotBindingEpoch bindingEpoch;
         private final long bindingEpochValue;
         private final CancellationTokenSource cancellation = new CancellationTokenSource();
         private ScheduledFuture<?> deadline;
+        private Throwable cancellationCleanupFailure;
+        /* Guarded by this session monitor; closes late deadline installation before token notify. */
+        private boolean cancellationStarted;
         private boolean terminalObservationClaimed;
 
         private ActiveSession(
@@ -986,10 +1139,17 @@ public final class ClientAiRequestSessionController {
             this.bindingEpochValue = bindingEpochValue;
         }
 
-        private synchronized void setDeadline(ScheduledFuture<?> deadline) {
-            this.deadline = Objects.requireNonNull(deadline, "deadline");
-            if (cancellation.isCancellationRequested()) {
-                deadline.cancel(false);
+        private void setDeadline(ScheduledFuture<?> deadline) {
+            ScheduledFuture<?> checked = Objects.requireNonNull(deadline, "deadline");
+            boolean cancelImmediately;
+            synchronized (this) {
+                cancelImmediately = cancellationStarted;
+                if (!cancelImmediately) {
+                    this.deadline = checked;
+                }
+            }
+            if (cancelImmediately) {
+                checked.cancel(false);
             }
         }
 
@@ -999,6 +1159,13 @@ public final class ClientAiRequestSessionController {
                     deadline.cancel(false);
                 } catch (RuntimeException ignored) {
                     // A third-party scheduler cannot prevent cancellation-token cleanup.
+                } catch (Error failure) {
+                    /*
+                     * Structural detachment must continue even when a third-party future
+                     * rejects cancellation. The terminal owner reports this retained failure
+                     * after token cancellation and terminal observation.
+                     */
+                    recordCancellationCleanupFailure(failure);
                 } finally {
                     deadline = null;
                 }
@@ -1006,11 +1173,29 @@ public final class ClientAiRequestSessionController {
         }
 
         private void cancel() {
-            try {
-                cancelDeadline();
-            } finally {
-                cancellation.cancel();
+            synchronized (this) {
+                cancellationStarted = true;
             }
+            cancelDeadline();
+            try {
+                cancellation.cancel();
+            } catch (Throwable failure) {
+                recordCancellationCleanupFailure(failure);
+            }
+        }
+
+        private synchronized void recordCancellationCleanupFailure(Throwable failure) {
+            if (cancellationCleanupFailure == null) {
+                cancellationCleanupFailure = failure;
+            } else if (cancellationCleanupFailure != failure) {
+                cancellationCleanupFailure.addSuppressed(failure);
+            }
+        }
+
+        private synchronized Throwable takeCancellationCleanupFailure() {
+            Throwable failure = cancellationCleanupFailure;
+            cancellationCleanupFailure = null;
+            return failure;
         }
 
         private synchronized boolean claimTerminalObservation() {

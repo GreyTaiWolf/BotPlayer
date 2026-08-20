@@ -7,6 +7,16 @@
 
 ### 新增
 
+- 新增 ADR-0026 的 P6-C2 登记后 Error cleanup：deadline、Provider factory/complete、completion
+  registration 与 completion-time 本地再校验的受信任 `Error`，会先按精确 session 摘除、取消并在锁外
+  至多一次投影已决定的安全 terminal receipt（setup/再校验/handoff Error 为 `FAILED`，不会因后续 cleanup
+  Error 覆盖已决定的 `SUCCEEDED|CANCELLED`）；同步 setup 或 attachment 中同步暂存后由 `accept` 激活的
+  completion Error 会随后重抛，attachment 返回后才到达的 callback 则只遵循 `CompletionStage` 的
+  exceptional-stage 语义（本地 controller 不承诺其 host-level fatal propagation）。
+  callback 在 `whenComplete` 正常返回前只暂存，防止“先 callback、后 attachment Error”发布不可撤回的
+  provisional proposal。不发送 packet、不接 Lifecycle 或通用 client-sponsored bridge。间接 completion
+  reentry 仍是调用方 no-reentry 前置条件，尚待独立状态机硬化；当前提交 Java 21 CI 与 Minecraft 实机验证
+  仍待完成；
 - 新增 ADR-0025 的受限 `Technique → Action` 预绑定 Contract：只有单一 lifecycle coordinator
   正在分派的精确活动 child ticket 才能签发 opaque `TechniqueActionPermit`；permit 冻结
   run/ticket/revision、generation、Action origin/kind/channel/deadline/idempotency 与低于 L0 的 priority，

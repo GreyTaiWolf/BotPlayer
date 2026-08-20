@@ -44,6 +44,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0023](0023-atomic-aim-and-place-action-contract.md) | 原子瞄准并放置方块动作合同 | Accepted | P2 共享动作合同已编码；尚未接入 Technique、Skill、蓝图、AI 或 P5D 建筑能力 |
 | [ADR-0024](0024-client-sponsored-request-coordinator.md) | 客户端赞助请求的 server-thread 协调器与有界终态邮箱 | Accepted | gate+ledger 的纯 Java owner-thread 协调器与默认 no-op 的客户端安全 terminal-observation Contract 已编码；不接 Lifecycle/Network/通用 Client bridge/Scheduler，世界执行仍未接线 |
 | [ADR-0025](0025-restricted-technique-action-prebinding-port.md) | 受限 Technique→Action 预绑定 Port | Accepted | 精确 child permit、Action provenance 与 L0 以下 priority 的纯 Java Contract 已编码；尚无 lifecycle adapter、approved construction route 或 P5D 世界能力 |
+| [ADR-0026](0026-client-session-post-admission-error-cleanup.md) | 客户端 AI 会话登记后的 Error 清理 | Accepted | P6-C2 已登记 session 的 trusted Error 先精确收口、锁外已决定的安全终态观察；同步 setup/inline signal 重抛，异步 callback 保留 CompletionStage exceptional-stage 语义；不接 Network/Lifecycle/通用 bridge，间接 completion reentry 仍待独立状态机硬化 |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
@@ -88,6 +89,14 @@ ADR-0025 在 ADR-0017 的 child ticket 与 P2 Action 之间增加不透明的预
 bot generation、Action origin/channel/deadline/idempotency 和低于 L0 的 priority 一并冻结。它
 不开放 raw Action submission，不接现有 SafetyService，也不表示已有建筑 route、真实放置或 P5D
 能力。
+
+ADR-0026 收紧 P6-C2 已登记 session 的 trusted Error 路径：deadline、factory、Provider、completion
+registration 和 completion-time 再校验抛出 Error 时，必须先精确摘除、取消并在锁外交付一次安全
+terminal observation：setup/再校验/handoff Error 为 `FAILED`，cleanup Error 不覆盖已决定的
+`SUCCEEDED|CANCELLED`。同步 callback 在 attachment 返回前只暂存，故 attachment Error 不能发布
+provisional proposal。同步 setup 或暂存后由 `accept` 激活的 inline signal Error 会重抛；attachment 返回
+后才到达的 callback Error 由 `CompletionStage` 的 returned stage 表示，controller 不承诺其 host-level
+fatal propagation。它不增加 packet 或 bridge，也不把间接 completion reentry 误写成已解决。
 
 ## 新 ADR 文件规则
 
