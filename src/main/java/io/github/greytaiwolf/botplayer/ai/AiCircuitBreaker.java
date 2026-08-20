@@ -9,12 +9,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.BooleanSupplier;
 
 /**
  * 不依赖线程池或 Minecraft 状态的有界 Provider 熔断器。
  *
- * <p>调用方必须把每次 accepted permit 用 success/failure 结算。遗失 permit 到期后会按
- * TIMEOUT 失败处理，防止一个永不回调的 Provider 无限占用准入容量。
+ * <p>已经开始 physical Provider 调用的 accepted permit 必须用 success/failure 结算；已证明
+ * 从未开始的 permit 可仅由本包 {@link #abandonUnstartedPermit(AiCircuitPermit)} 无 outcome
+ * 归还。其余遗失 permit 到期后会按 TIMEOUT 失败处理，防止一个永不回调的 Provider 无限占用
+ * 准入容量。
  */
 public final class AiCircuitBreaker {
     private final AiCircuitBreakerPolicy policy;
@@ -109,6 +112,56 @@ public final class AiCircuitBreaker {
     }
 
     /**
+     * Atomically fences bounded local accounting immediately before one physical Provider call.
+     *
+     * <p>The caller must supply only bounded, local accounting that neither re-enters this breaker
+     * nor invokes a Provider, scheduler, callback, Minecraft object or other unbounded boundary.
+     * This method first applies lease expiry and verifies the exact current permit. It invokes the
+     * gate only when that permit is still current; a stale permit therefore cannot settle another
+     * accounting reservation. A {@code false} result or a gate exception neutrally removes the
+     * exact permit before releasing this breaker monitor.
+     *
+     * <p>A {@code true} result is the circuit-side linearization point for the physical attempt.
+     * The caller must then invoke its delegate exactly once without another terminal re-check.
+     * Later lease expiry is consequently handled as an already-started attempt, rather than as an
+     * unstarted local gate failure.
+     */
+    synchronized boolean settleUnstartedPermit(
+            AiCircuitPermit permit,
+            Instant now,
+            BooleanSupplier boundedLocalGate) {
+        AiCircuitPermit checkedPermit = Objects.requireNonNull(permit, "permit");
+        BooleanSupplier checkedGate = Objects.requireNonNull(
+                boundedLocalGate, "boundedLocalGate");
+        Instant observedAt = AiChecks.instant(now, "now");
+        expireLeases(observedAt);
+        if (!isCurrentPermit(checkedPermit)) {
+            return false;
+        }
+        try {
+            if (checkedGate.getAsBoolean()) {
+                return true;
+            }
+        } catch (RuntimeException exception) {
+            removeCurrentPermit(checkedPermit);
+            throw exception;
+        }
+        removeCurrentPermit(checkedPermit);
+        return false;
+    }
+
+    /**
+     * Discards one exact admission proven not to have reached a physical Provider invocation.
+     *
+     * <p>This deliberately does not run lease expiry or apply a health outcome: callers may use
+     * it only before a delegate call starts. It prevents a local pre-delegate gate (such as token
+     * accounting) from turning an otherwise unused permit into a synthetic Provider timeout.
+     */
+    synchronized boolean abandonUnstartedPermit(AiCircuitPermit permit) {
+        return removeCurrentPermit(Objects.requireNonNull(permit, "permit"));
+    }
+
+    /**
      * 返回状态快照，并顺便清理已超时租约。
      */
     public synchronized AiCircuitSnapshot snapshot(Instant now) {
@@ -196,6 +249,12 @@ public final class AiCircuitBreaker {
         }
         AiCircuitPermit current = activePermits.remove(permit.permitId());
         return current == permit;
+    }
+
+    private boolean isCurrentPermit(AiCircuitPermit permit) {
+        return permit != null
+                && permit.epoch() == epoch
+                && activePermits.get(permit.permitId()) == permit;
     }
 
     private void applyFailure(AiFailureKind failureKind, Instant now) {

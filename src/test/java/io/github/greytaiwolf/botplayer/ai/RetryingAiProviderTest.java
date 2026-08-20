@@ -28,6 +28,10 @@ import org.junit.jupiter.api.Test;
 
 class RetryingAiProviderTest {
     private static final String PROVIDER_ID = "retrying";
+    private static final AiTokenBudgetScope BUDGET_SCOPE = new AiTokenBudgetScope(
+            new UUID(0L, 11L), new UUID(0L, 12L), new UUID(0L, 13L));
+    private static final AiModelAdmission BUDGET_ADMISSION = new AiModelAdmission(
+            AiModelAdmissionStatus.ACCEPTED, 20L, 30L, 50L);
 
     private ScheduledExecutorService scheduler;
 
@@ -579,6 +583,650 @@ class RetryingAiProviderTest {
         Assertions.assertTrue(pending.isCancelled());
     }
 
+    @Test
+    void budgetedRetrySettlesFreshReservationForEveryPhysicalDelegateCall()
+            throws Exception {
+        UUID requestId = UUID.fromString(
+                "24242424-2424-2424-2424-242424242424");
+        AiRequest request = AiTestFixtures.request(requestId);
+        AtomicInteger calls = new AtomicInteger();
+        AiProvider delegate = new AiProvider() {
+            @Override
+            public CompletionStage<AiResponse> complete(
+                    AiRequest delegateRequest, CancellationToken token) {
+                if (calls.getAndIncrement() == 0) {
+                    return CompletableFuture.failedFuture(
+                            AiProviderException.of(AiFailureKind.UNAVAILABLE));
+                }
+                return CompletableFuture.completedFuture(
+                        AiTestFixtures.response(delegateRequest, PROVIDER_ID));
+            }
+
+            @Override
+            public CompletionStage<AiCapabilities> probeCapabilities() {
+                return CompletableFuture.completedFuture(
+                        AiTestFixtures.capabilities(PROVIDER_ID));
+            }
+
+            @Override
+            public ProviderHealth health() {
+                return ProviderHealth.healthy(PROVIDER_ID, Instant.EPOCH);
+            }
+        };
+        AiTokenBudgetLedger ledger = budgetLedger(100L);
+        RetryingAiProvider provider = provider(delegate, 2, 1);
+
+        AiResponse response = provider.completeBudgeted(
+                request,
+                CancellationToken.none(),
+                budgetContext(ledger, requestId, Instant.now().plusSeconds(30L)))
+                .toCompletableFuture().get(2L, TimeUnit.SECONDS);
+
+        Assertions.assertEquals(requestId, response.requestId());
+        Assertions.assertEquals(2, calls.get());
+        AiRequestHealth health = provider.requestHealth(requestId).orElseThrow();
+        Assertions.assertEquals(AiRequestHealthState.SUCCEEDED, health.state());
+        Assertions.assertEquals(2, health.attemptsStarted());
+        Assertions.assertEquals(2, health.attemptsCompleted());
+        AiTokenBudgetSnapshot snapshot = ledger.snapshot();
+        Assertions.assertEquals(100L, snapshot.committedTokens());
+        Assertions.assertEquals(0L, snapshot.reservedTokens());
+        Assertions.assertEquals(0, snapshot.activeReservations());
+
+        UUID legacyId = UUID.fromString(
+                "25252525-2525-2525-2525-252525252525");
+        provider.complete(AiTestFixtures.request(legacyId), CancellationToken.none())
+                .toCompletableFuture().get(2L, TimeUnit.SECONDS);
+        Assertions.assertEquals(3, calls.get());
+        Assertions.assertEquals(100L, ledger.snapshot().committedTokens());
+    }
+
+    @Test
+    void budgetExhaustionStopsBeforeTheNextPhysicalDelegateCall()
+            throws Exception {
+        UUID requestId = UUID.fromString(
+                "26262626-2626-2626-2626-262626262626");
+        AiRequest request = AiTestFixtures.request(requestId);
+        AtomicInteger calls = new AtomicInteger();
+        AiProvider delegate = new AiProvider() {
+            @Override
+            public CompletionStage<AiResponse> complete(
+                    AiRequest delegateRequest, CancellationToken token) {
+                if (calls.getAndIncrement() == 0) {
+                    return CompletableFuture.failedFuture(
+                            AiProviderException.of(AiFailureKind.UNAVAILABLE));
+                }
+                return CompletableFuture.completedFuture(
+                        AiTestFixtures.response(delegateRequest, PROVIDER_ID));
+            }
+
+            @Override
+            public CompletionStage<AiCapabilities> probeCapabilities() {
+                return CompletableFuture.completedFuture(
+                        AiTestFixtures.capabilities(PROVIDER_ID));
+            }
+
+            @Override
+            public ProviderHealth health() {
+                return ProviderHealth.healthy(PROVIDER_ID, Instant.EPOCH);
+            }
+        };
+        AiTokenBudgetLedger ledger = budgetLedger(50L);
+        RetryingAiProvider provider = provider(delegate, 2, 1);
+
+        AiProviderException budgetFailure = failure(provider.completeBudgeted(
+                request,
+                CancellationToken.none(),
+                budgetContext(ledger, requestId, Instant.now().plusSeconds(30L))));
+
+        Assertions.assertEquals(AiFailureKind.OVERLOADED,
+                budgetFailure.failureKind());
+        Assertions.assertEquals(1, calls.get());
+        AiRequestHealth health = provider.requestHealth(requestId).orElseThrow();
+        Assertions.assertEquals(AiRequestHealthState.FAILED, health.state());
+        Assertions.assertEquals(1, health.attemptsStarted());
+        Assertions.assertEquals(1, health.attemptsCompleted());
+        AiTokenBudgetSnapshot snapshot = ledger.snapshot();
+        Assertions.assertEquals(50L, snapshot.committedTokens());
+        Assertions.assertEquals(0L, snapshot.reservedTokens());
+        Assertions.assertEquals(0, snapshot.activeReservations());
+
+        UUID followUpId = UUID.fromString(
+                "27272727-2727-2727-2727-272727272727");
+        AiResponse followUp = provider.complete(
+                AiTestFixtures.request(followUpId), CancellationToken.none())
+                .toCompletableFuture().get(2L, TimeUnit.SECONDS);
+        Assertions.assertEquals(followUpId, followUp.requestId());
+        Assertions.assertEquals(2, calls.get());
+    }
+
+    @Test
+    void budgetedEntryRejectsMismatchedRequestBindingBeforeAnyDelegateCall() {
+        UUID requestId = UUID.fromString(
+                "28282828-2828-2828-2828-282828282828");
+        AtomicInteger calls = new AtomicInteger();
+        AiProvider delegate = countingProvider(
+                AiTestFixtures.fixedProvider(PROVIDER_ID,
+                        AiTestFixtures.response(AiTestFixtures.request(requestId), PROVIDER_ID)),
+                calls);
+        AiTokenBudgetLedger ledger = budgetLedger(50L);
+        RetryingAiProvider provider = provider(delegate, 1, 1);
+
+        AiProviderException failure = failure(provider.completeBudgeted(
+                AiTestFixtures.request(requestId),
+                CancellationToken.none(),
+                budgetContext(ledger,
+                        UUID.fromString("29292929-2929-2929-2929-292929292929"),
+                        Instant.now().plusSeconds(30L))));
+
+        Assertions.assertEquals(AiFailureKind.INVALID_REQUEST,
+                failure.failureKind());
+        Assertions.assertEquals(0, calls.get());
+        Assertions.assertTrue(provider.requestHealth(requestId).isEmpty());
+        AiTokenBudgetSnapshot snapshot = ledger.snapshot();
+        Assertions.assertEquals(0L, snapshot.committedTokens());
+        Assertions.assertEquals(0L, snapshot.reservedTokens());
+        Assertions.assertEquals(0, snapshot.activeReservations());
+    }
+
+    @Test
+    void closedLedgerPreventsAnyPhysicalDelegateCallWithoutDegradingProviderHealth() {
+        UUID requestId = UUID.fromString(
+                "30303030-3030-3030-3030-303030303030");
+        AtomicInteger calls = new AtomicInteger();
+        AiProvider delegate = countingProvider(
+                AiTestFixtures.fixedProvider(PROVIDER_ID,
+                        AiTestFixtures.response(AiTestFixtures.request(requestId), PROVIDER_ID)),
+                calls);
+        AiTokenBudgetLedger ledger = budgetLedger(50L);
+        ledger.close();
+        RetryingAiProvider provider = provider(delegate, 1, 1);
+
+        AiProviderException failure = failure(provider.completeBudgeted(
+                AiTestFixtures.request(requestId),
+                CancellationToken.none(),
+                budgetContext(ledger, requestId, Instant.now().plusSeconds(30L))));
+
+        Assertions.assertEquals(AiFailureKind.UNAVAILABLE,
+                failure.failureKind());
+        Assertions.assertEquals(0, calls.get());
+        AiRequestHealth health = provider.requestHealth(requestId).orElseThrow();
+        Assertions.assertEquals(AiRequestHealthState.REJECTED, health.state());
+        Assertions.assertEquals(0, health.attemptsStarted());
+        Assertions.assertEquals(0, health.attemptsCompleted());
+        Assertions.assertEquals(ProviderHealthState.HEALTHY,
+                provider.health().state());
+        AiTokenBudgetSnapshot snapshot = ledger.snapshot();
+        Assertions.assertTrue(snapshot.closed());
+        Assertions.assertEquals(0L, snapshot.committedTokens());
+        Assertions.assertEquals(0L, snapshot.reservedTokens());
+        Assertions.assertEquals(0, snapshot.activeReservations());
+    }
+
+    @Test
+    void settledBudgetIsNeverRefundedForSyncThrowNullStageOrCallbackFailure() {
+        assertSettledBudgetStaysCommitted(
+                UUID.fromString("31313131-3131-3131-3131-313131313131"),
+                new AiProvider() {
+                    @Override
+                    public CompletionStage<AiResponse> complete(
+                            AiRequest request, CancellationToken token) {
+                        throw new IllegalStateException("delegate failed synchronously");
+                    }
+
+                    @Override
+                    public CompletionStage<AiCapabilities> probeCapabilities() {
+                        return CompletableFuture.completedFuture(
+                                AiTestFixtures.capabilities(PROVIDER_ID));
+                    }
+
+                    @Override
+                    public ProviderHealth health() {
+                        return ProviderHealth.healthy(PROVIDER_ID, Instant.EPOCH);
+                    }
+                });
+        assertSettledBudgetStaysCommitted(
+                UUID.fromString("32323232-3232-3232-3232-323232323232"),
+                providerReturning(null));
+        assertSettledBudgetStaysCommitted(
+                UUID.fromString("33333333-3333-3333-3333-333333333333"),
+                providerReturning(new ThrowingWhenCompleteFuture<>()));
+    }
+
+    @Test
+    void cancellationBeforeSettlementReleasesReservationWithoutDelegateCall()
+            throws Exception {
+        Instant start = Instant.now();
+        BlockingLedgerClock ledgerClock = new BlockingLedgerClock(start);
+        AiTokenBudgetLedger ledger = new AiTokenBudgetLedger(
+                BUDGET_SCOPE,
+                new AiTokenBudgetPolicy(50L, 1, Duration.ofMinutes(1L)),
+                ledgerClock,
+                UUID::randomUUID);
+        UUID requestId = UUID.fromString(
+                "34343434-3434-3434-3434-343434343434");
+        AtomicInteger calls = new AtomicInteger();
+        AiProvider delegate = countingProvider(
+                AiTestFixtures.fixedProvider(PROVIDER_ID,
+                        AiTestFixtures.response(AiTestFixtures.request(requestId), PROVIDER_ID)),
+                calls);
+        RetryingAiProvider provider = provider(delegate, 1, 1);
+        CancellationTokenSource source = new CancellationTokenSource();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<CompletionStage<AiResponse>> started = executor.submit(() ->
+                    provider.completeBudgeted(
+                            AiTestFixtures.request(requestId),
+                            source.token(),
+                            budgetContext(ledger, requestId, start.plusSeconds(30L))));
+
+            Assertions.assertTrue(ledgerClock.awaitReservationRead());
+            Assertions.assertTrue(source.cancel());
+            ledgerClock.resumeReservation();
+
+            AiProviderException failure = failure(started.get(
+                    2L, TimeUnit.SECONDS));
+            Assertions.assertEquals(AiFailureKind.CANCELLED,
+                    failure.failureKind());
+            Assertions.assertEquals(0, calls.get());
+            Assertions.assertEquals(AiRequestHealthState.CANCELLED,
+                    provider.requestHealth(requestId).orElseThrow().state());
+            AiTokenBudgetSnapshot snapshot = ledger.snapshot();
+            Assertions.assertEquals(0L, snapshot.committedTokens());
+            Assertions.assertEquals(0L, snapshot.reservedTokens());
+            Assertions.assertEquals(0, snapshot.activeReservations());
+        } finally {
+            ledgerClock.resumeReservation();
+            executor.shutdownNow();
+            Assertions.assertTrue(executor.awaitTermination(2L, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void cancellationAfterSettlementKeepsTheCommittedAttempt() throws Exception {
+        UUID requestId = UUID.fromString(
+                "35353535-3535-3535-3535-353535353535");
+        TrackingFuture<AiResponse> pending = new TrackingFuture<>();
+        AtomicInteger calls = new AtomicInteger();
+        AiProvider delegate = countingProvider(providerReturning(pending), calls);
+        AiTokenBudgetLedger ledger = budgetLedger(50L);
+        RetryingAiProvider provider = provider(delegate, 1, 1);
+        CancellationTokenSource source = new CancellationTokenSource();
+
+        CompletionStage<AiResponse> result = provider.completeBudgeted(
+                AiTestFixtures.request(requestId),
+                source.token(),
+                budgetContext(ledger, requestId, Instant.now().plusSeconds(30L)));
+        Assertions.assertEquals(1, calls.get());
+        Assertions.assertTrue(source.cancel());
+
+        AiProviderException failure = failure(result);
+        Assertions.assertEquals(AiFailureKind.CANCELLED, failure.failureKind());
+        Assertions.assertTrue(pending.awaitCancellation());
+        AiTokenBudgetSnapshot snapshot = ledger.snapshot();
+        Assertions.assertEquals(50L, snapshot.committedTokens());
+        Assertions.assertEquals(0L, snapshot.reservedTokens());
+        Assertions.assertEquals(0, snapshot.activeReservations());
+    }
+
+    @Test
+    void settledBudgetRemainsCommittedWhenRequestTimeoutCancelsDelegate()
+            throws Exception {
+        UUID requestId = UUID.fromString(
+                "36353535-3535-3535-3535-353535353535");
+        TrackingFuture<AiResponse> pending = new TrackingFuture<>();
+        AtomicInteger calls = new AtomicInteger();
+        AiProvider delegate = countingProvider(providerReturning(pending), calls);
+        AiTokenBudgetLedger ledger = budgetLedger(50L);
+        RetryingAiProvider provider = provider(delegate, 1, 1);
+
+        CompletionStage<AiResponse> result = provider.completeBudgeted(
+                requestWithTimeout(requestId, 100L),
+                CancellationToken.none(),
+                budgetContext(ledger, requestId, Instant.now().plusSeconds(30L)));
+        Assertions.assertEquals(1, calls.get());
+
+        AiProviderException failure = failure(result);
+        Assertions.assertEquals(AiFailureKind.TIMEOUT, failure.failureKind());
+        Assertions.assertTrue(pending.awaitCancellation());
+        Assertions.assertTrue(pending.isCancelled());
+        AiRequestHealth health = provider.requestHealth(requestId).orElseThrow();
+        Assertions.assertEquals(AiRequestHealthState.FAILED, health.state());
+        Assertions.assertEquals(1, health.attemptsStarted());
+        Assertions.assertEquals(1, health.attemptsCompleted());
+        AiTokenBudgetSnapshot snapshot = ledger.snapshot();
+        Assertions.assertEquals(50L, snapshot.committedTokens());
+        Assertions.assertEquals(0L, snapshot.reservedTokens());
+        Assertions.assertEquals(0, snapshot.activeReservations());
+    }
+
+    @Test
+    void upstreamDeadlineExpiringBetweenReservationAndSettlementPreventsDelegateCall()
+            throws Exception {
+        Instant start = Instant.parse("2026-08-20T00:00:00Z");
+        AiTokenBudgetLedger ledger = new AiTokenBudgetLedger(
+                BUDGET_SCOPE,
+                new AiTokenBudgetPolicy(50L, 1, Duration.ofMinutes(1L)),
+                new SequenceClock(start, start, start.plusSeconds(1L)),
+                UUID::randomUUID);
+        UUID requestId = UUID.fromString(
+                "36363636-3636-3636-3636-363636363636");
+        AtomicInteger calls = new AtomicInteger();
+        AiProvider delegate = new AiProvider() {
+            @Override
+            public CompletionStage<AiResponse> complete(
+                    AiRequest request, CancellationToken token) {
+                calls.incrementAndGet();
+                return CompletableFuture.completedFuture(
+                        AiTestFixtures.response(request, PROVIDER_ID));
+            }
+
+            @Override
+            public CompletionStage<AiCapabilities> probeCapabilities() {
+                return CompletableFuture.completedFuture(
+                        AiTestFixtures.capabilities(PROVIDER_ID));
+            }
+
+            @Override
+            public ProviderHealth health() {
+                return ProviderHealth.healthy(PROVIDER_ID, start);
+            }
+        };
+        RetryingAiProvider provider = provider(
+                delegate,
+                1,
+                1,
+                Clock.fixed(start, ZoneOffset.UTC),
+                Duration.ofSeconds(2L));
+
+        AiProviderException failure = failure(provider.completeBudgeted(
+                AiTestFixtures.request(requestId),
+                CancellationToken.none(),
+                budgetContext(ledger, requestId, start.plusSeconds(1L))));
+
+        Assertions.assertEquals(AiFailureKind.TIMEOUT, failure.failureKind());
+        Assertions.assertEquals(0, calls.get());
+        AiRequestHealth health = provider.requestHealth(requestId).orElseThrow();
+        Assertions.assertEquals(AiRequestHealthState.REJECTED, health.state());
+        Assertions.assertEquals(0, health.attemptsStarted());
+        Assertions.assertEquals(0, health.attemptsCompleted());
+        AiTokenBudgetSnapshot snapshot = ledger.snapshot();
+        Assertions.assertEquals(0L, snapshot.committedTokens());
+        Assertions.assertEquals(0L, snapshot.reservedTokens());
+        Assertions.assertEquals(0, snapshot.activeReservations());
+
+        UUID followUpId = UUID.fromString(
+                "37373737-3737-3737-3737-373737373737");
+        AiResponse followUp = provider.complete(
+                AiTestFixtures.request(followUpId), CancellationToken.none())
+                .toCompletableFuture().get(2L, TimeUnit.SECONDS);
+        Assertions.assertEquals(followUpId, followUp.requestId());
+        Assertions.assertEquals(1, calls.get());
+    }
+
+    @Test
+    void providerClockAtUpstreamDeadlinePreventsSettlementWhenLedgerClockLags() {
+        Instant ledgerNow = Instant.parse("2026-08-20T00:00:00Z");
+        Instant upstreamDeadline = ledgerNow.plusSeconds(1L);
+        AtomicInteger reservationIdReads = new AtomicInteger();
+        AiTokenBudgetLedger ledger = new AiTokenBudgetLedger(
+                BUDGET_SCOPE,
+                new AiTokenBudgetPolicy(50L, 1, Duration.ofMinutes(1L)),
+                Clock.fixed(ledgerNow, ZoneOffset.UTC),
+                () -> {
+                    reservationIdReads.incrementAndGet();
+                    return UUID.randomUUID();
+                });
+        UUID requestId = UUID.fromString(
+                "38383838-3838-3838-3838-383838383838");
+        AtomicInteger calls = new AtomicInteger();
+        AiProvider delegate = new AiProvider() {
+            @Override
+            public CompletionStage<AiResponse> complete(
+                    AiRequest request, CancellationToken token) {
+                calls.incrementAndGet();
+                return CompletableFuture.completedFuture(
+                        AiTestFixtures.response(request, PROVIDER_ID));
+            }
+
+            @Override
+            public CompletionStage<AiCapabilities> probeCapabilities() {
+                return CompletableFuture.completedFuture(
+                        AiTestFixtures.capabilities(PROVIDER_ID));
+            }
+
+            @Override
+            public ProviderHealth health() {
+                return ProviderHealth.healthy(PROVIDER_ID, upstreamDeadline);
+            }
+        };
+        RetryingAiProvider provider = provider(
+                delegate,
+                1,
+                1,
+                Clock.fixed(upstreamDeadline, ZoneOffset.UTC),
+                Duration.ofSeconds(2L));
+
+        AiProviderException failure = failure(provider.completeBudgeted(
+                AiTestFixtures.request(requestId),
+                CancellationToken.none(),
+                budgetContext(ledger, requestId, upstreamDeadline)));
+
+        Assertions.assertEquals(AiFailureKind.TIMEOUT, failure.failureKind());
+        Assertions.assertEquals(0, calls.get());
+        Assertions.assertEquals(0, reservationIdReads.get());
+        AiTokenBudgetSnapshot snapshot = ledger.snapshot();
+        Assertions.assertEquals(0L, snapshot.committedTokens());
+        Assertions.assertEquals(0L, snapshot.reservedTokens());
+        Assertions.assertEquals(0, snapshot.activeReservations());
+    }
+
+    @Test
+    void expiredUnstartedCircuitPermitIsAbandonedWithoutProviderHealthFailure() {
+        Instant start = Instant.parse("2026-08-20T00:00:00Z");
+        SequenceClock providerClock = new SequenceClock(
+                start,
+                start,
+                start,
+                start,
+                start.plusSeconds(2L));
+        AiTokenBudgetLedger ledger = new AiTokenBudgetLedger(
+                BUDGET_SCOPE,
+                new AiTokenBudgetPolicy(50L, 1, Duration.ofMinutes(1L)),
+                Clock.fixed(start, ZoneOffset.UTC),
+                UUID::randomUUID);
+        UUID requestId = UUID.fromString(
+                "39393939-3939-3939-3939-393939393939");
+        AtomicInteger calls = new AtomicInteger();
+        AiProvider delegate = new AiProvider() {
+            @Override
+            public CompletionStage<AiResponse> complete(
+                    AiRequest request, CancellationToken token) {
+                calls.incrementAndGet();
+                return CompletableFuture.completedFuture(
+                        AiTestFixtures.response(request, PROVIDER_ID));
+            }
+
+            @Override
+            public CompletionStage<AiCapabilities> probeCapabilities() {
+                return CompletableFuture.completedFuture(
+                        AiTestFixtures.capabilities(PROVIDER_ID));
+            }
+
+            @Override
+            public ProviderHealth health() {
+                return ProviderHealth.healthy(PROVIDER_ID, start);
+            }
+        };
+        AiCircuitBreaker circuitBreaker = new AiCircuitBreaker(
+                new AiCircuitBreakerPolicy(
+                        1,
+                        1,
+                        1,
+                        Duration.ofSeconds(10L),
+                        Duration.ofSeconds(1L)));
+        RetryingAiProvider provider = new RetryingAiProvider(
+                PROVIDER_ID,
+                delegate,
+                circuitBreaker,
+                new AiRetryPolicy(
+                        1,
+                        1,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        AiRetryJitter.none()),
+                scheduler,
+                providerClock);
+
+        AiProviderException failure = failure(provider.completeBudgeted(
+                AiTestFixtures.request(requestId),
+                CancellationToken.none(),
+                budgetContext(ledger, requestId, start.plusSeconds(30L))));
+
+        Assertions.assertEquals(AiFailureKind.TIMEOUT, failure.failureKind());
+        Assertions.assertEquals(0, calls.get());
+        AiTokenBudgetSnapshot snapshot = ledger.snapshot();
+        Assertions.assertEquals(0L, snapshot.committedTokens());
+        Assertions.assertEquals(0L, snapshot.reservedTokens());
+        Assertions.assertEquals(0, snapshot.activeReservations());
+        AiCircuitSnapshot circuit = circuitBreaker.snapshot(start.plusSeconds(2L));
+        Assertions.assertEquals(AiCircuitState.CLOSED, circuit.state());
+        Assertions.assertEquals(0, circuit.consecutiveTransientFailures());
+        Assertions.assertEquals(0, circuit.inFlightPermits());
+    }
+
+    @Test
+    void circuitObserverWinningBeforeBudgetSettlementPreventsDelegateCall()
+            throws Exception {
+        Instant start = Instant.parse("2026-08-20T00:00:00Z");
+        BlockingNthReadClock providerClock = new BlockingNthReadClock(
+                start, 5);
+        AiTokenBudgetLedger ledger = new AiTokenBudgetLedger(
+                BUDGET_SCOPE,
+                new AiTokenBudgetPolicy(50L, 1, Duration.ofMinutes(1L)),
+                Clock.fixed(start, ZoneOffset.UTC),
+                UUID::randomUUID);
+        UUID requestId = UUID.fromString(
+                "40404040-4040-4040-4040-404040404040");
+        AtomicInteger calls = new AtomicInteger();
+        AiProvider delegate = countingProvider(
+                AiTestFixtures.fixedProvider(PROVIDER_ID,
+                        AiTestFixtures.response(
+                                AiTestFixtures.request(requestId), PROVIDER_ID)),
+                calls);
+        AiCircuitBreaker circuitBreaker = new AiCircuitBreaker(
+                new AiCircuitBreakerPolicy(
+                        1,
+                        1,
+                        1,
+                        Duration.ofSeconds(10L),
+                        Duration.ofSeconds(1L)));
+        RetryingAiProvider provider = new RetryingAiProvider(
+                PROVIDER_ID,
+                delegate,
+                circuitBreaker,
+                new AiRetryPolicy(
+                        1,
+                        1,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        AiRetryJitter.none()),
+                scheduler,
+                providerClock);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<CompletionStage<AiResponse>> started = executor.submit(() ->
+                    provider.completeBudgeted(
+                            AiTestFixtures.request(requestId),
+                            CancellationToken.none(),
+                            budgetContext(
+                                    ledger,
+                                    requestId,
+                                    start.plusSeconds(30L))));
+
+            Assertions.assertTrue(providerClock.awaitBlockedRead());
+            Assertions.assertEquals(AiCircuitState.OPEN,
+                    circuitBreaker.snapshot(start.plusSeconds(2L)).state());
+            providerClock.resumeBlockedRead();
+
+            AiProviderException failure = failure(started.get(
+                    2L, TimeUnit.SECONDS));
+            Assertions.assertEquals(AiFailureKind.TIMEOUT,
+                    failure.failureKind());
+            Assertions.assertEquals(0, calls.get());
+            AiRequestHealth health = provider.requestHealth(requestId)
+                    .orElseThrow();
+            Assertions.assertEquals(AiRequestHealthState.REJECTED,
+                    health.state());
+            Assertions.assertEquals(0, health.attemptsStarted());
+            Assertions.assertEquals(0, health.attemptsCompleted());
+            AiTokenBudgetSnapshot snapshot = ledger.snapshot();
+            Assertions.assertEquals(0L, snapshot.committedTokens());
+            Assertions.assertEquals(0L, snapshot.reservedTokens());
+            Assertions.assertEquals(0, snapshot.activeReservations());
+        } finally {
+            providerClock.resumeBlockedRead();
+            executor.shutdownNow();
+            Assertions.assertTrue(executor.awaitTermination(2L, TimeUnit.SECONDS));
+        }
+    }
+
+    private void assertSettledBudgetStaysCommitted(
+            UUID requestId, AiProvider delegate) {
+        AtomicInteger calls = new AtomicInteger();
+        AiTokenBudgetLedger ledger = budgetLedger(50L);
+        RetryingAiProvider provider = provider(countingProvider(delegate, calls), 1, 1);
+
+        failure(provider.completeBudgeted(
+                AiTestFixtures.request(requestId),
+                CancellationToken.none(),
+                budgetContext(ledger, requestId, Instant.now().plusSeconds(30L))));
+
+        Assertions.assertEquals(1, calls.get());
+        AiTokenBudgetSnapshot snapshot = ledger.snapshot();
+        Assertions.assertEquals(50L, snapshot.committedTokens());
+        Assertions.assertEquals(0L, snapshot.reservedTokens());
+        Assertions.assertEquals(0, snapshot.activeReservations());
+    }
+
+    private static AiTokenBudgetLedger budgetLedger(long maximumTokens) {
+        return new AiTokenBudgetLedger(BUDGET_SCOPE,
+                new AiTokenBudgetPolicy(maximumTokens, 1, Duration.ofMinutes(1L)));
+    }
+
+    private static AiRetryAttemptBudgetContext budgetContext(
+            AiTokenBudgetLedger ledger, UUID requestId, Instant upstreamDeadline) {
+        return new AiRetryAttemptBudgetContext(
+                ledger,
+                new AiTokenBudgetRequestBinding(BUDGET_SCOPE, requestId, 1L),
+                BUDGET_ADMISSION,
+                upstreamDeadline);
+    }
+
+    private static AiProvider countingProvider(
+            AiProvider delegate, AtomicInteger calls) {
+        return new AiProvider() {
+            @Override
+            public CompletionStage<AiResponse> complete(
+                    AiRequest request, CancellationToken token) {
+                calls.incrementAndGet();
+                return delegate.complete(request, token);
+            }
+
+            @Override
+            public CompletionStage<AiCapabilities> probeCapabilities() {
+                return delegate.probeCapabilities();
+            }
+
+            @Override
+            public ProviderHealth health() {
+                return delegate.health();
+            }
+        };
+    }
+
     private RetryingAiProvider provider(
             AiProvider delegate, int maximumAttempts, int maximumInFlight) {
         return provider(
@@ -699,6 +1347,134 @@ class RetryingAiProviderTest {
         @Override
         public Instant instant() {
             return value;
+        }
+    }
+
+    /** Blocks ledger reservation after the constructor's first clock read, before settlement. */
+    private static final class BlockingLedgerClock extends Clock {
+        private final Instant value;
+        private final AtomicInteger reads = new AtomicInteger();
+        private final CountDownLatch reservationRead = new CountDownLatch(1);
+        private final CountDownLatch resumeReservation = new CountDownLatch(1);
+
+        private BlockingLedgerClock(Instant value) {
+            this.value = value;
+        }
+
+        private boolean awaitReservationRead() throws InterruptedException {
+            return reservationRead.await(2L, TimeUnit.SECONDS);
+        }
+
+        private void resumeReservation() {
+            resumeReservation.countDown();
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return Clock.fixed(value, zone);
+        }
+
+        @Override
+        public Instant instant() {
+            if (reads.incrementAndGet() == 2) {
+                reservationRead.countDown();
+                try {
+                    if (!resumeReservation.await(2L, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "reservation clock was not resumed");
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(
+                            "reservation clock was interrupted", exception);
+                }
+            }
+            return value;
+        }
+    }
+
+    /** Blocks one selected provider-clock read so another thread can observe an admitted permit. */
+    private static final class BlockingNthReadClock extends Clock {
+        private final Instant value;
+        private final int blockedRead;
+        private final AtomicInteger reads = new AtomicInteger();
+        private final CountDownLatch blocked = new CountDownLatch(1);
+        private final CountDownLatch resume = new CountDownLatch(1);
+
+        private BlockingNthReadClock(Instant value, int blockedRead) {
+            this.value = value;
+            this.blockedRead = blockedRead;
+        }
+
+        private boolean awaitBlockedRead() throws InterruptedException {
+            return blocked.await(2L, TimeUnit.SECONDS);
+        }
+
+        private void resumeBlockedRead() {
+            resume.countDown();
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return Clock.fixed(value, zone);
+        }
+
+        @Override
+        public Instant instant() {
+            if (reads.incrementAndGet() == blockedRead) {
+                blocked.countDown();
+                try {
+                    if (!resume.await(2L, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "provider clock was not resumed");
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(
+                            "provider clock was interrupted", exception);
+                }
+            }
+            return value;
+        }
+    }
+
+    /** Returns a fixed adversarial sequence, then keeps returning its final instant. */
+    private static final class SequenceClock extends Clock {
+        private final Instant[] values;
+        private int index;
+
+        private SequenceClock(Instant... values) {
+            if (values.length == 0) {
+                throw new IllegalArgumentException("values must not be empty");
+            }
+            this.values = values.clone();
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return Clock.fixed(instant(), zone);
+        }
+
+        @Override
+        public synchronized Instant instant() {
+            int current = Math.min(index, values.length - 1);
+            index++;
+            return values[current];
         }
     }
 

@@ -1557,11 +1557,13 @@ opt-in 后，固定 Provider 会在客户端发起受限 HTTPS 请求，回传�
 ADR-0031 另只加入纯 Java 的 scope-local `AiTokenBudgetLedger`：它冻结已接受 admission 的
 conservative input/output/total reservation，按 `reserved + committed` 限额，release/expiry 只退未
 开始的 attempt，physical-attempt settle 后不因 usage、response、error、cancel 或 timeout 退款。ADR-0032
-的 `AiRetryAttemptBudgetContext` 仅要求 future trusted bridge 显式传入完整 binding/admission/upstream
-deadline，future retry wrapper 每次 physical attempt 再传其自身 deadline，ledger 统一取 upstream/retry/
-policy TTL 的最早值并产生 fresh reservation。两者都不接 `AiRequestScheduler`、`RetryingAiProvider`、HTTP、
-client session、network、Lifecycle、Skill、Action 或世界；真正每次 retry 的调用前 hook、预算统计/真实计费、
-generic bridge、聊天和 AI→世界执行仍是后续工作。
+的 `AiRetryAttemptBudgetContext` 要求可信调用者显式传入完整 binding/admission/upstream deadline，retry
+wrapper 再传自身 request deadline，ledger 统一取 upstream/retry/policy TTL 的最早值并产生 fresh
+reservation。ADR-0034 的 P6-A1b 已在 `RetryingAiProvider.completeBudgeted(...)` 增加一个 explicit
+opt-in physical delegate hook：每次 retry reserve，最终 cancel/deadline/circuit check 后只有 `SETTLED`
+才能调一次 `delegate.complete(...)`，之后永不退款；普通 `AiProvider.complete(...)` 保持 unbudgeted。
+当前没有 production `AiRequestScheduler`、HTTP/client session、network 或 Lifecycle bridge 创建/传入 context，
+也没有预算统计/真实计费、generic bridge、聊天或 AI→世界执行；这些仍是后续工作。
 
 ### 11.2 DeepSeek 的职责
 

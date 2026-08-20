@@ -54,15 +54,17 @@ UUID 候选耗尽或 clock rollback，返回既有 fail-closed status 且不产�
 `CLOCK_ROLLBACK`，不会双花或延长 reservation。
 
 每次 `reservePhysicalAttempt` 都要求账本给出新的 exact reservation instance；即使 requestId/revision 相同，
-retry 也不得复用旧 reservation。未来实际 hook 仍必须在锁外协调取消与开始：取消在 settle 前胜出时
-release；仅当 `settleAttempt(...) == SETTLED` 后才紧邻地调用一次 remote delegate；settle 后同步 throw、
-response/error/cancel/timeout/usage 都不得退款。
+retry 也不得复用旧 reservation。ADR-0034 的实际 hook 已把 cancel/deadline、exact current circuit permit
+与 `settleAttempt(...)` 线性化：取消在 settle 前胜出时 release；只有 atomic gate 中的 `SETTLED` 才紧邻地
+调用一次 remote delegate；settle 后同步 throw、response/error/cancel/timeout/usage 都不得退款。其他 future
+retry wrapper 也必须保留这些边界，不能从 context 推导出更宽的调用权限。
 
-### 3. 本 ADR 仍不接入真实调用点
+### 3. 本 ADR 只定义输入合同；调用点由 ADR-0034 单独接入
 
-本阶段**不**修改 `AiRequestScheduler`、`RetryingAiProvider`、`AiProvider`、HTTP/client session、
-network、Lifecycle、R1、Tool/Skill/Action 或 Minecraft。它只提供 future retry hook 的完整输入与
-deadline/TTL 算法；尚未有生产 bridge 创建 context，也没有真实 delegate 调用使用它。
+本 ADR 本身不修改 `AiRequestScheduler`、`AiProvider` SPI、HTTP/client session、network、Lifecycle、
+R1、Tool/Skill/Action 或 Minecraft。ADR-0034 后，`RetryingAiProvider` 已有显式 opt-in
+`completeBudgeted(...)` 调用点，会在每次实际 delegate retry 前使用本 context；普通
+`AiProvider.complete(...)` 仍不接预算，当前也没有 production bridge 创建或传入 context。
 
 ## 被否决方案
 
@@ -92,9 +94,10 @@ deadline/TTL 算法；尚未有生产 bridge 创建 context，也没有真实 de
 
 ## 迁移和回滚
 
-未来先由可信 client-sponsored bridge 在已有精确 request binding 上构造 context，再以独立变更把它接到
-`RetryingAiProvider.RequestRun.startAttempt()` 的真实 delegate 边界。该变更必须验证 cancellation、timeout、
-sync throw、null stage、callback failure、retry、ledger close 与 expiry 的胜负次序。
+未来可信 client-sponsored bridge 必须在已有精确 request binding 上构造 context，并显式调用
+ADR-0034 的 `RetryingAiProvider.completeBudgeted(...)`。ADR-0034 已验证 cancellation、timeout、sync
+throw、null stage、callback failure、retry、ledger close 与 expiry 的胜负次序；bridge 自身的 owner/
+session/lifecycle deadline 与 Provider E2E 仍须另行验证。
 
 回滚本 ADR 的代码只会移除未接线 helper/context；不会撤销外部 Provider 调用、写入 session、world 或
 credential storage。

@@ -158,7 +158,19 @@ public record AiRequestHealth(
 
     public AiRequestHealth rejected(
             AiFailureKind rejectionKind, Instant observedAt) {
-        Objects.requireNonNull(rejectionKind, "rejectionKind");
+        return rejected(AiProviderException.of(
+                Objects.requireNonNull(rejectionKind, "rejectionKind")), observedAt);
+    }
+
+    /**
+     * Records a pre-delegate rejection while retaining its fixed, sanitized reason code.
+     *
+     * <p>This is used when a local gate has a more specific stable reason than the broad failure
+     * kind. No Provider exception text or cause enters the health model.
+     */
+    public AiRequestHealth rejected(
+            AiProviderException exception, Instant observedAt) {
+        Objects.requireNonNull(exception, "exception");
         if (state != AiRequestHealthState.QUEUED) {
             throw new IllegalStateException(
                     "only queued requests may be rejected");
@@ -166,8 +178,8 @@ public record AiRequestHealth(
         return terminal(
                 AiRequestHealthState.REJECTED,
                 0,
-                rejectionKind,
-                Optional.of(rejectionKind.defaultReasonCode()),
+                exception.failureKind(),
+                Optional.of(exception.reasonCode()),
                 observedAt);
     }
 

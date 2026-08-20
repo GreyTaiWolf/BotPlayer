@@ -2,6 +2,12 @@ package io.github.greytaiwolf.botplayer.ai;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -67,6 +73,100 @@ class AiCircuitBreakerTest {
     }
 
     @Test
+    void abandonsAnUnstartedPermitWithoutSynthesizingProviderTimeout() {
+        AiCircuitBreaker breaker = new AiCircuitBreaker(
+                new AiCircuitBreakerPolicy(
+                        1,
+                        1,
+                        1,
+                        Duration.ofSeconds(10L),
+                        Duration.ofSeconds(1L)));
+
+        AiCircuitPermit permit = breaker.admit(START).permit().orElseThrow();
+
+        Assertions.assertTrue(breaker.abandonUnstartedPermit(permit));
+        Assertions.assertFalse(breaker.abandonUnstartedPermit(permit));
+        AiCircuitSnapshot later = breaker.snapshot(START.plusSeconds(2L));
+        Assertions.assertEquals(AiCircuitState.CLOSED, later.state());
+        Assertions.assertEquals(0, later.inFlightPermits());
+        Assertions.assertTrue(breaker.admit(START.plusSeconds(2L)).accepted());
+    }
+
+    @Test
+    void settlesUnstartedPermitAtomicallyAgainstConcurrentLeaseExpiry()
+            throws Exception {
+        AiCircuitBreaker breaker = new AiCircuitBreaker(
+                new AiCircuitBreakerPolicy(
+                        1,
+                        1,
+                        1,
+                        Duration.ofSeconds(10L),
+                        Duration.ofSeconds(1L)));
+        AiCircuitPermit permit = breaker.admit(START).permit().orElseThrow();
+        CountDownLatch gateEntered = new CountDownLatch(1);
+        CountDownLatch resumeGate = new CountDownLatch(1);
+        CountDownLatch observerAttempted = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<Boolean> settled = executor.submit(() ->
+                    breaker.settleUnstartedPermit(permit, START, () -> {
+                        gateEntered.countDown();
+                        await(resumeGate);
+                        return true;
+                    }));
+            Assertions.assertTrue(gateEntered.await(2L, TimeUnit.SECONDS));
+
+            Future<AiCircuitSnapshot> observer = executor.submit(() -> {
+                observerAttempted.countDown();
+                return breaker.snapshot(START.plusSeconds(2L));
+            });
+            Assertions.assertTrue(observerAttempted.await(2L, TimeUnit.SECONDS));
+            Assertions.assertThrows(TimeoutException.class,
+                    () -> observer.get(100L, TimeUnit.MILLISECONDS));
+
+            resumeGate.countDown();
+            Assertions.assertTrue(settled.get(2L, TimeUnit.SECONDS));
+            Assertions.assertEquals(AiCircuitState.OPEN,
+                    observer.get(2L, TimeUnit.SECONDS).state());
+        } finally {
+            resumeGate.countDown();
+            executor.shutdownNow();
+            Assertions.assertTrue(executor.awaitTermination(2L, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void neutralizesRejectedOrThrowingUnstartedSettlementGate() {
+        AiCircuitBreaker breaker = new AiCircuitBreaker(
+                new AiCircuitBreakerPolicy(
+                        1,
+                        1,
+                        1,
+                        Duration.ofSeconds(10L),
+                        Duration.ofSeconds(1L)));
+        AiCircuitPermit rejected = breaker.admit(START).permit().orElseThrow();
+        Assertions.assertFalse(breaker.settleUnstartedPermit(
+                rejected, START, () -> false));
+        Assertions.assertEquals(AiCircuitState.CLOSED,
+                breaker.snapshot(START.plusSeconds(2L)).state());
+
+        AiCircuitPermit throwing = breaker.admit(START.plusSeconds(2L))
+                .permit()
+                .orElseThrow();
+        Assertions.assertThrows(IllegalStateException.class,
+                () -> breaker.settleUnstartedPermit(
+                        throwing,
+                        START.plusSeconds(2L),
+                        () -> {
+                            throw new IllegalStateException("local accounting failed");
+                        }));
+        Assertions.assertEquals(AiCircuitState.CLOSED,
+                breaker.snapshot(START.plusSeconds(4L)).state());
+        Assertions.assertEquals(0,
+                breaker.snapshot(START.plusSeconds(4L)).inFlightPermits());
+    }
+
+    @Test
     void opensImmediatelyForAuthenticationFailureWithoutRetryingRequests() {
         AiCircuitBreaker breaker = new AiCircuitBreaker(
                 new AiCircuitBreakerPolicy(
@@ -128,5 +228,16 @@ class AiCircuitBreakerTest {
                         1,
                         Duration.ofSeconds(1L),
                         Duration.ofSeconds(1L)));
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            if (!latch.await(2L, TimeUnit.SECONDS)) {
+                throw new AssertionError("test gate was not resumed");
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("test thread interrupted", exception);
+        }
     }
 }

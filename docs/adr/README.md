@@ -49,9 +49,10 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0028](0028-client-sponsored-proposal-review-transaction.md) | 通用 client-sponsored proposal 的精确 owner-thread 审阅事务 | Accepted | coordinator 已有 ledger-first C2S correlation precheck、gate terminal 后 exact ledger close 与分歧 fail-closed 合同；不接 Lifecycle/Network/Client/Scheduler/R1 或世界执行 |
 | [ADR-0029](0029-bounded-blueprint-data-contract.md) | 有界蓝图数据契约 | Accepted | P5D-A0 已有 1–256 cell、canonical content hash 与计划方块需求的纯 Java DTO；不含 NBT/物品映射/世界或施工接线，P5D 仍未实现 |
 | [ADR-0030](0030-bounded-construction-work-package-contract.md) | 有界施工工作包图合同 | Accepted | P5D-A1 已有完整 Blueprint identity 绑定、exact-cover、16 package 上限和稳定拓扑的纯 Java DTO；不含 site/材料预留/Technique/Action/world，P5D 仍未实现 |
-| [ADR-0031](0031-bounded-token-reservation-ledger.md) | 有界 AI token 预留账本 | Accepted | P6-A0 已有 scope-local、并发安全的 conservative token reservation accounting Contract；未接 Scheduler/retry/Provider/client session/network，不是实际计费或通用 bridge |
-| [ADR-0032](0032-physical-retry-attempt-budget-context.md) | 物理重试尝试预算上下文 | Accepted | P6-A1a 只固定完整 trusted budget context 与 upstream/retry/TTL 最早 deadline；尚未接 RetryProvider、Scheduler、client session 或真实 Provider 调用 |
+| [ADR-0031](0031-bounded-token-reservation-ledger.md) | 有界 AI token 预留账本 | Accepted | P6-A0 已有 scope-local、并发安全的 conservative token reservation accounting Contract；ADR-0034 的 explicit retry hook 已使用它，但仍未接 Scheduler/client session/network，不是实际计费或通用 bridge |
+| [ADR-0032](0032-physical-retry-attempt-budget-context.md) | 物理重试尝试预算上下文 | Accepted | P6-A1a 固定完整 trusted budget context 与 upstream/retry/TTL 最早 deadline；ADR-0034 的 opt-in hook 使用它，仍无 production Scheduler/client bridge |
 | [ADR-0033](0033-candidate-construction-site-binding-contract.md) | 候选施工站点绑定 | Accepted | P5D-A2 只将 exact WorkPlan/Blueprint 绑定到 dimension+anchor 的派生 bounds 与已知 cell target；不 survey/accepted/lease/material/placement/world，P5D 仍未实现 |
+| [ADR-0034](0034-budgeted-physical-retry-hook.md) | 受限物理重试预算调用点 | Accepted | P6-A1b 只为显式 `RetryingAiProvider.completeBudgeted(...)` 在每个 physical delegate retry 前 reserve/settle；普通 SPI、Scheduler、client bridge、真实计费与 P6 总完成仍未接线 |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
@@ -131,12 +132,17 @@ P5D 建造能力已经实现。
 ADR-0031 在 P6 只增加每 `(ownerId, botId, agentId)` scope 独立的纯 Java token reservation
 accounting：accepted admission 的 reserved input/output/total 先占用 `reserved`，只有物理调用前
 settle 才转入 `committed`，其后永不退款；同一 requestId 的 future retry 必须使用新的 exact
-reservation。它既不接 Scheduler/Retrying Provider/HTTP/client session，也不是 real billing、generic
-bridge、聊天或 AI→Skill/world execution。
+reservation。ADR-0034 现已在显式 retry hook 使用它；账本自身仍不接 Scheduler/HTTP/client session，
+也不是 real billing、generic bridge、聊天或 AI→Skill/world execution。
 
-ADR-0032 只为未来 physical retry hook 增加完整 immutable budget context：trusted bridge 给出 ledger、
-binding、admission 与 upstream deadline，retry wrapper 每次 attempt 给出自身 deadline，账本取最早 deadline/
-TTL 并产生新的 exact reservation instance。它尚未接到 retry、scheduler、Provider、client session 或网络。
+ADR-0032 为 physical retry hook 固定完整 immutable budget context：trusted bridge 给出 ledger、binding、
+admission 与 upstream deadline，retry wrapper 每次 attempt 给出自身 deadline，账本取最早 deadline/TTL 并
+产生新的 exact reservation instance。ADR-0034 已将它接到 `RetryingAiProvider.completeBudgeted(...)` 的
+explicit opt-in delegate 边界；普通 Provider SPI、scheduler、client session、网络与 production bridge 仍未接线。
+
+ADR-0034 固定 P6-A1b 的 reserve → circuit admit → settle → one delegate-call 顺序；cancel/timeout 在
+settle 前胜出时 release，`SETTLED` 后绝不退款。它不构造 trusted context，也不提供 generic bridge、真实
+billing、聊天或 AI→Skill/world execution。
 
 ADR-0033 只为 P5D future survey/lease/placement 增加 candidate `building.site` DTO：完整 WorkPlan
 与 dimension+anchor 派生 exact bounds，target 只允许 Blueprint 中真实存在的 offset。它不是 site survey、

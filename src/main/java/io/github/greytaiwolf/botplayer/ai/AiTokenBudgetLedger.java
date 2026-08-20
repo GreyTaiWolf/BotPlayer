@@ -18,8 +18,8 @@ import java.util.function.Supplier;
  *
  * <p>This is deliberately only an accounting contract. It neither starts a Provider nor calls a
  * scheduler, client/session coordinator, network, lifecycle, Skill, Action or Minecraft API. A
- * future physical-attempt adapter must reserve a fresh token, call {@link #settleAttempt} before
- * its real remote invocation, and never refund a settled attempt.</p>
+ * physical-attempt adapter must reserve a fresh token, call {@link #settleAttempt} before its
+ * real remote invocation, and never refund a settled attempt.</p>
  */
 public final class AiTokenBudgetLedger implements AutoCloseable {
     private static final int MAX_RESERVATION_ID_CANDIDATES = 16;
@@ -92,10 +92,10 @@ public final class AiTokenBudgetLedger implements AutoCloseable {
      * ledger's maximum reservation age.
      *
      * <p>This is the only public helper that derives an expiration from the ledger's own clock
-     * and policy. A future retry adapter must pass its already-trusted logical-attempt deadline;
-     * it must not guess a TTL or retain a reservation past that deadline. The returned reservation
-     * is still not permission to invoke a Provider: {@link #settleAttempt(AiTokenReservation)}
-     * must win immediately before that physical invocation.
+     * and policy. A retry adapter must pass its already-trusted logical-attempt deadline; it must
+     * not guess a TTL or retain a reservation past that deadline. The returned reservation is
+     * still not permission to invoke a Provider: {@link #settleAttempt(AiTokenReservation)} must
+     * win immediately before that physical invocation.
      */
     public AiTokenBudgetReservationResult reserveForDeadline(
             AiTokenBudgetRequestBinding binding,

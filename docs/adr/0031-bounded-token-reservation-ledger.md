@@ -104,9 +104,10 @@ requestId、reservationId、prompt、credential、model、response 或 usage。
   lifecycle；
 - chat、Tool→Skill、Technique、Action、世界写入或任何 Minecraft API。
 
-下一阶段必须在每次实际 `delegate.complete(...)` 前紧邻地插入新的 reserve/settle hook，并把
-Scheduler deadline、client/session deadline 与 policy TTL 取最早值。该 hook、generic bridge、聊天、
-模型策略接线、AI→Skill/world 执行、真实 Provider 计费和 E2E 都仍未实现。
+ADR-0034 后，`RetryingAiProvider.completeBudgeted(...)` 已作为显式 opt-in hook 在每次实际
+`delegate.complete(...)` 前紧邻地插入新的 reserve/settle，并把 retry request、upstream 与 policy TTL
+取最早值。production Scheduler/client/session bridge、聊天、模型策略接线、AI→Skill/world 执行、真实
+Provider 计费和 E2E 都仍未实现。
 
 ## 被否决方案
 
@@ -138,9 +139,9 @@ Scheduler deadline、client/session deadline 与 policy TTL 取最早值。该 h
 
 ## 迁移和回滚
 
-当前没有生产调用点。未来 adapter 可为每个绑定 scope 创建 ledger，并在其精确物理 attempt hook
-处使用；不得把它写入世界、SavedData、client binding 或 credential storage。回滚时停止创建该
-ledger；不存在要退款的外部副作用，也不触及现有 session gate 或 P5/world。
+当前没有生产调用点。ADR-0034 仅允许一个已构造 context 的显式 retry hook 使用 ledger；未来 generic
+bridge 可为每个绑定 scope 创建它，但不得把它写入世界、SavedData、client binding 或 credential
+storage。回滚时停止创建该 ledger；不存在要退款的外部副作用，也不触及现有 session gate 或 P5/world。
 
 ## 验证方式
 

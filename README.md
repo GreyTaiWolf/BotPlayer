@@ -7,7 +7,7 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 
 > **当前状态：P2、P3 与 P4 自动化退出门已通过；Build #362 已验证受限 P5 纵切与
 > P6-R1 的先前自动化基线。其后的 P5A 修复、单 `TechniqueLifecycleCoordinator` Contract 与
-> P6 会话协调器、客户端安全 terminal-observation/Error-cleanup/间接重入收口、ledger-first proposal review、P6-A0/A1a token-reservation/physical-retry budget Contract、受限 Technique→Action permit Contract 与 P5D-A0/A1/A2 有界蓝图/施工工作包/candidate-site 数据 Contract
+> P6 会话协调器、客户端安全 terminal-observation/Error-cleanup/间接重入收口、ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget Contract、受限 Technique→Action permit Contract 与 P5D-A0/A1/A2 有界蓝图/施工工作包/candidate-site 数据 Contract
 > 提交仍待各自 Java 21 CI；仍不是
 > 正式版本，P5/P6 总退出门均未关闭。**
 >
@@ -43,10 +43,11 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 > Scheduler 或 R1；通用 bridge、聊天与 AI→世界执行仍未实现。
 > P6-A0 的 `AiTokenBudgetLedger` 只为单个 `(owner, bot, agent)` scope 冻结已接受 admission 的
 > token 预留：release/expiry 只退未开始的 reservation，物理调用前 settle 后永不退款。P6-A1a 的
-> `AiRetryAttemptBudgetContext` 仅把 trusted binding/admission 和 upstream deadline 与 retry 自身 deadline、
-> 账本 TTL 取最早值，并要求每个 future attempt 取得新的 reservation；它仍尚未接到
-> Scheduler/Retrying Provider/HTTP/client session，也不是真实计费或预算统计。真实 physical attempt hook、
-> 通用 bridge、聊天与 AI→世界执行仍未实现。
+> `AiRetryAttemptBudgetContext` 把 trusted binding/admission 和 upstream deadline 与 retry 自身 deadline、
+> 账本 TTL 取最早值；P6-A1b 已新增 `RetryingAiProvider.completeBudgeted(...)` 的显式 opt-in 物理
+> delegate hook，每个 retry 用新 reservation，settle 后即使 cancel/timeout/同步失败也不退款。普通
+> `AiProvider.complete(...)`、Scheduler/HTTP/client session 仍不自动接预算，也没有 production bridge；
+> 因此这不是真实计费或预算统计，通用 bridge、聊天与 AI→世界执行仍未实现。
 > 请以
 > [当前实现状态](docs/IMPLEMENTATION_STATUS_CN.md) 为准，不要把路线图中的目标当成已完成。
 

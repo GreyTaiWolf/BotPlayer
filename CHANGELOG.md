@@ -7,6 +7,14 @@
 
 ### 新增
 
+- 新增 ADR-0034 的 P6-A1b 受限 physical-retry hook：`RetryingAiProvider` 新增显式
+  `completeBudgeted(...)`，只接受完整可信 `AiRetryAttemptBudgetContext`，并在每次真实
+  `delegate.complete(...)` 前 fresh reserve、final cancel/deadline/circuit check 与 settle。只有
+  `SETTLED` 才调用一次 delegate；settle 前 cancel/expiry/ledger/circuit 拒绝 release，settle 后的
+  cancel、timeout、sync throw、null stage、callback failure 或 response/error 均不退款。普通
+  `AiProvider.complete(...)`、Scheduler、HTTP/client session、network、Lifecycle、Skill、Action 与
+  Minecraft 均未自动接线；它不是 generic bridge、真实 billing/usage reconciliation 或 P6 完成，当前
+  Java 21 CI 与真实 Provider E2E 仍待完成；
 - 新增 ADR-0033 的 P5D-A2 pure Java candidate construction-site binding Contract：完整 immutable
   `ConstructionWorkPlan` 以非零 siteId、dimension+anchor 绑定到由全部 Blueprint cell checked translation
   派生的 inclusive bounds，只有完整 package key 与真实 cell offset 可读取。它不做 survey/accepted site、
@@ -15,9 +23,9 @@
 - 新增 ADR-0032 的 P6-A1a pure Java physical-retry attempt budget context：可信 bridge 未来必须显式
   传入 ledger、完整 request binding、已接受 admission 与 upstream deadline；retry wrapper 每次 physical
   attempt 另传自身 deadline，账本统一取 upstream/retry/policy TTL 的最早值并返回 fresh exact reservation。
-  它还没有接入 `RetryingAiProvider`、Scheduler、Provider、client session/transport、HTTP、Lifecycle、Skill、
-  Action 或 Minecraft；因此不是实际 retry hook、计费、预算统计、通用 AI bridge 或 P6 完成，当前 Java 21
-  CI 与真实 Provider E2E 仍待完成；
+  ADR-0034 已把它接到 `RetryingAiProvider` 的显式 opt-in physical hook；它仍没有 production
+  Scheduler/client session/transport/HTTP/Lifecycle bridge，也不是实际计费、预算统计、通用 AI bridge 或 P6
+  完成，当前 Java 21 CI 与真实 Provider E2E 仍待完成；
 - 新增 ADR-0031 的 P6-A0 有界纯 Java token-reservation ledger Contract：每个 runtime-local
   `(ownerId, botId, agentId)` scope 以完整 request binding 和随机 exact reservation 管理已接受
   `AiModelAdmission` 的输入/最大输出/总 token；`reserved + committed` 受上限约束，release/expiry

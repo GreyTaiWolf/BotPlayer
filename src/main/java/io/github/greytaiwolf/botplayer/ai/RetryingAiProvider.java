@@ -62,6 +62,45 @@ public final class RetryingAiProvider implements AiProvider {
     @Override
     public CompletionStage<AiResponse> complete(
             AiRequest request, CancellationToken token) {
+        return completeInternal(request, token, null);
+    }
+
+    /**
+     * Starts one logical request whose every physical delegate attempt must consume a fresh,
+     * trusted token reservation.
+     *
+     * <p>This is deliberately an explicit entry point rather than a change to {@link AiProvider}:
+     * callers of the ordinary {@link #complete(AiRequest, CancellationToken)} SPI have no trusted
+     * owner/bot/agent/revision/admission binding and therefore remain unbudgeted. A future bridge
+     * must construct the context from its authoritative request binding, and this method rejects a
+     * context for another request before reserving a provider slot or invoking a delegate.
+     *
+     * <p>For each actual {@code delegate.complete(...)} invocation, the run obtains a new
+     * reservation bounded by both its request deadline and the context deadline, releases it if
+     * cancellation or timeout wins before settlement, and settles it immediately before exactly
+     * one delegate call. A settled reservation is never released on response, failure, timeout or
+     * cancellation.
+     */
+    public CompletionStage<AiResponse> completeBudgeted(
+            AiRequest request,
+            CancellationToken token,
+            AiRetryAttemptBudgetContext attemptBudgetContext) {
+        AiRequest checkedRequest = Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(token, "token");
+        AiRetryAttemptBudgetContext checkedContext = Objects.requireNonNull(
+                attemptBudgetContext, "attemptBudgetContext");
+        if (!checkedRequest.requestId().equals(
+                checkedContext.binding().requestId())) {
+            return CompletableFuture.failedFuture(AiProviderException.of(
+                    AiFailureKind.INVALID_REQUEST));
+        }
+        return completeInternal(checkedRequest, token, checkedContext);
+    }
+
+    private CompletionStage<AiResponse> completeInternal(
+            AiRequest request,
+            CancellationToken token,
+            AiRetryAttemptBudgetContext attemptBudgetContext) {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(token, "token");
         if (token.isCancellationRequested()) {
@@ -91,7 +130,8 @@ public final class RetryingAiProvider implements AiProvider {
             return CompletableFuture.failedFuture(
                     AiProviderException.of(AiFailureKind.INVALID_REQUEST));
         }
-        RequestRun run = new RequestRun(request, token, initial, deadline);
+        RequestRun run = new RequestRun(
+                request, token, initial, deadline, attemptBudgetContext);
         run.start();
         return run.completion();
     }
@@ -277,6 +317,7 @@ public final class RetryingAiProvider implements AiProvider {
         private final AiRequest request;
         private final CancellationToken cancellationToken;
         private final Instant deadline;
+        private final AiRetryAttemptBudgetContext attemptBudgetContext;
         private final CompletableFuture<AiResponse> completion =
                 new CompletableFuture<>();
         private final AtomicBoolean terminal = new AtomicBoolean();
@@ -295,11 +336,13 @@ public final class RetryingAiProvider implements AiProvider {
                 AiRequest request,
                 CancellationToken cancellationToken,
                 AiRequestHealth initialHealth,
-                Instant deadline) {
+                Instant deadline,
+                AiRetryAttemptBudgetContext attemptBudgetContext) {
             this.request = request;
             this.cancellationToken = cancellationToken;
             this.health = initialHealth;
             this.deadline = AiChecks.instant(deadline, "deadline");
+            this.attemptBudgetContext = attemptBudgetContext;
             completion.whenComplete((response, throwable) -> {
                 if (completion.isCancelled()) {
                     cancelFromCaller();
@@ -383,6 +426,160 @@ public final class RetryingAiProvider implements AiProvider {
         }
 
         private void startAttempt() {
+            if (attemptBudgetContext != null) {
+                startBudgetedAttempt(attemptBudgetContext);
+                return;
+            }
+            startUnbudgetedAttempt();
+        }
+
+        /**
+         * Reserves outside this run's lock, then linearizes cancel/deadline, circuit admission and
+         * token settlement together under the lock immediately before the one physical delegate
+         * call.
+         *
+         * <p>A cancellation or timeout that obtains the run lock before settlement releases the
+         * reservation and prevents the call. Ledger settlement is bounded accounting with no
+         * callback, scheduler or Provider re-entry, so keeping this final state transition under
+         * the run lock preserves health counts and gives a single winner. Once settlement returns
+         * {@code SETTLED}, this method must invoke the delegate exactly once even if a later
+         * cancellation wins; the ledger has already conservatively committed the attempt and must
+         * not be refunded.
+         */
+        private void startBudgetedAttempt(
+                AiRetryAttemptBudgetContext budgetContext) {
+            synchronized (this) {
+                retryFuture = null;
+                if (terminal.get()) {
+                    return;
+                }
+                Instant observedAt = now();
+                if (finishBeforeDelegateLocked(observedAt)) {
+                    return;
+                }
+            }
+
+            AiTokenBudgetReservationResult reservationResult;
+            try {
+                reservationResult = budgetContext.reservePhysicalAttempt(deadline);
+            } catch (RuntimeException exception) {
+                finishBudgetReservationFailure(
+                        AiProviderException.of(AiFailureKind.UNAVAILABLE));
+                return;
+            }
+            if (reservationResult == null || !reservationResult.reserved()) {
+                finishBudgetReservationFailure(budgetFailure(reservationResult == null
+                        ? null
+                        : reservationResult.status()));
+                return;
+            }
+
+            AiTokenReservation reservation = reservationResult.reservation()
+                    .orElseThrow();
+            AiCircuitPermit permit = null;
+            boolean releaseReservation = false;
+            boolean settled = false;
+            try {
+                synchronized (this) {
+                    if (terminal.get()) {
+                        releaseReservation = true;
+                    } else {
+                        Instant observedAt = now();
+                        if (finishBeforeDelegateLocked(observedAt)) {
+                            releaseReservation = true;
+                        } else {
+                            AiCircuitAdmission admission = circuitBreaker.admit(observedAt);
+                            if (!admission.accepted()) {
+                                finishCircuitAdmissionRejectedLocked(
+                                        admission, observedAt);
+                                releaseReservation = true;
+                            } else {
+                                permit = admission.permit().orElseThrow();
+                                activePermit = permit;
+                                Instant settlementObservedAt = now();
+                                if (cancellationToken.isCancellationRequested()) {
+                                    releaseUnstartedCircuitPermitLocked(
+                                            permit);
+                                    finishCancelledLocked(settlementObservedAt);
+                                    releaseReservation = true;
+                                } else if (!settlementObservedAt.isBefore(deadline)
+                                        || !settlementObservedAt.isBefore(
+                                        budgetContext.upstreamDeadline())
+                                        || !settlementObservedAt.isBefore(
+                                        permit.expiresAt())) {
+                                    releaseUnstartedCircuitPermitLocked(
+                                            permit);
+                                    finishPreDelegateFailureLocked(
+                                            AiProviderException.of(
+                                                    AiFailureKind.TIMEOUT),
+                                            settlementObservedAt);
+                                    releaseReservation = true;
+                                } else {
+                                    AiTokenBudgetOperationStatus[] settlement =
+                                            new AiTokenBudgetOperationStatus[1];
+                                    boolean[] settlementGateRan = new boolean[1];
+                                    boolean physicalStartCommitted = circuitBreaker
+                                            .settleUnstartedPermit(
+                                                    permit,
+                                                    settlementObservedAt,
+                                                    () -> {
+                                                        settlementGateRan[0] = true;
+                                                        settlement[0] = budgetContext
+                                                                .ledger()
+                                                                .settleAttempt(reservation);
+                                                        return settlement[0]
+                                                                == AiTokenBudgetOperationStatus
+                                                                .SETTLED;
+                                                    });
+                                    if (!physicalStartCommitted) {
+                                        if (activePermit == permit) {
+                                            activePermit = null;
+                                        }
+                                        AiProviderException failure = settlementGateRan[0]
+                                                ? budgetFailure(settlement[0])
+                                                : AiProviderException.of(
+                                                        AiFailureKind.TIMEOUT);
+                                        finishPreDelegateFailureLocked(
+                                                failure,
+                                                settlementObservedAt);
+                                        releaseReservation = true;
+                                    } else {
+                                        // Set this before changing diagnostics: no later failure
+                                        // path may skip the already-committed physical invocation.
+                                        settled = true;
+                                        health = health.inFlight(settlementObservedAt);
+                                        recordHealth(health);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (RuntimeException exception) {
+                if (!settled && permit != null) {
+                    synchronized (this) {
+                        releaseUnstartedCircuitPermitLocked(
+                                permit);
+                    }
+                }
+                if (!settled) {
+                    releaseBudgetReservation(budgetContext, reservation);
+                    failUnexpected(AiReasonCode.DEADLINE_OUT_OF_RANGE);
+                    return;
+                }
+            }
+            if (releaseReservation) {
+                releaseBudgetReservation(budgetContext, reservation);
+                return;
+            }
+            if (settled) {
+                // Do not re-check terminal here. Ledger settlement, rather than later
+                // cancellation, is the physical-call linearization point for this attempt.
+                invokeDelegate(permit);
+            }
+        }
+
+        private void startUnbudgetedAttempt() {
             AiCircuitPermit permit;
             synchronized (this) {
                 retryFuture = null;
@@ -425,6 +622,11 @@ public final class RetryingAiProvider implements AiProvider {
             if (terminal.get()) {
                 return;
             }
+            invokeDelegate(permit);
+        }
+
+        /** Invokes one already-admitted physical delegate attempt without holding this run's lock. */
+        private void invokeDelegate(AiCircuitPermit permit) {
             CompletionStage<AiResponse> delegateStage;
             try {
                 delegateStage = delegate.complete(
@@ -464,6 +666,141 @@ public final class RetryingAiProvider implements AiProvider {
                                 AiReasonCode.CALLBACK_ATTACHMENT_FAILED));
                 cancelDelegateStage(delegateStage);
             }
+        }
+
+        /** Returns true after local cancellation or any trusted deadline wins before settlement. */
+        private boolean finishBeforeDelegateLocked(Instant observedAt) {
+            if (terminal.get()) {
+                return true;
+            }
+            if (cancellationToken.isCancellationRequested()) {
+                finishCancelledLocked(observedAt);
+                return true;
+            }
+            if (!observedAt.isBefore(deadline)) {
+                finishPreDelegateFailureLocked(AiProviderException.of(
+                        AiFailureKind.TIMEOUT), observedAt);
+                return true;
+            }
+            if (attemptBudgetContext != null
+                    && !observedAt.isBefore(
+                    attemptBudgetContext.upstreamDeadline())) {
+                finishPreDelegateFailureLocked(AiProviderException.of(
+                        AiFailureKind.TIMEOUT), observedAt);
+                return true;
+            }
+            return false;
+        }
+
+        /**
+         * Fails one reservation admission without directly treating a local budget gate as
+         * Provider health degradation. The retry path has no new physical attempt in this state.
+         */
+        private void finishBudgetReservationFailure(
+                AiProviderException exception) {
+            synchronized (this) {
+                if (terminal.get()) {
+                    return;
+                }
+                Instant observedAt = safeObservedAt();
+                if (finishBeforeDelegateLocked(observedAt)) {
+                    return;
+                }
+                finishPreDelegateFailureLocked(exception, observedAt);
+            }
+        }
+
+        /** Retires a local pre-delegate failure while preserving prior physical retry counts. */
+        private void finishPreDelegateFailureLocked(
+                AiProviderException exception, Instant observedAt) {
+            if (health.state() == AiRequestHealthState.QUEUED) {
+                health = health.rejected(exception, observedAt);
+            } else if (health.state() == AiRequestHealthState.BACKING_OFF) {
+                health = health.failed(exception, observedAt);
+            } else {
+                throw new IllegalStateException(
+                        "only queued or backing-off requests may fail before delegate start");
+            }
+            recordHealth(health);
+            finishTerminalLocked(exception);
+        }
+
+        /** Matches the unbudgeted circuit-rejection behaviour without keeping a reservation. */
+        private void finishCircuitAdmissionRejectedLocked(
+                AiCircuitAdmission admission, Instant observedAt) {
+            AiFailureKind rejectionKind = admission.rejectionKind()
+                    .orElse(AiFailureKind.UNKNOWN);
+            AiProviderException exception = new AiProviderException(
+                    rejectionKind,
+                    admission.retryAfter(),
+                    rejectionKind.defaultReasonCode());
+            if (health.state() == AiRequestHealthState.QUEUED) {
+                health = health.rejected(exception, observedAt);
+                recordHealth(health);
+                rememberFailure(exception, observedAt);
+                finishTerminalLocked(exception);
+            } else {
+                finishFailureLocked(exception, observedAt);
+            }
+        }
+
+        /** Returns a circuit admission that was never allowed to reach a physical delegate. */
+        private void releaseUnstartedCircuitPermitLocked(
+                AiCircuitPermit permit) {
+            if (activePermit == permit) {
+                activePermit = null;
+            }
+            try {
+                circuitBreaker.abandonUnstartedPermit(permit);
+            } catch (RuntimeException ignored) {
+                // The permit still has a bounded circuit lease. Do not let a diagnostic boundary
+                // throw prevent the local request from reaching its already-determined terminal.
+            }
+        }
+
+        /** Releases only a reservation known not to have settled; its bounded TTL remains a fallback. */
+        private static void releaseBudgetReservation(
+                AiRetryAttemptBudgetContext budgetContext,
+                AiTokenReservation reservation) {
+            try {
+                budgetContext.ledger().release(reservation);
+            } catch (RuntimeException ignored) {
+                // A valid ledger release is non-throwing. If a hostile boundary nevertheless
+                // throws, no remote call has occurred and the ledger's TTL still bounds retention.
+            }
+        }
+
+        /**
+         * Normalizes ledger-local results to the existing sanitized Provider failure surface.
+         *
+         * <p>Callers must not retry this locally: the surrounding path terminates rather than
+         * handing a local accounting fault back to the retry policy. This mapping therefore does
+         * not claim that the remote Provider itself returned the corresponding failure.
+         */
+        private static AiProviderException budgetFailure(
+                AiTokenBudgetOperationStatus status) {
+            AiFailureKind failureKind;
+            if (status == null) {
+                failureKind = AiFailureKind.UNAVAILABLE;
+            } else {
+                failureKind = switch (status) {
+                    case INVALID_EXPIRATION, EXPIRED -> AiFailureKind.TIMEOUT;
+                    case TOKEN_BUDGET_EXHAUSTED,
+                            ACTIVE_RESERVATION_LIMIT -> AiFailureKind.OVERLOADED;
+                    case ADMISSION_REJECTED,
+                            INVALID_ADMISSION,
+                            SCOPE_MISMATCH -> AiFailureKind.INVALID_REQUEST;
+                    case RESERVED,
+                            RELEASED,
+                            SETTLED,
+                            NOT_FOUND,
+                            STALE_RESERVATION,
+                            RESERVATION_ID_EXHAUSTED,
+                            LEDGER_CLOSED,
+                            CLOCK_ROLLBACK -> AiFailureKind.UNAVAILABLE;
+                };
+            }
+            return AiProviderException.of(failureKind);
         }
 
         private void completeAttempt(
