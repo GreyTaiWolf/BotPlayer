@@ -437,12 +437,15 @@ challenge 的原版 handler。连续在线、独立专用服和多 bot soak 尚�
 Mixin 不修改死亡结果，只在原版死亡完整结束后通知生命周期管理器。
 
 严格消耗品使用另有第四个窄行为围栏，详见 ADR-0040：`LivingEntity.updateUsingItem(ItemStack)`
-的精确 1.21.1 `HEAD` 注入先服务活动 `BotServerPlayer` 的严格 `UseItem`，并在同一方法对
-`completeUsingItem()` 的精确调用前二次复核。普通 Post tick 和 `PlayerTickEvent.Pre` 都无法保证
-位于所有第三方 effect 修改之后、原版牛奶等消耗之前；而 Finish/Post 取消又可能已晚于物理提交。
-因此第二点通过后 state 单向进入提交相位：漂移只走既有原版 release/stop 并取消本次消费，已提交
-动作的取消则等待 exact Action receipt 先核验。真人和旧版非严格 `UseItem` 保持原版路径。两个注入
-固定方法/invocation descriptor 且 `require = 1`，需要目标 NeoForge 版本的干净 GameTest 验证。
+的精确 1.21.1 `HEAD` 注入服务活动 `BotServerPlayer` 的所有 active strict `UseItem`；同一方法对
+`completeUsingItem()` 的精确调用前二次复核和提交相位只限 strict natural completion。两个点均按
+authoritative tick 在 action deadline/maxTicks 边界前阻止物理消费，避免原版 `doTick()` 先消费、后续
+Action runtime 才 timeout。普通 Post tick 和 `PlayerTickEvent.Pre` 都无法保证位于所有第三方 effect
+修改之后、原版牛奶等消耗之前；而 Finish/Post 取消又可能已晚于物理提交。因此 completion 点通过后
+state 单向进入提交相位：漂移或 timing fence 失败只走既有原版 release/stop 并取消本次消费，已提交
+动作的取消则等待 exact Action receipt 先核验。真人、非 strict 使用和 completion 点的非自然完成使用
+保持原版路径。两个注入固定方法/invocation descriptor 且 `require = 1`，需要目标 NeoForge 版本的干净
+GameTest 验证。
 
 若后续确实需要新的行为注入点，必须新增 ADR，说明无法通过事件、子类或访问转换解决的原因。
 

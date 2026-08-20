@@ -195,6 +195,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
         Objects.requireNonNull(player, "player");
         boolean interrupted = false;
         long generation = player.runtimeHandle().generation();
+        long currentTick = nativeUseCurrentTickOrInvalid(player);
         for (InteractionState state : List.copyOf(active.values())) {
             if (!state.botId.equals(player.getUUID())
                     || state.botGeneration != generation
@@ -215,15 +216,18 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                 return true;
             }
             if (state.strictUseStopReason == StrictUseStopReason.NONE
+                    && StrictNativeUseTimingFence.allows(
+                            state.envelope, state.startedTick, currentTick)
                     && strictUseStillMatches(player, useItem)) {
                 continue;
             }
             /*
-             * Record strict observation drift before native cleanup. A
+             * Record the failed strict native fence before cleanup. A
              * cancellation-fenced state was marked earlier by lifecycle code
              * and must stay distinct: the action runtime still needs to drain
              * its accepted cancellation rather than reinterpret this stop as
-             * a precondition failure.
+             * a precondition failure. At an action time boundary the runtime
+             * later owns the terminal timeout outcome.
              */
             if (state.strictUseStopReason == StrictUseStopReason.NONE) {
                 state.strictUseStopReason =
@@ -259,6 +263,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
     boolean beforeNativeItemUseCompletion(BotServerPlayer player) {
         Objects.requireNonNull(player, "player");
         long generation = player.runtimeHandle().generation();
+        long currentTick = nativeUseCurrentTickOrInvalid(player);
         List<InteractionState> strictStates = new ArrayList<>();
         boolean reject = false;
         for (InteractionState state : List.copyOf(active.values())) {
@@ -275,6 +280,8 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                     || !(state.spec
                             instanceof WorldInteractionActionSpec.UseItem
                                     useItem)
+                    || !StrictNativeUseTimingFence.allows(
+                            state.envelope, state.startedTick, currentTick)
                     || !strictUseStillMatches(player, useItem)) {
                 reject = true;
             }
@@ -313,10 +320,10 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
      * Marks one already-active strict use so the native-use mixin rejects it
      * before the next vanilla update.
      *
-     * <p>This intentionally only records an exact active
+     * <p>This intentionally only records an exact active strict-natural
      * {@link WorldInteractionActionSpec.UseItem} key. It does not guess from a
      * bot id, touch a queued action, mutate inventory/effects, or stop a
-     * non-strict legacy use. The marker is consumed by
+     * non-strict or non-natural legacy use. The marker is consumed by
      * {@link #beforeNativeItemUseUpdate(BotServerPlayer)} at the actual native
      * consumption boundary.
      */
@@ -365,6 +372,17 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
                         == WorldInteractionActionSpec.ItemUseMode
                                 .FINISH_NATURALLY
                 && useItem.strictPreconditions().isPresent();
+    }
+
+    private static long nativeUseCurrentTickOrInvalid(BotServerPlayer player) {
+        try {
+            return Objects.requireNonNull(player, "player")
+                    .serverLevel()
+                    .getServer()
+                    .getTickCount();
+        } catch (RuntimeException exception) {
+            return -1L;
+        }
     }
 
     @Override
@@ -7281,7 +7299,7 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
     }
 
     /**
-     * Why a strict natural item use was stopped before native completion.
+     * Why a strict item use was stopped before native completion.
      *
      * <p>Cancellation is deliberately distinct from observation drift: a
      * cancellation command can be accepted by the lifecycle layer yet remain

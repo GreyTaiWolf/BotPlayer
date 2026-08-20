@@ -58,7 +58,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0037](0037-server-owned-physical-attempt-handshake.md) | 服务器拥有的跨边界物理尝试握手 | Accepted | P6-B0 只增加有界 server-owned offer/ACK/settle/start-grant Contract 与 client-local one-claim fence；没有 network/session/Provider/HTTP/lifecycle bridge，也不是真实计费或 P6 完成 |
 | [ADR-0038](0038-loaded-world-construction-site-survey-adapter.md) | 已加载世界候选施工站点调查适配器 | Accepted | P5D-A5 只在 server thread 对 exact binding 的已加载 cell 生成 immutable survey；不加载 chunk、不写世界，也不是 lease/placement/Technique/Action/Skill 或 P5D 完成 |
 | [ADR-0039](0039-construction-site-spatial-lease-adapter.md) | 施工站点空间租约适配器 | Accepted | P5D-A6 只将 exact binding 的 bounds 映射为最多 8 个 owner-thread `WORK_AREA` TTL tile lease；不预留材料/临时区，也不接 Action/Technique/Skill/world 或 P5D 完成 |
-| [ADR-0040](0040-strict-consumable-commit-boundary.md) | 严格消耗品的原版提交边界与精确终态优先级 | Accepted | strict `UseItem` 在 `HEAD` 与 `completeUsingItem()` 前双重围栏；Finish/Post 的已提交取消先核验 exact Action receipt。新增回归仍待 Java 21/NeoForge CI 与实机验证 |
+| [ADR-0040](0040-strict-consumable-commit-boundary.md) | 严格消耗品的原版提交边界与精确终态优先级 | Accepted | `HEAD` 围栏所有 active strict `UseItem`，completion/`ENTERED` 只限 natural；两个点均拒绝 action deadline/maxTicks 当 tick 的物理消费。新增回归仍待 Java 21/NeoForge CI 与实机验证 |
 | [ADR-0041](0041-r1-physical-attempt-transport-bridge.md) | R1 物理尝试的有界传输桥接 | Accepted | P6-B1 已将 v3 atomic offer/prepare ACK/start grant 接入 R1 production bridge：认证 ACK 后 exact settle，grant 前不得 proposal/provider start，exact TTL/terminal/logout/rebind/death/retirement/shutdown close；仍待 Java 21 CI、GameTest、真实客户端/独立服 E2E，不构成通用 bridge、billing/usage 或 P6 完成 |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
@@ -182,10 +182,12 @@ key scope；scope 放不下的 dimension 显式失败而不截断/hash。adapter
 `releaseRun`、`closeGeneration` 与 expiry 都会失效。它不是 accepted site、material/temporary reservation、placement
 candidate、Technique、Skill、Action 或 world permission。
 
-ADR-0040 取代 ADR-0018 的单一 pre-use 围栏：严格 natural `UseItem` 除 `HEAD` 外，还在精确
-`completeUsingItem()` invocation 前二次复核，并在放行时进入不可逆提交相位。Finish/Post 才到达的
-取消不再覆盖真实 Action receipt；success 先经 verifier 再结算请求的 Skill terminal，failed/stale 保持失败，
-已入队 receipt 在同 tick deadline 前优先处理。该补强仍只限 strict Bot 消耗，不开放一般 world 或 AI 路径。
+ADR-0040 取代 ADR-0018 的单一 pre-use 围栏：`HEAD` 对所有 active strict `UseItem` 做 native
+preflight，精确 `completeUsingItem()` invocation 前的二次复核和不可逆提交相位只限 strict natural
+`UseItem`。两个点均拒绝 action deadline/maxTicks 当 tick 的物理消费。Finish/Post 才到达的取消不再覆盖
+真实 Action receipt；success 先经 verifier 再结算请求的 Skill terminal，failed/stale 保持失败，已入队 receipt
+在同 tick plan deadline 前优先处理。该补强仍只限 strict Bot 消耗，不开放一般 world 或 AI 路径，仍待 Java 21/
+NeoForge/实机验证。
 
 ADR-0041 将 ADR-0037 的纯 Java attempt identity 映射为 R1 专用的 v3 transport Contract：原子 S2C
 offer 携带已受限 dispatch 和 exact identity，C2S ACK/S2C grant 只带 identity；server 仅在 authenticated

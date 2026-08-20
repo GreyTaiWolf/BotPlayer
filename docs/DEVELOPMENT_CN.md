@@ -181,7 +181,7 @@ src/main/templates/
 | `ConnectionAccessor` | 为本地连接设置私有 channel | 只暴露字段写入 |
 | `PlayerListMixin` | 登录时换 listener；重生时保持 bot 类型；按精确 fence/permit 拦截不安全保存 | 两处 `NEW` 包装；`save` HEAD 只检查持久 fence/死亡精确许可，`remove` 内的 `save` 包装才消费一次性门闩 |
 | `ServerPlayerDeathMixin` | 标记正常死亡 TAIL 并通知 manager | 取消死亡的早退路径不进入；业务收口留在 BotPlayer/生命周期层 |
-| `LivingEntityUseItemMixin` | 严格消耗品在原版提交前复核快照 | 只在 `BotServerPlayer` 的精确 `updateUsingItem(ItemStack)` HEAD 及 `completeUsingItem()` 调用前围栏；前者/后者漂移或未提交取消会 release/stop 并取消该次消费，后者放行后进入不可逆提交相位，Finish/Post 的取消等待 exact Action receipt；围栏/取消入口失败由 lifecycle 同步隔离该 generation |
+| `LivingEntityUseItemMixin` | 严格消耗品在原版提交前复核快照和时间 | `HEAD` 围栏全部 active strict `UseItem`；`completeUsingItem()` 前复核/不可逆提交相位只限 natural completion。两个点在 action deadline/maxTicks 当 tick release/stop 并取消该次消费，避免原版先消费后 timeout；Finish/Post 的已提交取消等待 exact Action receipt，围栏/时间/取消入口失败由 lifecycle 同步隔离该 generation |
 
 修改 Mixin 时必须：
 
