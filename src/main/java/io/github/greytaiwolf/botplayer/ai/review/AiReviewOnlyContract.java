@@ -43,10 +43,13 @@ public final class AiReviewOnlyContract {
     public static final String TOOL_NAME = AiReviewOnlyProposalShape.TOOL_NAME;
     public static final int REQUEST_TTL_TICKS = 40;
     public static final long REQUEST_TIMEOUT_MILLIS = 1_500L;
+    /** Conservative server-owned input reservation for the fixed R1 context shape. */
+    public static final int MAXIMUM_INPUT_TOKENS = 2_048;
     public static final int MAXIMUM_OUTPUT_TOKENS = 256;
 
     private static final UUID TEMPLATE_REQUEST_ID = new UUID(0L, 7L);
-    private static final ContextBudget CONTEXT_BUDGET = new ContextBudget(2_048, 3, 4_096);
+    private static final ContextBudget CONTEXT_BUDGET = new ContextBudget(
+            MAXIMUM_INPUT_TOKENS, 3, 4_096);
     private static final ContextPolicy CONTEXT_POLICY = ContextPolicy.fixedRules(List.of(
             "You are reviewing one fixed BotPlayer observation snapshot. "
                     + "Do not infer hidden world state, issue instructions, or claim execution. "

@@ -39,6 +39,30 @@ class AiReviewOnlyTicketBookTest {
     }
 
     @Test
+    void exactLookupDoesNotConsumeTheLiveTicketOrAcceptReceiptDrift() {
+        AiReviewOnlyTicketBook book = new AiReviewOnlyTicketBook();
+        AiReviewOnlyTicket ticket = ticket(REQUEST_ONE, 7L, 140L);
+        book.open(ticket);
+
+        AiRequestDispatchReceipt drifted = new AiRequestDispatchReceipt(
+                BOT_ID,
+                AGENT_ID,
+                2L,
+                REQUEST_ONE,
+                8L,
+                140L,
+                AiRequestPurpose.REVIEW_ONLY_V1);
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(ticket,
+                        book.findExact(ticket.dispatch()).orElseThrow()),
+                () -> Assertions.assertTrue(book.findExact(drifted).isEmpty()),
+                () -> Assertions.assertEquals(1, book.activeTicketCount()),
+                () -> Assertions.assertEquals(ticket,
+                        book.close(ticket.dispatch()).orElseThrow()));
+    }
+
+    @Test
     void replacementAndExpiryCannotLeaveAnOldReviewTicketReachable() {
         AiReviewOnlyTicketBook book = new AiReviewOnlyTicketBook();
         AiReviewOnlyTicket first = ticket(REQUEST_ONE, 7L, 140L);

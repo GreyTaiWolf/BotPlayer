@@ -452,6 +452,39 @@ class AiProposalSessionGateTest {
     }
 
     @Test
+    void exactLookupLeavesTheLiveGateOpenAndRejectsAReceiptPurposeDrift() {
+        AiProposalSessionGate gate = new AiProposalSessionGate();
+        AiProposalRequestEnvelope request = gate.open(
+                BOT_ID,
+                OWNER_ID,
+                AGENT_ID,
+                1L,
+                7L,
+                100L,
+                20,
+                AiRequestPurpose.REVIEW_ONLY_V1,
+                true,
+                policy());
+        AiRequestDispatchReceipt exact = AiRequestDispatchReceipt.fromEnvelope(request);
+        AiRequestDispatchReceipt drifted = new AiRequestDispatchReceipt(
+                exact.botId(),
+                exact.agentId(),
+                exact.generation(),
+                exact.requestId(),
+                exact.revision(),
+                exact.expiresAtTick(),
+                AiRequestPurpose.UNSPECIFIED_V1);
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(request,
+                        gate.findExact(exact).orElseThrow()),
+                () -> Assertions.assertTrue(gate.findExact(drifted).isEmpty()),
+                () -> Assertions.assertEquals(1, gate.activeRequestCount()),
+                () -> Assertions.assertEquals(request,
+                        gate.closeExact(exact).orElseThrow()));
+    }
+
+    @Test
     void closeOperationsReturnTheExactOutstandingEnvelopeForClientCancellation() {
         AiProposalSessionGate gate = new AiProposalSessionGate();
         AiProposalRequestEnvelope first = gate.open(

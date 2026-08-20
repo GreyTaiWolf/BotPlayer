@@ -38,8 +38,10 @@ offer 将完整已受限的 `AiClientRequestDispatch` 与相同 identity 原子�
 not-after deadline；不携带 credential、endpoint、prompt/schema、response、token 数量、usage、
 billing 或 HTTP 事实。所有 payload 的 `toString()` 必须保持 redacted。
 
-当前提交只落地这三种 payload/codec 和它们的 round-trip/redaction 测试；在 network registrar、
-生命周期和客户端同时接线前，它们不得注册为生产入口，也不得称为 Provider bridge。
+当前实现已落地这三种 payload/codec 和它们的 round-trip/redaction 测试，并提供未接 lifecycle 的
+R1 owner-thread pure holder：它只对 canonical dispatch 派生固定 conservative admission、按 exact
+scope 建 bounded ledger 并关联 receipt identity。在 network registrar、生命周期和客户端同时接线前，
+这些部件不得注册为生产入口，也不得称为 Provider bridge。
 
 ### 2. 服务端保持 R1 专用 owner 与精确 lifecycle 清理
 

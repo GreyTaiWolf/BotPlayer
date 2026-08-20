@@ -59,7 +59,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0038](0038-loaded-world-construction-site-survey-adapter.md) | 已加载世界候选施工站点调查适配器 | Accepted | P5D-A5 只在 server thread 对 exact binding 的已加载 cell 生成 immutable survey；不加载 chunk、不写世界，也不是 lease/placement/Technique/Action/Skill 或 P5D 完成 |
 | [ADR-0039](0039-construction-site-spatial-lease-adapter.md) | 施工站点空间租约适配器 | Accepted | P5D-A6 只将 exact binding 的 bounds 映射为最多 8 个 owner-thread `WORK_AREA` TTL tile lease；不预留材料/临时区，也不接 Action/Technique/Skill/world 或 P5D 完成 |
 | [ADR-0040](0040-strict-consumable-commit-boundary.md) | 严格消耗品的原版提交边界与精确终态优先级 | Accepted | strict `UseItem` 在 `HEAD` 与 `completeUsingItem()` 前双重围栏；Finish/Post 的已提交取消先核验 exact Action receipt。新增回归仍待 Java 21/NeoForge CI 与实机验证 |
-| [ADR-0041](0041-r1-physical-attempt-transport-bridge.md) | R1 物理尝试的有界传输桥接 | Accepted | P6-B1 先编码 atomic offer、prepare ACK 和 start grant 的 redacted payload Contract；尚未注册 network 或接入 lifecycle/client Provider，因此不构成 production bridge |
+| [ADR-0041](0041-r1-physical-attempt-transport-bridge.md) | R1 物理尝试的有界传输桥接 | Accepted | P6-B1 已编码 atomic offer、prepare ACK、start grant payload 与未接 lifecycle 的 R1 conservative admission/ledger holder；尚未注册 network 或接入 lifecycle/client Provider，因此不构成 production bridge |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
@@ -190,8 +190,9 @@ ADR-0040 取代 ADR-0018 的单一 pre-use 围栏：严格 natural `UseItem` 除
 ADR-0041 将 ADR-0037 的纯 Java attempt identity 映射为 R1 专用的 v3 transport Contract：原子 S2C
 offer 携带已受限 dispatch 和 exact identity，C2S ACK/S2C grant 只带 identity；server 后续必须以
 authenticated sender、live gate/ticket 和 server-owned conservative admission/ledger 才能 settle，client
-后续必须仅在 local grant lease 的 atomic claim 后紧邻启动 Provider。当前仅 payload/codec 已编码，尚未
-注册或接入 lifecycle/client session，不能称为真实 Provider bridge 或 P6 完成。
+后续必须仅在 local grant lease 的 atomic claim 后紧邻启动 Provider。当前 payload/codec 和未接 lifecycle
+的 R1 conservative admission/ledger holder 已编码，仍未注册或接入 lifecycle/client session，不能称为真实
+Provider bridge 或 P6 完成。
 
 ## 新 ADR 文件规则
 

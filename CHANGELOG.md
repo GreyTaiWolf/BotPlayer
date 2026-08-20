@@ -10,8 +10,11 @@
 - 新增 ADR-0041 的 P6-B1 R1 physical-attempt transport Contract：atomic S2C offer 将已有受限
   dispatch 与完整 redacted attempt identity 一起编码，C2S prepare ACK 与 S2C start grant 只携带 exact
   identity；codec round-trip 和 diagnostics 覆盖 owner/nonce/prompt 不泄露及 dispatch/identity drift 拒绝。
-  本提交尚未注册 v3 packet、认证 sender、创建 server-owned admission/ledger、接入 lifecycle/reaper 或
-  client Provider start，因此不表示真实 bridge、budget settle、HTTP、billing/usage 或 P6 完成；
+  R1 另有一个尚未接入 lifecycle 的 owner-thread pure holder：它只为 canonical dispatch 派生固定保守
+  admission、按 `(owner,bot,agent)` scope 建有界 ledger，并把 exact receipt identity 保存在 B0
+  coordinator 旁；ticket/gate 的非终态 exact lookup 不会按 botId 猜测。当前仍未注册 v3 packet、认证
+  sender、构造 production owner/reaper 或 client Provider start，因此不表示真实 bridge、budget settle、
+  HTTP、billing/usage 或 P6 完成；
 - 新增 ADR-0040 的 strict consumable 原版提交边界：活动 `BotServerPlayer` 的 strict natural
   `UseItem` 除 `updateUsingItem` HEAD 外，会在精确 `completeUsingItem()` invocation 前再次复核；
   通过后进入不可逆提交相位。Finish 或 `PlayerTickEvent.Post` 才到达的取消不会以 mailbox

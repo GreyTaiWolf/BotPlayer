@@ -48,6 +48,15 @@ public final class AiReviewOnlyTicketBook {
         return Optional.of(ticket);
     }
 
+    /** Returns one ticket only when its complete safe dispatch receipt is still exact and live. */
+    public Optional<AiReviewOnlyTicket> findExact(AiRequestDispatchReceipt receipt) {
+        AiRequestDispatchReceipt checked = Objects.requireNonNull(receipt, "receipt");
+        AiReviewOnlyTicket ticket = ticketsByRequest.get(checked.requestId());
+        return ticket != null && ticket.dispatch().equals(checked)
+                ? Optional.of(ticket)
+                : Optional.empty();
+    }
+
     /** Removes any outstanding ticket for a retired/rebound bot. */
     public Optional<AiReviewOnlyTicket> closeBot(UUID botId) {
         UUID checkedBotId = Objects.requireNonNull(botId, "botId");

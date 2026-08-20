@@ -422,6 +422,23 @@ public final class AiProposalSessionGate {
     }
 
     /**
+     * Reads a live request only when every safe dispatch correlation component remains exact.
+     *
+     * <p>This lookup is intentionally non-terminal. A lifecycle bridge may use it to authenticate
+     * a prepare ACK before it decides whether an exact physical-attempt reservation can settle;
+     * it must not infer a current request from a bot or request id alone.
+     */
+    public Optional<AiProposalRequestEnvelope> findExact(
+            AiRequestDispatchReceipt expected) {
+        AiRequestDispatchReceipt checked = Objects.requireNonNull(expected, "expected");
+        AiProposalRequestEnvelope envelope = requestsById.get(checked.requestId());
+        return envelope != null
+                && AiRequestDispatchReceipt.fromEnvelope(envelope).equals(checked)
+                ? Optional.of(envelope)
+                : Optional.empty();
+    }
+
+    /**
      * Drops all transient request associations during server shutdown and returns the exact
      * correlations that may still have client HTTP work in flight.
      */
