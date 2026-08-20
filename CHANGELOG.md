@@ -7,6 +7,12 @@
 
 ### 新增
 
+- 新增 ADR-0030 的 P5D-A1 有界纯 Java construction work-package Contract：每个 package 必须完整绑定
+  `blueprintId + revision + contentHash + ordinal`，在一个 Blueprint 内精确覆盖一次；小蓝图只能有一个
+  `1..64` cell package，较大蓝图每包 `16..64` cell、总数最多 16，并对完整 key prerequisite 验证 DAG
+  与稳定拓扑序。材料输出仍只是按目标 blockId/permanent-temporary 的结构性聚合，绝不映射/预留/消耗
+  inventory。它不接 site、world、placement、Technique、Action、Skill、checkpoint、玩家修改或红石，
+  因而 P5D 仍未实现；当前提交的 Java 21 CI 与 Minecraft 实机验证仍待完成；
 - 新增 ADR-0029 的 P5D-A0 有界纯 Java Blueprint 数据 Contract：schema-v1 只接受 1–256 个唯一、
   canonical cell，限制 relative offset/span，派生确定性 SHA-256 content hash，并按目标 blockId 与
   permanent/temporary 聚合计划方块需求。它不含 BlockEntity NBT、不把 blockId 映射为 inventory item，

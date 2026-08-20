@@ -1487,6 +1487,12 @@ ADR-0029 当前只落实了不接线的 schema-v1 `building.blueprint` 数据边
 block id 推导成 inventory item，也不含 modules/`PostPlacementSemantic`，更不意味着选址、材料预留、
 施工、真实放置或 P5D 已完成。
 
+ADR-0030 只在该 immutable Blueprint 之上增加 `building.construction` 的有界 exact-cover
+work-package 数据图：每包绑定完整 `(blueprintId, revision, contentHash, ordinal)`，小蓝图保持一个
+`1..64` cell package，较大蓝图限制 `16..64` cell、最多 16 包，并对完整 prerequisite key 验证 DAG
+和稳定拓扑读取。它既不把 canonical 分区当成物理施工顺序，也不接 site、材料预留、world、placement、
+Technique、Action、Skill、checkpoint、玩家修改或红石；所有 P5D 退出门仍未完成。
+
 施工中记录：
 
 - 蓝图 hash；

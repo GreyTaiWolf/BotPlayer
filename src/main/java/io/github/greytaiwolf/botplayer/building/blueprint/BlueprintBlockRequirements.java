@@ -3,9 +3,11 @@ package io.github.greytaiwolf.botplayer.building.blueprint;
 import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
@@ -59,9 +61,16 @@ public record BlueprintBlockRequirements(
         entries = List.copyOf(canonical);
     }
 
-    static BlueprintBlockRequirements fromCells(List<BlueprintCell> cells) {
+    /**
+     * Derives canonical structural requirements from one bounded immutable cell list.
+     *
+     * <p>This remains deliberately structural: it neither maps a desired block ID to an item nor
+     * reserves, consumes, or otherwise authorizes any inventory or world operation.
+     */
+    public static BlueprintBlockRequirements fromCells(List<BlueprintCell> cells) {
         Objects.requireNonNull(cells, "cells");
         Map<RequirementKey, Integer> quantities = new TreeMap<>();
+        Set<BlueprintOffset> observedOffsets = new HashSet<>();
         int observedCells = 0;
         for (BlueprintCell cell : cells) {
             BlueprintCell nonNullCell = Objects.requireNonNull(cell,
@@ -70,6 +79,10 @@ public record BlueprintBlockRequirements(
             if (observedCells > Blueprint.MAX_CELLS) {
                 throw new IllegalArgumentException(
                         "blueprint cells exceed the bounded blueprint limit");
+            }
+            if (!observedOffsets.add(nonNullCell.offset())) {
+                throw new IllegalArgumentException(
+                        "blueprint cells must not share an offset");
             }
             RequirementKey key = new RequirementKey(
                     nonNullCell.expectedState().blockId(),

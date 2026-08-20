@@ -253,6 +253,8 @@ class BlueprintTest {
                         new BlueprintBlockRequirement(STONE,
                                 BlueprintMaterialClass.PERMANENT, 1))));
         Assertions.assertThrows(IllegalArgumentException.class,
+                () -> BlueprintBlockRequirements.fromCells(List.of(single, single)));
+        Assertions.assertThrows(IllegalArgumentException.class,
                 () -> new BlueprintContentHash("A".repeat(
                         BlueprintContentHash.HEX_LENGTH)));
     }

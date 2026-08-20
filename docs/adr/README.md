@@ -48,6 +48,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0027](0027-proposal-handoff-indirect-completion-reentry.md) | `ProposalHandoff` 间接 completion 重入围栏 | Accepted | 同线程嵌套 completion 会使外层与嵌套 session 失败关闭、释放外层 queue lease，并在锁外完成 token/observer cleanup；不发送 packet 或接入 generic bridge |
 | [ADR-0028](0028-client-sponsored-proposal-review-transaction.md) | 通用 client-sponsored proposal 的精确 owner-thread 审阅事务 | Accepted | coordinator 已有 ledger-first C2S correlation precheck、gate terminal 后 exact ledger close 与分歧 fail-closed 合同；不接 Lifecycle/Network/Client/Scheduler/R1 或世界执行 |
 | [ADR-0029](0029-bounded-blueprint-data-contract.md) | 有界蓝图数据契约 | Accepted | P5D-A0 已有 1–256 cell、canonical content hash 与计划方块需求的纯 Java DTO；不含 NBT/物品映射/世界或施工接线，P5D 仍未实现 |
+| [ADR-0030](0030-bounded-construction-work-package-contract.md) | 有界施工工作包图合同 | Accepted | P5D-A1 已有完整 Blueprint identity 绑定、exact-cover、16 package 上限和稳定拓扑的纯 Java DTO；不含 site/材料预留/Technique/Action/world，P5D 仍未实现 |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
@@ -117,6 +118,12 @@ ADR-0029 固定 P5D-A0 的纯 Java Blueprint 数据边界：schema-v1 只接受�
 cell，并派生 stable content hash 和 planned block requirements。它不含 BlockEntity/NBT，不把目标 block
 id 猜成背包 item，也不接 site、reservation、work package、Technique、Action 或 world；因此不表示
 P5D 建造或红石能力已经实现。
+
+ADR-0030 在 A0 Blueprint 上只增加有界 construction work-package 数据图：完整 immutable key 绑定
+`blueprintId/revision/contentHash/ordinal`，精确覆盖 Blueprint cell、small blueprint 单包例外、large
+blueprint `16..64` cell package、最多 16 package、完整 key DAG 与确定性拓扑读取。它不建立 site、
+材料预留、placement、Technique、Action、Skill、checkpoint、world 或红石生产路径；因此同样不表示
+P5D 建造能力已经实现。
 
 ## 新 ADR 文件规则
 
