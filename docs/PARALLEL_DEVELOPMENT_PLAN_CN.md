@@ -5,6 +5,8 @@
 > 它把已有有限自卫窄 route 迁到一个 lifecycle-owned runtime；ADR-0025 另增加精确 child 的
 > opaque `TechniqueActionPermit` 合同；另有未注册的 lifecycle Action runtime adapter Contract，
 > 但仍未实现 P5D 建筑/红石，也不放宽本文件的 P6/Technique 并行边界。
+> ADR-0028 另在未接线的 P6 coordinator 内固定 ledger-first proposal review 与 exact terminal
+> ledger close；它不接入 R1、network、client、scheduler 或 P5，亦不改变本文件的并行前置条件。
 >
 > 更新日期：2026-08-07
 >

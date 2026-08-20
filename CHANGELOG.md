@@ -7,6 +7,12 @@
 
 ### 新增
 
+- 新增 ADR-0028 的 P6-C3 owner-thread 通用 proposal review transaction：完整 immutable C2S
+  correlation 必须先由 coordinator ledger 预检，漂移/replay/replacement 的 payload 不进入 gate；gate
+  terminal receipt 必须 exact-close 同一 ledger binding，gate/ledger 分歧只精确清理已预检 binding 并
+  保持 coordinator fail-closed，绝不按 botId 宽泛关闭。结果仅供 server side 取得 review 与已移除
+  binding，accepted proposal 仍未执行；不改 R1、Network、Lifecycle、Client、Scheduler、Skill、Action 或世界。
+  当前提交的 Java 21 CI 与 Minecraft 实机验证仍待完成；
 - 新增 ADR-0026 的 P6-C2 登记后 Error cleanup：deadline、Provider factory/complete、completion
   registration 与 completion-time 本地再校验的受信任 `Error`，会先按精确 session 摘除、取消并在锁外
   至多一次投影已决定的安全 terminal receipt（setup/再校验/handoff Error 为 `FAILED`，不会因后续 cleanup

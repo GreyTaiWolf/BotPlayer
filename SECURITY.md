@@ -76,6 +76,8 @@ BotPlayer 当前没有正式稳定版本。
 - LLM 只能提出受 schema 限制的高层计划；
 - LLM 不能运行代码、脚本、服务器命令、文件访问或任意 HTTP；
 - bot 身份、owner、ACL、风险上限和工具白名单由服务器绑定；
+- 通用 C2S proposal 必须先匹配 server-held 的完整 immutable ledger correlation，才可进入 gate；
+  gate terminal 只可 exact-close 同一 binding，分歧保持 fail-closed，不能按 botId 猜测清理；
 - 所有破坏、放置、攻击、容器和物品动作重新做权限和世界状态校验；
 - 迟到、重复、越权、未知和超范围调用默认拒绝；
 - 告示牌、书本、聊天、物品名和模组文本都视为不可信输入；
@@ -92,6 +94,8 @@ BotPlayer 当前没有正式稳定版本。
 - 严格 Tool Firewall 已编码，但尚未接通 AI→技能计划或世界动作执行；
 - 客户端凭据文件没有加密或系统 keychain 保护；
 - 已编码的 P6-R1 固定本地 Provider/HTTP 往返默认关闭，尚无 Java 21/NeoForge 端到端模型响应安全验证；通用聊天、计划和世界执行尚未接通；
+- ADR-0028 的通用 proposal review 仅是未接线 coordinator 的本地合同；没有 generic network/client/
+  scheduler lifecycle，也未触及 world execution；
 - 没有生命周期故障注入 GameTest；
 - 没有正式依赖漏洞扫描和发布签名；
 - 没有生产环境支持承诺。

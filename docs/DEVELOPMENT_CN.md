@@ -47,8 +47,8 @@ P2 已加入生命周期、移动、交互和库存 GameTest；P3 加入有限�
 [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) 已通过 Java 21
 `clean build`、Gradle `test`、161 项常规 GameTest 和 phase-one/phase-two 重启
 GameTest（各 1 项）。P5 总退出门和 P6 总退出门仍未关闭；真实客户端、专用服和多 bot soak
-不由此替代。Build #362 是当前 P5A 修复、P5C lifecycle Contract 与 P6 会话协调器增量提交
-之前的自动化基线；这些提交仍须各自通过 Java 21 CI。涉及
+不由此替代。Build #362 是当前 P5A 修复、P5C lifecycle Contract、P6 会话协调器与本地
+ledger-first proposal review 增量提交之前的自动化基线；这些提交仍须各自通过 Java 21 CI。涉及
 Minecraft 行为的提交必须运行：
 
 ```bash
@@ -438,7 +438,8 @@ build 与 JAR upload，日志明确 `All 55 required tests passed`，其中 P4 �
 当前 P5/P6 远端证据为
 [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094)：Java 21
 `clean build`、Gradle `test`、161 项常规 GameTest 和 phase-one/phase-two 重启 GameTest
-均通过；它是当前 P5A/P5C/P6 增量提交之前的基线，不能代替这些提交待完成的 Java 21 CI。
+均通过；它是当前 P5A/P5C/P6（含本地 ledger-first proposal review）增量提交之前的基线，不能代替
+这些提交待完成的 Java 21 CI。
 真实进程崩溃/断电、死亡 handoff 的跨进程边界、Windows 或其他文件系统的目录刷盘、模组化
 XP/掉落事件矩阵、独立专用服和多 Bot soak 仍需专项验证。
 

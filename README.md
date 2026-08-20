@@ -7,7 +7,7 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 
 > **当前状态：P2、P3 与 P4 自动化退出门已通过；Build #362 已验证受限 P5 纵切与
 > P6-R1 的先前自动化基线。其后的 P5A 修复、单 `TechniqueLifecycleCoordinator` Contract 与
-> P6 会话协调器、客户端安全 terminal-observation/Error-cleanup/间接重入收口 Contract 与受限 Technique→Action permit Contract
+> P6 会话协调器、客户端安全 terminal-observation/Error-cleanup/间接重入收口、ledger-first proposal review Contract 与受限 Technique→Action permit Contract
 > 提交仍待各自 Java 21 CI；仍不是
 > 正式版本，P5/P6 总退出门均未关闭。**
 >
@@ -33,7 +33,9 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 > 的真实客户端/Provider E2E 仍待验证。保存 Key 不代表 AI 已经接通，方块观察也不代表能读取
 > 箱子内容。
 > P6-C2 的已登记 Error cleanup 与同线程间接 completion reentry 收口只保证本地 session 失败关闭；
-> 通用 bridge、聊天与 AI→世界执行仍未实现。
+> P6-C3 只在未接线的 owner-thread coordinator 内做到完整 correlation 的 ledger-first review、gate
+> terminal 后 exact ledger close 和分歧 fail-closed。它不是 network handler，未接 Lifecycle、Client、
+> Scheduler 或 R1；通用 bridge、聊天与 AI→世界执行仍未实现。
 > 请以
 > [当前实现状态](docs/IMPLEMENTATION_STATUS_CN.md) 为准，不要把路线图中的目标当成已完成。
 

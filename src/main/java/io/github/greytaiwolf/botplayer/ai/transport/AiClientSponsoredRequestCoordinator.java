@@ -3,6 +3,7 @@ package io.github.greytaiwolf.botplayer.ai.transport;
 import io.github.greytaiwolf.botplayer.ai.AiRequest;
 import io.github.greytaiwolf.botplayer.ai.AiRequestSchedulerPolicy;
 import io.github.greytaiwolf.botplayer.ai.tool.ToolFirewallPolicy;
+import io.github.greytaiwolf.botplayer.network.payload.AiProposalPayload;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -19,9 +20,11 @@ import java.util.concurrent.ArrayBlockingQueue;
  * lifecycle boundary. It enforces a global active-request cap, captures one owner thread, and
  * exposes a bounded non-blocking terminal mailbox for a future client or Scheduler lane. It does
  * not send a packet, read credentials, construct a Provider, submit or cancel an
- * {@code AiRequestScheduler} request, consume a C2S proposal, construct an AI plan, invoke P5, or
- * access Minecraft/world objects. Terminal mailbox observations are intentionally only observed;
- * the owner must later choose and perform an explicit exact close.
+ * {@code AiRequestScheduler} request, invoke P5, or access Minecraft/world objects.
+ * {@link #reviewProposal(AiProposalPayload, AiProposalAuthority, long)} only reviews an already-
+ * decoded untrusted DTO against its immutable gate/ledger session; it is not a packet handler and
+ * may return only the gate's still-unexecuted review DTO. Terminal mailbox observations are
+ * intentionally only observed; the owner must later choose and perform an explicit exact close.
  */
 public final class AiClientSponsoredRequestCoordinator {
     /** Hard ceiling so an embedding cannot turn the terminal mailbox into an unbounded queue. */
@@ -193,6 +196,65 @@ public final class AiClientSponsoredRequestCoordinator {
         requireOwnerThread();
         requireActiveCountsMatch();
         return ledger.activeRequestCount();
+    }
+
+    /**
+     * Reviews one generic client-sponsored proposal through one owner-thread exact transaction.
+     *
+     * <p>The immutable ledger correlation is checked before the gate sees the payload. A stale or
+     * partial C2S tuple therefore cannot consume a nonce, learn gate-specific status, or close a
+     * newer replacement. Once the full tuple matches, the gate remains authoritative for dynamic
+     * owner/agent/generation/TTL, codec and Firewall checks. A terminal gate receipt must then
+     * close the same ledger binding before this method returns it; no network, Scheduler, plan, or
+     * world side effect is performed here.
+     */
+    public AiClientSponsoredProposalReviewResult reviewProposal(
+            AiProposalPayload payload, AiProposalAuthority authority,
+            long currentTick) {
+        requireOwnerThread();
+        AiProposalPayload checkedPayload = Objects.requireNonNull(payload,
+                "payload");
+        AiProposalAuthority checkedAuthority = Objects.requireNonNull(authority,
+                "authority");
+        if (currentTick < 0L) {
+            throw new IllegalArgumentException("currentTick must not be negative");
+        }
+        requireActiveCountsMatch();
+        Optional<AiClientSponsoredRequest> prechecked = ledger.findMatching(
+                checkedPayload);
+        if (prechecked.isEmpty()) {
+            return AiClientSponsoredProposalReviewResult.droppedBeforeGate();
+        }
+
+        AiClientSponsoredRequest expected = prechecked.orElseThrow();
+        AiProposalReviewReceipt receipt = gate.reviewWithReceipt(checkedPayload,
+                checkedAuthority, currentTick);
+        if (receipt.terminalDispatch().isEmpty()) {
+            if (isImpossibleNonTerminalAfterExactPrecheck(
+                    receipt.review().status(), checkedAuthority)) {
+                failClosedReviewLedger(expected,
+                        "client-sponsored gate disagreed with an exact ledger precheck");
+            }
+            requireActiveCountsMatch();
+            return AiClientSponsoredProposalReviewResult.nonTerminal(
+                    receipt.review());
+        }
+
+        AiRequestDispatchReceipt terminalReceipt = receipt.terminalDispatch()
+                .orElseThrow();
+        if (!expected.matches(terminalReceipt)) {
+            failClosedReviewLedger(expected,
+                    "client-sponsored gate terminal receipt did not match its ledger precheck");
+        }
+        Optional<AiClientSponsoredRequest> closed = ledger.closeExact(
+                terminalReceipt);
+        if (closed.isEmpty() || closed.orElseThrow() != expected) {
+            failClosedReviewLedger(expected,
+                    "client-sponsored ledger could not exact-close a gate terminal receipt");
+        }
+        requireActiveCountsMatch();
+        return AiClientSponsoredProposalReviewResult.terminal(receipt.review(),
+                closed.orElseThrow());
     }
 
     /**
@@ -441,6 +503,36 @@ public final class AiClientSponsoredRequestCoordinator {
             throw new IllegalStateException(
                     "client-sponsored gate and ledger active counts are inconsistent");
         }
+    }
+
+    private void failClosedReviewLedger(AiClientSponsoredRequest expected,
+            String message) {
+        IllegalStateException failure = new IllegalStateException(message);
+        try {
+            Optional<AiClientSponsoredRequest> closed = ledger.closeExact(
+                    expected.dispatchReceipt());
+            if (closed.isEmpty()) {
+                failure.addSuppressed(new IllegalStateException(
+                        "client-sponsored review cleanup could not find its prechecked binding"));
+            }
+        } catch (RuntimeException cleanupFailure) {
+            failure.addSuppressed(cleanupFailure);
+        }
+        throw failure;
+    }
+
+    private static boolean isImpossibleNonTerminalAfterExactPrecheck(
+            AiProposalReviewStatus status, AiProposalAuthority authority) {
+        return switch (Objects.requireNonNull(status, "status")) {
+            case NO_ACTIVE_REQUEST, BOT_MISMATCH, AGENT_MISMATCH,
+                    NONCE_MISMATCH, REVISION_MISMATCH, EXPIRED,
+                    REVIEW_CONTRACT_REJECTED, TOOL_CALLS_NOT_ALLOWED,
+                    NO_TOOL_CALLS, MALFORMED_TOOL_CALL, TOOL_REJECTED,
+                    ACCEPTED_NO_EXECUTION -> true;
+            case BOT_NOT_ACTIVE, NOT_OWNER, OWNER_CHANGED, AGENT_NOT_BOUND -> false;
+            case GENERATION_MISMATCH -> Objects.requireNonNull(
+                    authority, "authority").activeGeneration().isPresent();
+        };
     }
 
     private static void requireExactClosureMatches(

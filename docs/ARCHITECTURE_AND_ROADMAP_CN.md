@@ -1610,14 +1610,19 @@ P6 首次接入时，记忆接口使用有界内存对话窗口和可选的空 `
 ADR-0022 的 server-thread binding 账本只持有上述不可变关联，并在显式替换、TTL、bot retirement
 和 shutdown 时返回精确旧 binding。ADR-0024 已将 gate+ledger 收敛到一个 owner-thread coordinator：
 它在 mutation 前预检真实 client epoch deadline，限制全局活动 binding，并提供只含完整 receipt 与
-安全 terminal status 的有界、非阻塞 mailbox。drain 仅供未来 lifecycle 观察，绝不自动关闭 gate/
-ledger；迟到或伪造 terminal 因而没有会话清理权。该阶段仍不发送网络包、不创建 Client/Provider/
-Scheduler，也不接触 Minecraft，详见 [ADR-0022](adr/0022-client-sponsored-request-ledger.md) 与
-[ADR-0024](adr/0024-client-sponsored-request-coordinator.md)。
+安全 terminal status 的有界、非阻塞 mailbox。ADR-0028 另让 coordinator 在完整 ledger correlation
+预检成功后才调用 gate review；gate terminal receipt 必须 exact-close 同一 ledger binding。分歧只会
+精确清理已预检 ledger binding 并保持 coordinator fail-closed，绝不按 botId 猜测关闭。drain 仅供未来
+lifecycle 观察，绝不自动关闭 gate/ledger；迟到或伪造 terminal 因而没有会话清理权。该阶段仍不发送
+网络包、不创建 Client/Provider/Scheduler，也不接触 Minecraft，详见
+[ADR-0022](adr/0022-client-sponsored-request-ledger.md)、
+[ADR-0024](adr/0024-client-sponsored-request-coordinator.md) 与
+[ADR-0028](adr/0028-client-sponsored-proposal-review-transaction.md)。
 
 任何客户端或异步回调都不得直接调用 `ServerPlayer`。上述通用 client-sponsored 网络请求流
-（gate→dispatch→Scheduler lifecycle→计划接收）仍未实现；P6-R1 是独立、固定且只读的
-实际 HTTPS 例外，不构成通用聊天、计划或世界执行入口。
+（gate→dispatch→Scheduler lifecycle→计划接收）仍未实现；ADR-0028 的本地 review transaction
+既不是 network handler，也不启动该流。P6-R1 是独立、固定且只读的实际 HTTPS 例外，不构成通用聊天、
+计划或世界执行入口。
 
 ### 11.5 Tool Firewall
 
