@@ -7,7 +7,7 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 
 > **当前状态：P2、P3 与 P4 自动化退出门已通过；Build #362 已验证受限 P5 纵切与
 > P6-R1 的先前自动化基线。其后的 P5A 修复、单 `TechniqueLifecycleCoordinator` Contract 与
-> P6 会话协调器、客户端安全 terminal-observation/Error-cleanup/间接重入收口、ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget Contract、受限 Technique→Action permit Contract 与 P5D-A0/A1/A2/A3 有界蓝图/施工工作包/candidate-site/survey-assessment 数据 Contract
+> P6 会话协调器、客户端安全 terminal-observation/Error-cleanup/间接重入收口、ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget Contract、受限 Technique→Action permit Contract 与 P5D-A0/A1/A2/A3/A4 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item 数据 Contract
 > 提交仍待各自 Java 21 CI；仍不是
 > 正式版本，P5/P6 总退出门均未关闭。**
 >
@@ -31,8 +31,10 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 > 拓扑的 work-package 数据图；P5D-A2 只将该 exact plan 绑定到 candidate dimension+anchor 与由真实
 > Blueprint cell 派生的 bounds/target 坐标；P5D-A3 只对 caller-supplied、完整 canonical target evidence
 > 产生 `BLOCKED|INCOMPLETE|ACCEPTED_CANDIDATE` 的纯数据评估。A3 的 candidate 不代表已读取/已加载世界、
-> accepted site、lease、ownership proof 或 human confirmation。计划方块 ID 不是背包 item ID，仍没有材料预留、
-> NBT、placement 或世界动作。仍没有 approved construction route、`GroundPlace`、
+> accepted site、lease、ownership proof 或 human confirmation。P5D-A4 要求每一种完整 expected BlockState
+> 都有显式 caller-supplied item declaration，并只产生按 itemId/永久-临时类别聚合的 declared quantity；它不把
+> blockId 猜成 itemId，也不证明物品可用/可放置。仍没有材料预留、NBT、placement 或世界动作。仍没有 approved
+> construction route、`GroundPlace`、
 > 材料授权或任何真实建筑/红石世界动作。
 > P6-R1 是默认关闭的固定本地只读审阅往返，只有真实 owner 本地 `reviewOnly.enabled=true`
 > 时才会尝试发起固定 Provider HTTPS；回传只形成安全摘要并丢弃，绝不进入 Skill、Action 或

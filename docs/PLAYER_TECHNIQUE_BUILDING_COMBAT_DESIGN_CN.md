@@ -694,6 +694,12 @@ Blueprint
 建筑 Skill 为一个 WorkPackage 准备稳定快捷栏布局，避免每放一块都全背包重排。背包变化
 继续受 P5 menu 事务、物品守恒和真人 viewer 写锁约束。
 
+当前 `P5D-A4` 只在 `building/material/` 固定了一项更早的输入边界：每一种完整 Blueprint target
+`BlockStateFingerprint` 都必须由 caller 显式声明一个 item ID，随后才能按 item ID 和 permanent/temporary
+类别导出 bounded declared quantity。它不从同名 blockId 猜 itemId，也不读取 registry、背包或容器，不能证明
+item 是可放置物、可用、已预留或能在真实交互中产出该状态；因此不是本节的 `BillOfMaterials` availability、
+材料背包、reservation 或施工许可。
+
 ### 7.6 施工依赖图
 
 ```text
@@ -1156,12 +1162,14 @@ binding，以及 `P5D-A3` 的 caller-supplied exact target evidence/fail-closed 
 cell/offset/span、重复坐标与 content hash；A1 只把同一 immutable Blueprint 按完整
 `(id, revision, hash, ordinal)` 分为有界分包并提供稳定拓扑读取；A2 只把 exact plan 绑定到非零 siteId、
 dimension+anchor 与从真实 Blueprint cell 派生的 bounds/known target；A3 的
-`ACCEPTED_CANDIDATE` 只表示 supplied evidence 的结构兼容。四者只给出结构性输入，**不**读取 Minecraft、
-映射背包物品、不接 NBT、真实 survey/accepted site、保护/加载检查、materials/lease、ownership/human
-confirmation、modules/`PostPlacementSemantic`、真实施工图、Technique 或真实世界放置。以下仍是后续 PT4-A 目标：
+`ACCEPTED_CANDIDATE` 只表示 supplied evidence 的结构兼容；A4 只要求 full target state 的 explicit item
+declaration 并导出 declared quantity。五者只给出结构性输入，**不**读取 Minecraft、把 blockId 自动映射为
+背包物品、不接 registry/inventory availability、NBT、真实 survey/accepted site、保护/加载检查、materials/
+lease、ownership/human confirmation、modules/`PostPlacementSemantic`、真实施工图、Technique 或真实世界放置。
+以下仍是后续 PT4-A 目标：
 
-后续扩展（其中 `building/site/` 已有 A2 binding 和 A3 caller-evidence assessment DTO，尚缺可信世界
-sampler、真实 survey/lease）：
+后续扩展（其中 `building/site/` 已有 A2 binding 和 A3 caller-evidence assessment DTO，`building/material/`
+已有 A4 explicit declaration，尚缺可信 world/registry sampler、真实 survey/lease/availability）：
 
 ```text
 building/blueprint/*

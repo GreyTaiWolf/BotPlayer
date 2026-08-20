@@ -53,7 +53,7 @@ rg -n '^#{1,4} ' docs/ARCHITECTURE_AND_ROADMAP_CN.md
 | Mixin 或映射敏感行为 | `mixin/`、`botplayer.mixins.json` | ADR、精确 descriptor、真人路径回归 |
 | 客户端 UI、本地凭据、网络 | `client/`、`network/` 及注册入口 | ADR-0012、SECURITY、配置/安装/开发文档、双端验证 |
 | AI Provider、对话、智能体状态 | `ai/`（含 P6-A0 ledger、P6-A1a retry context 与 P6-A1b `RetryingAiProvider.completeBudgeted(...)` opt-in physical hook）、当前实现状态列出的 AI 包；目标边界见架构 §8、§11 | ADR-0012、ADR-0020、ADR-0031～ADR-0034；不得把“保存 Key”、普通未预算调用或未接线 bridge 写成“AI 已接通/已计费” |
-| 玩家技术动作、跳劈、走位、真实施工 | `technique/`、`building/blueprint/`（A0 蓝图 DTO）、`building/construction/`（A1 exact-cover work-package DAG）、`building/site/`（A2 candidate binding、A3 caller-supplied evidence 的 fail-closed assessment）与现有 `action/`、`navigation/`、`safety/` | ADR-0017、ADR-0029、ADR-0030、ADR-0033、ADR-0035、`PLAYER_TECHNIQUE_BUILDING_COMBAT_DESIGN_CN.md`；不得复制 Action/Skill runtime，也不得把蓝图/分包/site survey DTO 或 `ACCEPTED_CANDIDATE` 当作世界动作、lease 或许可入口 |
+| 玩家技术动作、跳劈、走位、真实施工 | `technique/`、`building/blueprint/`（A0 蓝图 DTO）、`building/construction/`（A1 exact-cover work-package DAG）、`building/site/`（A2 candidate binding、A3 caller-supplied evidence 的 fail-closed assessment）、`building/material/`（A4 full-state explicit item declaration）与现有 `action/`、`navigation/`、`safety/` | ADR-0017、ADR-0029、ADR-0030、ADR-0033、ADR-0035、ADR-0036、`PLAYER_TECHNIQUE_BUILDING_COMBAT_DESIGN_CN.md`；不得复制 Action/Skill runtime，也不得把蓝图/分包/site survey DTO、`ACCEPTED_CANDIDATE` 或 declared item quantity 当作世界动作、lease、库存或许可入口 |
 | 动作、背包、感知、导航、安全、技能、记忆 | 对应功能包；未建立时先读架构 §5–§12 | 能力矩阵、阶段门和测试证据 |
 | P5A/PT/P6 并行、Token 暂停/恢复、分支切换 | `docs/PARALLEL_DEVELOPMENT_PLAN_CN.md` + 当前目标包 | 共享核心是否需要 Contract PR；是否有 handoff；是否基于最新 `main` |
 | 客户端文字 | `assets/botplayer/lang/zh_cn.json`、`en_us.json` | UI 不硬编码用户可见文本 |

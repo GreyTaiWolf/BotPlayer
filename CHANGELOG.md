@@ -7,6 +7,12 @@
 
 ### 新增
 
+- 新增 ADR-0036 的 P5D-A4 pure Java blueprint placeable-item declaration Contract：每一种完整 expected
+  `BlockStateFingerprint` 必须有一条显式 caller-supplied `PlaceableItemEvidence`，缺项、foreign/duplicate
+  state 或按 blockId 猜 itemId 都失败关闭；它只按显式 itemId 与 permanent/temporary 类别派生 canonical declared
+  quantity，不读取 registry、背包/容器或世界，也不证明 item 可用、是 `BlockItem`、能形成该 state、已预留或会被
+  消耗。它不接 site/lease、材料 availability、placement、Technique、Action、Skill、checkpoint 或红石，P5D
+  仍未实现，当前 Java 21 CI 与 Minecraft 实机验证仍待完成；
 - 新增 ADR-0035 的 P5D-A3 pure Java candidate construction-site survey/assessment Contract：一个 exact
   `ConstructionSiteBinding` 的所有真实 Blueprint target 必须恰好一次 canonical observation，`UNKNOWN`、
   `EMPTY` 与带 fingerprint 的 `OCCUPIED` 严格配对；assessment 只能从 complete survey 重算，已知 occupied
