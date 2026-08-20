@@ -51,6 +51,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0030](0030-bounded-construction-work-package-contract.md) | 有界施工工作包图合同 | Accepted | P5D-A1 已有完整 Blueprint identity 绑定、exact-cover、16 package 上限和稳定拓扑的纯 Java DTO；不含 site/材料预留/Technique/Action/world，P5D 仍未实现 |
 | [ADR-0031](0031-bounded-token-reservation-ledger.md) | 有界 AI token 预留账本 | Accepted | P6-A0 已有 scope-local、并发安全的 conservative token reservation accounting Contract；未接 Scheduler/retry/Provider/client session/network，不是实际计费或通用 bridge |
 | [ADR-0032](0032-physical-retry-attempt-budget-context.md) | 物理重试尝试预算上下文 | Accepted | P6-A1a 只固定完整 trusted budget context 与 upstream/retry/TTL 最早 deadline；尚未接 RetryProvider、Scheduler、client session 或真实 Provider 调用 |
+| [ADR-0033](0033-candidate-construction-site-binding-contract.md) | 候选施工站点绑定 | Accepted | P5D-A2 只将 exact WorkPlan/Blueprint 绑定到 dimension+anchor 的派生 bounds 与已知 cell target；不 survey/accepted/lease/material/placement/world，P5D 仍未实现 |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
@@ -132,6 +133,14 @@ accounting：accepted admission 的 reserved input/output/total 先占用 `reser
 settle 才转入 `committed`，其后永不退款；同一 requestId 的 future retry 必须使用新的 exact
 reservation。它既不接 Scheduler/Retrying Provider/HTTP/client session，也不是 real billing、generic
 bridge、聊天或 AI→Skill/world execution。
+
+ADR-0032 只为未来 physical retry hook 增加完整 immutable budget context：trusted bridge 给出 ledger、
+binding、admission 与 upstream deadline，retry wrapper 每次 attempt 给出自身 deadline，账本取最早 deadline/
+TTL 并产生新的 exact reservation instance。它尚未接到 retry、scheduler、Provider、client session 或网络。
+
+ADR-0033 只为 P5D future survey/lease/placement 增加 candidate `building.site` DTO：完整 WorkPlan
+与 dimension+anchor 派生 exact bounds，target 只允许 Blueprint 中真实存在的 offset。它不是 site survey、
+accepted area、material reservation、checkpoint、Technique、Action、Skill 或世界写入。
 
 ## 新 ADR 文件规则
 

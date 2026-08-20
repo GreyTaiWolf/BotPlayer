@@ -663,6 +663,11 @@ record BuildSiteAssessment(
 ) {}
 ```
 
+当前 `P5D-A2` 仅在 `building/site/` 提供 `ConstructionSiteAnchor`、由 Blueprint 全部 cell 派生的
+`ConstructionSiteBounds`，以及完整 WorkPlan 的 candidate binding。它不读取世界，因此不产生上述
+`BuildSiteAssessment`、`accepted`、冲突/危险、加载状态、保护结论或区域 lease；这些仍是实际选址调查
+的后续前置，不能把 anchor/bounds 当作可施工许可。
+
 ### 7.5 材料清单与施工背包
 
 ```text
@@ -1142,17 +1147,19 @@ technique/building/CrouchEdgePlaceTechnique.java
 
 ### 14.5 `PT4-A`：小屋工作包
 
-当前已落地 `P5D-A0` 的 `building/blueprint/` 纯 Java 数据边界，以及 `P5D-A1` 的
-`building/construction/` exact-cover work-package DAG：A0 限制 Blueprint cell/offset/span、重复坐标与
-content hash；A1 只把同一 immutable Blueprint 按完整 `(id, revision, hash, ordinal)` 分为有界分包并提供
-稳定拓扑读取。它们只给出结构性 block requirement，**不**映射背包物品、不接 NBT、选址、
+当前已落地 `P5D-A0` 的 `building/blueprint/` 纯 Java 数据边界、`P5D-A1` 的
+`building/construction/` exact-cover work-package DAG，以及 `P5D-A2` 的 `building/site/` candidate
+coordinate binding：A0 限制 Blueprint cell/offset/span、重复坐标与 content hash；A1 只把同一 immutable
+Blueprint 按完整 `(id, revision, hash, ordinal)` 分为有界分包并提供稳定拓扑读取；A2 只把 exact plan
+绑定到非零 siteId、dimension+anchor 与从真实 Blueprint cell 派生的 bounds/known target。三者只给出结构性
+输入，**不**映射背包物品、不接 NBT、survey/accepted site、保护/加载检查、materials/lease、
 modules/`PostPlacementSemantic`、真实施工图、Technique 或真实世界放置。以下仍是后续 PT4-A 目标：
 
-新增：
+后续扩展（其中 `building/site/` 已有 A2 binding DTO，尚缺 survey/assessment）：
 
 ```text
 building/blueprint/*
-building/site/*
+building/site/*                    # future survey/assessment/lease inputs
 skill/builtin/building/ConstructWorkPackageSkill.java
 ```
 

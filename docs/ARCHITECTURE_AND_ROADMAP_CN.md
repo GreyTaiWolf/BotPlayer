@@ -1493,6 +1493,12 @@ work-package 数据图：每包绑定完整 `(blueprintId, revision, contentHash
 和稳定拓扑读取。它既不把 canonical 分区当成物理施工顺序，也不接 site、材料预留、world、placement、
 Technique、Action、Skill、checkpoint、玩家修改或红石；所有 P5D 退出门仍未完成。
 
+ADR-0033 只增加 `building.site` 的 candidate coordinate binding：非零 siteId 将同一 exact
+`ConstructionWorkPlan` 绑定到纯 Java dimension+anchor，并从全部 Blueprint cell 用 checked translation
+派生唯一 inclusive bounds；target 只允许 Blueprint 中实际存在的 offset。它不是 site survey/accepted
+assessment、chunk/world/保护检查、区域或材料 lease、placement candidate、checkpoint/human override、
+Technique、Action、Skill、真实世界放置或红石；所有 P5D 退出门仍未完成。
+
 施工中记录：
 
 - 蓝图 hash；

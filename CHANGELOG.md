@@ -7,6 +7,11 @@
 
 ### 新增
 
+- 新增 ADR-0033 的 P5D-A2 pure Java candidate construction-site binding Contract：完整 immutable
+  `ConstructionWorkPlan` 以非零 siteId、dimension+anchor 绑定到由全部 Blueprint cell checked translation
+  派生的 inclusive bounds，只有完整 package key 与真实 cell offset 可读取。它不做 survey/accepted site、
+  chunk/world/保护检查、材料预留、checkpoint/human override、PlacementCandidate、Technique、Action、Skill、
+  真实放置或红石；P5D 仍未实现，当前 Java 21 CI 与 Minecraft 实机验证仍待完成；
 - 新增 ADR-0032 的 P6-A1a pure Java physical-retry attempt budget context：可信 bridge 未来必须显式
   传入 ledger、完整 request binding、已接受 admission 与 upstream deadline；retry wrapper 每次 physical
   attempt 另传自身 deadline，账本统一取 upstream/retry/policy TTL 的最早值并返回 fresh exact reservation。
