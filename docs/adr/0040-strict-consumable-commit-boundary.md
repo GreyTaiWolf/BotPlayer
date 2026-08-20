@@ -99,3 +99,6 @@ Java 21/NeoForge 验证发现 invocation 冲突，可一并移除两个 strict �
   边界时不消费牛奶/不清效果、随后走正常 timeout outcome；
 - Java 21 `clean build`、常规测试和 `runGameTestServer` 必须验证 Mixin 注入、真人路径及目标
   NeoForge 时序；真实客户端/专用服仍需要验证 mod 组合与 packet/事件排序。
+
+最终 native tick 的 deadline/maxTicks 两条 GameTest 已作为源码加入当前分支；它们在 Java 21
+NeoForge runner 实际通过前仍只属于待验证回归，不能作为已运行证据。

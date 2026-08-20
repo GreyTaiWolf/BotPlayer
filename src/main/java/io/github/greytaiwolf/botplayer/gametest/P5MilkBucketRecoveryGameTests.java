@@ -31,6 +31,7 @@ import io.github.greytaiwolf.botplayer.skill.menu.MenuFamily;
 import java.util.UUID;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import net.minecraft.gametest.framework.GameTest;
@@ -58,6 +59,8 @@ import net.neoforged.neoforge.event.tick.PlayerTickEvent;
 public final class P5MilkBucketRecoveryGameTests {
     private static final String BATCH = "p5_milk_bucket_recovery";
     private static final int TIMEOUT_TICKS = 260;
+    /* Vanilla milk has a fixed 32-tick native use duration in the pinned 1.21.1 target. */
+    private static final int NATIVE_MILK_USE_TICKS = 32;
 
     private P5MilkBucketRecoveryGameTests() {
     }
@@ -308,6 +311,50 @@ public final class P5MilkBucketRecoveryGameTests {
             cleanup.run();
             throw exception;
         }
+    }
+
+    /**
+     * Start the standalone skill during the Bot's {@code PlayerTickEvent.Post}
+     * so the manager starts its Action later in the same server tick. Freeze
+     * the deadline to the resulting final native milk-use tick and prove the
+     * Mixin stops physical consumption before the Action runtime reports it.
+     */
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void finalMilkUseAtActionDeadlineStopsBeforeConsumption(
+            GameTestHelper helper) {
+        verifyFinalMilkUseTimingBoundary(helper,
+                "milk_recovery_deadline_boundary",
+                (envelope, submittedTick) -> copyEnvelopeWithTiming(
+                        envelope,
+                        Math.addExact(submittedTick, NATIVE_MILK_USE_TICKS),
+                        envelope.maxTicks()),
+                ActionFailureCode.DEADLINE_EXCEEDED,
+                true);
+    }
+
+    /**
+     * The same physical boundary must be protected by the per-action tick
+     * budget, independently of a later plan deadline. Without the native
+     * fence, vanilla would consume milk first and the following Action tick
+     * would incorrectly turn that physical result into a timeout.
+     */
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void finalMilkUseAtActionMaxTicksStopsBeforeConsumption(
+            GameTestHelper helper) {
+        verifyFinalMilkUseTimingBoundary(helper,
+                "milk_recovery_max_ticks_boundary",
+                (envelope, ignoredSubmittedTick) -> copyEnvelopeWithTiming(
+                        envelope,
+                        envelope.deadlineTick(),
+                        NATIVE_MILK_USE_TICKS),
+                ActionFailureCode.MAX_TICKS_EXCEEDED,
+                false);
     }
 
     /**
@@ -899,6 +946,12 @@ public final class P5MilkBucketRecoveryGameTests {
     }
 
     private static RecoveryRun startRun(TestBot bot) {
+        return startRun(bot, (envelope, ignoredSubmittedTick) -> envelope);
+    }
+
+    private static RecoveryRun startRun(
+            TestBot bot,
+            ActionEnvelopeTimingOverride timingOverride) {
         SkillRegistry registry = new SkillRegistry();
         P2GameTestSupport.require(
                 registry.register(VanillaMilkBucketRecovery.descriptor())
@@ -913,11 +966,13 @@ public final class P5MilkBucketRecoveryGameTests {
                 new AtomicReference<>();
         AtomicReference<CompletionStage<ActionOutcome>> actionCompletion =
                 new AtomicReference<>();
+        AtomicReference<ActionEnvelope> submittedEnvelope = new AtomicReference<>();
         MinecraftMilkBucketRecoverySkillNodeHandler handler =
                 new MinecraftMilkBucketRecoverySkillNodeHandler(
                         bot.manager()::resolveActive,
                         actionGateway(bot, strictNaturalUseCancellation,
-                                actionCompletion),
+                                actionCompletion, submittedEnvelope,
+                                timingOverride),
                         runtime::offerSignal);
         P2GameTestSupport.require(
                 runtime.registerHandler(VanillaMilkBucketRecovery.ID,
@@ -937,20 +992,31 @@ public final class P5MilkBucketRecoveryGameTests {
                 "Standalone milk recovery plan was not accepted: "
                         + submission.safeSummary());
         return new RecoveryRun(runtime, submission.runId().orElseThrow(),
-                strictNaturalUseCancellation, actionCompletion);
+                strictNaturalUseCancellation, actionCompletion,
+                submittedEnvelope);
     }
 
     private static ActionBackedSkillNodeHandler.ActionGateway actionGateway(
             TestBot bot,
             AtomicReference<StrictNaturalUseCancellation>
                     strictNaturalUseCancellation,
-            AtomicReference<CompletionStage<ActionOutcome>> actionCompletion) {
+            AtomicReference<CompletionStage<ActionOutcome>> actionCompletion,
+            AtomicReference<ActionEnvelope> submittedEnvelope,
+            ActionEnvelopeTimingOverride timingOverride) {
         return new ActionBackedSkillNodeHandler.ActionGateway() {
             @Override
             public ActionMailbox.Submission submit(
                     ActionEnvelope envelope, ActionPriority priority) {
+                ActionEnvelope rewritten = timingOverride.apply(envelope,
+                        currentTick(bot));
+                requireTimingOverridePreservesActionIdentity(envelope,
+                        rewritten);
+                if (!submittedEnvelope.compareAndSet(null, rewritten)) {
+                    throw new IllegalStateException(
+                            "Milk recovery fixture submitted more than one action envelope");
+                }
                 ActionMailbox.Submission submission = bot.manager()
-                        .submitAction(envelope, priority);
+                        .submitAction(rewritten, priority);
                 submission.completion().ifPresent(completion -> {
                     if (!actionCompletion.compareAndSet(null, completion)) {
                         throw new IllegalStateException(
@@ -973,7 +1039,8 @@ public final class P5MilkBucketRecoveryGameTests {
                     ActionEnvelope envelope,
                     ActionCancellationReason reason) {
                 strictNaturalUseCancellation.set(bot.manager()
-                        .cancelStrictNaturalUse(envelope, reason));
+                        .cancelStrictNaturalUse(submittedEnvelopeFor(
+                                submittedEnvelope, envelope), reason));
             }
 
             @Override
@@ -982,11 +1049,206 @@ public final class P5MilkBucketRecoveryGameTests {
                             ActionEnvelope envelope,
                             ActionCancellationReason reason) {
                 StrictNaturalUseCancellation cancellation = bot.manager()
-                        .cancelStrictNaturalUse(envelope, reason);
+                        .cancelStrictNaturalUse(submittedEnvelopeFor(
+                                submittedEnvelope, envelope), reason);
                 strictNaturalUseCancellation.set(cancellation);
                 return cancellation;
             }
         };
+    }
+
+    private static void verifyFinalMilkUseTimingBoundary(
+            GameTestHelper helper,
+            String fixtureName,
+            ActionEnvelopeTimingOverride timingOverride,
+            ActionFailureCode expectedActionFailure,
+            boolean requireExactDeadlineTick) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        P5GameTestSupport.IsolatedFixture fixture =
+                P5GameTestSupport.isolatedFixture(helper, fixtureName);
+        TestBot bot = fixture.spawn("medic");
+        P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
+        try {
+            preparePoisonedMilk(bot);
+            AtomicBoolean startedFromPlayerPost = new AtomicBoolean();
+            AtomicBoolean reachedFinalNativeTick = new AtomicBoolean();
+            AtomicBoolean reachedExactDeadlineTick = new AtomicBoolean();
+            AtomicBoolean nativeFinishObserved = new AtomicBoolean();
+            AtomicLong scheduledStartTick = new AtomicLong(-1L);
+            AtomicLong finalNativeTick = new AtomicLong(-1L);
+            RecoveryRun run = startRun(bot, timingOverride);
+            cleanup.add(run.runtime()::close);
+            Consumer<PlayerTickEvent.Post> starter = event -> {
+                if (event.getEntity() != bot.player()) {
+                    return;
+                }
+                if (startedFromPlayerPost.compareAndSet(false, true)) {
+                    long scheduledTick = currentTick(bot);
+                    scheduledStartTick.set(scheduledTick);
+                    run.runtime().tick(scheduledTick);
+                }
+            };
+            Consumer<PlayerTickEvent.Pre> finalTickObserver = event -> {
+                if (event.getEntity() != bot.player()) {
+                    return;
+                }
+                ActionEnvelope envelope = run.submittedEnvelope().get();
+                if (envelope != null
+                        && bot.player().isUsingItem()
+                        && bot.player().getUseItemRemainingTicks() == 1) {
+                    reachedFinalNativeTick.set(true);
+                    long observedTick = currentTick(bot);
+                    finalNativeTick.compareAndSet(-1L, observedTick);
+                    if (observedTick == envelope.deadlineTick()) {
+                        reachedExactDeadlineTick.set(true);
+                    }
+                }
+            };
+            Consumer<LivingEntityUseItemEvent.Finish> finishObserver = event -> {
+                if (event.getEntity() == bot.player()
+                        && event.getItem().is(Items.MILK_BUCKET)) {
+                    nativeFinishObserved.set(true);
+                }
+            };
+            NeoForge.EVENT_BUS.addListener(starter);
+            cleanup.add(() -> NeoForge.EVENT_BUS.unregister(starter));
+            NeoForge.EVENT_BUS.addListener(finalTickObserver);
+            cleanup.add(() -> NeoForge.EVENT_BUS.unregister(finalTickObserver));
+            NeoForge.EVENT_BUS.addListener(finishObserver);
+            cleanup.add(() -> NeoForge.EVENT_BUS.unregister(finishObserver));
+            waitForTimedMilkRunStart(helper, cleanup, 20,
+                    startedFromPlayerPost, () -> driveUntilTerminal(helper, bot,
+                            run, cleanup, 180, terminal -> {
+                                ActionEnvelope envelope = run.submittedEnvelope()
+                                        .get();
+                                P2GameTestSupport.require(envelope != null,
+                                        "Timed milk fixture never submitted an action envelope");
+                                P2GameTestSupport.require(
+                                        reachedFinalNativeTick.get(),
+                                        "Timed milk fixture never reached the final native use tick");
+                                long expectedStartTick = scheduledStartTick.get();
+                                long observedFinalTick = finalNativeTick.get();
+                                P2GameTestSupport.require(expectedStartTick >= 0L,
+                                        "Timed milk fixture never scheduled its Action in PlayerTickEvent.Post");
+                                P2GameTestSupport.require(observedFinalTick >= 0L,
+                                        "Timed milk fixture did not record its final native use tick");
+                                if (requireExactDeadlineTick) {
+                                    P2GameTestSupport.require(
+                                            reachedExactDeadlineTick.get()
+                                                    && envelope.deadlineTick()
+                                                            == observedFinalTick
+                                                    && envelope.maxTicks()
+                                                            > NATIVE_MILK_USE_TICKS,
+                                            "Final native milk tick did not match the action deadline");
+                                } else {
+                                    P2GameTestSupport.require(
+                                            envelope.maxTicks()
+                                                    == NATIVE_MILK_USE_TICKS
+                                                    && envelope.deadlineTick()
+                                                            > observedFinalTick,
+                                            "Timed milk fixture did not freeze the action maxTicks boundary");
+                                }
+                                P2GameTestSupport.require(
+                                        terminal.state() == SkillRunState.FAILED
+                                                && terminal.failureCode().orElseThrow()
+                                                        == SkillFailureCode.TIMEOUT,
+                                        "Native timing fence did not terminalize as timeout: "
+                                                + terminal.safeSummary());
+                                ActionOutcome outcome = completedActionOutcome(run);
+                                P2GameTestSupport.require(
+                                        outcome.state() == ActionState.FAILED
+                                                && outcome.failureCode()
+                                                        == expectedActionFailure,
+                                        "Native timing fence reported the wrong Action outcome: "
+                                                + outcome.safeSummary());
+                                P2GameTestSupport.require(
+                                        outcome.startedTick() == expectedStartTick
+                                                && outcome.finishedTick()
+                                                        == observedFinalTick
+                                                && outcome.finishedTick()
+                                                        == Math.addExact(
+                                                                outcome.startedTick(),
+                                                                NATIVE_MILK_USE_TICKS),
+                                        "Timed milk Action did not terminate on its exact final native tick: "
+                                                + outcome.safeSummary());
+                                P2GameTestSupport.require(
+                                        !nativeFinishObserved.get()
+                                                && !bot.player().isUsingItem()
+                                                && bot.player().hasEffect(MobEffects.POISON)
+                                                && bot.player().getInventory().getItem(0)
+                                                        .is(Items.MILK_BUCKET)
+                                                && bot.player().getInventory().getItem(0)
+                                                        .getCount() == 1,
+                                        "Native timing boundary consumed milk or cleared poison");
+                                requireNativeEmptyCursor(bot);
+                            }));
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    private static void waitForTimedMilkRunStart(
+            GameTestHelper helper,
+            P2GameTestSupport.Cleanup cleanup,
+            int remainingTicks,
+            AtomicBoolean startedFromPlayerPost,
+            Runnable afterStart) {
+        try {
+            if (startedFromPlayerPost.get()) {
+                afterStart.run();
+                return;
+            }
+            if (remainingTicks <= 0) {
+                cleanup.run();
+                helper.fail("Timed milk fixture never reached PlayerTickEvent.Post");
+                return;
+            }
+            helper.runAfterDelay(1L, () -> waitForTimedMilkRunStart(helper,
+                    cleanup, remainingTicks - 1,
+                    startedFromPlayerPost, afterStart));
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            helper.fail(message(exception));
+        }
+    }
+
+    private static ActionEnvelope copyEnvelopeWithTiming(
+            ActionEnvelope envelope, long deadlineTick, int maxTicks) {
+        ActionEnvelope required = java.util.Objects.requireNonNull(envelope,
+                "envelope");
+        return new ActionEnvelope(required.actionId(), required.botId(),
+                required.botGeneration(), required.idempotencyKey(), deadlineTick,
+                maxTicks, required.action(), required.origin());
+    }
+
+    private static void requireTimingOverridePreservesActionIdentity(
+            ActionEnvelope original, ActionEnvelope rewritten) {
+        ActionEnvelope requiredOriginal = java.util.Objects.requireNonNull(
+                original, "original");
+        ActionEnvelope requiredRewritten = java.util.Objects.requireNonNull(
+                rewritten, "rewritten");
+        if (!requiredOriginal.actionId().equals(requiredRewritten.actionId())
+                || !requiredOriginal.botId().equals(requiredRewritten.botId())
+                || requiredOriginal.botGeneration()
+                        != requiredRewritten.botGeneration()
+                || !requiredOriginal.idempotencyKey().equals(
+                        requiredRewritten.idempotencyKey())
+                || !requiredOriginal.action().equals(requiredRewritten.action())
+                || !requiredOriginal.origin().equals(requiredRewritten.origin())) {
+            throw new IllegalArgumentException(
+                    "Timed milk fixture may override only ActionEnvelope timing");
+        }
+    }
+
+    private static ActionEnvelope submittedEnvelopeFor(
+            AtomicReference<ActionEnvelope> submittedEnvelope,
+            ActionEnvelope requestedEnvelope) {
+        ActionEnvelope submitted = submittedEnvelope.get();
+        return submitted != null
+                && submitted.actionId().equals(requestedEnvelope.actionId())
+                ? submitted
+                : requestedEnvelope;
     }
 
     private static void preparePoisonedMilk(TestBot bot) {
@@ -1097,7 +1359,8 @@ public final class P5MilkBucketRecoveryGameTests {
             UUID runId,
             AtomicReference<StrictNaturalUseCancellation>
                     strictNaturalUseCancellation,
-            AtomicReference<CompletionStage<ActionOutcome>> actionCompletion) {
+            AtomicReference<CompletionStage<ActionOutcome>> actionCompletion,
+            AtomicReference<ActionEnvelope> submittedEnvelope) {
         private SkillRunView view() {
             return runtime.inspectRun(runId).orElseThrow(() ->
                     new IllegalStateException(
@@ -1108,5 +1371,10 @@ public final class P5MilkBucketRecoveryGameTests {
     @FunctionalInterface
     private interface TerminalVerifier {
         void verify(SkillRunView view);
+    }
+
+    @FunctionalInterface
+    private interface ActionEnvelopeTimingOverride {
+        ActionEnvelope apply(ActionEnvelope envelope, long submittedTick);
     }
 }

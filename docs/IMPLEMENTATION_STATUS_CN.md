@@ -62,8 +62,9 @@ Build #362 已自动覆盖基线中的 P5A/P5B/P5C 受限生产 DAG、白名单�
 相位只限 natural completion。两个 native 点均按 authoritative tick 拒绝 deadline/maxTicks 当 tick 的物理
 消费；这与仅让已入 inbox receipt 在同 tick plan deadline 前结算的规则不同。围栏不匹配、时间异常或取消
 ingress 失败都会同步隔离同一 generation，且已接受取消不会与快照漂移共用失败标记。新增正常和取消 lane
-饱和的最后一 Tick `PlayerTickEvent.Pre` 取消牛奶 GameTest 源码回归，以及 deadline/maxTicks pure timing
-fence 源码/隔离回归；本增量尚未获得 Java 21 CI、NeoForge GameTest 或 Minecraft 实机运行结果。
+饱和的最后一 Tick `PlayerTickEvent.Pre` 取消牛奶 GameTest 源码回归、action deadline/maxTicks 恰命中最终
+native tick 时不消费牛奶/保留 poison 并报告 `TIMEOUT` 的两条 GameTest 源码回归，以及 deadline/maxTicks pure
+timing fence 源码/隔离回归；本增量尚未获得 Java 21 CI、NeoForge GameTest 或 Minecraft 实机运行结果。
 
 P5A-M1a 现把 world-menu 已领取 click 的原版 `clicked()` / `broadcastChanges()` 异常显式终结为
 `CLICK_DISPATCH_FAILED`：无论抛错在潜在变更前还是后，`confirmedClicks` 均不会推进，异常后的
