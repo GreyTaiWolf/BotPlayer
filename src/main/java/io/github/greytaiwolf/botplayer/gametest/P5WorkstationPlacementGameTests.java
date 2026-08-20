@@ -349,6 +349,15 @@ public final class P5WorkstationPlacementGameTests {
                                     "Frozen furnace action did not fail before native dispatch: "
                                             + outcome);
                             P2GameTestSupport.require(
+                                    evidence(outcome,
+                                                    WorldInteractionActionSpec
+                                                            .PlaceBlock
+                                                            .PRE_DISPATCH_FACING_DRIFT_EVIDENCE_KEY)
+                                            .equals(WorldInteractionActionSpec
+                                                    .PlaceBlock
+                                                    .PRE_DISPATCH_FACING_DRIFT_EVIDENCE_VALUE),
+                                    "Frozen furnace rejection omitted its no-packet facing-drift receipt");
+                            P2GameTestSupport.require(
                                     bot.player().serverLevel().getBlockState(
                                                     target).isAir()
                                             && inventoryCount(bot,

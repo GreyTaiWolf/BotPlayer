@@ -33,17 +33,25 @@ import io.github.greytaiwolf.botplayer.skill.builtin.production.ProductionSkillP
 import io.github.greytaiwolf.botplayer.skill.builtin.production.ResourceAcquisition;
 import io.github.greytaiwolf.botplayer.skill.core.SkillFailureCode;
 import io.github.greytaiwolf.botplayer.skill.core.SkillParameters;
+import io.github.greytaiwolf.botplayer.skill.core.SkillRegistry;
+import io.github.greytaiwolf.botplayer.skill.core.SkillRunState;
 import io.github.greytaiwolf.botplayer.skill.core.SkillSignal;
 import io.github.greytaiwolf.botplayer.skill.core.SkillSignalInbox;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuFamily;
 import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionLimits;
 import io.github.greytaiwolf.botplayer.skill.plan.SkillPlanNode;
+import io.github.greytaiwolf.botplayer.skill.plan.SkillPlan;
+import io.github.greytaiwolf.botplayer.skill.plan.SkillPlanLimits;
+import io.github.greytaiwolf.botplayer.skill.plan.SkillPlanValidator;
 import io.github.greytaiwolf.botplayer.skill.reservation.ReservationKey;
 import io.github.greytaiwolf.botplayer.skill.reservation.ReservationRequest;
 import io.github.greytaiwolf.botplayer.skill.reservation.ResourceReservationService;
 import io.github.greytaiwolf.botplayer.skill.runtime.core.ActionBackedSkillNodeHandler;
 import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillNodeContext;
 import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillNodeDirective;
+import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRunRequest;
+import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRuntime;
+import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillRuntimeBudget;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorLimits;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorService;
 import java.util.ArrayList;
@@ -272,6 +280,162 @@ class MinecraftProductionSkillNodeHandlerTest {
                         rejectedDirective.kind()),
                 () -> Assertions.assertEquals(SkillFailureCode.ACTION_REJECTED,
                         rejectedDirective.failureCode().orElseThrow()));
+    }
+
+    @Test
+    void replansOnlyOnceAfterTheMarkedNoPacketFurnaceFacingDrift() {
+        SequencedGateway actions = new SequencedGateway();
+        List<SkillSignal> signals = new ArrayList<>();
+        MinecraftProductionSkillNodeHandler handler = handler(
+                context -> Optional.of(placementPreflight(context.currentTick(),
+                        ProductionLedger.of(ProductionMaterials.FURNACE, 1))),
+                unused -> Optional.of(furnacePlacementAction()),
+                actions,
+                signal -> {
+                    signals.add(signal);
+                    return SkillSignalInbox.OfferStatus.ENQUEUED;
+                });
+        String operation = operation("place_furnace");
+        List<ActionEvidence> marker = List.of(new ActionEvidence(
+                WorldInteractionActionSpec.PlaceBlock
+                        .PRE_DISPATCH_FACING_DRIFT_EVIDENCE_KEY,
+                WorldInteractionActionSpec.PlaceBlock
+                        .PRE_DISPATCH_FACING_DRIFT_EVIDENCE_VALUE));
+
+        Assertions.assertEquals(SkillNodeDirective.Kind.WAIT_ACTION,
+                handler.begin(context(operation, 10L, 0L)).kind());
+        actions.completeNextFailure(marker,
+                "Block placement facing changed before native dispatch");
+        Assertions.assertTrue(handler.failed(
+                context(operation, 11L, 1L), signals.get(0))
+                .permitsCurrentNodeReplan());
+
+        Assertions.assertEquals(SkillNodeDirective.Kind.WAIT_ACTION,
+                handler.begin(context(operation, 12L, 3L)).kind());
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(2, actions.submitted.size()),
+                () -> Assertions.assertNotEquals(
+                        actions.submitted.get(0).idempotencyKey(),
+                        actions.submitted.get(1).idempotencyKey()),
+                () -> Assertions.assertTrue(actions.submitted.get(1)
+                        .idempotencyKey().endsWith(
+                                ":production-place-workstation-r1")));
+
+        actions.completeNextFailure(marker,
+                "Block placement facing changed before native dispatch");
+        Assertions.assertAll(
+                () -> Assertions.assertFalse(handler.failed(
+                        context(operation, 13L, 4L), signals.get(1))
+                        .permitsCurrentNodeReplan()),
+                () -> Assertions.assertEquals(2, actions.submitted.size(),
+                        "a second marker must not authorize a third placement"));
+    }
+
+    @Test
+    void runtimeConsumesTheMarkedFurnaceCapabilityOnceThenFailsClosed() {
+        SequencedGateway actions = new SequencedGateway();
+        List<SkillSignal> signals = new ArrayList<>();
+        List<Long> observationTicks = new ArrayList<>();
+        MinecraftProductionSkillNodeHandler handler = handler(
+                context -> {
+                    observationTicks.add(context.currentTick());
+                    return Optional.of(placementPreflight(context.currentTick(),
+                            ProductionLedger.of(
+                                    ProductionMaterials.FURNACE, 1)));
+                },
+                unused -> Optional.of(furnacePlacementAction()),
+                actions,
+                signal -> {
+                    signals.add(signal);
+                    return SkillSignalInbox.OfferStatus.ENQUEUED;
+                });
+        SkillRuntime runtime = productionRuntime(handler);
+        String operation = operation("place_furnace");
+        UUID runId = runtime.submit(new SkillRunRequest(BOT, 1L,
+                new SkillPlan(new UUID(0L, 70L), BOT, 1L,
+                        List.of(new SkillPlanNode(NODE,
+                                P5ABuiltinSkillIds.BOOTSTRAP_IRON,
+                                P5ABuiltinSkillIds.VERSION,
+                                parameters(operation))),
+                        List.of()),
+                0L)).runId().orElseThrow();
+        List<ActionEvidence> marker = List.of(new ActionEvidence(
+                WorldInteractionActionSpec.PlaceBlock
+                        .PRE_DISPATCH_FACING_DRIFT_EVIDENCE_KEY,
+                WorldInteractionActionSpec.PlaceBlock
+                        .PRE_DISPATCH_FACING_DRIFT_EVIDENCE_VALUE));
+
+        runtime.tick(0L);
+        actions.completeNextFailure(marker,
+                "Block placement facing changed before native dispatch");
+        Assertions.assertEquals(SkillSignalInbox.OfferStatus.ENQUEUED,
+                runtime.offerSignal(signals.get(0)));
+
+        runtime.tick(1L);
+        Assertions.assertEquals(SkillRunState.RECOVERING,
+                runtime.inspectRun(runId).orElseThrow().state());
+        runtime.tick(2L);
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.WAITING_ACTION,
+                        runtime.inspectRun(runId).orElseThrow().state()),
+                () -> Assertions.assertEquals(List.of(0L, 0L, 2L, 2L),
+                        observationTicks,
+                        "each dispatch must obtain two current preflight observations"),
+                () -> Assertions.assertEquals(2, actions.submitted.size()),
+                () -> Assertions.assertTrue(actions.submitted.get(1)
+                        .idempotencyKey().endsWith(
+                                ":production-place-workstation-r1")));
+
+        actions.completeNextFailure(marker,
+                "Block placement facing changed before native dispatch");
+        Assertions.assertEquals(SkillSignalInbox.OfferStatus.ENQUEUED,
+                runtime.offerSignal(signals.get(1)));
+        runtime.tick(3L);
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.FAILED,
+                        runtime.inspectRun(runId).orElseThrow().state()),
+                () -> Assertions.assertEquals(SkillFailureCode.WORLD_CHANGED,
+                        runtime.inspectRun(runId).orElseThrow()
+                                .failureCode().orElseThrow()),
+                () -> Assertions.assertEquals(List.of(
+                        actions.submitted.get(1).actionId()),
+                        actions.cancelledActionIds),
+                () -> Assertions.assertEquals(2, actions.submitted.size()));
+    }
+
+    @Test
+    void rejectsAmbiguousFacingDriftEvidenceInsteadOfRetrying() {
+        SequencedGateway actions = new SequencedGateway();
+        List<SkillSignal> signals = new ArrayList<>();
+        MinecraftProductionSkillNodeHandler handler = handler(
+                ignored -> Optional.of(placementPreflight(10L,
+                        ProductionLedger.of(ProductionMaterials.FURNACE, 1))),
+                unused -> Optional.of(furnacePlacementAction()),
+                actions,
+                signal -> {
+                    signals.add(signal);
+                    return SkillSignalInbox.OfferStatus.ENQUEUED;
+                });
+        String operation = operation("place_furnace");
+        List<ActionEvidence> ambiguous = List.of(
+                new ActionEvidence(WorldInteractionActionSpec.PlaceBlock
+                        .PRE_DISPATCH_FACING_DRIFT_EVIDENCE_KEY,
+                        WorldInteractionActionSpec.PlaceBlock
+                                .PRE_DISPATCH_FACING_DRIFT_EVIDENCE_VALUE),
+                new ActionEvidence("placement.unrelated", "true"));
+
+        Assertions.assertEquals(SkillNodeDirective.Kind.WAIT_ACTION,
+                handler.begin(context(operation, 10L, 0L)).kind());
+        actions.completeNextFailure(ambiguous,
+                "Block placement facing changed before native dispatch");
+
+        Assertions.assertAll(
+                () -> Assertions.assertFalse(handler.failed(
+                        context(operation, 11L, 1L), signals.get(0))
+                        .permitsCurrentNodeReplan()),
+                () -> Assertions.assertEquals(1, actions.submitted.size(),
+                        "extra evidence must not authorize a fresh placement"));
     }
 
     @Test
@@ -710,6 +874,19 @@ class MinecraftProductionSkillNodeHandlerTest {
                     .ExecutionTicket, Optional<MinecraftProductionSkillNodeHandler
                     .ProductionAction>> menuActions,
             ActionBackedSkillNodeHandler.ActionGateway actions) {
+        return handler(preflight, menuActions, actions,
+                signal -> SkillSignalInbox.OfferStatus.ENQUEUED);
+    }
+
+    private static MinecraftProductionSkillNodeHandler handler(
+            java.util.function.Function<SkillNodeContext, Optional<
+                    MinecraftProductionSkillNodeHandler.PreflightObservation>>
+                    preflight,
+            java.util.function.Function<MinecraftProductionSkillNodeHandler
+                    .ExecutionTicket, Optional<MinecraftProductionSkillNodeHandler
+                    .ProductionAction>> menuActions,
+            ActionBackedSkillNodeHandler.ActionGateway actions,
+            ActionBackedSkillNodeHandler.SignalSink signals) {
         return new MinecraftProductionSkillNodeHandler(
                 (botId, generation) -> Optional.of(
                         new MinecraftProductionSkillNodeHandler.ActiveBot(
@@ -741,7 +918,26 @@ class MinecraftProductionSkillNodeHandlerTest {
                 (ticket, sensors) -> menuActions.apply(ticket),
                 menuActions::apply,
                 actions,
-                signal -> SkillSignalInbox.OfferStatus.ENQUEUED);
+                signals);
+    }
+
+    private static SkillRuntime productionRuntime(
+            MinecraftProductionSkillNodeHandler handler) {
+        SkillRegistry registry = new SkillRegistry();
+        Assertions.assertEquals(SkillRegistry.RegisterStatus.REGISTERED,
+                registry.register(ProductionSkillPlanCompiler
+                        .handlerDescriptor()));
+        SkillRuntime runtime = new SkillRuntime(
+                registry,
+                new SkillPlanValidator(registry, SkillPlanLimits.defaults()),
+                new ResourceReservationService(16, 100),
+                new SkillRuntimeBudget(4, 8, 16,
+                        MinecraftProductionSkillNodeHandler
+                                .MAXIMUM_ACTION_TICKS));
+        Assertions.assertEquals(SkillRuntime.HandlerRegistrationStatus.REGISTERED,
+                runtime.registerHandler(P5ABuiltinSkillIds.BOOTSTRAP_IRON,
+                        P5ABuiltinSkillIds.VERSION, handler));
+        return runtime;
     }
 
     private static MinecraftProductionSkillNodeHandler.PreflightObservation
@@ -901,7 +1097,22 @@ class MinecraftProductionSkillNodeHandlerTest {
     }
 
     private static MinecraftProductionSkillNodeHandler.ProductionAction
+            furnacePlacementAction() {
+        return placementAction(new BlockStateFingerprint(
+                        new ResourceId("minecraft:furnace"),
+                        Map.of("facing", "north", "lit", "false")),
+                new ResourceId("minecraft:furnace"));
+    }
+
+    private static MinecraftProductionSkillNodeHandler.ProductionAction
             placementAction(BlockStateFingerprint placedState) {
+        return placementAction(placedState,
+                new ResourceId("minecraft:crafting_table"));
+    }
+
+    private static MinecraftProductionSkillNodeHandler.ProductionAction
+            placementAction(
+                    BlockStateFingerprint placedState, ResourceId heldItemId) {
         BlockTargetFingerprint anchor = new BlockTargetFingerprint(
                 new ResourceId("minecraft:overworld"),
                 new BlockCoordinates(4, 64, 4),
@@ -912,7 +1123,7 @@ class MinecraftProductionSkillNodeHandlerTest {
                 new BlockCoordinates(4, 65, 4),
                 placedState);
         ItemStackFingerprint held = ItemStackFingerprint.of(
-                new ResourceId("minecraft:crafting_table"),
+                heldItemId,
                 1,
                 0,
                 "a".repeat(64));
@@ -1016,6 +1227,7 @@ class MinecraftProductionSkillNodeHandlerTest {
         private final List<ActionEnvelope> submitted = new ArrayList<>();
         private final List<CompletableFuture<ActionOutcome>> completions =
                 new ArrayList<>();
+        private final List<UUID> cancelledActionIds = new ArrayList<>();
         private int nextCompletion;
 
         @Override
@@ -1035,7 +1247,7 @@ class MinecraftProductionSkillNodeHandlerTest {
                 UUID botId,
                 UUID actionId,
                 ActionCancellationReason reason) {
-            // The focused happy path never cancels an action.
+            cancelledActionIds.add(actionId);
         }
 
         private void completeNextSuccess(List<ActionEvidence> evidence) {
@@ -1044,6 +1256,15 @@ class MinecraftProductionSkillNodeHandlerTest {
                     envelope.actionId(), ActionState.SUCCEEDED,
                     ActionFailureCode.NONE, 10L, 10L, evidence,
                     "测试原版动作已完成"));
+        }
+
+        private void completeNextFailure(
+                List<ActionEvidence> evidence, String summary) {
+            ActionEnvelope envelope = submitted.get(nextCompletion);
+            completions.get(nextCompletion++).complete(new ActionOutcome(
+                    envelope.actionId(), ActionState.FAILED,
+                    ActionFailureCode.PRECONDITION_FAILED, 10L, 10L,
+                    evidence, summary));
         }
     }
 

@@ -8,6 +8,7 @@ import io.github.greytaiwolf.botplayer.skill.core.SkillRunState;
 import io.github.greytaiwolf.botplayer.skill.core.SkillSignal;
 import io.github.greytaiwolf.botplayer.skill.core.SkillSignalInbox;
 import io.github.greytaiwolf.botplayer.skill.core.SkillSignalStatus;
+import io.github.greytaiwolf.botplayer.skill.core.SkillSignalType;
 import io.github.greytaiwolf.botplayer.skill.core.SkillVersion;
 import io.github.greytaiwolf.botplayer.skill.plan.SkillPlan;
 import io.github.greytaiwolf.botplayer.skill.plan.SkillPlanNode;
@@ -444,11 +445,24 @@ public final class SkillRuntime implements AutoCloseable {
                             handler(run).signal(
                                     context(run, currentTick), signal),
                             currentTick);
-                    case FAILED -> finishFailed(
-                            run,
-                            signal.failureCode(),
-                            signal.safeSummary(),
-                            currentTick);
+                    case FAILED -> {
+                        SkillNodeContext signalContext = context(run, currentTick);
+                        SkillNodeHandler.FailedSignalDisposition disposition =
+                                handler(run).failed(
+                                        signalContext, signal);
+                        if (ActionBackedSkillNodeHandler
+                                        .consumeNoSideEffectReplan(
+                                                disposition, signalContext, signal)
+                                && replanCurrentNodeAfterProvenNoSideEffect(
+                                        run, signal, currentTick)) {
+                            continue;
+                        }
+                        finishFailed(
+                                run,
+                                signal.failureCode(),
+                                signal.safeSummary(),
+                                currentTick);
+                    }
                     case CANCELLED -> {
                         notifyCancelled(
                                 run, signal.safeSummary(), currentTick);
@@ -493,10 +507,13 @@ public final class SkillRuntime implements AutoCloseable {
                 transition(run, SkillRunState.PREPARING, currentTick,
                         "技能节点准备开始");
             }
-            if (run.state == SkillRunState.RESUMING) {
+            if (run.state == SkillRunState.RESUMING
+                    || run.state == SkillRunState.RECOVERING) {
                 run.nodeStarted = false;
                 transition(run, SkillRunState.PREPARING, currentTick,
-                        "技能节点正在从安全检查点恢复");
+                        run.state == SkillRunState.RESUMING
+                                ? "技能节点正在从安全检查点恢复"
+                                : "技能节点正在重新观察无副作用失败后的当前状态");
             }
             if (run.state == SkillRunState.PREPARING
                     && !run.nodeStarted) {
@@ -617,6 +634,27 @@ public final class SkillRuntime implements AutoCloseable {
                 : supplied;
         notifyCancelled(run, summary, currentTick);
         finish(run, SkillRunState.FAILED, resolved, summary, currentTick);
+    }
+
+    /**
+     * A handler can reach this path only through its explicit failed-signal
+     * hook.  Keep the core guard deliberately narrow: the completed receipt
+     * must have belonged to an action wait, the node remains the same, its
+     * deadline is unchanged, and the next tick must reacquire reservations and
+     * execute the normal dispatch fence before a fresh begin().
+     */
+    private boolean replanCurrentNodeAfterProvenNoSideEffect(
+            ActiveRun run, SkillSignal signal, long currentTick) {
+        if (signal.type() != SkillSignalType.ACTION
+                || run.state != SkillRunState.WAITING_ACTION
+                || !run.nodeStarted) {
+            return false;
+        }
+        releaseReservations(run);
+        run.nodeStarted = false;
+        transition(run, SkillRunState.RECOVERING, currentTick,
+                "原版动作在无副作用围栏处被拒绝，正在重新观察当前节点");
+        return true;
     }
 
     private void finish(

@@ -37,7 +37,48 @@ public interface SkillNodeHandler {
                 "技能节点收到了未处理的异步回执");
     }
 
+    /**
+     * Gives a handler one narrowly controlled chance to recover from an already
+     * terminal failed signal.
+     *
+     * <p>The default remains terminal.  A handler may request a current-node
+     * replan only by returning the action bridge's one-shot capability after
+     * it has checked the reviewed no-native-side-effect condition. This hook
+     * is never used for cancellation, preemption, or stale signals.
+     */
+    default FailedSignalDisposition failed(
+            SkillNodeContext context, SkillSignal signal) {
+        return FailedSignalDisposition.terminate();
+    }
+
     default void cancelled(SkillNodeContext context, String reason) {
         // 处理器可在此撤销自己的受控动作；运行时随后会释放所有 reservation。
+    }
+
+    /**
+     * A sealed failed-signal result.  Handlers cannot fabricate a replan: the
+     * only replan implementation is minted after an action bridge consumes its
+     * exact terminal completion capability.
+     */
+    sealed interface FailedSignalDisposition
+            permits TerminalFailedSignalDisposition,
+                    ActionBackedSkillNodeHandler.NoSideEffectActionReplan {
+        static FailedSignalDisposition terminate() {
+            return TerminalFailedSignalDisposition.INSTANCE;
+        }
+
+        /** Whether this result carries the bridge-minted replan capability. */
+        boolean permitsCurrentNodeReplan();
+    }
+}
+
+/** Package-private terminal singleton; a handler cannot turn it into a retry. */
+enum TerminalFailedSignalDisposition
+        implements SkillNodeHandler.FailedSignalDisposition {
+    INSTANCE;
+
+    @Override
+    public boolean permitsCurrentNodeReplan() {
+        return false;
     }
 }

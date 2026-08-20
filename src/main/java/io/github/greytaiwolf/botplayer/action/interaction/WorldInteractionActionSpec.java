@@ -798,6 +798,18 @@ public sealed interface WorldInteractionActionSpec
    public static record PlaceBlock(
       BlockHitTarget anchor, BlockTargetFingerprint expectedPlaced, ItemStackFingerprint expectedHeldItem
    ) implements WorldInteractionActionSpec {
+      /**
+       * A reviewed P5A furnace placement can reject before native dispatch when
+       * the frozen horizontal-facing context has drifted.  The bounded receipt
+       * is deliberately an evidence capability rather than a human-readable
+       * summary: only that no-side-effect rejection may request one fresh
+       * production replan.
+       */
+      public static final String PRE_DISPATCH_FACING_DRIFT_EVIDENCE_KEY =
+         "placement.pre_dispatch";
+      public static final String PRE_DISPATCH_FACING_DRIFT_EVIDENCE_VALUE =
+         "facing_drift";
+
       /*
        * Some vanilla blocks (notably furnaces) derive their complete placed
        * state from the player's facing.  Holding LOOK together with the hand

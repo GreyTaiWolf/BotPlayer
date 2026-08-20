@@ -2555,6 +2555,11 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             return failure(
                     envelope,
                     ActionFailureCode.PRECONDITION_FAILED,
+                    List.of(evidence(
+                            WorldInteractionActionSpec.PlaceBlock
+                                    .PRE_DISPATCH_FACING_DRIFT_EVIDENCE_KEY,
+                            WorldInteractionActionSpec.PlaceBlock
+                                    .PRE_DISPATCH_FACING_DRIFT_EVIDENCE_VALUE)),
                     "Block placement facing changed before native dispatch");
         }
         return BackendResult.accepted(envelope);
@@ -6801,7 +6806,15 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
             ActionEnvelope envelope,
             ActionFailureCode code,
             String summary) {
-        return BackendResult.failed(envelope, code, List.of(), summary);
+        return failure(envelope, code, List.of(), summary);
+    }
+
+    private static BackendResult failure(
+            ActionEnvelope envelope,
+            ActionFailureCode code,
+            List<ActionEvidence> evidence,
+            String summary) {
+        return BackendResult.failed(envelope, code, evidence, summary);
     }
 
     private static BackendResult success(

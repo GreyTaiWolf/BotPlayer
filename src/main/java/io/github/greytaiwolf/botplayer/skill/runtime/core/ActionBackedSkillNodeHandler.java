@@ -9,6 +9,8 @@ import io.github.greytaiwolf.botplayer.action.ActionOutcome;
 import io.github.greytaiwolf.botplayer.action.ActionPriority;
 import io.github.greytaiwolf.botplayer.action.ActionRequest;
 import io.github.greytaiwolf.botplayer.action.ActionState;
+import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
+import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
 import io.github.greytaiwolf.botplayer.skill.core.SkillFailureCode;
 import io.github.greytaiwolf.botplayer.skill.core.SkillSignal;
 import io.github.greytaiwolf.botplayer.skill.core.SkillSignalInbox;
@@ -32,12 +34,15 @@ import java.util.UUID;
 public final class ActionBackedSkillNodeHandler
         implements SkillNodeHandler {
     private static final int DEADLINE_GRACE_TICKS = 20;
+    private static final int MAXIMUM_MARKED_PLACE_BLOCK_REPLANS_PER_NODE = 1;
 
     private final Thread ownerThread;
     private final OperationPlanner planner;
     private final ActionGateway actions;
     private final SignalSink signals;
     private final Map<UUID, PendingAction> pendingByRun =
+            new LinkedHashMap<>();
+    private final Map<RunNodeKey, Integer> markedPlaceBlockReplans =
             new LinkedHashMap<>();
 
     public ActionBackedSkillNodeHandler(
@@ -86,6 +91,7 @@ public final class ActionBackedSkillNodeHandler
                             + context.nodeIndex());
         }
         UUID actionId = UUID.randomUUID();
+        UUID completionSignalId = UUID.randomUUID();
         long deadlineTick;
         try {
             deadlineTick = Math.min(
@@ -129,9 +135,11 @@ public final class ActionBackedSkillNodeHandler
         }
         PendingAction pending = new PendingAction(
                 actionId,
+                completionSignalId,
                 context.botId(),
                 context.botGeneration(),
                 context.nextStateRevision(),
+                context.node().nodeId(),
                 operation);
         pendingByRun.put(context.runId(), pending);
         submission.completion().orElseThrow().whenComplete(
@@ -149,20 +157,20 @@ public final class ActionBackedSkillNodeHandler
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(signal, "signal");
         PendingAction pending = pendingByRun.get(context.runId());
-        if (pending == null
-                || !pending.actionId.equals(signal.operationId())
-                || signal.type() != SkillSignalType.ACTION) {
+        if (!matchesPendingCompletion(context, signal, pending)) {
             return SkillNodeDirective.fail(
                     SkillFailureCode.INTERNAL_ERROR,
                     "技能节点收到不属于当前动作的回执");
         }
         pendingByRun.remove(context.runId(), pending);
+        markedPlaceBlockReplans.remove(new RunNodeKey(
+                context.runId(), context.node().nodeId()));
         if (signal.status() != SkillSignalStatus.SUCCEEDED) {
             return SkillNodeDirective.fail(
                     signal.failureCode() == SkillFailureCode.NONE
                             ? SkillFailureCode.INTERNAL_ERROR
                             : signal.failureCode(),
-                    "技能节点原版动作未成功完成");
+                    signal.safeSummary());
         }
         try {
             return pending.operation.successVerifier().verify(context, signal);
@@ -178,6 +186,8 @@ public final class ActionBackedSkillNodeHandler
         requireOwnerThread();
         Objects.requireNonNull(context, "context");
         PendingAction pending = pendingByRun.remove(context.runId());
+        markedPlaceBlockReplans.remove(new RunNodeKey(
+                context.runId(), context.node().nodeId()));
         if (pending == null) {
             return;
         }
@@ -192,6 +202,92 @@ public final class ActionBackedSkillNodeHandler
         }
     }
 
+    /**
+     * Consumes the one reviewed P5A receipt that proves a frozen old
+     * {@link WorldInteractionActionSpec.PlaceBlock} never reached vanilla's
+     * packet/item-consumption point.  This is deliberately not a generic
+     * failed-action retry API: the bridge itself requires the exact backend
+     * marker before it mints the one-shot capability.
+     */
+    public SkillNodeHandler.FailedSignalDisposition
+            consumeMarkedNoPacketPlaceBlockReplan(
+            SkillNodeContext context, SkillSignal signal) {
+        requireOwnerThread();
+        Objects.requireNonNull(context, "context");
+        Objects.requireNonNull(signal, "signal");
+        PendingAction pending = pendingByRun.get(context.runId());
+        if (signal.status() != SkillSignalStatus.FAILED
+                || !matchesPendingCompletion(context, signal, pending)
+                || !isMarkedNoPacketPlaceBlockFailure(signal, pending)) {
+            return SkillNodeHandler.FailedSignalDisposition.terminate();
+        }
+        RunNodeKey key = new RunNodeKey(context.runId(), context.node().nodeId());
+        if (markedPlaceBlockReplans.getOrDefault(key, 0)
+                >= MAXIMUM_MARKED_PLACE_BLOCK_REPLANS_PER_NODE) {
+            return SkillNodeHandler.FailedSignalDisposition.terminate();
+        }
+        if (!pendingByRun.remove(context.runId(), pending)) {
+            return SkillNodeHandler.FailedSignalDisposition.terminate();
+        }
+        markedPlaceBlockReplans.put(key, 1);
+        return new NoSideEffectActionReplan(
+                pending.completionSignalId,
+                pending.actionId,
+                pending.botId,
+                pending.generation,
+                pending.runRevision,
+                pending.nodeId,
+                context.runId());
+    }
+
+    /**
+     * Consumes a bridge-minted replan exactly once.  The runtime calls this
+     * after the handler has checked its domain-specific no-side-effect
+     * evidence, so a future handler cannot fabricate or reuse a capability
+     * from another node, revision, or signal.
+     */
+    static boolean consumeNoSideEffectReplan(
+            SkillNodeHandler.FailedSignalDisposition disposition,
+            SkillNodeContext context,
+            SkillSignal signal) {
+        return disposition instanceof NoSideEffectActionReplan capability
+                && capability.consume(context, signal);
+    }
+
+    private static boolean matchesPendingCompletion(
+            SkillNodeContext context,
+            SkillSignal signal,
+            PendingAction pending) {
+        return pending != null
+                && pending.completionSignalId.equals(signal.signalId())
+                && context.runId().equals(signal.runId())
+                && pending.actionId.equals(signal.operationId())
+                && pending.botId.equals(context.botId())
+                && pending.botId.equals(signal.botId())
+                && pending.generation == context.botGeneration()
+                && pending.generation == signal.botGeneration()
+                && pending.runRevision == context.stateRevision()
+                && pending.runRevision == signal.runRevision()
+                && pending.nodeId.equals(context.node().nodeId())
+                && signal.type() == SkillSignalType.ACTION;
+    }
+
+    private static boolean isMarkedNoPacketPlaceBlockFailure(
+            SkillSignal signal, PendingAction pending) {
+        return pending.operation.action() instanceof WorldInteractionAction
+                        interaction
+                && interaction.spec()
+                        instanceof WorldInteractionActionSpec.PlaceBlock
+                && signal.failureCode() == SkillFailureCode.WORLD_CHANGED
+                && signal.evidence().size() == 1
+                && signal.evidence().get(0).key().equals(
+                        WorldInteractionActionSpec.PlaceBlock
+                                .PRE_DISPATCH_FACING_DRIFT_EVIDENCE_KEY)
+                && signal.evidence().get(0).value().equals(
+                        WorldInteractionActionSpec.PlaceBlock
+                                .PRE_DISPATCH_FACING_DRIFT_EVIDENCE_VALUE);
+    }
+
     private void offerCompletion(
             UUID runId,
             PendingAction pending,
@@ -201,7 +297,7 @@ public final class ActionBackedSkillNodeHandler
         SignalProjection projection = projectOutcome(
                 pending.actionId, outcome, throwable, submittedTick);
         signals.offer(new SkillSignal(
-                UUID.randomUUID(),
+                pending.completionSignalId,
                 runId,
                 pending.botId,
                 pending.generation,
@@ -407,18 +503,93 @@ public final class ActionBackedSkillNodeHandler
 
     private record PendingAction(
             UUID actionId,
+            UUID completionSignalId,
             UUID botId,
             long generation,
             long runRevision,
+            UUID nodeId,
             Operation operation) {
         private PendingAction {
             Objects.requireNonNull(actionId, "actionId");
+            Objects.requireNonNull(completionSignalId, "completionSignalId");
             Objects.requireNonNull(botId, "botId");
             if (generation <= 0L || runRevision < 1L) {
                 throw new IllegalArgumentException(
                         "pending action identity is invalid");
             }
+            Objects.requireNonNull(nodeId, "nodeId");
             Objects.requireNonNull(operation, "operation");
+        }
+    }
+
+    private record RunNodeKey(UUID runId, UUID nodeId) {
+        private RunNodeKey {
+            Objects.requireNonNull(runId, "runId");
+            Objects.requireNonNull(nodeId, "nodeId");
+        }
+    }
+
+    /**
+     * Package-visible only because it is the sole permitted implementation of
+     * {@link SkillNodeHandler.FailedSignalDisposition}; its constructor and
+     * consumption remain private to the action bridge.
+     */
+    static final class NoSideEffectActionReplan
+            implements SkillNodeHandler.FailedSignalDisposition {
+        private final UUID completionSignalId;
+        private final UUID actionId;
+        private final UUID botId;
+        private final long generation;
+        private final long runRevision;
+        private final UUID nodeId;
+        private final UUID runId;
+        private boolean consumed;
+
+        private NoSideEffectActionReplan(
+                UUID completionSignalId,
+                UUID actionId,
+                UUID botId,
+                long generation,
+                long runRevision,
+                UUID nodeId,
+                UUID runId) {
+            this.completionSignalId = Objects.requireNonNull(
+                    completionSignalId, "completionSignalId");
+            this.actionId = Objects.requireNonNull(actionId, "actionId");
+            this.botId = Objects.requireNonNull(botId, "botId");
+            if (generation <= 0L || runRevision < 1L) {
+                throw new IllegalArgumentException(
+                        "replan capability identity is invalid");
+            }
+            this.generation = generation;
+            this.runRevision = runRevision;
+            this.nodeId = Objects.requireNonNull(nodeId, "nodeId");
+            this.runId = Objects.requireNonNull(runId, "runId");
+        }
+
+        @Override
+        public boolean permitsCurrentNodeReplan() {
+            return true;
+        }
+
+        private boolean consume(SkillNodeContext context, SkillSignal signal) {
+            if (consumed
+                    || !runId.equals(context.runId())
+                    || !botId.equals(context.botId())
+                    || generation != context.botGeneration()
+                    || runRevision != context.stateRevision()
+                    || !nodeId.equals(context.node().nodeId())
+                    || !completionSignalId.equals(signal.signalId())
+                    || !actionId.equals(signal.operationId())
+                    || !botId.equals(signal.botId())
+                    || generation != signal.botGeneration()
+                    || runRevision != signal.runRevision()
+                    || signal.type() != SkillSignalType.ACTION
+                    || signal.status() != SkillSignalStatus.FAILED) {
+                return false;
+            }
+            consumed = true;
+            return true;
         }
     }
 

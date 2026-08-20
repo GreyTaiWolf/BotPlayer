@@ -42,6 +42,7 @@ import io.github.greytaiwolf.botplayer.skill.runtime.core.ActionBackedSkillNodeH
 import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillNodeContext;
 import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillNodeDirective;
 import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillNodeHandler;
+import io.github.greytaiwolf.botplayer.skill.runtime.core.SkillNodeHandler.FailedSignalDisposition;
 import io.github.greytaiwolf.botplayer.skill.task.TaskSensorService;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -105,6 +106,8 @@ public final class MinecraftProductionSkillNodeHandler
             "block.drop.count";
     private static final String DROP_NAVIGATION_CANCELLATION_REASON =
             "P5A 资源掉落收集节点已被取消";
+    /** A single fresh observation is permitted only after a marked no-packet facing fence. */
+    private static final int MAXIMUM_WORKSTATION_PRE_DISPATCH_REPLANS = 1;
 
     private final ActiveBotResolver bots;
     private final ProductionObservationPort observations;
@@ -119,6 +122,8 @@ public final class MinecraftProductionSkillNodeHandler
     private final ActionBackedSkillNodeHandler.SignalSink signals;
     private final Map<UUID, ResourceDropCollection> resourceDropCollections =
             new LinkedHashMap<>();
+    private final Map<UUID, WorkstationPlacementReplan>
+            workstationPlacementReplans = new LinkedHashMap<>();
     private final Thread ownerThread;
 
     /**
@@ -261,7 +266,55 @@ public final class MinecraftProductionSkillNodeHandler
             }
             return result;
         }
-        return actionDelegate.signal(context, signal);
+        SkillNodeDirective result = actionDelegate.signal(context, signal);
+        if (signal.status() == SkillSignalStatus.SUCCEEDED) {
+            workstationPlacementReplans.remove(context.runId());
+        }
+        return result;
+    }
+
+    /**
+     * The sole P5A action-replan exception.  It is intentionally narrower than
+     * a generic retry: the backend must have returned exactly the reviewed
+     * no-native-packet facing-drift receipt, and the action bridge must consume
+     * its private completion capability before the runtime releases the node.
+     */
+    @Override
+    public FailedSignalDisposition failed(
+            SkillNodeContext context, SkillSignal signal) {
+        requireOwnerThread();
+        Objects.requireNonNull(context, "context");
+        Objects.requireNonNull(signal, "signal");
+        ApprovedOperation approved = approvedOperation(
+                context.node().parameters()).orElse(null);
+        if (approved == null
+                || !matchesBootstrapDescriptor(context)
+                || !(approved.resolved().node().operation()
+                        instanceof PlaceWorkstation placement)
+                || placement.workstation().furnaceKind().isEmpty()
+                || !isMarkedPreDispatchFacingDrift(signal)) {
+            return FailedSignalDisposition.terminate();
+        }
+        WorkstationPlacementReplan existing = workstationPlacementReplans.get(
+                context.runId());
+        int nextAttempt = existing == null ? 1
+                : Math.incrementExact(existing.retryAttempt());
+        if (nextAttempt > MAXIMUM_WORKSTATION_PRE_DISPATCH_REPLANS
+                || (existing != null && !existing.matches(context,
+                        approved.operationId()))) {
+            return FailedSignalDisposition.terminate();
+        }
+        FailedSignalDisposition authorization =
+                actionDelegate.consumeMarkedNoPacketPlaceBlockReplan(
+                        context, signal);
+        if (!authorization.permitsCurrentNodeReplan()) {
+            return FailedSignalDisposition.terminate();
+        }
+        workstationPlacementReplans.put(context.runId(),
+                new WorkstationPlacementReplan(
+                        context.node().nodeId(), approved.operationId(),
+                        nextAttempt));
+        return authorization;
     }
 
     /**
@@ -300,6 +353,7 @@ public final class MinecraftProductionSkillNodeHandler
     @Override
     public void cancelled(SkillNodeContext context, String reason) {
         requireOwnerThread();
+        workstationPlacementReplans.remove(context.runId());
         ResourceDropCollection collection = resourceDropCollections.remove(
                 context.runId());
         if (collection instanceof PendingResourceDropNavigation pending) {
@@ -364,7 +418,7 @@ public final class MinecraftProductionSkillNodeHandler
         }
         boolean menuOperation = ticket.resolved().menuContract().isPresent();
         return Optional.of(new ActionBackedSkillNodeHandler.Operation(
-                operationKey(ticket.resolved().node().operation()),
+                operationKey(context, ticket),
                 action.action(),
                 ActionPriority.AUTONOMOUS,
                 action.maximumTicks(),
@@ -1358,6 +1412,25 @@ public final class MinecraftProductionSkillNodeHandler
                 family.name().toLowerCase(java.util.Locale.ROOT));
     }
 
+    private String operationKey(
+            SkillNodeContext context, ExecutionTicket ticket) {
+        ProductionOperation operation = ticket.resolved().node().operation();
+        String base = operationKey(operation);
+        if (!(operation instanceof PlaceWorkstation)) {
+            return base;
+        }
+        WorkstationPlacementReplan replan = workstationPlacementReplans.get(
+                context.runId());
+        if (replan == null) {
+            return base;
+        }
+        if (!replan.matches(context, ticket.operationId())) {
+            workstationPlacementReplans.remove(context.runId(), replan);
+            return base;
+        }
+        return base + "-r" + replan.retryAttempt();
+    }
+
     private static String operationKey(ProductionOperation operation) {
         if (operation instanceof ResourceAcquisition) {
             return "production-acquire";
@@ -1378,6 +1451,20 @@ public final class MinecraftProductionSkillNodeHandler
         return context.node().skillId().equals(P5ABuiltinSkillIds.BOOTSTRAP_IRON)
                 && context.node().skillVersion().equals(
                         P5ABuiltinSkillIds.VERSION);
+    }
+
+    private static boolean isMarkedPreDispatchFacingDrift(
+            SkillSignal signal) {
+        return signal.type() == SkillSignalType.ACTION
+                && signal.status() == SkillSignalStatus.FAILED
+                && signal.failureCode() == SkillFailureCode.WORLD_CHANGED
+                && signal.evidence().size() == 1
+                && signal.evidence().get(0).key().equals(
+                        WorldInteractionActionSpec.PlaceBlock
+                                .PRE_DISPATCH_FACING_DRIFT_EVIDENCE_KEY)
+                && signal.evidence().get(0).value().equals(
+                        WorldInteractionActionSpec.PlaceBlock
+                                .PRE_DISPATCH_FACING_DRIFT_EVIDENCE_VALUE);
     }
 
     private static SkillFailureCode mapRejection(
@@ -1720,6 +1807,31 @@ public final class MinecraftProductionSkillNodeHandler
                                 + MAXIMUM_ACTION_TICKS);
             }
             waitingSummary = requireSummary(waitingSummary);
+        }
+    }
+
+    /**
+     * Transient, per-run permission to plan one new frozen furnace placement
+     * after the backend has proved the previous action never reached vanilla.
+     * It is intentionally not plan/checkpoint state: lifecycle cancellation,
+     * replacement, or restart must re-observe rather than inherit a retry.
+     */
+    private record WorkstationPlacementReplan(
+            UUID nodeId, String operationId, int retryAttempt) {
+        private WorkstationPlacementReplan {
+            requireNonZero(nodeId, "nodeId");
+            operationId = requireBinding(operationId, "operationId");
+            if (retryAttempt < 1
+                    || retryAttempt > MAXIMUM_WORKSTATION_PRE_DISPATCH_REPLANS) {
+                throw new IllegalArgumentException(
+                        "workstation placement retry attempt is outside its bound");
+            }
+        }
+
+        private boolean matches(
+                SkillNodeContext context, String currentOperationId) {
+            return nodeId.equals(context.node().nodeId())
+                    && operationId.equals(currentOperationId);
         }
     }
 

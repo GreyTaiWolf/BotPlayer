@@ -1,5 +1,21 @@
 package io.github.greytaiwolf.botplayer.skill.runtime.core;
 
+import io.github.greytaiwolf.botplayer.action.ActionCancellationReason;
+import io.github.greytaiwolf.botplayer.action.ActionEnvelope;
+import io.github.greytaiwolf.botplayer.action.ActionEvidence;
+import io.github.greytaiwolf.botplayer.action.ActionFailureCode;
+import io.github.greytaiwolf.botplayer.action.ActionMailbox;
+import io.github.greytaiwolf.botplayer.action.ActionOutcome;
+import io.github.greytaiwolf.botplayer.action.ActionPriority;
+import io.github.greytaiwolf.botplayer.action.ActionState;
+import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
+import io.github.greytaiwolf.botplayer.action.interaction.BlockCoordinates;
+import io.github.greytaiwolf.botplayer.action.interaction.BlockHitTarget;
+import io.github.greytaiwolf.botplayer.action.interaction.BlockStateFingerprint;
+import io.github.greytaiwolf.botplayer.action.interaction.BlockTargetFingerprint;
+import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
+import io.github.greytaiwolf.botplayer.action.interaction.ResourceId;
+import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
 import io.github.greytaiwolf.botplayer.skill.core.SkillCategory;
 import io.github.greytaiwolf.botplayer.skill.core.SkillDescriptor;
 import io.github.greytaiwolf.botplayer.skill.core.SkillFailureCode;
@@ -24,7 +40,10 @@ import io.github.greytaiwolf.botplayer.skill.reservation.ReservationRequest;
 import io.github.greytaiwolf.botplayer.skill.reservation.ResourceReservationService;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -110,6 +129,84 @@ class SkillRuntimeTest {
                         io.github.greytaiwolf.botplayer.skill.core
                                 .SkillSignalInbox.OfferStatus.UNKNOWN_RUN,
                         runtime.offerSignal(signal(runId, 2L, 1L))));
+    }
+
+    @Test
+    void boundedNoSideEffectFailureReplansTheCurrentActionNode() {
+        TestHandler handler = new TestHandler();
+        handler.reserve = true;
+        handler.enableVerifiedReplan();
+        SkillRuntime runtime = runtime(handler, 40);
+        UUID runId = runtime.submit(request(oneNodePlan(), 0L))
+                .runId().orElseThrow();
+
+        runtime.tick(0L);
+        SkillRunView firstWait = runtime.inspectRun(runId).orElseThrow();
+        Assertions.assertEquals(SkillRunState.WAITING_ACTION,
+                firstWait.state());
+        SkillSignal firstFailure = handler.completeVerifiedActionFailure();
+        Assertions.assertEquals(
+                io.github.greytaiwolf.botplayer.skill.core.SkillSignalInbox
+                        .OfferStatus.ENQUEUED,
+                runtime.offerSignal(firstFailure));
+
+        runtime.tick(1L);
+        SkillRunView recovering = runtime.inspectRun(runId).orElseThrow();
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.RECOVERING,
+                        recovering.state()),
+                () -> Assertions.assertEquals(1, handler.failedCount),
+                () -> Assertions.assertEquals(0, handler.cancelledCount,
+                        "a consumed terminal action is not cancelled again"),
+                () -> Assertions.assertEquals(0,
+                        handler.reservations.activeLeaseCount(1L)),
+                () -> Assertions.assertEquals(1, handler.startedNodes.size()));
+
+        runtime.tick(2L);
+        SkillRunView retried = runtime.inspectRun(runId).orElseThrow();
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.WAITING_ACTION,
+                        retried.state()),
+                () -> Assertions.assertEquals(2, handler.startedNodes.size(),
+                        "retry must re-enter begin() after fresh observation"),
+                () -> Assertions.assertEquals(1,
+                        handler.reservations.activeLeaseCount(2L)),
+                () -> Assertions.assertEquals(firstWait.deadlineTick(),
+                        retried.deadlineTick()));
+
+        Assertions.assertEquals(
+                io.github.greytaiwolf.botplayer.skill.core.SkillSignalInbox
+                        .OfferStatus.ENQUEUED,
+                runtime.offerSignal(firstFailure));
+        runtime.tick(3L);
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.WAITING_ACTION,
+                        runtime.inspectRun(runId).orElseThrow().state()),
+                () -> Assertions.assertEquals(1, handler.failedCount,
+                        "the previous action revision must not request another replan"));
+    }
+
+    @Test
+    void unapprovedFailedActionStillTerminatesNormally() {
+        TestHandler handler = new TestHandler();
+        SkillRuntime runtime = runtime(handler, 40);
+        UUID runId = runtime.submit(request(oneNodePlan(), 0L))
+                .runId().orElseThrow();
+        runtime.tick(0L);
+        SkillRunView waiting = runtime.inspectRun(runId).orElseThrow();
+
+        runtime.offerSignal(failedSignal(
+                runId, waiting.stateRevision(), 1L));
+        runtime.tick(1L);
+
+        SkillRunView failed = runtime.inspectRun(runId).orElseThrow();
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(SkillRunState.FAILED,
+                        failed.state()),
+                () -> Assertions.assertEquals(SkillFailureCode.WORLD_CHANGED,
+                        failed.failureCode().orElseThrow()),
+                () -> Assertions.assertEquals(1, handler.failedCount),
+                () -> Assertions.assertEquals(1, handler.cancelledCount));
     }
 
     @Test
@@ -417,13 +514,55 @@ class SkillRuntimeTest {
                 tick);
     }
 
+    private static SkillSignal failedSignal(
+            UUID runId, long revision, long tick) {
+        return new SkillSignal(
+                new UUID(0L, 300L + tick),
+                runId,
+                BOT,
+                1L,
+                revision,
+                new UUID(0L, 400L + tick),
+                SkillSignalType.ACTION,
+                SkillSignalStatus.FAILED,
+                SkillFailureCode.WORLD_CHANGED,
+                List.of(),
+                "测试无副作用动作失败",
+                tick);
+    }
+
+    private static WorldInteractionAction markedPlaceBlockAction() {
+        BlockTargetFingerprint anchor = new BlockTargetFingerprint(
+                new ResourceId("minecraft:overworld"),
+                new BlockCoordinates(4, 64, 4),
+                new BlockStateFingerprint(new ResourceId("minecraft:stone"),
+                        java.util.Map.of()));
+        BlockTargetFingerprint placed = new BlockTargetFingerprint(
+                new ResourceId("minecraft:overworld"),
+                new BlockCoordinates(4, 65, 4),
+                new BlockStateFingerprint(new ResourceId("minecraft:furnace"),
+                        java.util.Map.of("facing", "north", "lit", "false")));
+        return new WorldInteractionAction(
+                new WorldInteractionActionSpec.PlaceBlock(
+                        new BlockHitTarget(anchor, BlockHitTarget.Face.UP,
+                                0.5D, 1.0D, 0.5D, false),
+                        placed,
+                        ItemStackFingerprint.of(
+                                new ResourceId("minecraft:furnace"), 1, 0,
+                                "a".repeat(64))));
+    }
+
     private static final class TestHandler implements SkillNodeHandler {
         private final List<UUID> startedNodes = new ArrayList<>();
         private ResourceReservationService reservations;
         private boolean reserve;
         private boolean pauseFirstBegin;
         private boolean paused;
+        private ActionBackedSkillNodeHandler verifiedReplanDelegate;
+        private VerifiedReplanGateway verifiedReplanActions;
+        private final List<SkillSignal> verifiedReplanSignals = new ArrayList<>();
         private int cancelledCount;
+        private int failedCount;
 
         @Override
         public List<ReservationRequest> requiredReservations(
@@ -446,6 +585,9 @@ class SkillRuntimeTest {
                 paused = true;
                 return SkillNodeDirective.pause("测试请求暂停");
             }
+            if (verifiedReplanDelegate != null) {
+                return verifiedReplanDelegate.begin(context);
+            }
             return SkillNodeDirective.waitFor(
                     SkillNodeDirective.Kind.WAIT_ACTION,
                     "等待测试动作回执");
@@ -454,7 +596,21 @@ class SkillRuntimeTest {
         @Override
         public SkillNodeDirective signal(
                 SkillNodeContext context, SkillSignal signal) {
+            if (verifiedReplanDelegate != null) {
+                return verifiedReplanDelegate.signal(context, signal);
+            }
             return SkillNodeDirective.verify("测试动作已经进入验证");
+        }
+
+        @Override
+        public FailedSignalDisposition failed(
+                SkillNodeContext context, SkillSignal signal) {
+            failedCount++;
+            return verifiedReplanDelegate == null
+                    ? FailedSignalDisposition.terminate()
+                    : verifiedReplanDelegate
+                            .consumeMarkedNoPacketPlaceBlockReplan(
+                                    context, signal);
         }
 
         @Override
@@ -466,7 +622,82 @@ class SkillRuntimeTest {
 
         @Override
         public void cancelled(SkillNodeContext context, String reason) {
+            if (verifiedReplanDelegate != null) {
+                verifiedReplanDelegate.cancelled(context, reason);
+            }
             cancelledCount++;
+        }
+
+        private void enableVerifiedReplan() {
+            verifiedReplanActions = new VerifiedReplanGateway();
+            verifiedReplanDelegate = new ActionBackedSkillNodeHandler(
+                    ignored -> Optional.of(new ActionBackedSkillNodeHandler
+                            .Operation(
+                                    "verified-replan",
+                                    markedPlaceBlockAction(),
+                                    ActionPriority.AUTONOMOUS,
+                                    2,
+                                    SkillNodeDirective.Kind.WAIT_ACTION,
+                                    "等待已验证重规划测试动作",
+                                    (context, signal) -> SkillNodeDirective
+                                            .verify("测试动作已完成"))),
+                    verifiedReplanActions,
+                    signal -> {
+                        verifiedReplanSignals.add(signal);
+                        return io.github.greytaiwolf.botplayer.skill.core
+                                .SkillSignalInbox.OfferStatus.ENQUEUED;
+                    });
+        }
+
+        private SkillSignal completeVerifiedActionFailure() {
+            if (verifiedReplanActions == null) {
+                throw new IllegalStateException(
+                        "verified replan action was not enabled");
+            }
+            verifiedReplanActions.completeNextFailure();
+            return verifiedReplanSignals.get(verifiedReplanSignals.size() - 1);
+        }
+    }
+
+    private static final class VerifiedReplanGateway
+            implements ActionBackedSkillNodeHandler.ActionGateway {
+        private final List<ActionEnvelope> submitted = new ArrayList<>();
+        private final List<CompletableFuture<ActionOutcome>> completions =
+                new ArrayList<>();
+        private int nextCompletion;
+
+        @Override
+        public ActionMailbox.Submission submit(
+                ActionEnvelope envelope, ActionPriority priority) {
+            CompletableFuture<ActionOutcome> completion =
+                    new CompletableFuture<>();
+            submitted.add(envelope);
+            completions.add(completion);
+            return new ActionMailbox.Submission(
+                    ActionMailbox.SubmissionStatus.ENQUEUED,
+                    Optional.<CompletionStage<ActionOutcome>>of(completion));
+        }
+
+        @Override
+        public void cancel(
+                UUID botId, UUID actionId, ActionCancellationReason reason) {
+            // This state-machine test only consumes a completed action receipt.
+        }
+
+        private void completeNextFailure() {
+            ActionEnvelope envelope = submitted.get(nextCompletion);
+            completions.get(nextCompletion++).complete(new ActionOutcome(
+                    envelope.actionId(),
+                    ActionState.FAILED,
+                    ActionFailureCode.PRECONDITION_FAILED,
+                    1L,
+                    1L,
+                    List.of(new ActionEvidence(WorldInteractionActionSpec
+                            .PlaceBlock
+                            .PRE_DISPATCH_FACING_DRIFT_EVIDENCE_KEY,
+                            WorldInteractionActionSpec.PlaceBlock
+                                    .PRE_DISPATCH_FACING_DRIFT_EVIDENCE_VALUE)),
+                    "已验证无副作用测试失败"));
         }
     }
 }
