@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 35975)
-Total output lines: 3367
-
 # BotPlayer：NeoForge 1.21.1 完整架构、编码规范与 P0–P10 路线图
 
 > 文档状态：架构基线 v1.4
@@ -1423,7 +1420,470 @@ navigation/
 - 方块破坏时间、工具耐久；
 - 放置/搭桥材料；
 - 熔岩、火、仙人掌、粉雪、深水、窒息、悬崖；
-- 敌对实体威胁…5975 tokens truncated…BotIntegrationContext context);
+- 敌对实体威胁；
+- 光照、剩余生命、食物和装备；
+- 保护区域和明确禁止区域；
+- 返回路径与补给距离。
+
+不能为了更短路径无脑拆墙。破坏和放置必须由任务策略明确允许，并有数量上限。
+
+卡住检测使用移动进展窗口、碰撞、重复路径节点和输入历史。恢复顺序：
+
+`重新转向 → 短跳/后退 → 邻近节点重算 → 合法挖/放 → 回退检查点 → 报告 NO_PATH`。
+
+### 10.2 L0 安全反射
+
+每 Tick 快速评估：
+
+- 当前/下一步是否进入熔岩、火或危险流体；
+- 空气值与最近可换气位置；
+- 脚下支撑、预计坠落伤害与落地点；
+- 窒息和方块挤压；
+- 生命、护甲、食物、治疗物品；
+- 附近敌人、弹射物、爆炸倒计时；
+- 当前动作是否阻止逃生；
+- 背包 GUI 是否必须强制关闭。
+
+L0 只能调用白名单安全技能，并有冷却和循环检测，防止反复左右横跳。它不能借“安全”名义执行普通采集。
+
+### 10.3 战斗
+
+战斗分四层：
+
+1. `ThreatAssessment`：敌我、伤害潜力、距离、数量、地形和逃生路线；
+2. `CombatTactic`：近战、远程、格挡、风筝、守点、撤退；
+3. `CombatController`：瞄准、攻击冷却、移动和物品使用；
+4. `CombatVerifier`：目标死亡、脱离、任务保护对象存活。
+
+默认规则：
+
+- 不主动攻击 owner、队友、驯服实体和非敌对生物；
+- PVP 默认关闭，需服务器与 owner 双重允许；
+- 低生命优先撤退而不是硬拼；
+- 追击有距离、时间和区域边界；
+- 不为追击进入已知致命环境；
+- 无法判断模组生物关系时先防御或撤退。
+
+### 10.4 建造
+
+建造流程：
+
+```text
+需求规范化
+→ 选址与边界检查
+→ 蓝图版本
+→ 材料清单
+→ 区域锁
+→ 分层/分区施工
+→ 每层校验
+→ 缺料恢复
+→ 最终差异检查
+```
+
+`Blueprint` 必须是可版本化的数据结构，方块状态、方块实体数据和替换策略分开。普通放置仍走玩家 use 入口。只对管理员明确允许的世界生成/修复工具开放直接方块写入，且不属于普通 bot 游戏能力。
+
+施工中记录：
+
+- 蓝图 hash；
+- 当前层/区域；
+- 已验证位置；
+- 缺失与冲突方块；
+- 材料预留；
+- 不可替换方块；
+- 玩家修改过的保护位置。
+
+若真人在施工区改方块，默认视为世界变化并暂停相关分区，不能立刻把玩家作品改回去。
+
+---
+
+## 11. DeepSeek 接入
+
+### 11.1 Provider 抽象
+
+```text
+ai/                         # 服务端稳定 DTO、校验、预算与熔断
+  AiProvider.java
+  AiCapabilities.java
+  AiRequest.java
+  AiResponse.java
+  ModelPolicy.java
+  RequestScheduler.java
+  AiCircuitBreaker.java
+  ToolCallCodec.java
+  ToolFirewall.java
+  ContextBudget.java
+  CostBudget.java
+  RedactionFilter.java
+  ScriptedAiProvider.java
+  ChaosAiProvider.java
+client/ai/                  # P6：使用本地凭据的客户端 Provider 传输
+  DeepSeekProvider.java
+client/credential/          # 已实现基础：本地 profile、binding 与 agentId
+```
+
+```java
+interface AiProvider {
+    CompletionStage<AiResponse> complete(AiRequest request, CancellationToken token);
+    CompletionStage<AiCapabilities> probeCapabilities();
+    ProviderHealth health();
+}
+```
+
+通用模型名和能力必须配置化。不能把某个模型别名永久写死进业务代码；P6 建立授权客户端会话后
+由客户端探测 Provider 能力，只把不含 secret 的 thinking、工具调用、JSON 输出和上下文
+上限返回服务端策略层。当前代码已有有界 P6 Provider/codec/firewall/context 与客户端传输基础。
+例外的 P6-R1 是默认关闭、固定策略的 owner 只读审阅路径：真实持久 owner 在本地显式
+opt-in 后，固定 Provider 会在客户端发起受限 HTTPS 请求，回传只生成安全摘要并丢弃。它不是
+通用模型策略、聊天或世界执行；[Build #354](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31756795111)
+已完成其 Java 21 自动验证，真实客户端/Provider E2E 仍待验证。
+
+### 11.2 DeepSeek 的职责
+
+适合交给模型：
+
+- 自然语言理解与多轮澄清；
+- 复杂任务分解；
+- 从候选技能中选择组合；
+- 对陌生模组描述进行推理；
+- 对多次结构化失败做诊断；
+- 生成面向玩家的解释和摘要。
+
+不交给模型：
+
+- 每 Tick 移动；
+- 直接伤害、改方块、改物品；
+- 权限判断最终决定；
+- API Key 选择；
+- 自行启用外部技能；
+- 把模型文本当作世界事实；
+- 处理必须在主线程完成的对象访问。
+
+### 11.3 请求上下文
+
+`ContextAssembler` 按需组成：
+
+1. 固定系统规则摘要；
+2. bot 身份、owner 和当前风险策略；
+3. 当前目标和计划状态；
+4. 有界观察快照；
+5. 检索出的相关记忆，附来源与置信度；
+6. 当前可用技能的精简描述；
+7. 最近结构化失败；
+8. 对话窗口和历史摘要；
+9. 输出 JSON Schema 与工具约束；
+10. token、时间和成本预算。
+
+P6 首次接入时，记忆接口使用有界内存对话窗口和可选的空 `MemoryRetriever`；只有 P7
+长期存储通过后，才允许向上下文加入跨重启检索结果。P6 不能提前依赖尚未验收的 SQLite
+长期记忆。
+
+不发送：
+
+- API Key；
+- 无关玩家私聊；
+- 整个世界存档；
+- 未经需要的精确坐标和 UUID；
+- 服务端路径、环境变量和日志；
+- 任意 Minecraft 活动对象序列化。
+
+### 11.4 异步请求生命周期
+
+1. 服务器线程创建 `ObservationSnapshot`；
+2. 服务端 `RequestScheduler` 绑定 owner、botId、agentId、nonce、deadline 和 revision，并把
+   最小化、不含 secret 的请求 DTO 发送给已授权 owner 客户端；
+3. 客户端从本地 credential profile 解析 Key，在客户端 AI executor 使用 Java 21
+   `HttpClient.sendAsync`；
+4. SSE/JSON 在客户端异步线程解析为受限 DTO，原始 Key 不进入 Minecraft payload；
+5. 客户端回传模型结果以及不可伪造为权限的会话关联字段；
+6. 服务端 `ToolCallCodec` 做语法与 schema 验证；
+7. 重新解析持久 owner、bot generation、目标 revision 和 world revision；
+8. `PlanValidator` 做权限、风险与能力校验；
+9. 过期、重放或 owner 已离线的结果标记 `STALE`/拒绝；
+10. 只把合法 `ProposedPlan` 交给计划系统。
+
+客户端赞助的通用请求必须先由服务器 gate 生成唯一 `requestId + nonce`，再以同一不可变绑定
+同时构造客户端 dispatch、Scheduler `AiRequest` 与精确取消 payload；请求模板的 ID 不得进入
+关联。完整关联、gate terminal receipt、Scheduler 清理和后续实时世界复核缺一不可。该绑定只
+解决身份与取消，不授权 Tool、Skill、Action 或世界执行，详见
+[ADR-0021](adr/0021-client-sponsored-request-correlation.md)。
+
+任何客户端或异步回调都不得直接调用 `ServerPlayer`。上述通用 client-sponsored 网络请求流
+（gate→dispatch→Scheduler lifecycle→计划接收）仍未实现；P6-R1 是独立、固定且只读的
+实际 HTTPS 例外，不构成通用聊天、计划或世界执行入口。
+
+### 11.5 Tool Firewall
+
+每个模型工具调用必须校验：
+
+- 工具属于当前请求白名单；
+- botId 由服务器绑定，模型不能覆盖；
+- 参数类型、枚举、长度、坐标范围、集合大小；
+- 未知字段拒绝；
+- owner/ACL 和风险级别；
+- 距离、维度、视线、区块状态；
+- 最大破坏/放置/转移数量；
+- 不允许命令、文件、HTTP、脚本；
+- planId、snapshotId、worldRevision；
+- 幂等键和调用次数；
+- 聊天、书本、告示牌、物品名中的提示注入不能改变系统策略。
+
+### 11.6 API Key
+
+凭据模式采用 [ADR-0012](adr/0012-client-sponsored-ai-credentials.md)：
+
+- Key 只在持久 owner 客户端的独立本地凭据文件中保存；
+- 当前本地文件是明文，优先原子替换（不支持时同目录覆盖）并尽力收紧权限，不宣称加密
+  或系统 keychain；
+- Key 只从客户端 Screen 输入，不提供 `/botplayer apikey <key>`；
+- Key 和可还原值不进入聊天/命令参数、Minecraft payload、服务端、SERVER 配置、世界、
+  SQLite、日志、crash report 或模型上下文；
+- 一个 `credentialProfileId` 可供多个 bot 使用，但
+  `(serverInstanceId, ownerUuid, botId)` 各自绑定独立 `agentId` 和状态；
+- 只有服务端 roster 的持久 owner 可以配置或建立未来通用 AI 会话；P6-R1 的固定只读
+  审阅同样要求该 owner、活动 binding 与本地显式 opt-in；
+- owner 离线时，P6-R1 与未来使用这个 Key 的 client-sponsored LLM 均不可用；
+- P6-R1 与未来通用 Provider HTTP 都在客户端运行；服务端始终把未来通用响应当作不可信
+  计划重新校验。
+
+当前实现已有本地 credential profile、binding、agentId，以及 P6-R1 的固定 DeepSeek
+review-only 请求；R1 不开放能力探测、可配置模型/endpoint、通用聊天或计划接收。
+ADR-0010 的历史门禁仍禁止在 P0–P2 阶段提前接入 Provider。
+
+`RedactionFilter` 必须在客户端 Provider、Minecraft payload 编解码边界和服务端日志再次
+脱敏，包括 Authorization header、常见 Key 模式和任何凭据字段。状态界面只显示用户设置的
+profile 名称与不含 secret 的可用状态；不需要把 Key 指纹或末四位发送给服务端。
+
+### 11.7 故障和降级
+
+| 故障 | 行为 |
+|---|---|
+| 401/403 | 凭据熔断，不重试，管理员状态提示 |
+| 402/余额不足 | 暂停新 AI 请求，本地技能继续 |
+| 429 | 有上限指数退避 + jitter |
+| 5xx/网络超时 | 有限重试，禁止重复副作用 |
+| 空/截断/非法 JSON | 结构化失败，不执行 |
+| 未知工具/越权参数 | Tool Firewall 拒绝并记录 |
+| 响应迟到 | revision 复核，过期即丢弃 |
+| provider 长期不可用 | 只运行安全反射和已批准的确定性任务 |
+
+Bot 应向玩家诚实报告“AI 服务暂时不可用，但我会先保证安全/继续已确认动作”，不能假装仍在推理。
+
+---
+
+## 12. 分层记忆与持久化
+
+### 12.1 记忆层
+
+| 层 | 内容 | 生命周期 |
+|---|---|---|
+| 工作记忆 | 当前目标、最近观察、工具链、对话窗口 | RAM，分钟级 |
+| 情景记忆 | 何时何地和谁做了什么、结果 | 长期，压缩与衰减 |
+| 语义记忆 | 基地、规则、容器用途、玩家偏好 | 长期，来源和置信度 |
+| 空间记忆 | 地点、路线、资源区、危险点、结构 | 随世界变化失效 |
+| 社交记忆 | owner、信任、称呼、承诺、纠正 | 长期，按玩家隔离 |
+| 技能记忆 | 技能版本、成功率、失败模式 | 版本化，环境变化重验证 |
+
+### 12.2 存储分工
+
+- `DataAttachment`：少量玩家运行标记，不存大日志；
+- Overworld `SavedData`：`serverInstanceId`、bot 身份、player UUID、owner 和生命周期
+  索引的权威源；autoload 是后续扩展；
+- SQLite WAL：语义事件、情景、事实、空间索引、对话摘要、技能统计；
+- SQLite FTS5/BM25：第一版文本检索；
+- 可选 `EmbeddingProvider`：以后接本地或独立服务，不与 DeepSeek 强耦合。
+
+数据库建议位于：
+
+```text
+<world>/botplayer/
+  botplayer.db
+  botplayer.db-wal
+  botplayer.db-shm
+  migrations/
+  export/
+```
+
+不得把数据库放入模组 JAR 或客户端目录。服务器复制世界备份时应包含该目录。
+
+阶段职责：
+
+- P1 已建立最小 roster `SavedData`，负责服务器实例、身份、owner、版本和 playerdata
+  关联；autoload、自动恢复和迁移硬化仍待完成；
+- P7 扩展计划/承诺/记忆指针，并加入 SQLite 与迁移；
+- SQLite `bots` 行只是查询和外键副本，不是身份权威源；
+- SavedData 与 SQLite 不一致时禁止自动覆盖，先进入诊断/迁移流程。
+
+客户端 credential profile 与 agent binding 不属于世界记忆，也不能写进 SQLite。它们留在
+owner 客户端，并通过 `serverInstanceId` 与服务端世界命名空间隔离。
+
+### 12.3 核心表
+
+```sql
+bots(
+  bot_id TEXT PRIMARY KEY,
+  player_uuid TEXT UNIQUE NOT NULL,
+  current_name TEXT NOT NULL,
+  owner_uuid TEXT,
+  created_at INTEGER NOT NULL,
+  profile_revision INTEGER NOT NULL
+)
+
+semantic_events(
+  event_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT UNIQUE NOT NULL,
+  bot_id TEXT,
+  game_tick INTEGER NOT NULL,
+  dimension TEXT NOT NULL,
+  x REAL, y REAL, z REAL,
+  event_type TEXT NOT NULL,
+  source TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  payload_json TEXT NOT NULL
+)
+
+facts(
+  fact_id TEXT PRIMARY KEY,
+  bot_id TEXT NOT NULL,
+  fact_key TEXT NOT NULL,
+  value_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  first_tick INTEGER NOT NULL,
+  last_confirmed_tick INTEGER NOT NULL,
+  source_json TEXT NOT NULL,
+  invalidation_json TEXT NOT NULL
+)
+
+episodes(
+  episode_id TEXT PRIMARY KEY,
+  bot_id TEXT NOT NULL,
+  started_tick INTEGER NOT NULL,
+  ended_tick INTEGER,
+  summary TEXT NOT NULL,
+  outcome TEXT,
+  evidence_json TEXT NOT NULL
+)
+
+commitments(...);
+plans(...);
+skill_runs(...);
+dialogue_summaries(...);
+locations(...);
+```
+
+SQLite 中的 `bots` 必须记录与 SavedData 对应的 `profile_revision`；不能单独通过数据库
+修改 UUID、owner 或 autoload。具体 SQL 由 migration 管理，业务代码使用 repository
+接口，不拼接 SQL。
+
+### 12.4 写入模型
+
+- 服务器线程生成事件 DTO 并加入有界队列；
+- 单独 DB writer 串行批量提交；
+- 重要状态（承诺接受、计划检查点、卸载）使用高优先级 flush；
+- 队列达到上限时，先丢弃可重建的低价值观察采样，不能丢关键生命周期/物品事务；
+- 数据库不可用时进入降级状态，并明确报告长期记忆暂停；
+- DB writer 不读取 Minecraft 对象；
+- WAL checkpoint 在保存、关服和配置周期执行；
+- schema migration 必须先备份并记录版本。
+
+### 12.5 检索与事实写入
+
+检索流程：
+
+```text
+bot/玩家/维度/时间/事实类型结构过滤
+→ FTS/BM25 文本召回
+→ 新鲜度、置信度、来源、任务相关性重排
+→ 去重与 token 预算裁剪
+```
+
+模型输出不能直接写入 `ACTIVE` 权威事实：
+
+- 观察或动作结果可直接形成有证据事实；
+- 玩家明确告知形成 `USER_REPORTED` 事实；
+- 模型推断先进入 `UNVERIFIED`；
+- 后续观察可确认或撤回；
+- 冲突事实保留 provenance。
+
+### 12.6 数据保留与隐私
+
+配置：
+
+- 事件保留天数；
+- 对话原文是否保存；
+- 对话摘要保留天数；
+- 精确坐标是否降精度；
+- 玩家可否查询/删除自己的社交记忆；
+- 管理员导出、清理和数据库压缩。
+
+删除操作必须可审计，且不能意外删除 bot 的身份/playerdata。记忆删除与 bot 删除是不同命令。
+
+---
+
+## 13. 模组内容理解与适配
+
+### 13.1 四级兼容
+
+| 级别 | 能力 | 实现 |
+|---|---|---|
+| C0 静态认识 | registry ID、名称、标签、配方、属性、数据组件 | 自动索引 |
+| C1 通用交互 | 标准 use、普通容器、物品 handler/capability | 通用 driver |
+| C2 声明式玩法 | 已知输入输出、步骤、危险、成功条件 | Knowledge/Skill Pack |
+| C3 深度适配 | 自定义机器 GUI、网络、魔法系统、特殊时序 | Java `BotModAdapter` |
+
+看到注册表不等于会玩。未知自定义菜单和隐藏协议默认：
+
+1. 只读识别；
+2. 查询已安装适配器；
+3. 检索经过批准的知识/技能包；
+4. 向玩家询问；
+5. 在测试世界验证；
+6. 正式世界中拒绝盲目破坏性试验。
+
+### 13.2 环境指纹
+
+```text
+Minecraft 版本
++ NeoForge 版本
++ 模组 ID/版本排序列表
++ registry 摘要
++ tags/recipes/datapack 摘要
++ BotPlayer skill pack 摘要
+```
+
+启动和 `/reload` 后计算指纹。变化后：
+
+- C0 索引重建；
+- C2/C3 能力按声明的兼容范围重新验证；
+- 旧技能统计不直接继承为“已验证”；
+- 正在运行的相关计划进入 `REVALIDATION_REQUIRED`；
+- 不兼容适配器禁用并报告，不让服务器崩溃。
+
+### 13.3 公开 API
+
+```java
+interface BotSkillProvider {
+    void registerSkills(BotSkillRegistry registry);
+}
+
+interface BotSensorProvider {
+    void registerSensors(BotSensorRegistry registry);
+}
+
+interface BotContentDescriptorProvider {
+    Stream<ContentDescriptor> describe(BotEnvironment environment);
+}
+
+interface BotMenuAdapter {
+    boolean supports(MenuDescriptor menu);
+    MenuAffordances inspect(MenuSnapshot snapshot);
+    MenuActionPlan plan(MenuIntent intent, MenuSnapshot snapshot);
+}
+
+interface BotModAdapter {
+    ResourceLocation id();
+    CompatibilityRange compatibility();
+    void register(BotIntegrationContext context);
 }
 ```
 
@@ -2286,10 +2746,8 @@ P5A-0 的冻结合同、Safety handoff、统一 menu 事务、checkpoint schema�
 #### P5C：运输、探索、进程与高级战斗
 
 当前只有一个未验收的窄实现切片：已有有限自卫已经授权的一次 `MELEE_ATTACK` 可经
-不可变 `AttackEntity` 绑定进入单 child Technique，并在 owner-thread 的单一
-`TechniqueLifecycleCoordinator` 回收 Action 结果。当前有限自卫 bridge 只是该协调器的一条
-受限路由，不拥有第二个 runtime；它不含目标选择、移动、装备、重试、连击或泛化战斗路由，
-不能关闭本节任一任务或退出门。
+不可变 `AttackEntity` 绑定进入单 child Technique，并在 owner-thread 回收 Action 结果。
+它不含目标选择、移动、装备、重试、连击或泛化战斗路由，不能关闭本节任一任务或退出门。
 
 任务与验收：
 
