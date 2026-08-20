@@ -16,6 +16,9 @@ import io.github.greytaiwolf.botplayer.ai.ProviderHealth;
 import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyContract;
 import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlySnapshotProjection;
 import io.github.greytaiwolf.botplayer.ai.transport.AiClientRequestDispatch;
+import io.github.greytaiwolf.botplayer.ai.transport.AiClientSponsoredTerminalObservation;
+import io.github.greytaiwolf.botplayer.ai.transport.AiClientSponsoredTerminalStatus;
+import io.github.greytaiwolf.botplayer.ai.transport.AiRequestDispatchReceipt;
 import io.github.greytaiwolf.botplayer.ai.transport.AiRequestPurpose;
 import io.github.greytaiwolf.botplayer.client.credential.ClientCredentialStore;
 import io.github.greytaiwolf.botplayer.network.payload.AiProposalPayload;
@@ -24,12 +27,17 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
@@ -622,6 +630,289 @@ class ClientAiRequestSessionControllerTest {
         Assertions.assertEquals(0, controller.activeRequestCount());
     }
 
+    @Test
+    void terminalObserverPublishesOnlySafeExactStatusForSuccessFailureAndCancellation() {
+        ControlledProvider successful = new ControlledProvider();
+        ControlledProvider failed = new ControlledProvider();
+        ControlledProvider cancelled = new ControlledProvider();
+        List<AiProposalPayload> returned = new ArrayList<>();
+        List<AiClientSponsoredTerminalObservation> observations = new ArrayList<>();
+        Deque<ControlledProvider> providers = new ArrayDeque<>(
+                List.of(successful, failed, cancelled));
+        ClientAiRequestSessionController controller = new ClientAiRequestSessionController(
+                credentialStore,
+                OWNER_ID,
+                (dispatch, store) -> providers.removeFirst(),
+                clock::get,
+                scheduler,
+                () -> true,
+                (dispatch, proposal) -> returned.add(proposal),
+                observations::add);
+        AiClientRequestDispatch success = dispatch(REQUEST_ID, AGENT_ID, 2_000L);
+        AiClientRequestDispatch failure = dispatch(
+                UUID.fromString("00000000-0000-0000-0000-000000000302"),
+                AGENT_ID,
+                2_000L);
+        AiClientRequestDispatch cancellation = dispatch(
+                UUID.fromString("00000000-0000-0000-0000-000000000303"),
+                AGENT_ID,
+                2_000L);
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.STARTED, controller.accept(success));
+        successful.completion.complete(toolResponse(success));
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.STARTED, controller.accept(failure));
+        failed.completion.completeExceptionally(new IllegalStateException("provider sentinel"));
+        Assertions.assertEquals(
+                ClientAiRequestDispatchStatus.STARTED, controller.accept(cancellation));
+        Assertions.assertTrue(controller.cancelRequest(cancellation.requestId()));
+
+        Assertions.assertEquals(1, returned.size());
+        Assertions.assertEquals(List.of(
+                AiClientSponsoredTerminalStatus.SUCCEEDED,
+                AiClientSponsoredTerminalStatus.FAILED,
+                AiClientSponsoredTerminalStatus.CANCELLED), observations.stream()
+                .map(AiClientSponsoredTerminalObservation::status)
+                .toList());
+        Assertions.assertEquals(AiRequestDispatchReceipt.fromDispatch(success),
+                observations.get(0).receipt());
+        Assertions.assertEquals(AiRequestDispatchReceipt.fromDispatch(failure),
+                observations.get(1).receipt());
+        Assertions.assertEquals(AiRequestDispatchReceipt.fromDispatch(cancellation),
+                observations.get(2).receipt());
+        String rendered = observations.toString();
+        Assertions.assertFalse(rendered.contains(success.nonce().toString()));
+        Assertions.assertFalse(rendered.contains(success.ownerId().toString()));
+        Assertions.assertFalse(rendered.contains("tool_argument_sentinel"));
+        Assertions.assertFalse(rendered.contains("deepseek-chat"));
+        Assertions.assertFalse(rendered.contains("prompt_sentinel"));
+    }
+
+    @Test
+    void providerSetupFailureIsObservedAsFailedAfterTheSessionWasRegistered() {
+        List<AiClientSponsoredTerminalObservation> observations = new ArrayList<>();
+        ClientAiRequestSessionController controller = new ClientAiRequestSessionController(
+                credentialStore,
+                OWNER_ID,
+                (dispatch, store) -> {
+                    throw new IllegalStateException("factory sentinel");
+                },
+                clock::get,
+                scheduler,
+                (dispatch, proposal) -> Assertions.fail("proposal must not be handed off"),
+                observations::add);
+        AiClientRequestDispatch dispatch = dispatch(REQUEST_ID, AGENT_ID, 2_000L);
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.PROVIDER_UNAVAILABLE,
+                controller.accept(dispatch));
+        Assertions.assertEquals(0, controller.activeRequestCount());
+        Assertions.assertEquals(List.of(new AiClientSponsoredTerminalObservation(
+                AiRequestDispatchReceipt.fromDispatch(dispatch),
+                AiClientSponsoredTerminalStatus.FAILED)), observations);
+    }
+
+    @Test
+    void rejectedIngressDoesNotCreateATerminalObservation() {
+        List<AiClientSponsoredTerminalObservation> observations = new ArrayList<>();
+        ClientAiRequestSessionController controller = new ClientAiRequestSessionController(
+                credentialStore,
+                OTHER_OWNER_ID,
+                (dispatch, store) -> Assertions.fail("provider must not be constructed"),
+                clock::get,
+                scheduler,
+                (dispatch, proposal) -> Assertions.fail("proposal must not be handed off"),
+                observations::add);
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.NOT_LOCAL_OWNER,
+                controller.accept(dispatch(REQUEST_ID, AGENT_ID, 2_000L)));
+        Assertions.assertEquals(0, controller.activeRequestCount());
+        Assertions.assertTrue(observations.isEmpty());
+    }
+
+    @Test
+    void observerRuntimeFailureDoesNotRetainACompletedSession() {
+        ControlledProvider provider = new ControlledProvider();
+        AtomicInteger observerCalls = new AtomicInteger();
+        List<AiProposalPayload> returned = new ArrayList<>();
+        ClientAiRequestSessionController controller = new ClientAiRequestSessionController(
+                credentialStore,
+                OWNER_ID,
+                (dispatch, store) -> provider,
+                clock::get,
+                scheduler,
+                (dispatch, proposal) -> returned.add(proposal),
+                observation -> {
+                    observerCalls.incrementAndGet();
+                    throw new IllegalStateException("observer sentinel");
+                });
+        AiClientRequestDispatch dispatch = dispatch(REQUEST_ID, AGENT_ID, 2_000L);
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.STARTED, controller.accept(dispatch));
+        Assertions.assertTrue(provider.completion.complete(toolResponse(dispatch)));
+
+        Assertions.assertEquals(1, observerCalls.get());
+        Assertions.assertEquals(1, returned.size());
+        Assertions.assertEquals(0, controller.activeRequestCount());
+        Assertions.assertTrue(provider.token.get().isCancellationRequested());
+    }
+
+    @Test
+    void proposalHandoffReentrancyFailsClosedAndPublishesAfterTheLockIsReleased() {
+        ControlledProvider provider = new ControlledProvider();
+        AtomicReference<ClientAiRequestSessionController> controllerRef = new AtomicReference<>();
+        AtomicBoolean observerRanOutsideTheLock = new AtomicBoolean();
+        List<AiClientSponsoredTerminalObservation> observations = new ArrayList<>();
+        ExecutorService observerExecutor = Executors.newSingleThreadExecutor();
+        try {
+            ClientAiRequestSessionController controller = new ClientAiRequestSessionController(
+                    credentialStore,
+                    OWNER_ID,
+                    (dispatch, store) -> provider,
+                    clock::get,
+                    scheduler,
+                    () -> true,
+                    (dispatch, proposal, bindingEpoch) -> controllerRef.get().cancelRequest(
+                            dispatch.requestId()),
+                    observation -> {
+                        try {
+                            Future<Integer> activeCount = observerExecutor.submit(
+                                    () -> controllerRef.get().activeRequestCount());
+                            Assertions.assertEquals(0, activeCount.get(1L, TimeUnit.SECONDS));
+                        } catch (Exception exception) {
+                            throw new AssertionError(
+                                    "terminal observer was invoked while the controller lock held",
+                                    exception);
+                        }
+                        observerRanOutsideTheLock.set(true);
+                        observations.add(observation);
+                    });
+            controllerRef.set(controller);
+            AiClientRequestDispatch dispatch = dispatch(REQUEST_ID, AGENT_ID, 2_000L);
+
+            Assertions.assertEquals(
+                    ClientAiRequestDispatchStatus.STARTED, controller.accept(dispatch));
+            Assertions.assertTrue(provider.completion.complete(toolResponse(dispatch)));
+
+            Assertions.assertTrue(observerRanOutsideTheLock.get());
+            Assertions.assertEquals(List.of(new AiClientSponsoredTerminalObservation(
+                    AiRequestDispatchReceipt.fromDispatch(dispatch),
+                    AiClientSponsoredTerminalStatus.FAILED)), observations);
+            Assertions.assertEquals(0, controller.activeRequestCount());
+            Assertions.assertTrue(provider.token.get().isCancellationRequested());
+        } finally {
+            observerExecutor.shutdownNow();
+        }
+    }
+
+    @Test
+    void cancellationListenerErrorStillPublishesTheTerminalObservation() {
+        ControlledProvider provider = new ControlledProvider();
+        List<AiClientSponsoredTerminalObservation> observations = new ArrayList<>();
+        ClientAiRequestSessionController controller = new ClientAiRequestSessionController(
+                credentialStore,
+                OWNER_ID,
+                (dispatch, store) -> provider,
+                clock::get,
+                scheduler,
+                (dispatch, proposal) -> Assertions.fail("proposal must not be handed off"),
+                observations::add);
+        AiClientRequestDispatch dispatch = dispatch(REQUEST_ID, AGENT_ID, 2_000L);
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.STARTED, controller.accept(dispatch));
+        provider.token.get().onCancellation(() -> {
+            throw new AssertionError("cancellation listener sentinel");
+        });
+
+        Assertions.assertThrows(AssertionError.class,
+                () -> controller.cancelRequest(dispatch.requestId()));
+        Assertions.assertEquals(List.of(new AiClientSponsoredTerminalObservation(
+                AiRequestDispatchReceipt.fromDispatch(dispatch),
+                AiClientSponsoredTerminalStatus.CANCELLED)), observations);
+        Assertions.assertEquals(0, controller.activeRequestCount());
+        Assertions.assertTrue(provider.token.get().isCancellationRequested());
+    }
+
+    @Test
+    void replacementCancellationErrorAlsoRetiresTheNewSessionBeforeRethrowing() {
+        ControlledProvider provider = new ControlledProvider();
+        List<AiClientSponsoredTerminalObservation> observations = new ArrayList<>();
+        ClientAiRequestSessionController controller = new ClientAiRequestSessionController(
+                credentialStore,
+                OWNER_ID,
+                (dispatch, store) -> provider,
+                clock::get,
+                scheduler,
+                (dispatch, proposal) -> Assertions.fail("proposal must not be handed off"),
+                observations::add);
+        AiClientRequestDispatch first = dispatch(REQUEST_ID, AGENT_ID, 2_000L);
+        AiClientRequestDispatch replacement = dispatch(
+                UUID.fromString("00000000-0000-0000-0000-000000000302"),
+                AGENT_ID,
+                2_000L);
+
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.STARTED, controller.accept(first));
+        provider.token.get().onCancellation(() -> {
+            throw new AssertionError("replacement cancellation listener sentinel");
+        });
+
+        Assertions.assertThrows(AssertionError.class, () -> controller.accept(replacement));
+        Assertions.assertEquals(List.of(
+                new AiClientSponsoredTerminalObservation(
+                        AiRequestDispatchReceipt.fromDispatch(first),
+                        AiClientSponsoredTerminalStatus.CANCELLED),
+                new AiClientSponsoredTerminalObservation(
+                        AiRequestDispatchReceipt.fromDispatch(replacement),
+                        AiClientSponsoredTerminalStatus.FAILED)), observations);
+        Assertions.assertEquals(0, controller.activeRequestCount());
+        Assertions.assertEquals(1, provider.calls.get());
+        Assertions.assertTrue(provider.token.get().isCancellationRequested());
+    }
+
+    @Test
+    void completionAndExactCancellationRaceProduceOneTerminalObservation() throws Exception {
+        ControlledProvider provider = new ControlledProvider();
+        List<AiClientSponsoredTerminalObservation> observations = Collections.synchronizedList(
+                new ArrayList<>());
+        List<AiProposalPayload> returned = new ArrayList<>();
+        ClientAiRequestSessionController controller = new ClientAiRequestSessionController(
+                credentialStore,
+                OWNER_ID,
+                (dispatch, store) -> provider,
+                clock::get,
+                scheduler,
+                (dispatch, proposal) -> returned.add(proposal),
+                observations::add);
+        AiClientRequestDispatch dispatch = dispatch(REQUEST_ID, AGENT_ID, 2_000L);
+        Assertions.assertEquals(ClientAiRequestDispatchStatus.STARTED, controller.accept(dispatch));
+
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> completion = executor.submit(() -> {
+                await(start);
+                provider.completion.complete(toolResponse(dispatch));
+            });
+            Future<Boolean> cancellation = executor.submit(() -> {
+                await(start);
+                return controller.cancelRequest(dispatch.requestId());
+            });
+            start.countDown();
+            completion.get(5L, TimeUnit.SECONDS);
+            cancellation.get(5L, TimeUnit.SECONDS);
+        } finally {
+            executor.shutdownNow();
+        }
+
+        Assertions.assertEquals(1, observations.size());
+        Assertions.assertEquals(AiRequestDispatchReceipt.fromDispatch(dispatch),
+                observations.getFirst().receipt());
+        Assertions.assertTrue(List.of(
+                AiClientSponsoredTerminalStatus.SUCCEEDED,
+                AiClientSponsoredTerminalStatus.CANCELLED).contains(
+                        observations.getFirst().status()));
+        Assertions.assertEquals(0, controller.activeRequestCount());
+        Assertions.assertTrue(provider.token.get().isCancellationRequested());
+    }
+
     private ClientAiRequestSessionController controller(
             UUID localOwnerId,
             List<ControlledProvider> providers,
@@ -636,6 +927,15 @@ class ClientAiRequestSessionControllerTest {
                 clock::get,
                 scheduler,
                 (dispatch, proposal) -> returned.add(proposal));
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("test worker was interrupted", exception);
+        }
     }
 
     private static AiClientRequestDispatch dispatch(
@@ -663,7 +963,7 @@ class ClientAiRequestSessionControllerTest {
                 expiresAtEpochMillis,
                 "deepseek",
                 "deepseek-chat",
-                List.of(new AiMessage(AiMessageRole.USER, "request")),
+                List.of(new AiMessage(AiMessageRole.USER, "prompt_sentinel")),
                 new AiRequestOptions(
                         256,
                         500L,
@@ -691,7 +991,7 @@ class ClientAiRequestSessionControllerTest {
                 2_000L,
                 "deepseek",
                 "deepseek-chat",
-                List.of(new AiMessage(AiMessageRole.USER, "request")),
+                List.of(new AiMessage(AiMessageRole.USER, "prompt_sentinel")),
                 new AiRequestOptions(
                         256,
                         500L,

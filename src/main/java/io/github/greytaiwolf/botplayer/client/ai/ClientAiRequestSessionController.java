@@ -7,6 +7,9 @@ import io.github.greytaiwolf.botplayer.ai.AiResponse;
 import io.github.greytaiwolf.botplayer.ai.CancellationTokenSource;
 import io.github.greytaiwolf.botplayer.ai.review.AiReviewOnlyContract;
 import io.github.greytaiwolf.botplayer.ai.transport.AiClientRequestDispatch;
+import io.github.greytaiwolf.botplayer.ai.transport.AiClientSponsoredTerminalObservation;
+import io.github.greytaiwolf.botplayer.ai.transport.AiClientSponsoredTerminalStatus;
+import io.github.greytaiwolf.botplayer.ai.transport.AiRequestDispatchReceipt;
 import io.github.greytaiwolf.botplayer.ai.transport.AiRequestPurpose;
 import io.github.greytaiwolf.botplayer.client.credential.BotCredentialBinding;
 import io.github.greytaiwolf.botplayer.client.credential.ClientCredentialStore;
@@ -55,13 +58,17 @@ public final class ClientAiRequestSessionController {
      * full instead of evicting a live tombstone and reopening a replay window.
      */
     static final int MAX_REQUEST_TOMBSTONES = 256;
+    private static final ClientAiRequestTerminalObserver NOOP_TERMINAL_OBSERVER =
+            observation -> {};
 
     /**
      * Physical-client handoff for a completed proposal.
      *
      * <p>An asynchronous handoff must call {@link BindingEpochHandoff#release()} exactly once
      * after it sends or drops the proposal. The lease remains valid only while the same bot's
-     * local credential binding epoch is unchanged.
+     * local credential binding epoch is unchanged. The handoff is invoked while this controller
+     * serializes the final cancellation-before-queue check, so it must not synchronously re-enter
+     * this controller directly or indirectly, including by completing a controller-owned stage.
      */
     @FunctionalInterface
     public interface ProposalHandoff {
@@ -87,6 +94,7 @@ public final class ClientAiRequestSessionController {
     private final ScheduledExecutorService deadlineScheduler;
     private final BooleanSupplier sessionActive;
     private final ProposalHandoff proposalHandoff;
+    private final ClientAiRequestTerminalObserver terminalObserver;
     private final Map<UUID, ActiveSession> sessionsByRequest = new LinkedHashMap<>();
     private final Map<UUID, ActiveSession> sessionsByBot = new LinkedHashMap<>();
     private final Map<UUID, Long> tombstoneExpiryByRequest = new LinkedHashMap<>();
@@ -112,6 +120,26 @@ public final class ClientAiRequestSessionController {
                 proposalSink);
     }
 
+    /** Creates an always-active controller with an optional safe terminal-observation handoff. */
+    public ClientAiRequestSessionController(
+            ClientCredentialStore credentialStore,
+            UUID localOwnerId,
+            ClientAiProviderFactory providerFactory,
+            LongSupplier currentEpochMillis,
+            ScheduledExecutorService deadlineScheduler,
+            BiConsumer<AiClientRequestDispatch, AiProposalPayload> proposalSink,
+            ClientAiRequestTerminalObserver terminalObserver) {
+        this(
+                credentialStore,
+                localOwnerId,
+                providerFactory,
+                currentEpochMillis,
+                deadlineScheduler,
+                () -> true,
+                proposalSink,
+                terminalObserver);
+    }
+
     /**
      * Creates a session controller with a physical-client connection guard.
      *
@@ -133,7 +161,34 @@ public final class ClientAiRequestSessionController {
                 currentEpochMillis,
                 deadlineScheduler,
                 sessionActive,
-                synchronousProposalHandoff(proposalSink));
+                synchronousProposalHandoff(proposalSink),
+                NOOP_TERMINAL_OBSERVER);
+    }
+
+    /**
+     * Creates a controller with an optional safe terminal-observation handoff.
+     *
+     * <p>The observer is invoked only after a locally started session becomes terminal. It is not
+     * a packet sender and does not grant it any authority over this controller or the server gate.
+     */
+    public ClientAiRequestSessionController(
+            ClientCredentialStore credentialStore,
+            UUID localOwnerId,
+            ClientAiProviderFactory providerFactory,
+            LongSupplier currentEpochMillis,
+            ScheduledExecutorService deadlineScheduler,
+            BooleanSupplier sessionActive,
+            BiConsumer<AiClientRequestDispatch, AiProposalPayload> proposalSink,
+            ClientAiRequestTerminalObserver terminalObserver) {
+        this(
+                credentialStore,
+                localOwnerId,
+                providerFactory,
+                currentEpochMillis,
+                deadlineScheduler,
+                sessionActive,
+                synchronousProposalHandoff(proposalSink),
+                terminalObserver);
     }
 
     /**
@@ -151,6 +206,36 @@ public final class ClientAiRequestSessionController {
             ScheduledExecutorService deadlineScheduler,
             BooleanSupplier sessionActive,
             ProposalHandoff proposalHandoff) {
+        this(
+                credentialStore,
+                localOwnerId,
+                providerFactory,
+                currentEpochMillis,
+                deadlineScheduler,
+                sessionActive,
+                proposalHandoff,
+                NOOP_TERMINAL_OBSERVER);
+    }
+
+    /**
+     * Creates a controller with an exact physical-client proposal handoff and safe terminal
+     * observation hook.
+     *
+     * <p>When {@code proposalHandoff} honors its no-reentrancy contract, the terminal observer
+     * runs outside this controller's lock. Runtime exceptions from it are isolated; an {@link
+     * Error} is rethrown only after local cancellation and terminal cleanup have been attempted.
+     * The observer cannot send a payload, close a server session, or expose provider data through
+     * this API.
+     */
+    public ClientAiRequestSessionController(
+            ClientCredentialStore credentialStore,
+            UUID localOwnerId,
+            ClientAiProviderFactory providerFactory,
+            LongSupplier currentEpochMillis,
+            ScheduledExecutorService deadlineScheduler,
+            BooleanSupplier sessionActive,
+            ProposalHandoff proposalHandoff,
+            ClientAiRequestTerminalObserver terminalObserver) {
         this.credentialStore = Objects.requireNonNull(
                 credentialStore, "credentialStore");
         this.localOwnerId = requireNonZero(localOwnerId, "localOwnerId");
@@ -161,12 +246,15 @@ public final class ClientAiRequestSessionController {
                 deadlineScheduler, "deadlineScheduler");
         this.sessionActive = Objects.requireNonNull(sessionActive, "sessionActive");
         this.proposalHandoff = Objects.requireNonNull(proposalHandoff, "proposalHandoff");
+        this.terminalObserver = Objects.requireNonNull(
+                terminalObserver, "terminalObserver");
     }
 
     /**
      * Rebinds this controller to a newly connected local owner and cancels every prior session.
      */
     public void updateLocalOwner(UUID ownerId) {
+        rejectProposalHandoffReentrancy();
         UUID checkedOwnerId = requireNonZero(ownerId, "ownerId");
         List<ActiveSession> cancelled;
         synchronized (lock) {
@@ -182,6 +270,7 @@ public final class ClientAiRequestSessionController {
 
     /** Clears the connected owner and prevents all existing sessions from returning a proposal. */
     public void clearLocalOwner() {
+        rejectProposalHandoffReentrancy();
         List<ActiveSession> cancelled;
         synchronized (lock) {
             localOwnerId = null;
@@ -198,6 +287,7 @@ public final class ClientAiRequestSessionController {
      * cancels the older local request before the newer Provider call begins.
      */
     public ClientAiRequestDispatchStatus accept(AiClientRequestDispatch dispatch) {
+        rejectProposalHandoffReentrancy();
         AiClientRequestDispatch checked = Objects.requireNonNull(dispatch, "dispatch");
         if (checked.purpose() == AiRequestPurpose.REVIEW_ONLY_V1
                 && !AiReviewOnlyContract.isCanonicalDispatch(checked)) {
@@ -234,7 +324,11 @@ public final class ClientAiRequestSessionController {
             sessionsByRequest.put(checked.requestId(), session);
             sessionsByBot.put(checked.botId(), session);
         }
-        cancelAll(cancelled);
+        try {
+            cancelAll(cancelled);
+        } catch (Throwable cancellationFailure) {
+            failReplacementAfterCancellationFailure(session, cancellationFailure);
+        }
 
         /*
          * A local clock may be behind the server's issue timestamp by the tolerated skew. Never
@@ -253,10 +347,10 @@ public final class ClientAiRequestSessionController {
                     TimeUnit.MILLISECONDS);
             session.setDeadline(deadline);
         } catch (RejectedExecutionException exception) {
-            cancelSession(session);
+            failSession(session);
             return ClientAiRequestDispatchStatus.PROVIDER_UNAVAILABLE;
         } catch (RuntimeException exception) {
-            cancelSession(session);
+            failSession(session);
             return ClientAiRequestDispatchStatus.PROVIDER_UNAVAILABLE;
         }
 
@@ -271,7 +365,7 @@ public final class ClientAiRequestSessionController {
                     providerFactory.create(checked, credentialStore),
                     "client provider factory result");
         } catch (RuntimeException exception) {
-            cancelSession(session);
+            failSession(session);
             return ClientAiRequestDispatchStatus.PROVIDER_UNAVAILABLE;
         }
 
@@ -286,7 +380,7 @@ public final class ClientAiRequestSessionController {
                     provider.complete(checked.toAiRequest(), session.cancellation.token()),
                     "AiProvider completion");
         } catch (RuntimeException exception) {
-            cancelSession(session);
+            failSession(session);
             return ClientAiRequestDispatchStatus.PROVIDER_UNAVAILABLE;
         }
 
@@ -294,7 +388,7 @@ public final class ClientAiRequestSessionController {
             completion.whenComplete((response, failure) ->
                     completeSession(session, response, failure));
         } catch (RuntimeException exception) {
-            cancelSession(session);
+            failSession(session);
             return ClientAiRequestDispatchStatus.PROVIDER_UNAVAILABLE;
         }
         return ClientAiRequestDispatchStatus.STARTED;
@@ -302,6 +396,7 @@ public final class ClientAiRequestSessionController {
 
     /** Cancels a still-active local request by its server-generated request id. */
     public boolean cancelRequest(UUID requestId) {
+        rejectProposalHandoffReentrancy();
         Objects.requireNonNull(requestId, "requestId");
         ActiveSession session;
         synchronized (lock) {
@@ -311,7 +406,7 @@ public final class ClientAiRequestSessionController {
             }
             detachLocked(session);
         }
-        session.cancel();
+        cancelAndObserve(session, AiClientSponsoredTerminalStatus.CANCELLED);
         return true;
     }
 
@@ -321,6 +416,7 @@ public final class ClientAiRequestSessionController {
      * broad bot/request-id cancellation.
      */
     public boolean cancel(AiRequestCancellationPayload cancellation) {
+        rejectProposalHandoffReentrancy();
         AiRequestCancellationPayload checked = Objects.requireNonNull(
                 cancellation, "cancellation");
         ActiveSession session;
@@ -336,12 +432,13 @@ public final class ClientAiRequestSessionController {
             }
             detachLocked(session);
         }
-        session.cancel();
+        cancelAndObserve(session, AiClientSponsoredTerminalStatus.CANCELLED);
         return true;
     }
 
     /** Cancels the one active local request for a bot, if any. */
     public boolean cancelBot(UUID botId) {
+        rejectProposalHandoffReentrancy();
         Objects.requireNonNull(botId, "botId");
         ActiveSession session;
         synchronized (lock) {
@@ -351,7 +448,7 @@ public final class ClientAiRequestSessionController {
             }
             detachLocked(session);
         }
-        session.cancel();
+        cancelAndObserve(session, AiClientSponsoredTerminalStatus.CANCELLED);
         return true;
     }
 
@@ -363,6 +460,7 @@ public final class ClientAiRequestSessionController {
      * connection, so an ordinary local rebind cannot invalidate unrelated bots.
      */
     public void advanceBindingEpoch(UUID botId) {
+        rejectProposalHandoffReentrancy();
         Objects.requireNonNull(botId, "botId");
         synchronized (lock) {
             BotBindingEpoch bindingEpoch = bindingEpochsByBot.get(botId);
@@ -374,6 +472,7 @@ public final class ClientAiRequestSessionController {
 
     /** Cancels every local Provider request without sending a C2S payload. */
     public int cancelAll() {
+        rejectProposalHandoffReentrancy();
         List<ActiveSession> cancelled;
         synchronized (lock) {
             cancelled = detachAllLocked();
@@ -384,6 +483,7 @@ public final class ClientAiRequestSessionController {
 
     /** Expires requests against a testable wall-clock source; returns the number retired. */
     public int expireThrough(long nowEpochMillis) {
+        rejectProposalHandoffReentrancy();
         if (nowEpochMillis < 0L) {
             throw new IllegalArgumentException("nowEpochMillis must not be negative");
         }
@@ -396,6 +496,7 @@ public final class ClientAiRequestSessionController {
     }
 
     public int activeRequestCount() {
+        rejectProposalHandoffReentrancy();
         synchronized (lock) {
             return sessionsByRequest.size();
         }
@@ -410,7 +511,7 @@ public final class ClientAiRequestSessionController {
             }
             detachLocked(session);
         }
-        session.cancel();
+        cancelAndObserve(session, AiClientSponsoredTerminalStatus.CANCELLED);
     }
 
     private void completeSession(
@@ -418,7 +519,7 @@ public final class ClientAiRequestSessionController {
         if (failure != null
                 || response == null
                 || !isAcceptableResponse(session.dispatch, response)) {
-            finishSession(session);
+            failSession(session);
             return;
         }
 
@@ -431,11 +532,11 @@ public final class ClientAiRequestSessionController {
              * physical send path merely because a future payload implementation regresses it.
              */
             if (proposal.encodedByteLength() > AiProposalPayload.MAX_ENCODED_FRAME_BYTES) {
-                finishSession(session);
+                failSession(session);
                 return;
             }
         } catch (RuntimeException exception) {
-            finishSession(session);
+            failSession(session);
             return;
         }
 
@@ -443,36 +544,53 @@ public final class ClientAiRequestSessionController {
          * Keep the session current until the non-blocking physical-client handoff has been made.
          * This makes a concurrent cancellation/owner change win before the C2S proposal is queued.
          */
-        boolean finished;
-        synchronized (lock) {
-            if (!isCurrentLocked(session)
-                    || session.cancellation.isCancellationRequested()
-                    || !isBindingEpochCurrentLocked(session)
-                    || localStatusLocked(
-                            session.dispatch,
-                            readCurrentEpochMillisSafely())
-                    != ClientAiRequestDispatchStatus.STARTED) {
-                finished = detachIfCurrentLocked(session);
-            } else {
-                BindingEpochHandoff bindingEpoch = createBindingEpochHandoffLocked(session);
-                try {
-                    proposalHandoff.accept(session.dispatch, proposal, bindingEpoch);
-                } catch (RuntimeException exception) {
-                    // A send handoff failure must not trigger a retry or reveal model output.
-                    bindingEpoch.release();
-                } finally {
-                    finished = detachIfCurrentLocked(session);
+        AiClientSponsoredTerminalStatus terminalStatus = null;
+        try {
+            synchronized (lock) {
+                if (!isCurrentLocked(session)
+                        || session.cancellation.isCancellationRequested()
+                        || !isBindingEpochCurrentLocked(session)
+                        || localStatusLocked(
+                                session.dispatch,
+                                readCurrentEpochMillisSafely())
+                        != ClientAiRequestDispatchStatus.STARTED) {
+                    if (detachIfCurrentLocked(session)) {
+                        terminalStatus = AiClientSponsoredTerminalStatus.CANCELLED;
+                    }
+                } else {
+                    BindingEpochHandoff bindingEpoch = createBindingEpochHandoffLocked(session);
+                    boolean handedOff = false;
+                    try {
+                        proposalHandoff.accept(session.dispatch, proposal, bindingEpoch);
+                        handedOff = true;
+                    } catch (RuntimeException ignored) {
+                        // A send handoff failure must not trigger a retry or reveal model output.
+                    } finally {
+                        if (!handedOff) {
+                            /* A failed handoff never transfers its binding-epoch lease. */
+                            bindingEpoch.release();
+                        }
+                        if (detachIfCurrentLocked(session)) {
+                            terminalStatus = handedOff
+                                    ? AiClientSponsoredTerminalStatus.SUCCEEDED
+                                    : AiClientSponsoredTerminalStatus.FAILED;
+                        }
+                    }
                 }
             }
-        }
-        if (finished) {
-            /*
-             * The provider has completed, but signalling the token still releases any provider
-             * listener which races its terminal callback.  This is idempotent for the normal
-             * success path and ensures failures/mismatches never retain a cancellation
-             * registration or a transport-owned credential copy.
-             */
-            session.cancel();
+        } finally {
+            if (terminalStatus != null) {
+                /*
+                 * The provider has completed, but signalling the token still releases any
+                 * provider listener which races its terminal callback. This is idempotent for
+                 * the normal success path and ensures terminal sessions cannot retain a
+                 * cancellation registration or a transport-owned credential copy.
+                 */
+                cancelAndObserve(session, terminalStatus);
+            } else {
+                /* A concurrent replacement owns the observation but not this token cleanup. */
+                session.cancel();
+            }
         }
     }
 
@@ -487,18 +605,25 @@ public final class ClientAiRequestSessionController {
     }
 
     private void cancelSession(ActiveSession session) {
-        synchronized (lock) {
-            detachIfCurrentLocked(session);
-        }
-        // Idempotently notify even if a concurrent replacement detached the session first.
-        session.cancel();
+        retireSession(session, AiClientSponsoredTerminalStatus.CANCELLED);
     }
 
-    private void finishSession(ActiveSession session) {
+    private void failSession(ActiveSession session) {
+        retireSession(session, AiClientSponsoredTerminalStatus.FAILED);
+    }
+
+    private void retireSession(
+            ActiveSession session, AiClientSponsoredTerminalStatus terminalStatus) {
+        boolean detached;
         synchronized (lock) {
-            detachIfCurrentLocked(session);
+            detached = detachIfCurrentLocked(session);
         }
-        session.cancel();
+        if (detached) {
+            cancelAndObserve(session, terminalStatus);
+        } else {
+            // The first detacher owns the terminal observation, but this callback still cleans up.
+            session.cancel();
+        }
     }
 
     private boolean detachIfCurrentLocked(ActiveSession session) {
@@ -590,6 +715,18 @@ public final class ClientAiRequestSessionController {
         return ClientAiRequestDispatchStatus.STARTED;
     }
 
+    /**
+     * Rejects callbacks that try to mutate the controller while its final handoff check owns the
+     * monitor. Allowing Java monitor reentrancy here would let an observer run while the outer
+     * handoff still holds the lock and would weaken the cancellation-before-queue ordering.
+     */
+    private void rejectProposalHandoffReentrancy() {
+        if (Thread.holdsLock(lock)) {
+            throw new IllegalStateException(
+                    "ClientAiRequestSessionController must not be re-entered from a callback");
+        }
+    }
+
     private boolean isSessionActive() {
         try {
             return sessionActive.getAsBoolean();
@@ -645,8 +782,90 @@ public final class ClientAiRequestSessionController {
                 toolCalls);
     }
 
-    private static void cancelAll(List<ActiveSession> sessions) {
-        sessions.forEach(ActiveSession::cancel);
+    private void cancelAll(List<ActiveSession> sessions) {
+        Throwable failure = null;
+        for (ActiveSession session : sessions) {
+            try {
+                cancelAndObserve(session, AiClientSponsoredTerminalStatus.CANCELLED);
+            } catch (Throwable currentFailure) {
+                if (failure == null) {
+                    failure = currentFailure;
+                } else if (currentFailure != failure) {
+                    failure.addSuppressed(currentFailure);
+                }
+            }
+        }
+        if (failure != null) {
+            rethrowTerminalFailure(failure);
+        }
+    }
+
+    /** Runs after the caller released {@link #lock}; observer failures cannot retain a session. */
+    private void observeTerminal(
+            ActiveSession session, AiClientSponsoredTerminalStatus terminalStatus) {
+        if (!session.claimTerminalObservation()) {
+            return;
+        }
+        AiClientSponsoredTerminalObservation observation =
+                new AiClientSponsoredTerminalObservation(
+                        AiRequestDispatchReceipt.fromDispatch(session.dispatch),
+                        Objects.requireNonNull(terminalStatus, "terminalStatus"));
+        deliverTerminalObservation(observation);
+    }
+
+    /** Ensures an observer runtime failure cannot prevent cancellation-token cleanup. */
+    private void cancelAndObserve(
+            ActiveSession session, AiClientSponsoredTerminalStatus terminalStatus) {
+        Throwable failure = null;
+        try {
+            session.cancel();
+        } catch (Throwable currentFailure) {
+            failure = currentFailure;
+        }
+        try {
+            observeTerminal(session, terminalStatus);
+        } catch (Throwable currentFailure) {
+            if (failure == null) {
+                failure = currentFailure;
+            } else if (currentFailure != failure) {
+                failure.addSuppressed(currentFailure);
+            }
+        }
+        if (failure != null) {
+            rethrowTerminalFailure(failure);
+        }
+    }
+
+    private void deliverTerminalObservation(
+            AiClientSponsoredTerminalObservation observation) {
+        try {
+            terminalObserver.observe(observation);
+        } catch (RuntimeException ignored) {
+            // An observational handoff must never resurrect or retain local client work.
+        }
+    }
+
+    private static void rethrowTerminalFailure(Throwable failure) {
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        throw new IllegalStateException("unexpected checked terminal callback failure", failure);
+    }
+
+    /** Cleans a newly installed replacement if retiring its predecessor reported a fatal error. */
+    private void failReplacementAfterCancellationFailure(
+            ActiveSession replacement, Throwable cancellationFailure) {
+        try {
+            failSession(replacement);
+        } catch (Throwable replacementFailure) {
+            if (replacementFailure != cancellationFailure) {
+                cancellationFailure.addSuppressed(replacementFailure);
+            }
+        }
+        rethrowTerminalFailure(cancellationFailure);
     }
 
     private static ProposalHandoff synchronousProposalHandoff(
@@ -756,6 +975,7 @@ public final class ClientAiRequestSessionController {
         private final long bindingEpochValue;
         private final CancellationTokenSource cancellation = new CancellationTokenSource();
         private ScheduledFuture<?> deadline;
+        private boolean terminalObservationClaimed;
 
         private ActiveSession(
                 AiClientRequestDispatch dispatch,
@@ -791,6 +1011,14 @@ public final class ClientAiRequestSessionController {
             } finally {
                 cancellation.cancel();
             }
+        }
+
+        private synchronized boolean claimTerminalObservation() {
+            if (terminalObservationClaimed) {
+                return false;
+            }
+            terminalObservationClaimed = true;
+            return true;
         }
     }
 }

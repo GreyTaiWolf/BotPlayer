@@ -65,6 +65,25 @@ public record AiRequestDispatchReceipt(
                 checked.purpose());
     }
 
+    /**
+     * Projects a client-visible dispatch onto the same safe correlation receipt.
+     *
+     * <p>The dispatch itself contains local-only owner, nonce and request-content fields. This
+     * projection deliberately carries none of them into a terminal observation.
+     */
+    public static AiRequestDispatchReceipt fromDispatch(
+            AiClientRequestDispatch dispatch) {
+        AiClientRequestDispatch checked = Objects.requireNonNull(dispatch, "dispatch");
+        return new AiRequestDispatchReceipt(
+                checked.botId(),
+                checked.agentId(),
+                checked.generation(),
+                checked.requestId(),
+                checked.revision(),
+                checked.expiresAtTick(),
+                checked.purpose());
+    }
+
     /** No prompt, nonce, owner id, tool arguments, or credential-derived data is rendered. */
     @Override
     public String toString() {

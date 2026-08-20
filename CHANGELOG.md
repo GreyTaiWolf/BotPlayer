@@ -7,6 +7,13 @@
 
 ### 新增
 
+- 新增 P6-C2 客户端本地终态观察 Contract：`ClientAiRequestSessionController` 可选注入、默认
+  no-op 的 `ClientAiRequestTerminalObserver`，只在已登记 session 首次精确终结后交付
+  `AiRequestDispatchReceipt + SUCCEEDED|FAILED|CANCELLED`。安全 receipt 不含 nonce、owner、
+  prompt/schema、Provider 响应、Throwable、凭据或取消句柄；观察器 runtime 异常隔离，token
+  listener 的 `Error` 仍先完成本地清理与观察再重抛。它不发送 C2S/S2C payload，不接
+  coordinator、Lifecycle、Scheduler 或 R1，也不表示 proposal 已送达、server gate 接受或世界
+  执行成功；当前提交的 Java 21 CI 与 Minecraft 实机验证仍待完成；
 - 新增 ADR-0017 的窄 Contract：服务器生命周期以一个 owner-thread
   `TechniqueLifecycleCoordinator` 管理所有已注册 Technique；已有有限自卫单击 bridge 迁为
   一条受限 Action 路由，保留精确 child ticket、generation 关闭与 L0 抢占的失败关闭清理。

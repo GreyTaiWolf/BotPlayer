@@ -7,7 +7,8 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 
 > **当前状态：P2、P3 与 P4 自动化退出门已通过；Build #362 已验证受限 P5 纵切与
 > P6-R1 的先前自动化基线。其后的 P5A 修复、单 `TechniqueLifecycleCoordinator` Contract 与
-> P6 会话协调器提交仍待各自 Java 21 CI；仍不是正式版本，P5/P6 总退出门均未关闭。**
+> P6 会话协调器及客户端安全 terminal-observation Contract 提交仍待各自 Java 21 CI；仍不是
+> 正式版本，P5/P6 总退出门均未关闭。**
 >
 > 当前代码已建立真实 `BotServerPlayer`、generation 隔离、确定性动作运行时、短程输入、
 > 基础世界交互和 bot 自身背包 GUI。P3 提供有限感知和短期世界事实；P4 提供有界导航与 L0

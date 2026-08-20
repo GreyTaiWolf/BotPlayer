@@ -61,11 +61,33 @@ Throwable、HTTP/Scheduler handle。满队列返回 `false`，调用者不得在
 drain 只按 FIFO 交给未来 owner-thread 生命周期观察，**不会**验证 receipt 是否仍活动，也不会自动关闭
 gate 或账本。迟到/伪造/旧 replacement receipt 因而没有改变会话的权力。
 
-### 4. 本阶段明确不接线的边界
+### 4. 客户端本地终态观察 Contract（P6-C2）
 
-本 ADR 不改 `BotLifecycleManager`、network payload/handler、客户端 credential、Provider、
+`ClientAiRequestSessionController` 新增可选的 `ClientAiRequestTerminalObserver`；既有构造器仍
+注入默认 no-op。一个已经登记的本地 session 只在首次成功从 request/bot 两个索引摘除后，才在锁外
+交付一次：
+
+```text
+AiRequestDispatchReceipt + { SUCCEEDED | FAILED | CANCELLED }
+```
+
+receipt 从 `AiClientRequestDispatch` 做最小投影，不带 nonce、owner、prompt、schema、Provider 响应、
+Throwable、credential 或取消句柄。未登记 ingress 的 owner/binding/expiry/duplicate 拒绝没有 terminal
+observation。`SUCCEEDED` 仅表示本地已校验的 Provider 响应被 `ProposalHandoff` 正常接受；它不表示
+Minecraft queue 已发送、C2S 到达、server gate 接受、计划提交或世界执行。Provider/setup/解析/handoff
+的本地失败为 `FAILED`；replacement、owner/binding/connection 撤销、精确取消和 TTL 为 `CANCELLED`。
+
+观察器必须非阻塞；其 `RuntimeException` 被隔离，token listener 或观察器的 `Error` 会在已尝试本地
+取消和 observation 后重新抛出。为保持最终 cancellation-before-queue 原子检查，`ProposalHandoff`
+在 controller lock 内运行，且不得直接或间接重入 controller（包括同步完成另一个 controller-owned
+stage）；违规按本地 handoff `FAILED` 失败关闭。P6-C2 不把 observation 接到 coordinator mailbox、
+network、Lifecycle、Scheduler 或 R1，所以它仍不是 generic client-sponsored bridge。
+
+### 5. 本阶段明确不接线的边界
+
+协调器与 P6-C2 不改 `BotLifecycleManager`、network payload/handler、客户端 credential、Provider、
 `AiRequestScheduler`、C2S proposal review、聊天、Tool→Skill port、Technique、Action 或 Minecraft
-世界。它不发送 packet，不启动/取消 HTTP 或 Scheduler，也不把 AI 输出转换为计划或执行。
+世界。它们不发送 packet，不启动/取消 HTTP 或 Scheduler，也不把 AI 输出转换为计划或执行。
 
 后续 bridge 仍必须在服务器线程按同一 immutable binding 依次完成 lifecycle ownership、精确 S2C
 dispatch、client/Scheduler terminal reporting、C2S gate review、snapshot/revision/world recheck，最后才
@@ -92,7 +114,7 @@ dispatch、client/Scheduler terminal reporting、C2S gate review、snapshot/revi
 
 ## 兼容性、性能、安全与许可证影响
 
-- 兼容性：只新增纯 Java transport 类型和 ledger 的 package-private 查询；不改变 R1 或既有 payload。
+- 兼容性：新增纯 Java transport 安全投影和客户端默认 no-op observer；不改变 R1 或既有 payload。
 - 性能：活动索引仍为两个 UUID Map；每个 foreign terminal report 只做一次非阻塞有界 queue offer；
   owner 每 tick 最多 drain 配置上限。
 - 安全：公开诊断不输出 owner、nonce、prompt、schema、credential、response 或 Throwable；所有 close
@@ -101,9 +123,10 @@ dispatch、client/Scheduler terminal reporting、C2S gate review、snapshot/revi
 
 ## 迁移和回滚
 
-本阶段仍无生产调用点。未来接入可先创建 coordinator，再逐项接入精确 dispatch、Scheduler handle
-与 lifecycle cleanup；每一步都必须保留 R1 的独立路径。若回滚本阶段，停止创建 coordinator，并在
-其 owner thread 调 `closeAll()` 取得精确 binding 供下游清理；不删除 credential、不触及 P5/world。
+本阶段 coordinator 与 P6-C2 observer 都仍无生产 bridge 调用点。未来接入可先创建 coordinator，再
+逐项接入精确 dispatch、Scheduler handle 与 lifecycle cleanup；每一步都必须保留 R1 的独立路径。若
+回滚本阶段，停止创建 coordinator，保留客户端 observer 的默认 no-op，并在其 owner thread 调
+`closeAll()` 取得精确 binding 供下游清理；不删除 credential、不触及 P5/world。
 
 ## 验证方式
 
@@ -112,5 +135,8 @@ dispatch、client/Scheduler terminal reporting、C2S gate review、snapshot/revi
   shutdown 使 gate/ledger 同步；foreign thread 只能 offer；mailbox FIFO、有界且 drain 不自动 close。
 - Java 21 自动基线：本 ADR 对应提交必须通过 GitHub Actions 的完整 Gradle `clean build`、JUnit 与
   NeoForge GameTest；提交前不得把本地缺少 Java 21/Gradle 的静态检查当作该结论。
+- P6-C2 纯 Java：覆盖 success/failure/cancellation、provider setup failure、replacement、精确
+  completion-vs-cancel race、handoff reentrancy 拒绝、observer runtime failure、token listener Error
+  与 safe `toString()` redaction；当前提交仍待 Java 21 CI。
 - 后续集成：真实 client、Provider/Scheduler lane、owner 退出、断线、死亡、TTL 与迟到 C2S 仍必须
   验证只影响同一完整 binding；在此之前通用 bridge、聊天和 AI 世界执行均未实现。
