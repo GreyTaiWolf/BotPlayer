@@ -56,6 +56,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0035](0035-bounded-construction-site-survey-assessment-contract.md) | 有界候选施工站点调查与评估 | Accepted | P5D-A3 只对 caller-supplied exact target evidence 作 fail-closed 纯 Java assessment；`ACCEPTED_CANDIDATE` 不是 world read、accepted site、lease、ownership/human proof 或 placement，P5D 仍未实现 |
 | [ADR-0036](0036-bounded-blueprint-placeable-item-evidence.md) | 有界蓝图可放置物品声明 | Accepted | P5D-A4 只要求 full-state 的 explicit item declaration 并派生 declared quantity；不猜 blockId→itemId，也不是 registry proof、inventory/reservation、placement 或 P5D 完成 |
 | [ADR-0037](0037-server-owned-physical-attempt-handshake.md) | 服务器拥有的跨边界物理尝试握手 | Accepted | P6-B0 只增加有界 server-owned offer/ACK/settle/start-grant Contract 与 client-local one-claim fence；没有 network/session/Provider/HTTP/lifecycle bridge，也不是真实计费或 P6 完成 |
+| [ADR-0038](0038-loaded-world-construction-site-survey-adapter.md) | 已加载世界候选施工站点调查适配器 | Accepted | P5D-A5 只在 server thread 对 exact binding 的已加载 cell 生成 immutable survey；不加载 chunk、不写世界，也不是 lease/placement/Technique/Action/Skill 或 P5D 完成 |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
@@ -166,6 +167,11 @@ receipt、attempt、nonce、client-not-after 和更早的 physical-start-not-aft
 承诺，不是 HTTP/Provider 事实；offer 可 release，grant/丢包/断线/expiry 只 tombstone，客户端须在实际 start
 边界原子 `tryClaimPhysicalStart()`。它仍没有 packet、authenticated session、client queue、Provider/HTTP、
 lifecycle/reaper 调用、billing 或 AI→世界执行。
+
+ADR-0038 只把 ADR-0035 的 caller-supplied survey 接到一个 stateless server-thread adapter：它只遍历 exact
+binding 的 canonical Blueprint cell，在 build-height 和 `isLoaded` guard 后读取 native `BlockState`，以完整
+serialized properties 产生 `EMPTY|OCCUPIED`，未加载/越界/codec failure 一律 `UNKNOWN`。它不加载 chunk、不写
+world，也不构成 accepted site、lease、material proof、placement、Technique、Action、Skill 或 P5D 建造路径。
 
 ## 新 ADR 文件规则
 
