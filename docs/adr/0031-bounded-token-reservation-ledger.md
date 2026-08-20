@@ -87,9 +87,11 @@ ADR-0022/0024 session 的 close，也不取消 HTTP、Scheduler 或 client work�
 callback 或 Minecraft。`settleAttempt`、`release`、expiry 和 `close` 对同一 exact reservation 只能有
 一个终态胜出，其他调用返回 no-op/fail-closed status。
 
-TTL 为半开区间：`now >= expiresAt` 时过期。时钟早于此前观测值、`Instant` 溢出或无效 expiration
-都不得倒退或改变 accounting；需要当前时间的读取/expiry 抛出失败，reserve/settle 返回
-`CLOCK_ROLLBACK` 或 `INVALID_EXPIRATION`。普通 `toString()` 与 snapshot 不显示 owner/bot/agent、
+TTL 为半开区间：`now >= expiresAt` 时过期。时钟早于此前观测值或无效 expiration 都不得倒退或
+改变 accounting；需要当前时间的读取/expiry 抛出失败，reserve/settle 返回 `CLOCK_ROLLBACK` 或
+`INVALID_EXPIRATION`。若 `now + maximumReservationAge` 超过 `Instant.MAX`，仍可安全接受一个更早、
+可表示且晚于 `now` 的 expiration，因为它必然在概念 TTL 内；不得把表示范围错误地当作额度退款。
+普通 `toString()` 与 snapshot 不显示 owner/bot/agent、
 requestId、reservationId、prompt、credential、model、response 或 usage。
 
 ### 5. 本阶段明确不接线的内容

@@ -60,9 +60,10 @@ public final class AiTokenBudgetLedger implements AutoCloseable {
      * Reserves the conservative admission total for one future physical attempt.
      *
      * <p>The binding must belong to this ledger's exact scope and the admission must already be
-     * accepted by a trusted model-policy path. A rejection never spends a token. The caller must
-     * pass the earlier of its applicable request/session deadline and this policy's age limit; this
-     * ledger enforces only its own bounded maximum age.</p>
+     * accepted by a trusted model-policy path. A rejection never spends a token. This overload
+     * accepts only an explicit expiration; callers with a trusted deadline should use
+     * {@link #reserveForDeadline(AiTokenBudgetRequestBinding, AiModelAdmission, Instant)} so the
+     * ledger derives the bounded TTL itself.</p>
      */
     public AiTokenBudgetReservationResult reserve(
             AiTokenBudgetRequestBinding binding,
@@ -83,7 +84,48 @@ public final class AiTokenBudgetLedger implements AutoCloseable {
             return rejected(AiTokenBudgetOperationStatus.INVALID_ADMISSION);
         }
         Instant observedAt = currentInstant();
-        if (!isValidExpiration(observedAt, checkedExpiresAt)) {
+        return reserveAt(checkedBinding, checkedAdmission, observedAt, checkedExpiresAt);
+    }
+
+    /**
+     * Reserves one future physical attempt until the earlier of a trusted deadline and this
+     * ledger's maximum reservation age.
+     *
+     * <p>This is the only public helper that derives an expiration from the ledger's own clock
+     * and policy. A future retry adapter must pass its already-trusted logical-attempt deadline;
+     * it must not guess a TTL or retain a reservation past that deadline. The returned reservation
+     * is still not permission to invoke a Provider: {@link #settleAttempt(AiTokenReservation)}
+     * must win immediately before that physical invocation.
+     */
+    public AiTokenBudgetReservationResult reserveForDeadline(
+            AiTokenBudgetRequestBinding binding,
+            AiModelAdmission admission,
+            Instant deadline) {
+        AiTokenBudgetRequestBinding checkedBinding = Objects.requireNonNull(
+                binding, "binding");
+        AiModelAdmission checkedAdmission = Objects.requireNonNull(
+                admission, "admission");
+        Instant checkedDeadline = AiChecks.instant(deadline, "deadline");
+        if (!checkedAdmission.accepted()) {
+            return rejected(AiTokenBudgetOperationStatus.ADMISSION_REJECTED);
+        }
+        if (!scope.equals(checkedBinding.scope())) {
+            return rejected(AiTokenBudgetOperationStatus.SCOPE_MISMATCH);
+        }
+        if (checkedAdmission.reservedTotalTokens() <= 0L) {
+            return rejected(AiTokenBudgetOperationStatus.INVALID_ADMISSION);
+        }
+        Instant observedAt = currentInstant();
+        Instant expiresAt = expirationForDeadline(observedAt, checkedDeadline);
+        return reserveAt(checkedBinding, checkedAdmission, observedAt, expiresAt);
+    }
+
+    private AiTokenBudgetReservationResult reserveAt(
+            AiTokenBudgetRequestBinding binding,
+            AiModelAdmission admission,
+            Instant observedAt,
+            Instant expiresAt) {
+        if (!isValidExpiration(observedAt, expiresAt)) {
             return rejected(AiTokenBudgetOperationStatus.INVALID_EXPIRATION);
         }
         List<UUID> candidates = reservationIdCandidates();
@@ -98,7 +140,7 @@ public final class AiTokenBudgetLedger implements AutoCloseable {
             if (activeReservations.size() >= policy.maximumActiveReservations()) {
                 return rejected(AiTokenBudgetOperationStatus.ACTIVE_RESERVATION_LIMIT);
             }
-            long total = checkedAdmission.reservedTotalTokens();
+            long total = admission.reservedTotalTokens();
             if (total > availableTokensLocked()) {
                 return rejected(AiTokenBudgetOperationStatus.TOKEN_BUDGET_EXHAUSTED);
             }
@@ -108,12 +150,12 @@ public final class AiTokenBudgetLedger implements AutoCloseable {
             }
             AiTokenReservation reservation = new AiTokenReservation(
                     reservationId,
-                    checkedBinding,
-                    checkedAdmission.estimatedInputTokens(),
-                    checkedAdmission.reservedOutputTokens(),
+                    binding,
+                    admission.estimatedInputTokens(),
+                    admission.reservedOutputTokens(),
                     total,
                     observedAt,
-                    checkedExpiresAt);
+                    expiresAt);
             addReservationLocked(reservation);
             return new AiTokenBudgetReservationResult(
                     AiTokenBudgetOperationStatus.RESERVED,
@@ -255,7 +297,21 @@ public final class AiTokenBudgetLedger implements AutoCloseable {
             return !expiresAt.isAfter(observedAt.plus(
                     policy.maximumReservationAge()));
         } catch (DateTimeException | ArithmeticException exception) {
-            return false;
+            // The bounded age extends beyond Instant.MAX, so every representable later deadline
+            // remains within it. Rejecting it would make accounting depend on representability,
+            // rather than on an unsafe longer TTL.
+            return true;
+        }
+    }
+
+    private Instant expirationForDeadline(Instant observedAt, Instant deadline) {
+        try {
+            Instant maximumExpiry = observedAt.plus(policy.maximumReservationAge());
+            return deadline.isBefore(maximumExpiry) ? deadline : maximumExpiry;
+        } catch (DateTimeException | ArithmeticException exception) {
+            // The conceptual bounded expiry lies beyond Instant.MAX. A valid Instant deadline is
+            // necessarily earlier, and reserveAt still rejects a deadline at or before now.
+            return deadline;
         }
     }
 

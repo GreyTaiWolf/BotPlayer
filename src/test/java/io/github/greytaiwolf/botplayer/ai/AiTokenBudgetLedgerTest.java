@@ -14,6 +14,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -58,6 +59,84 @@ class AiTokenBudgetLedgerTest {
                 () -> Assertions.assertEquals(50L, snapshot.availableTokens()),
                 () -> Assertions.assertEquals(1, snapshot.activeReservations()),
                 () -> Assertions.assertFalse(snapshot.closed()));
+    }
+
+    @Test
+    void reserveForDeadlineDerivesTheEarlierTrustedDeadlineOrLedgerTtl() {
+        MutableClock clock = new MutableClock(START);
+        AiTokenBudgetScope scope = scope();
+        AiTokenBudgetRequestBinding binding = binding(scope, REQUEST, 7L);
+        AiModelAdmission admission = accepted(20L, 30L);
+        AiTokenBudgetLedger deadlineLedger = ledger(scope, policy(100L, 2), clock);
+
+        AiTokenReservation upstreamEarlier = deadlineLedger.reserveForDeadline(
+                binding, admission, START.plusSeconds(5L)).reservation().orElseThrow();
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(START.plusSeconds(5L),
+                        upstreamEarlier.expiresAt()),
+                () -> Assertions.assertEquals(AiTokenBudgetOperationStatus.RELEASED,
+                        deadlineLedger.release(upstreamEarlier)));
+
+        AiTokenBudgetLedger ttlLedger = ledger(scope, policy(100L, 2), clock);
+        AiTokenReservation ttlEarlier = ttlLedger.reserveForDeadline(
+                binding, admission, START.plusSeconds(300L)).reservation().orElseThrow();
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(START.plusSeconds(30L),
+                        ttlEarlier.expiresAt()),
+                () -> assertRejected(ttlLedger.reserveForDeadline(binding, admission, START),
+                        AiTokenBudgetOperationStatus.INVALID_EXPIRATION),
+                () -> Assertions.assertEquals(50L, ttlLedger.snapshot().reservedTokens()));
+
+        MutableClock maximumClock = new MutableClock(Instant.MAX.minusSeconds(1L));
+        AiTokenBudgetLedger maximumLedger = ledger(scope, policy(100L, 1), maximumClock);
+        AiTokenReservation maximumReservation = maximumLedger.reserveForDeadline(binding,
+                admission, Instant.MAX).reservation().orElseThrow();
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(Instant.MAX, maximumReservation.expiresAt()),
+                () -> Assertions.assertEquals(50L, maximumLedger.snapshot().consumedTokens()));
+    }
+
+    @Test
+    void retryAttemptContextBoundsEveryFreshReservationByBothDeadlines() {
+        MutableClock clock = new MutableClock(START);
+        AiTokenBudgetScope scope = scope();
+        AiTokenBudgetRequestBinding binding = binding(scope, REQUEST, 7L);
+        AiModelAdmission admission = accepted(20L, 30L);
+        AtomicLong nextReservationId = new AtomicLong(1L);
+        AiTokenBudgetLedger ledger = new AiTokenBudgetLedger(scope, policy(200L, 3), clock,
+                () -> new UUID(0L, nextReservationId.getAndIncrement()));
+        AiRetryAttemptBudgetContext context = new AiRetryAttemptBudgetContext(
+                ledger, binding, admission, START.plusSeconds(20L));
+
+        AiTokenReservation first = context.reservePhysicalAttempt(START.plusSeconds(5L))
+                .reservation().orElseThrow();
+        Assertions.assertEquals(AiTokenBudgetOperationStatus.SETTLED,
+                ledger.settleAttempt(first));
+        AiTokenReservation retry = context.reservePhysicalAttempt(START.plusSeconds(25L))
+                .reservation().orElseThrow();
+
+        Assertions.assertAll(
+                () -> Assertions.assertEquals(START.plusSeconds(5L), first.expiresAt()),
+                () -> Assertions.assertEquals(START.plusSeconds(20L), retry.expiresAt()),
+                () -> Assertions.assertNotEquals(first.reservationId(), retry.reservationId()),
+                () -> Assertions.assertSame(binding, first.binding()),
+                () -> Assertions.assertSame(binding, retry.binding()),
+                () -> Assertions.assertEquals(AiTokenBudgetOperationStatus.SETTLED,
+                        ledger.settleAttempt(retry)),
+                () -> Assertions.assertEquals(100L, ledger.snapshot().committedTokens()));
+
+        AiRetryAttemptBudgetContext rejected = new AiRetryAttemptBudgetContext(
+                ledger, binding, new AiModelAdmission(AiModelAdmissionStatus.MODEL_NOT_AVAILABLE,
+                        20L, 30L, 50L), START.plusSeconds(25L));
+        assertRejected(rejected.reservePhysicalAttempt(START.plusSeconds(25L)),
+                AiTokenBudgetOperationStatus.ADMISSION_REJECTED);
+        AiRetryAttemptBudgetContext expired = new AiRetryAttemptBudgetContext(
+                ledger, binding, admission, START);
+        assertRejected(expired.reservePhysicalAttempt(START.plusSeconds(25L)),
+                AiTokenBudgetOperationStatus.INVALID_EXPIRATION);
+        Assertions.assertEquals(100L, ledger.snapshot().committedTokens());
     }
 
     @Test
@@ -276,7 +355,7 @@ class AiTokenBudgetLedgerTest {
     }
 
     @Test
-    void clockRollbackAndInstantOverflowFailClosed() {
+    void clockRollbackFailsClosedAndInstantUpperBoundStaysBounded() {
         MutableClock clock = new MutableClock(START);
         AiTokenBudgetScope scope = scope();
         AiTokenBudgetLedger ledger = ledger(scope, policy(100L, 1), clock);
@@ -288,6 +367,10 @@ class AiTokenBudgetLedgerTest {
         Assertions.assertAll(
                 () -> Assertions.assertEquals(AiTokenBudgetOperationStatus.CLOCK_ROLLBACK,
                         ledger.settleAttempt(reservation)),
+                () -> assertRejected(ledger.reserveForDeadline(binding(scope,
+                                UUID.fromString("aaaaaaaa-0000-0000-0000-000000000009"), 2L),
+                                accepted(1L, 1L), START.plusSeconds(5L)),
+                        AiTokenBudgetOperationStatus.CLOCK_ROLLBACK),
                 () -> Assertions.assertThrows(IllegalStateException.class,
                         ledger::snapshot));
         clock.set(START);
@@ -297,11 +380,11 @@ class AiTokenBudgetLedgerTest {
         MutableClock maximumClock = new MutableClock(nearMaximum);
         AiTokenBudgetLedger maximumLedger = ledger(scope, policy(100L, 1),
                 maximumClock);
-        assertRejected(maximumLedger.reserve(binding(scope,
+        AiTokenReservation maximumReservation = reserve(maximumLedger, binding(scope,
                         UUID.fromString("aaaaaaaa-0000-0000-0000-000000000003"), 2L),
-                        accepted(1L, 1L), Instant.MAX),
-                AiTokenBudgetOperationStatus.INVALID_EXPIRATION);
-        Assertions.assertEquals(0L, maximumLedger.snapshot().consumedTokens());
+                accepted(1L, 1L), Instant.MAX);
+        Assertions.assertEquals(Instant.MAX, maximumReservation.expiresAt());
+        Assertions.assertEquals(2L, maximumLedger.snapshot().consumedTokens());
     }
 
     @Test
@@ -438,6 +521,10 @@ class AiTokenBudgetLedgerTest {
 
         assertDoesNotContainIdentity(scope, binding, reservation, result, ledger);
         assertNoForbiddenProductionReference(AiTokenBudgetLedger.class);
+        AiRetryAttemptBudgetContext context = new AiRetryAttemptBudgetContext(
+                ledger, binding, accepted(10L, 20L), START.plusSeconds(5L));
+        assertDoesNotContainIdentity(context);
+        assertNoForbiddenProductionReference(AiRetryAttemptBudgetContext.class);
     }
 
     @Test
@@ -456,7 +543,11 @@ class AiTokenBudgetLedgerTest {
                                 AiTokenBudgetOperationStatus.RELEASED,
                                 java.util.Optional.of(new AiTokenReservation(
                                         UUID.randomUUID(), binding(scope(), REQUEST, 1L),
-                                        1L, 1L, 2L, START, START.plusSeconds(1L))))));
+                                        1L, 1L, 2L, START, START.plusSeconds(1L))))),
+                () -> Assertions.assertThrows(NullPointerException.class,
+                        () -> new AiRetryAttemptBudgetContext(ledger(scope(),
+                                policy(100L, 1), new MutableClock(START)),
+                                binding(scope(), REQUEST, 1L), accepted(1L, 1L), null)));
     }
 
     private static AiTokenBudgetScope scope() {

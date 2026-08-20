@@ -7,6 +7,12 @@
 
 ### 新增
 
+- 新增 ADR-0032 的 P6-A1a pure Java physical-retry attempt budget context：可信 bridge 未来必须显式
+  传入 ledger、完整 request binding、已接受 admission 与 upstream deadline；retry wrapper 每次 physical
+  attempt 另传自身 deadline，账本统一取 upstream/retry/policy TTL 的最早值并返回 fresh exact reservation。
+  它还没有接入 `RetryingAiProvider`、Scheduler、Provider、client session/transport、HTTP、Lifecycle、Skill、
+  Action 或 Minecraft；因此不是实际 retry hook、计费、预算统计、通用 AI bridge 或 P6 完成，当前 Java 21
+  CI 与真实 Provider E2E 仍待完成；
 - 新增 ADR-0031 的 P6-A0 有界纯 Java token-reservation ledger Contract：每个 runtime-local
   `(ownerId, botId, agentId)` scope 以完整 request binding 和随机 exact reservation 管理已接受
   `AiModelAdmission` 的输入/最大输出/总 token；`reserved + committed` 受上限约束，release/expiry

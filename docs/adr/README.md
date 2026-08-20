@@ -50,6 +50,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0029](0029-bounded-blueprint-data-contract.md) | 有界蓝图数据契约 | Accepted | P5D-A0 已有 1–256 cell、canonical content hash 与计划方块需求的纯 Java DTO；不含 NBT/物品映射/世界或施工接线，P5D 仍未实现 |
 | [ADR-0030](0030-bounded-construction-work-package-contract.md) | 有界施工工作包图合同 | Accepted | P5D-A1 已有完整 Blueprint identity 绑定、exact-cover、16 package 上限和稳定拓扑的纯 Java DTO；不含 site/材料预留/Technique/Action/world，P5D 仍未实现 |
 | [ADR-0031](0031-bounded-token-reservation-ledger.md) | 有界 AI token 预留账本 | Accepted | P6-A0 已有 scope-local、并发安全的 conservative token reservation accounting Contract；未接 Scheduler/retry/Provider/client session/network，不是实际计费或通用 bridge |
+| [ADR-0032](0032-physical-retry-attempt-budget-context.md) | 物理重试尝试预算上下文 | Accepted | P6-A1a 只固定完整 trusted budget context 与 upstream/retry/TTL 最早 deadline；尚未接 RetryProvider、Scheduler、client session 或真实 Provider 调用 |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
