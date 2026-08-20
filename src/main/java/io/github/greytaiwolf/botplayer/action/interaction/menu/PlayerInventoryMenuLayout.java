@@ -70,6 +70,16 @@ public final class PlayerInventoryMenuLayout {
                 && inventorySlot <= LAST_HOTBAR_INVENTORY_SLOT;
     }
 
+    /**
+     * 原版 {@code Inventory.placeItemBackInInventory} 可作为 carried 回收面的普通储物格。
+     * 盔甲与副手虽然也是 inventory-backed menu slot，却不是任意 stack 的泛化回收容量。
+     */
+    public static boolean isMainOrHotbarInventorySlot(int inventorySlot) {
+        requireInventorySlot(inventorySlot);
+        return isHotbarInventorySlot(inventorySlot)
+                || isMainInventorySlot(inventorySlot);
+    }
+
     public static boolean isMainInventorySlot(int inventorySlot) {
         return inventorySlot >= FIRST_MAIN_INVENTORY_SLOT
                 && inventorySlot <= LAST_MAIN_INVENTORY_SLOT;

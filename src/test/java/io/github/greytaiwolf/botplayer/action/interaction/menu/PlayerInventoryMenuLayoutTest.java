@@ -106,5 +106,31 @@ class PlayerInventoryMenuLayoutTest {
                 IllegalArgumentException.class,
                 () -> PlayerInventoryMenuLayout
                         .inventorySlotForMenuSlot(46));
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> PlayerInventoryMenuLayout
+                        .isMainOrHotbarInventorySlot(-1));
+        Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> PlayerInventoryMenuLayout
+                        .isMainOrHotbarInventorySlot(41));
+    }
+
+    @Test
+    void distinguishesOrdinaryCarriedReturnStorageFromEquipmentSlots() {
+        Assertions.assertTrue(PlayerInventoryMenuLayout
+                .isMainOrHotbarInventorySlot(0));
+        Assertions.assertTrue(PlayerInventoryMenuLayout
+                .isMainOrHotbarInventorySlot(8));
+        Assertions.assertTrue(PlayerInventoryMenuLayout
+                .isMainOrHotbarInventorySlot(9));
+        Assertions.assertTrue(PlayerInventoryMenuLayout
+                .isMainOrHotbarInventorySlot(35));
+        Assertions.assertFalse(PlayerInventoryMenuLayout
+                .isMainOrHotbarInventorySlot(36));
+        Assertions.assertFalse(PlayerInventoryMenuLayout
+                .isMainOrHotbarInventorySlot(39));
+        Assertions.assertFalse(PlayerInventoryMenuLayout
+                .isMainOrHotbarInventorySlot(40));
     }
 }

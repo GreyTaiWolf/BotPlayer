@@ -6206,16 +6206,61 @@ final class MinecraftWorldInteractionBackend implements ActionBackend {
      */
     private static void closeWorldMenuDuringCleanup(
             BotServerPlayer player, InteractionState state) {
-        if (state.worldMenuTransaction != null) {
-            state.worldMenuTransaction.cancel();
+        MenuTransaction transaction = state.worldMenuTransaction;
+        boolean settleNativeInventoryCursor =
+                canSettleNativeInventoryCursorThroughVanillaClose(
+                        player, transaction);
+        if (transaction != null) {
+            transaction.cancel();
         }
-        if (player.containerMenu != player.inventoryMenu) {
+        if (player.containerMenu != player.inventoryMenu
+                || settleNativeInventoryCursor) {
             player.closeContainer();
         }
         if (!nativeInventoryMenuHasEmptyCursor(player)) {
             throw new IllegalStateException(
                     "World menu cleanup could not restore native menu with an empty cursor");
         }
+    }
+
+    /**
+     * 原生 {@link InventoryMenu} 不会因为引用已经等于 {@code inventoryMenu} 而自动走
+     * {@link BotServerPlayer#closeContainer()}。一个已经确认的 PICKUP 前缀却可能把完整
+     * stack 留在 carried。只在当前 46 槽快照仍严格等于该已确认前缀、cursor 非空，且主
+     * 背包/快捷栏明示有空位时，才允许原版 close 把 carried 归还；不能证明这些前置条件时
+     * 仍 fail-closed，绝不直接写回或冒险触发可能掉落的关闭。
+     */
+    private static boolean canSettleNativeInventoryCursorThroughVanillaClose(
+            BotServerPlayer player, MenuTransaction transaction) {
+        if (transaction == null
+                || transaction.expectedFamily()
+                        != MenuFamily.INVENTORY_2X2
+                || !transaction.hasConfirmedApplyingPrefix()) {
+            return false;
+        }
+        MenuSnapshot confirmed = transaction.observedSnapshot()
+                .orElse(null);
+        if (confirmed == null || confirmed.carried().isEmpty()) {
+            return false;
+        }
+        MenuSnapshot current = snapshotMenu(
+                player, MenuFamily.INVENTORY_2X2).orElse(null);
+        if (!confirmed.equals(current)) {
+            return false;
+        }
+        for (int menuSlot = PlayerInventoryMenuLayout.FIRST_MENU_SLOT;
+                menuSlot < current.slots().size(); menuSlot++) {
+            int inventorySlot = PlayerInventoryMenuLayout
+                    .inventorySlotForMenuSlot(menuSlot)
+                    .orElse(-1);
+            if (inventorySlot >= 0
+                    && PlayerInventoryMenuLayout
+                            .isMainOrHotbarInventorySlot(inventorySlot)
+                    && current.itemAt(menuSlot).isEmpty()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

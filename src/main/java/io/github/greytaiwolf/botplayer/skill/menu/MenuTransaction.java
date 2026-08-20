@@ -71,6 +71,19 @@ public final class MenuTransaction {
         return confirmedClicks;
     }
 
+    /**
+     * 当前观测快照是否来自至少一次已经 ACK 的、仍可继续的 click 前缀。
+     *
+     * <p>这个资格专门供取消收口使用：正在 {@link MenuTransactionState#ACK} 的 click
+     * 尚未确认，{@link #failAfterClickDispatchException(MenuSnapshot, long)} 留下的诊断
+     * snapshot 也绝不能取得资格。调用方仍须重读原版 menu，并证明该快照未漂移。
+     */
+    public boolean hasConfirmedApplyingPrefix() {
+        return state == MenuTransactionState.APPLYING
+                && confirmedClicks > 0
+                && failure == null;
+    }
+
     public Optional<MenuTransactionFailure> failure() {
         return Optional.ofNullable(failure);
     }

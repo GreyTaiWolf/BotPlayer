@@ -42,9 +42,14 @@ Build #163 是早期 P5A 基线记录，不是当前候选的完整验证计数�
 原生 `InventoryMenu` 适配器会冻结 41 槽、cursor、选择槽和 stateId，并以动态槽权限、
 完整布局与物品多重集验证。通用 `SWAP_SEQUENCE` 允许 1～16 次点击、最多 8 个槽位，
 每 Tick 只派发一次点击；真实五步场景验证跨 Tick `PENDING`、固定安全端点、旧 owner/
-新 claimant 双 ticket 阻塞和精确 progress revision。generic equipment/offhand 仍
-`UNSUPPORTED`；盔甲热栏单击及主背包 2～3 步路径保持独立。无法证明安全时 fail-closed，
-这不是无条件回滚，也不表示跨 menu 统一事务完成。
+新 claimant 双 ticket 阻塞和精确 progress revision。这个旧 `SWAP_SEQUENCE` 的 generic
+equipment/offhand 仍 `UNSUPPORTED`。另有已注册的封闭 P5A `WorldMenuTransaction` handler
+只处理基础工具、编译器白名单精确主手物品和显式普通副手；它不接受任意物品或自动装备策略。
+本分支的 E1a 只在当前 46 槽快照严格等于已确认 PICKUP 前缀、cursor 非空且主背包/快捷栏
+可见空位时，才让原版 `closeContainer()` 收口该 handler 的取消，绝不直接写回或冒险触发可能
+掉落的关闭。
+相应 GameTest 源码已加入，但本增量尚未获得 Java 21 CI/NeoForge GameTest 运行证据。无法证明
+安全时仍 fail-closed；这不是无条件回滚，也不表示跨 menu 统一事务完成。
 
 Build #362 已自动覆盖基线中的 P5A/P5B/P5C 受限生产 DAG、白名单容器/工作站（含 Bot 私有
 末影箱）、作物/交易/牛奶、有限自卫、保存围栏和两阶段重启路径；这仍不是 P5 的总退出门。
@@ -365,7 +370,7 @@ screen、独立专用服和长时间 soak 是明确保留的专项验证，不�
 |---|---|---|
 | P3 | 感知、语义事件、世界模型、玩家活动理解 | 自动化退出门已通过；客户端、独立专用服与 soak 未验证 |
 | P4 | 导航、安全反射、动态重规划、玩家规则兼容 | 自动化退出门已通过；复杂移动、专用服、保护模组与 soak 未验证 |
-| P5A | 技能 FSM、首条生存闭环、最小原版世界容器驱动 | Build #362 已自动验证受限资源—制作—存放 DAG、保存围栏和两阶段重启；当前 M1a 已为 world-menu click dispatch exception 增加 pure FSM/adapter fail-closed 边界，仍待 Java 21 CI、真实原版故障 GameTest 与跨 Tick cleanup 验证；跨 menu 通用事务、工具/副手与独立专用服仍未完成或未验证 |
+| P5A | 技能 FSM、首条生存闭环、最小原版世界容器驱动 | Build #362 已自动验证受限资源—制作—存放 DAG、保存围栏和两阶段重启；当前 M1a 已为 world-menu click dispatch exception 增加 pure FSM/adapter fail-closed 边界，E1a 已为已确认 native `InventoryMenu` PICKUP 前缀的取消补上受限原版 close 收口和守恒 GameTest 源码。受限 `EQUIP_BASIC_TOOL`、白名单 `EQUIP_EXACT_MAIN_HAND` 与显式 `EQUIP_REQUESTED_OFFHAND` handler 已注册，但本轮 M1a/E1a 仍待 Java 21 CI、真实原版故障/取消 GameTest 与跨 Tick cleanup 验证；跨 menu 通用事务、任意装备策略与独立专用服仍未完成或未验证 |
 | P5B | 广泛原版容器/工作站、制作、生产和日常生活 | Build #362 已自动验证严格白名单容器、工作站边界、Bot 私有末影箱、受限 wheat/甘蔗收获、牛繁殖、单笔村民交易和牛奶解毒纵切；末影箱只承诺账本隔离与守恒取消，不承诺逐槽回滚或同方块跨 Bot 并行。当前 strict `UseItem` 的 HEAD 围栏覆盖所有 active strict use，`completeUsingItem()` 前的复核/`ENTERED` 只限 natural completion；两个 native 点在 deadline/maxTicks 边界前 fail-close，避免先物理消费再被 Action runtime timeout。Tick-event 漂移/取消、Finish 取消、`PlayerTickEvent.Post` 取消、deadline 精确 receipt 优先和 pure timing fence 均有源码/隔离回归，但仍待 Java 21 CI/NeoForge GameTest。这不等于通用容器、任意配方/作物/交易或自动药物策略，真实客户端与专用服仍待验证 |
 | P5C | 运输、游戏进程和高级战斗 | Build #362 已自动验证旧有的、有限自卫会话授权的单次 `MELEE_ATTACK` 窄 bridge；当前分支已把该路由迁入单个 owner-thread `TechniqueLifecycleCoordinator` 的 Contract，并让 self-defense terminal 查询与取消都按完整 immutable `ActionEnvelope` 收口（同三元组的 foreign envelope 不能成为 child evidence 或安全回执），但这些增量仍待 Java 21 CI。目标选择、移动、装备、重试、连击、泛化 Technique 路由和其余 P5C 能力仍未实现 |
 | P5D | 建筑与红石 | 未实现；ADR-0025 已有纯 Java `TechniqueActionPermit`/Port 与未注册的 `LifecycleTechniqueActionPort` adapter Contract：已注册 route 必须在精确活动 child dispatch 中冻结 run/ticket/revision、Action origin/kind/channel/deadline/idempotency 和低于 L0 的 priority；adapter 只转调既有 `BotActionRuntime` 的入队、exact-envelope terminal drain 与 exact cancel-or-contain，拒绝 ingress 使用本地 fenced receipt，且同步 close/preempt 后复核 exact active child。其来自 P2 的 cancellation receipt 仅随 live opaque permit binding 保留，terminal/reap release 会一并清除，历史回执不能淘汰 live safety proof；只有从未入 P2 的 rejected-ingress fenced receipt 可按 opaque permit 有界保留。ADR-0029 的 A0 加入 1–256 cell、有界 offset/span、重复拒绝、canonical content hash 与按 blockId/permanent-temporary 聚合的纯 Java `Blueprint` Contract；ADR-0030 的 A1 将同一 immutable Blueprint 分成完整 `(id, revision, hash, ordinal)` 绑定、exact-cover、16 包上限与稳定拓扑的纯 Java work-package DAG；ADR-0033 的 A2 只把该 exact plan 以非零 candidate siteId、dimension+anchor 和从全部 cell checked translation 派生的 bounds/known target 绑定；ADR-0035 的 A3 只接受其全部真实 Blueprint target 的 caller-supplied canonical `UNKNOWN|EMPTY|OCCUPIED` evidence，并由完整 survey 重算 fail-closed assessment：known mismatch 的 `BLOCKED` 高于 `UNKNOWN` 的 `INCOMPLETE`，`ACCEPTED_CANDIDATE` 只表示 supplied evidence 的结构兼容，不是 world read/loaded state、accepted site、lease、ownership proof 或 human confirmation；ADR-0036 的 A4 只要求每种完整 expected state 有 explicit item declaration，并按 itemId/permanent-temporary class 产生 declared quantity，不猜 blockId→itemId、也不证明 registry placeability 或 inventory availability。ADR-0039 的 A6 只复用已有 `ResourceReservationService`，把 exact binding 的最多 32-block axis bounds 保守映射为至多 8 个 exclusive `WORK_AREA` TTL tile；cache 必须重查底层 token，external run/generation cleanup 与 expiry 都会失效，超过 key scope 的完整 dimension 显式拒绝、不截断/hash。A0–A6 都不含 NBT，A3/A4/A6 也不读取世界/检查保护或危险；仍没有材料或临时区预留、placement candidate、checkpoint/human override、真实方块放置或红石。route kind allowlist 与 route-bound one-shot permit 防止泛化/重复 ingress；当前增量仍待 Java 21 CI |

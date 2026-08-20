@@ -10,11 +10,13 @@ import io.github.greytaiwolf.botplayer.action.ActionPriority;
 import io.github.greytaiwolf.botplayer.action.ActionState;
 import io.github.greytaiwolf.botplayer.action.StopAction;
 import io.github.greytaiwolf.botplayer.action.WorldInteractionAction;
+import io.github.greytaiwolf.botplayer.action.interaction.ItemStackFingerprint;
 import io.github.greytaiwolf.botplayer.action.interaction.WorldInteractionActionSpec;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSnapshot;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSwapInstruction;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSwapPlan;
 import io.github.greytaiwolf.botplayer.action.interaction.menu.InventoryMenuSwapPlanBuilder;
+import io.github.greytaiwolf.botplayer.action.interaction.menu.PlayerInventoryMenuLayout;
 import io.github.greytaiwolf.botplayer.action.minecraft.MinecraftActionSnapshot;
 import io.github.greytaiwolf.botplayer.gametest.P2GameTestSupport.TestBot;
 import io.github.greytaiwolf.botplayer.kernel.BotConnection;
@@ -22,6 +24,11 @@ import io.github.greytaiwolf.botplayer.kernel.BotGamePacketListener;
 import io.github.greytaiwolf.botplayer.kernel.BotServerPlayer;
 import io.github.greytaiwolf.botplayer.lifecycle.BotLifecycleManager.ListenerDisconnectDecision;
 import io.github.greytaiwolf.botplayer.mixin.PlayerListAccessor;
+import io.github.greytaiwolf.botplayer.skill.menu.MenuFamily;
+import io.github.greytaiwolf.botplayer.skill.menu.MenuSnapshot;
+import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionLimits;
+import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionTemplate;
+import io.github.greytaiwolf.botplayer.skill.menu.MenuTransactionTemplateBuilder;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -29,6 +36,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -43,6 +51,7 @@ import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ClientInformation;
 import net.minecraft.world.level.storage.LevelResource;
+import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -221,6 +230,75 @@ public final class P5GenericMenuTransactionGameTests {
                         cleanup.run();
                         helper.succeed();
                     });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    /**
+     * {@link WorldInteractionActionSpec.WorldMenuTransaction} 的 native 2x2 路径与 P5A
+     * 装备 handler 共用。第一个 PICKUP 后 cursor 非空，再由 emergency Stop 抢占时，
+     * 必须经原版 close 收口，而不是把同代 Bot 隔离或直接写库存。
+     */
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void nativeInventoryPickupPreemptionClosesCursorAndPreservesConservation(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        P5GameTestSupport.IsolatedFixture fixture =
+                P5GameTestSupport.isolatedFixture(
+                        helper, "native-inventory-pickup-preempt");
+        TestBot bot = fixture.spawn("bot");
+        P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
+        try {
+            InventoryMenuSnapshot initial =
+                    prepareNativeInventoryPickupSwap(bot);
+            MenuTransactionTemplate template =
+                    nativeInventoryPickupTemplate(bot.player());
+            long generation = bot.player().runtimeHandle().generation();
+            TrackedSubmission menu = submit(
+                    bot,
+                    new WorldInteractionAction(
+                            new WorldInteractionActionSpec
+                                    .WorldMenuTransaction(
+                                            WorldInteractionActionSpec.Hand
+                                                    .MAIN_HAND,
+                                            Optional.empty(),
+                                            MinecraftActionSnapshot.item(
+                                                    bot.player(),
+                                                    bot.player()
+                                                            .getMainHandItem()),
+                                            template,
+                                            new MenuTransactionLimits(
+                                                    template.orderedSteps()
+                                                            .size(),
+                                                    80L))),
+                    ActionPriority.OWNER_TASK,
+                    "native-pickup-preempt",
+                    80);
+
+            P2GameTestSupport.awaitCondition(
+                    helper,
+                    WAIT_TICKS,
+                    () -> nativeInventoryPickupPrefix(bot),
+                    "World-menu transaction never exposed its carried PICKUP prefix",
+                    cleanup,
+                    () -> awaitNativeInventoryPickupPreemption(
+                            helper,
+                            bot,
+                            initial,
+                            menu,
+                            submit(
+                                    bot,
+                                    new StopAction(),
+                                    ActionPriority.EMERGENCY,
+                                    "native-pickup-preempt-stop",
+                                    40),
+                            generation,
+                            cleanup));
         } catch (RuntimeException | AssertionError exception) {
             cleanup.run();
             throw exception;
@@ -694,6 +772,132 @@ public final class P5GenericMenuTransactionGameTests {
                             ? exception.toString()
                             : exception.getMessage());
         }
+    }
+
+    private static InventoryMenuSnapshot prepareNativeInventoryPickupSwap(
+            TestBot bot) {
+        bot.player().getInventory().clearContent();
+        bot.player().getInventory().selected = 8;
+        bot.player().getInventory().setItem(
+                0, new ItemStack(Items.STONE));
+        bot.player().getInventory().setItem(
+                8, new ItemStack(Items.FLINT));
+        bot.player().getInventory().setItem(
+                9, new ItemStack(Items.DIAMOND_HELMET));
+        bot.player().inventoryMenu.setCarried(ItemStack.EMPTY);
+        bot.player().inventoryMenu.broadcastChanges();
+        return MinecraftActionSnapshot.inventoryMenu(bot.player());
+    }
+
+    private static MenuTransactionTemplate nativeInventoryPickupTemplate(
+            BotServerPlayer player) {
+        MenuSnapshot snapshot = nativeInventoryMenuSnapshot(player);
+        return MenuTransactionTemplateBuilder.moveOrSwap(
+                        snapshot,
+                        PlayerInventoryMenuLayout.menuSlotForInventorySlot(9),
+                        PlayerInventoryMenuLayout.menuSlotForInventorySlot(0))
+                .orElseThrow(() -> new IllegalStateException(
+                        "Native inventory pickup fixture could not bind a strict template"));
+    }
+
+    private static MenuSnapshot nativeInventoryMenuSnapshot(
+            BotServerPlayer player) {
+        P2GameTestSupport.require(
+                player.containerMenu == player.inventoryMenu
+                        && player.inventoryMenu.slots.size()
+                                == MenuFamily.INVENTORY_2X2.slotCount(),
+                "Native inventory pickup fixture has no exact 2x2 menu");
+        List<ItemStackFingerprint> slots = new ArrayList<>(
+                player.inventoryMenu.slots.size());
+        for (Slot slot : player.inventoryMenu.slots) {
+            slots.add(MinecraftActionSnapshot.item(player, slot.getItem()));
+        }
+        return new MenuSnapshot(
+                MenuFamily.INVENTORY_2X2,
+                player.inventoryMenu.containerId,
+                player.inventoryMenu.getStateId(),
+                MinecraftActionSnapshot.item(
+                        player, player.inventoryMenu.getCarried()),
+                slots);
+    }
+
+    private static boolean nativeInventoryPickupPrefix(TestBot bot) {
+        return bot.player().containerMenu == bot.player().inventoryMenu
+                && bot.player().getInventory().getItem(9).isEmpty()
+                && bot.player().getInventory().getItem(0).is(Items.STONE)
+                && bot.player().inventoryMenu.getCarried().is(
+                        Items.DIAMOND_HELMET);
+    }
+
+    private static void awaitNativeInventoryPickupPreemption(
+            GameTestHelper helper,
+            TestBot bot,
+            InventoryMenuSnapshot initial,
+            TrackedSubmission menu,
+            TrackedSubmission stop,
+            long generation,
+            P2GameTestSupport.Cleanup cleanup) {
+        P2GameTestSupport.awaitOutcome(
+                helper,
+                menu.completion(),
+                WAIT_TICKS,
+                cleanup,
+                menuOutcome -> {
+                    P2GameTestSupport.require(
+                            menuOutcome.state() == ActionState.PREEMPTED
+                                    && menuOutcome.failureCode()
+                                            == ActionFailureCode.PREEMPTED,
+                            "Native inventory menu action did not preserve its PREEMPTED outcome: "
+                                    + menuOutcome);
+                    InventoryMenuSnapshot actual =
+                            MinecraftActionSnapshot.inventoryMenu(
+                                    bot.player());
+                    requireSafeControlPlane(bot, initial, actual);
+                    P2GameTestSupport.awaitOutcome(
+                            helper,
+                            stop.completion(),
+                            WAIT_TICKS,
+                            cleanup,
+                            stopOutcome -> {
+                                P2GameTestSupport.require(
+                                        stopOutcome.state()
+                                                        == ActionState
+                                                                .SUCCEEDED
+                                                && bot.player()
+                                                                .runtimeHandle()
+                                                                .generation()
+                                                        == generation,
+                                        "Emergency stop did not release the native menu "
+                                                + "in the same generation: "
+                                                + stopOutcome);
+                                TrackedSubmission probe = submit(
+                                        bot,
+                                        new StopAction(),
+                                        ActionPriority.OWNER_CONTROL,
+                                        "native-pickup-preempt-probe",
+                                        40);
+                                P2GameTestSupport.awaitOutcome(
+                                        helper,
+                                        probe.completion(),
+                                        40,
+                                        cleanup,
+                                        probeOutcome -> {
+                                            P2GameTestSupport.require(
+                                                    probeOutcome.state()
+                                                                    == ActionState
+                                                                            .SUCCEEDED
+                                                            && bot.player()
+                                                                            .runtimeHandle()
+                                                                            .generation()
+                                                                    == generation,
+                                                    "Same-generation probe failed after native "
+                                                            + "menu cleanup: "
+                                                            + probeOutcome);
+                                            cleanup.run();
+                                            helper.succeed();
+                                        });
+                            });
+                });
     }
 
     private static InventoryMenuSwapPlan prepareFiveStepPlan(

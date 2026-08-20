@@ -219,6 +219,51 @@ class MenuTransactionTest {
     }
 
     @Test
+    void confirmedApplyingPrefixNeverTreatsInFlightOrDispatchFailureObservationAsAck() {
+        MenuSnapshot opened = chest(3, 20, List.of(
+                SlotChange.at(0, item("oak_log", 1, '1')),
+                SlotChange.at(1, item("cobblestone", 1, '2'))));
+        MenuSnapshot first = chest(3, 21, List.of(
+                SlotChange.at(1, item("cobblestone", 1, '2')),
+                SlotChange.at(27, item("oak_log", 1, '1'))));
+        MenuSnapshot second = chest(3, 22, List.of(
+                SlotChange.at(27, item("oak_log", 1, '1')),
+                SlotChange.at(28, item("cobblestone", 1, '2'))));
+        MenuTransactionPlan plan = new MenuTransactionPlan(
+                MenuFamily.CHEST_3X9,
+                opened,
+                List.of(
+                        new MenuClickStep(
+                                new MenuClick(0, MenuClickType.QUICK_MOVE, 0),
+                                opened,
+                                first,
+                                MenuConservationRule.strict()),
+                        new MenuClickStep(
+                                new MenuClick(1, MenuClickType.QUICK_MOVE, 0),
+                                first,
+                                second,
+                                MenuConservationRule.strict())),
+                second);
+
+        MenuTransaction acknowledged = start(plan, opened);
+        Assertions.assertFalse(acknowledged.hasConfirmedApplyingPrefix());
+        Assertions.assertTrue(acknowledged.issueNextClick(11L, opened).isPresent());
+        Assertions.assertFalse(acknowledged.hasConfirmedApplyingPrefix());
+        Assertions.assertTrue(acknowledged.acknowledge(first, 11L));
+        Assertions.assertTrue(acknowledged.hasConfirmedApplyingPrefix());
+        Assertions.assertTrue(acknowledged.issueNextClick(12L, first).isPresent());
+        Assertions.assertFalse(acknowledged.hasConfirmedApplyingPrefix());
+
+        MenuTransaction dispatchFailure = start(plan, opened);
+        Assertions.assertTrue(dispatchFailure.issueNextClick(11L, opened).isPresent());
+        Assertions.assertFalse(dispatchFailure.failAfterClickDispatchException(
+                first, 11L));
+        Assertions.assertEquals(first,
+                dispatchFailure.observedSnapshot().orElseThrow());
+        Assertions.assertFalse(dispatchFailure.hasConfirmedApplyingPrefix());
+    }
+
+    @Test
     void clickDispatchExceptionNeverAcceptsForeignOrLateObservation() {
         MenuSnapshot opened = chest(3, 20, List.of(
                 SlotChange.at(0, item("oak_log", 1, '1'))));
