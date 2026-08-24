@@ -253,8 +253,10 @@ idle moving exploring mining building combat farming crafting smelting none
 走向安全邻格、上浮和规避箭/TNT/敌对目标。P4 L0 本身不会吃东西；P5 开发切片可以接收
 临界饥饿 handoff，并尝试真实食用背包中的安全原版基础食物。P5 还提供扫描 carried
 inventory `0..35` 的基础盔甲升级入口；主动进食，以及热栏和主背包 2～3 步路径已由
-Build #137 运行验证。主动用药、工具/通用副手选择、策略性盾牌格挡和反击仍未实现；下文的
-固定副手盾牌持有源码不改变这些边界。
+Build #137 运行验证。受限 P5A handler 还可在内部 lifecycle plan 中把请求的工具、白名单精确
+主手物品或显式普通副手送入真实原版菜单，但没有相应普通命令或泛化策略；其直接 GameTest 源仍待
+Java 21 CI/NeoForge GameTest。主动用药、工具/通用副手的策略选择、策略性盾牌格挡和反击仍未实现；
+下文的固定副手盾牌持有源码不改变这些边界。
 
 ### P5 生存技能管理与诊断
 
@@ -269,8 +271,10 @@ Build #137 运行验证。主动用药、工具/通用副手选择、策略性�
 诅咒。热栏候选使用一次原生 `SWAP`；主背包候选通过确定性临时热栏槽形成 2～3 步计划，
 并保持独立盔甲路径。底层通用 `InventoryMenu SWAP_SEQUENCE` 可执行 1～16 次点击、最多
 8 个槽位，每 Tick 一击；跨 Tick cleanup 保持 `PENDING` 和固定端点，非端点时旧 owner/
-新 claimant 都不会完成。通用 equipment/offhand 仍 `UNSUPPORTED`，因此当前不选择工具/
-副手，也不提供盾牌格挡。`combat shield-hold` 是单独的 P5C-S1 管理员入口：它只接受无竞争
+新 claimant 都不会完成。通用 `SWAP_SEQUENCE` 的 equipment/offhand 仍 `UNSUPPORTED`，它不提供
+工具/副手的普通命令或策略选择；不过已注册的受限 P5A handler 会把请求的工具、白名单精确主手
+物品和显式普通副手冻结为真实原版 `WorldMenuTransaction`。其直接 GameTest 源仍待 Java 21 CI/
+NeoForge GameTest，普通副手盾牌继续在 action 前 fail-close。`combat shield-hold` 是单独的 P5C-S1 管理员入口：它只接受无竞争
 owner、原版 `InventoryMenu` 空 cursor 且已装备精确原版副手盾牌的活动 bot，固定持有 8 Tick
 后释放；没有目标、换装、重试或普通停止参数，也不证明真实受击格挡、耐久或斧破盾。该新增
 源码仍待 Java 21 CI 与 NeoForge GameTest。`inspect` 读取活动 bot 当前
@@ -345,7 +349,7 @@ Build #137 的 batch 预算记录是早期基线；Build #133/#135 暴露的超�
 - 通过普通玩家任务、技能或 AI 自主选择并执行 P2/P4 动作；
 - 强制加载远方区块、跨维度寻路或维护永久地图/地标；
 - 自动寻找或生产食物；主动进食和受限资源—制作—存放纵切已经自动验证，但主动
-  用药/通用药物策略、选择工具/通用副手、策略性盾牌格挡或完整战斗仍不支持；
+  用药/通用药物策略、泛化的工具/副手选择、策略性盾牌格挡或完整战斗仍不支持；
 - 执行泛化的砍树、采矿、制作、熔炼、完整战斗策略或建造技能；当前只有固定、有限的
   P5 生产 DAG，不能把它当作自主生存能力；
 - 通过普通命令、GUI 或 AI 操作任意箱子、工作站或模组自定义 menu；P5B 只覆盖内部严格

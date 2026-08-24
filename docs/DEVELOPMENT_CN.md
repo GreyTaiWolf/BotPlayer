@@ -47,7 +47,7 @@ P2 已加入生命周期、移动、交互和库存 GameTest；P3 加入有限�
 [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094) 已通过 Java 21
 `clean build`、Gradle `test`、161 项常规 GameTest 和 phase-one/phase-two 重启
 GameTest（各 1 项）。P5 总退出门和 P6 总退出门仍未关闭；真实客户端、专用服和多 bot soak
-不由此替代。Build #362 是当前 P5A 修复、P5C lifecycle Contract/固定副手盾牌持有、P6 会话协调器、本地
+不由此替代。Build #362 是当前 P5A 修复/受限工具-主手-副手 native-menu GameTest 源、P5C lifecycle Contract/固定副手盾牌持有、P6 会话协调器、本地
 ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget、P6-B0 server-owned
 physical-attempt handshake、P6-B1 mock payload-path GameTest 源与 P5D-A0/A1/A2/A3/A4/A5/A6 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item/loaded-world survey/spatial-lease 数据增量提交之前的自动化基线；这些提交仍须各自通过 Java 21 CI。涉及
 Minecraft 行为的提交必须运行：
@@ -396,8 +396,9 @@ P5C-S1：只从生命周期已冻结、已经装备的精确原版副手盾牌�
 - 通用 `SWAP_SEQUENCE` 只接受 1～16 次点击、最多 8 个槽位；每 Tick 最多派发一次点击，
   cleanup 跨 Tick 返回 `PENDING` 并保持首次冻结端点，旧 owner 和 claimant 在非端点均
   不得完成。每个确认前缀只推进一次 revision；不得同步循环点击或描述为无条件回滚；
-- generic equipment/offhand 槽必须继续 `UNSUPPORTED`，基础盔甲的热栏单击和主背包
-  2～3 步路径保持独立，不得借通用序列绕过装备限制；
+- generic `SWAP_SEQUENCE` 的 equipment/offhand 槽必须继续 `UNSUPPORTED`；受限 P5A handler
+  只能把请求工具、白名单精确主手物品和显式普通副手冻结为原版 46 槽菜单事务，基础盔甲的热栏
+  单击和主背包 2～3 步路径保持独立，不得借通用序列绕过装备限制；
 - 每件盔甲仍是独立 `InventoryMenu` 事务；动作完成信号进入技能 FSM 后必须再次读取权威
   41 槽布局，外部修改以 `WORLD_CHANGED` 失败，不能用冻结计划自证成功；
 - 敌对目标继续走 P4 安全回退；当前唯一例外是已有有限自卫已完成授权的单一
@@ -405,10 +406,12 @@ P5C-S1：只从生命周期已冻结、已经装备的精确原版副手盾牌�
   8 Tick hold/release。后者没有真实受击格挡、耐久或斧破盾证据；两者都不补足武器选择、
   目标选择、撤退路线、逐击重观察或脱战后置条件，不能据此宣称有限自卫或高级战斗已完成；
 - 当前受限生产链已具备 TaskSensor/Reservation、Checkpoint、craft/chest/furnace/DAG 和
-  有限自卫纵切；P5A-M1a 另为 world-menu 的原版 `clicked()` / `broadcastChanges()` 异常建立了
+  有限自卫纵切；请求工具、白名单精确主手物品与显式普通副手的 handler 已有经 lifecycle plan
+  的真实 `InventoryMenu` / `WORLD_MENU_TRANSACTION` GameTest 源，普通副手盾牌在 action 前
+  fail-close；该测试仍待 Java 21 CI。P5A-M1a 另为 world-menu 的原版 `clicked()` / `broadcastChanges()` 异常建立了
   `CLICK_DISPATCH_FAILED` fail-closed 边界：已领取 click 不会被 ACK 或重派，适配器只作一次
   exact reread 后交给既有原版 close cleanup。该 pure Java/adapter seam 仍待 Java 21 CI 和真实
-  修改前/后抛错 GameTest；跨 menu 统一事务、生命周期通用 continuation、工具/副手、任意
+  修改前/后抛错 GameTest；跨 menu 统一事务、生命周期通用 continuation、泛化工具/副手策略、任意
   配方/作物/交易和广泛战斗仍未实现或未验证，P5 总退出门没有完成。
 
 完整冻结合同与退出门见
@@ -453,7 +456,7 @@ build 与 JAR upload，日志明确 `All 55 required tests passed`，其中 P4 �
 当前 P5/P6 远端证据为
 [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094)：Java 21
 `clean build`、Gradle `test`、161 项常规 GameTest 和 phase-one/phase-two 重启 GameTest
-均通过；它是当前 P5A/P5C/P6（含本地 ledger-first proposal review、P5C-S1 固定副手盾牌和 P6-B1 mock payload-path GameTest 源）增量提交之前的基线，不能代替
+均通过；它是当前 P5A/P5C/P6（含 P5A 受限工具-主手-副手 native-menu GameTest 源、本地 ledger-first proposal review、P5C-S1 固定副手盾牌和 P6-B1 mock payload-path GameTest 源）增量提交之前的基线，不能代替
 这些提交待完成的 Java 21 CI。
 真实进程崩溃/断电、死亡 handoff 的跨进程边界、Windows 或其他文件系统的目录刷盘、模组化
 XP/掉落事件矩阵、独立专用服和多 Bot soak 仍需专项验证。

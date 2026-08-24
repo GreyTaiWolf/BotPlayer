@@ -6,7 +6,8 @@ BotPlayer 是面向 Minecraft Java 的真实服务端玩家 AI 框架。项目�
 Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 
 > **当前状态：P2、P3 与 P4 自动化退出门已通过；Build #362 已验证受限 P5 纵切与
-> P6-R1 的先前自动化基线。其后的 P5A 修复、单 `TechniqueLifecycleCoordinator` Contract 与
+> P6-R1 的先前自动化基线。其后的 P5A 修复与受限工具/精确主手/普通副手 native-menu
+> GameTest 源、单 `TechniqueLifecycleCoordinator` Contract 与
 > P5C-S1 固定副手盾牌持有、P6 会话协调器、客户端安全 terminal-observation/Error-cleanup/间接重入收口、ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget 与 P6-B0 handshake / P6-B1 R1 physical-attempt production bridge 及其 mock payload-path GameTest 源、受限 Technique→Action permit Contract 与 P5D-A0/A1/A2/A3/A4/A5 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item/loaded-world survey 数据 Contract
 > 提交仍待各自 Java 21 CI；仍不是
 > 正式版本，P5/P6 总退出门均未关闭。**
@@ -320,7 +321,10 @@ JAR upload 均通过；GameTest 日志明确报告 `All 55 required tests passed
 基础盔甲升级；
 `skill inspect` 只显示当前或最近一条 P5 生存技能 run 的 generation、状态、revision、
 操作序号与安全摘要。主动进食、盔甲专用路径，以及 1～16 步通用
-`InventoryMenu SWAP_SEQUENCE` 已由 Build #137 运行验证；通用 equipment/offhand 仍拒绝。
+`InventoryMenu SWAP_SEQUENCE` 已由 Build #137 运行验证；其通用 equipment/offhand 入口仍拒绝。
+已注册的受限 P5A handler 则只能经真实原版 `WorldMenuTransaction` 处理请求的工具、白名单精确
+主手物品和显式普通副手；盾牌仍在该普通副手路径 fail-close，并仅能走下述单独固定入口。
+这三条路径的直接 GameTest 源仍待 Java 21 CI/NeoForge GameTest，且不构成通用装备或策略选择。
 `combat shield-hold` 只允许 OP 对无竞争所有者、原版 `InventoryMenu` 空 cursor 且已预装备
 精确原版副手盾牌的活动 bot 触发固定 8 Tick 持有后释放；它没有普通停止、目标或换装参数，
 也不代表真实格挡。该新增源码仍待 Java 21 CI 与 NeoForge GameTest。

@@ -7,6 +7,12 @@
 
 ### 新增
 
+- 新增 P5A 受限基础装备的直接 GameTest 源：经 lifecycle `SkillPlan` 分别覆盖请求的
+  `EQUIP_BASIC_TOOL`、白名单 `EQUIP_EXACT_MAIN_HAND` 和显式普通
+  `EQUIP_REQUESTED_OFFHAND` 都以精确原版 46 槽 `InventoryMenu` 的
+  `WORLD_MENU_TRANSACTION` 完成，并验证空 crafting/cursor、选中栏/副手端点和物品守恒；普通
+  副手盾牌在提交 action 前以 `FAILED/WORLD_CHANGED` fail-close。该测试源码仍待 Java 21 CI 与
+  NeoForge GameTest，通用 equipment/offhand 入口、装备策略与 P5 总退出门仍未完成；
 - 新增 P5C-S1 的 `/botplayer combat shield-hold <name>` 管理员窄入口：只在活动 bot 没有竞争
   owner、原版 `InventoryMenu`/空 cursor 静止且已经装备精确原版副手盾牌时，冻结该指纹并通过
   单个 lifecycle-owned Technique child 发出固定 8 Tick `UseItem(OFF_HAND, RELEASE_AFTER_HOLD)`。
