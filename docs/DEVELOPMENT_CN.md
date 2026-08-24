@@ -49,7 +49,7 @@ P2 已加入生命周期、移动、交互和库存 GameTest；P3 加入有限�
 GameTest（各 1 项）。P5 总退出门和 P6 总退出门仍未关闭；真实客户端、专用服和多 bot soak
 不由此替代。Build #362 是当前 P5A 修复、P5C lifecycle Contract/固定副手盾牌持有、P6 会话协调器、本地
 ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget、P6-B0 server-owned
-physical-attempt handshake 与 P5D-A0/A1/A2/A3/A4/A5/A6 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item/loaded-world survey/spatial-lease 数据增量提交之前的自动化基线；这些提交仍须各自通过 Java 21 CI。涉及
+physical-attempt handshake、P6-B1 mock payload-path GameTest 源与 P5D-A0/A1/A2/A3/A4/A5/A6 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item/loaded-world survey/spatial-lease 数据增量提交之前的自动化基线；这些提交仍须各自通过 Java 21 CI。涉及
 Minecraft 行为的提交必须运行：
 
 ```bash
@@ -84,7 +84,7 @@ src/main/java/io/github/greytaiwolf/botplayer/
   building/site/                 P5D-A2 candidate anchor/derived-bounds/work-plan binding，A3 caller-supplied exact target evidence 的 fail-closed assessment；A5 `minecraft/` 只在 server thread 将 binding 的已加载 canonical target state 转为 immutable survey；A6 只复用现有 TTL reservation 将 exact bounds 映射为最多 8 个 conservative spatial tile lease；不创建材料/临时区 reservation、许可、placement/Technique/Action
   building/material/             P5D-A4 full-state explicit item declaration 与 declared quantity；不猜 blockId→itemId，不读 registry/inventory/world，也不表示 reservation/placement/许可
   worldmodel/                    scoped revision、短期事实与确定性活动推断
-  gametest/                      P2–P5 NeoForge GameTest
+  gametest/                      P2–P6 NeoForge GameTest
   network/                       界面打开与 agentId 绑定 payload；永不传 Key
   client/
     BotPlayerClient.java         CLIENT 物理端装配本地 store 与 payload 实现
@@ -453,7 +453,7 @@ build 与 JAR upload，日志明确 `All 55 required tests passed`，其中 P4 �
 当前 P5/P6 远端证据为
 [Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094)：Java 21
 `clean build`、Gradle `test`、161 项常规 GameTest 和 phase-one/phase-two 重启 GameTest
-均通过；它是当前 P5A/P5C/P6（含本地 ledger-first proposal review、P5C-S1 固定副手盾牌源码）增量提交之前的基线，不能代替
+均通过；它是当前 P5A/P5C/P6（含本地 ledger-first proposal review、P5C-S1 固定副手盾牌和 P6-B1 mock payload-path GameTest 源）增量提交之前的基线，不能代替
 这些提交待完成的 Java 21 CI。
 真实进程崩溃/断电、死亡 handoff 的跨进程边界、Windows 或其他文件系统的目录刷盘、模组化
 XP/掉落事件矩阵、独立专用服和多 Bot soak 仍需专项验证。

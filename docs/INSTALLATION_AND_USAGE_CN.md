@@ -187,7 +187,9 @@ P5 的异常隔离 teardown 另有 `PlayerListMixin` 一次性 no-save 包装，
 `reviewOnly.enabled=true`、binding 指向的 `deepseek` profile 含可读 Key 时，才会启动固定
 Provider。它不接受 prompt 或动作请求，回传只形成
 安全数字摘要后丢弃，绝不执行世界动作；[Build #362](https://github.com/GreyTaiWolf/BotPlayer/actions/runs/31778579094)
-已完成自动验证，真实客户端/Provider E2E 仍待验证。
+只完成当前增量之前的自动验证。当前 P6-B1 GameTest 源在保留配置的 mock connection 上捕获真实
+offer/grant/cancellation，并经 server listener 送回 exact prepare ACK；它仍待 Java 21 CI/NeoForge
+GameTest，真实客户端/Provider E2E 也仍待验证。
 
 ### 检查 P3 感知
 

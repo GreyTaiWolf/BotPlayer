@@ -29,6 +29,11 @@
   都按 exact identity close；offer 可释放、settled grant 永不退款。当前增量仍待 Java 21 CI、NeoForge
   GameTest 与真实客户端/独立服丢包乱序 soak；它不是通用 AI bridge、真实 billing/usage reconciliation、
   聊天或 AI→世界执行，也不表示 P6 总退出门完成；
+- 新增 P6-B1 `P6ReviewOnlyPhysicalAttemptGameTests`：在保留 NeoForge 配置的 mock owner connection
+  上捕获真实 S2C offer/grant/cancellation，并经实际 server listener 注入 exact C2S prepare ACK；覆盖
+  exact ACK 的 replay-stable grant、replacement 后的旧 ACK、unbind 和 tick-TTL expiry 的 stale ACK。
+  该测试源码仍待 Java 21 CI/NeoForge GameTest，且不替代 payload codec 回归、真实客户端/Provider 或
+  丢包乱序 E2E；
 - 新增 ADR-0040 的 strict consumable 原版提交边界：活动 `BotServerPlayer` 的 `updateUsingItem` HEAD
   围栏覆盖所有 active strict `UseItem`，精确 `completeUsingItem()` invocation 前的再次复核和不可逆
   提交相位只限 natural completion；两个 native 点均在 action deadline/maxTicks 当 tick fail-close，避免

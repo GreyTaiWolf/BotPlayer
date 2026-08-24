@@ -1,6 +1,6 @@
 # BotPlayer 当前实现状态
 
-> 更新日期：2026-08-21
+> 更新日期：2026-08-24
 >
 > 当前 P5/P6 集成验收载体：
 > [`agent/p5-p6-next`](https://github.com/GreyTaiWolf/BotPlayer/tree/agent/p5-p6-next)
@@ -11,8 +11,8 @@
 >
 > 当前阶段：P2-A～P2-E、P3 与 P4 自动化退出门已通过；Build #362 验证了受限 P5 纵切与
 > P6-R1 的先前基线。当前分支的 P5A 修复、P5C 单 lifecycle Contract 与固定副手盾牌持有、P6 会话协调器、本地
-> ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget 与 P6-B0 server-owned
-> physical-attempt handshake Contract 和 P5D-A0/A1/A2/A3/A4/A5/A6 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item/loaded-world survey/spatial-lease 数据 Contract 仍待各自 Java 21 CI；P5 的通用生存能力和 P6 的通用
+> ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget、P6-B0 server-owned
+> physical-attempt handshake、P6-B1 mock payload-path GameTest 源和 P5D-A0/A1/A2/A3/A4/A5/A6 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item/loaded-world survey/spatial-lease 数据 Contract 仍待各自 Java 21 CI；P5 的通用生存能力和 P6 的通用
 > client-sponsored bridge 均未完成。
 >
 > 发布状态：尚未发布，不建议用于重要存档
@@ -329,7 +329,7 @@ P4 自动化门证明了“受控导航、安全反射和真实玩家规则底�
 | 空主手、主手右键 bot | 已编码，待客户端验收 | owner 或 OP 在范围内打开 bot 自身背包；不是世界容器自动化 |
 | 客户端 API Key 管理 | 已编码 | 创建/替换 profile、绑定/解绑；profile 删除未实现 |
 | 服务端 agent binding | 部分完成 | 只保存 botId↔agentId 运行时关系；owner 离线/卸载/停服时清除 |
-| `/botplayer ai review <name>` | 已编码；Build #362 自动验证通过 | 仅真实持久 owner、活动 bot 和 active binding；owner 本地显式开启 R1 后发送固定只读快照，结果只作安全摘要并丢弃，不进入 Skill、Action 或世界 |
+| `/botplayer ai review <name>` | 已编码；Build #362 验证先前 R1 基线，当前 packet-path GameTest 源待运行 | 仅真实持久 owner、活动 bot 和 active binding；owner 本地显式开启 R1 后发送固定只读快照，结果只作安全摘要并丢弃，不进入 Skill、Action 或世界 |
 | 通过管理命令导航 | 已编码 | P4 提供 OP 诊断入口；不是普通玩家任务系统、技能或 AI 调用入口 |
 | 聊天与 DeepSeek | 部分编码 | Provider/codec/firewall/context、客户端 DeepSeek 传输和默认关闭的 owner R1 只读审阅链已通过 Build #362 自动验证；没有通用聊天、自动计划或世界执行，R1 的真实客户端/Provider E2E 仍待验证 |
 
@@ -379,7 +379,7 @@ screen、独立专用服和长时间 soak 是明确保留的专项验证，不�
 | P5D-A5 | 已加载候选施工站点调查 | 已编码为 ADR-0038 narrow server-thread adapter，尚未集成：仅遍历 exact binding 的 canonical Blueprint cells（≤256），先验证 server thread + dimension，再依次检查 build height/`isLoaded`，只有已加载 target 调用 `getBlockState`；air→`EMPTY`，完整 registry/properties state→`OCCUPIED`，unloaded/out-of-height/codec failure→`UNKNOWN`。无 chunk load/ticket/world write、NBT/容器、site/material lease、placement candidate、Technique、Action、Skill、lifecycle、AI 或红石接线；survey 的 tick snapshot/assessment 不是 freshness、accepted site 或施工许可。当前增量仍待 Java 21 CI、NeoForge GameTest 和 Minecraft 实机验证 |
 | P5D-A6 | 候选施工站点空间租约 | 已编码为 ADR-0039 owner-thread pure Java adapter，尚未集成：将 exact `ConstructionSiteBinding` 的 32-block bounded inclusive bounds 用 `floorDiv` 映射为最多 8 个 exclusive `WORK_AREA` tile，并由已有 `ResourceReservationService` 保持 TTL/capacity/atomic acquire/run-generation cleanup 权威；同一 adapter 中同 owner 只接受完整 binding 的 idempotent 重入。exact-binding `renew(...)` 只对当前 issuing cache 调用 raw renewal，并返回 replacement opaque lease、立即使旧 lease stale；foreign/stale/drift 会在 raw renewal 前拒绝，out-of-band raw renewal 只会使 cache 懒失效而不会被采用。dimension 不可放入 key scope 时返回 `DIMENSION_KEY_TOO_LONG`，绝不截断/hash。无 Minecraft world read/load/write、material/temporary reservation、accepted/protection/ownership/human confirmation、placement candidate、Technique、Action、Skill、lifecycle、AI 或红石接线；空间 lease 不是施工许可。当前增量仍待 Java 21 CI；由于没有 Minecraft API 不要求独立 GameTest，未来真实施工仍需 GameTest 与实机验证 |
 | P6 | DeepSeek、聊天、Tool Firewall、预算 | 部分编码：Provider/故障边界、codec/firewall、上下文、session 修复与 R1 固定只读审阅往返已由 Build #362 自动验证；R1 绝不执行世界动作。ADR-0022 的通用 binding 账本及 ADR-0024 的 owner-thread gate+ledger 协调器（全局上限、精确 close、有界安全 terminal mailbox）已编码；P6-C2 另增加默认 no-op 的客户端本地安全 terminal-observation Contract，并由 ADR-0026 保证已登记 session 的 trusted `Error` 会先精确清理、锁外投影一次已决定的安全 terminal status（setup/再校验/handoff Error 为 `FAILED`；cleanup Error 不覆盖已决定的 `SUCCEEDED|CANCELLED`）。`whenComplete` 正常返回前的 callback 只暂存，不能发布 provisional proposal；同步 setup 或由 `accept` 激活的 inline signal Error 会重抛，attachment 返回后才到达的 callback 则只保留 `CompletionStage` 的 exceptional-stage 语义，controller 不承诺其 host-level fatal propagation。ADR-0027 还把 `ProposalHandoff` 内同线程完成另一 session 的间接 completion 失败关闭：嵌套 session 不会在外层 lock 内 handoff/token/observe，外层与嵌套 session 均为 `FAILED`，外层 queue lease 失效并在锁外收口。ADR-0028 已在该未接线 coordinator 内增加完整 immutable correlation 的 ledger-first proposal review、gate terminal 后 exact ledger close 与分歧 fail-closed；其接受结果仍是未执行 DTO，未接 Network、Lifecycle、Client、Scheduler 或 R1。ADR-0031 的 P6-A0 有独立、并发安全的 scope-local token reservation ledger：它只冻结 accepted admission、以 `reserved + committed` 累计限额，release/expiry 只退未开始 reservation，physical-attempt settle 后绝不退款。ADR-0032 的 P6-A1a 新增 explicit `AiRetryAttemptBudgetContext` 与账本 deadline helper；ADR-0034 的 P6-A1b 已把它接到 `RetryingAiProvider.completeBudgeted(...)` 的显式 opt-in physical delegate hook：每 retry fresh reserve；`RequestRun → breaker → ledger` 的原子 local-accounting gate 先验证 exact current permit，observer lease expiry 若先胜即阻止 settle/delegate，只有 `SETTLED` 才线性化并调用一次 delegate，settle 后不退款；普通 `AiProvider.complete(...)` 不受影响，账本本地拒绝不会直接记入 Provider health。当前没有 production Scheduler/client session/network/Lifecycle bridge 创建或传入 context，也不是真实 billing/usage reconciliation。上述当前增量提交仍待 Java 21 CI。通用 client-sponsored bridge、聊天/模型策略与 AI→技能计划/世界执行仍未实现，真实客户端/Provider E2E 仍待验证 |
-| P6-B0/B1 | 跨边界 physical-attempt start 预算握手 | ADR-0037 的 pure Java Contract 有 server owner 的有界 `offer → exact ACK → settle → replay-stable grant` 与 client-local one-claim gate。ADR-0041 已将 atomic S2C offer、C2S ACK、S2C grant 接入 R1 protocol v3：offer 带 bounded dispatch + complete redacted identity，ACK/grant 只带 identity；client 先 stage、重验 local connection/session/binding/deadline 后才 ACK，canonical R1 direct `accept` 一律拒绝，exact grant 的 one-claim 才能紧邻启动 Provider。server 在认证 sender、runtime/generation/agent、gate/ticket/nonce/identity 与 tick TTL 全部 exact 后才 settle；pre-grant proposal non-terminal 拒绝，TTL/reaper、terminal、unbind、logout、death、retirement、shutdown 都 exact close，settled grant 永不退款。当前增量仍待 Java 21 CI、NeoForge GameTest 与真实客户端/独立服丢包乱序 E2E；没有真实 billing/usage reconciliation，也不构成通用 bridge、聊天或 AI→世界执行 |
+| P6-B0/B1 | 跨边界 physical-attempt start 预算握手 | ADR-0037 的 pure Java Contract 有 server owner 的有界 `offer → exact ACK → settle → replay-stable grant` 与 client-local one-claim gate。ADR-0041 已将 atomic S2C offer、C2S ACK、S2C grant 接入 R1 protocol v3：offer 带 bounded dispatch + complete redacted identity，ACK/grant 只带 identity；client 先 stage、重验 local connection/session/binding/deadline 后才 ACK，canonical R1 direct `accept` 一律拒绝，exact grant 的 one-claim 才能紧邻启动 Provider。server 在认证 sender、runtime/generation/agent、gate/ticket/nonce/identity 与 tick TTL 全部 exact 后才 settle；pre-grant proposal non-terminal 拒绝，TTL/reaper、terminal、unbind、logout、death、retirement、shutdown 都 exact close，settled grant 永不退款。`P6ReviewOnlyPhysicalAttemptGameTests` 已在保留 NeoForge 配置的 mock owner connection 上捕获真实 S2C offer/grant/cancellation，并经实际 server listener 注入 C2S prepare ACK；源码覆盖 exact ACK/grant replay、replacement 后旧 ACK、unbind 与 tick-TTL expiry，仍待 Java 21 CI/NeoForge GameTest 运行。它不覆盖 payload 字节 codec、真实客户端/Provider 或丢包乱序 E2E；没有真实 billing/usage reconciliation，也不构成通用 bridge、聊天或 AI→世界执行 |
 | P7 | 长期记忆、目标、承诺和恢复 | 未实现 |
 | P8 | 模组 C0–C3、标准容器与自定义 menu 适配 | 未实现 |
 | P9 | 多 bot 协作 | 未实现 |

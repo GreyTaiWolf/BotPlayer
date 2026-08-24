@@ -7,7 +7,7 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 
 > **当前状态：P2、P3 与 P4 自动化退出门已通过；Build #362 已验证受限 P5 纵切与
 > P6-R1 的先前自动化基线。其后的 P5A 修复、单 `TechniqueLifecycleCoordinator` Contract 与
-> P5C-S1 固定副手盾牌持有、P6 会话协调器、客户端安全 terminal-observation/Error-cleanup/间接重入收口、ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget 与 P6-B0 handshake / P6-B1 R1 physical-attempt production bridge、受限 Technique→Action permit Contract 与 P5D-A0/A1/A2/A3/A4/A5 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item/loaded-world survey 数据 Contract
+> P5C-S1 固定副手盾牌持有、P6 会话协调器、客户端安全 terminal-observation/Error-cleanup/间接重入收口、ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget 与 P6-B0 handshake / P6-B1 R1 physical-attempt production bridge 及其 mock payload-path GameTest 源、受限 Technique→Action permit Contract 与 P5D-A0/A1/A2/A3/A4/A5 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item/loaded-world survey 数据 Contract
 > 提交仍待各自 Java 21 CI；仍不是
 > 正式版本，P5/P6 总退出门均未关闭。**
 >
@@ -61,8 +61,10 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 > Contract：identity 精确绑定 owner、receipt、attempt、nonce、client not-after 与更早的 physical-start
 > deadline；未 settle offer 可 release，settle 后 grant/断线/丢包/expiry 一律不退款，客户端只可在实际
 > Provider/HTTP start 边界原子 claim 一次本地 lease。P6-B1 已将该 Contract 仅为固定 R1 接入 v3 packet、
-> authenticated session、client queue 与 lifecycle reaper；仍没有 billing/usage reconciliation、通用 bridge、
-> 聊天或 AI→世界执行，且本增量的 Java 21 CI 与真实客户端/Provider E2E 仍待验证。
+> authenticated session、client queue 与 lifecycle reaper。`P6ReviewOnlyPhysicalAttemptGameTests` 在保留配置的
+> mock owner connection 上验证真实 S2C offer/grant/cancellation 与 server listener 的 C2S ACK 路径，覆盖
+> replay、replacement、unbind 和 tick-TTL stale ACK；这批源码仍待 Java 21 CI/NeoForge GameTest。仍没有
+> billing/usage reconciliation、通用 bridge、聊天或 AI→世界执行，真实客户端/Provider E2E 也仍待验证。
 > 请以
 > [当前实现状态](docs/IMPLEMENTATION_STATUS_CN.md) 为准，不要把路线图中的目标当成已完成。
 
@@ -326,6 +328,8 @@ JAR upload 均通过；GameTest 日志明确报告 `All 55 required tests passed
 binding 和 0/1 Tick 已完成快照时发起固定只读审阅；本地开关未启用时不会启动 Provider。它不
 接收用户 prompt、不创建计划，也不执行 Skill、Action 或世界变更。该 binding 指向的
 `deepseek` credential profile 缺失或无可读 Key 时会失败关闭，不会发出 HTTP。
+当前 P6-B1 GameTest 源在 mock connection 上走真实 offer/ACK/grant/cancellation packet 路径，但仍待
+Java 21 CI/NeoForge GameTest；Build #362 只证明这批增量之前的 R1 基线，并非真实客户端或 Provider E2E。
 
 名称必须是 1–16 位 ASCII 字母、数字或下划线。现阶段 UUID 由名称的小写形式派生：只改
 字母大小写仍得到同一临时 UUID，其他改名会得到新身份；当前没有重命名约束或迁移工具，

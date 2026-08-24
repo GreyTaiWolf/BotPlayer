@@ -98,9 +98,10 @@ rg -n '^#{1,4} ' docs/ARCHITECTURE_AND_ROADMAP_CN.md
   `InventoryMenu SWAP_SEQUENCE` 与原版死亡恢复纵切已经进入 `main`；PR #6 的最终远端
   Build #165/#166 已通过 Java 21 `clean build`、Gradle `test`、91/91 GameTest 与 JAR
   上传。它们仍不等于 P5A 总退出门完成。
-- P5A 仍缺跨 menu 统一事务、`clicked()` 故障注入、生命周期 `PENDING` continuation、
-  TaskSensor/Reservation 生产接线、Checkpoint、工具/副手、有限自卫、craft/chest/furnace/
-  DAG、木头到铁镐生产链，以及真实二次启动、独立专用服和多 Bot soak 等验证。
+- 当前受限生产链已经把 TaskSensor/Reservation、Checkpoint 与 craft/chest/furnace/DAG 接入生产；
+  P5A 仍缺跨 menu 通用事务、真实 `clicked()` 故障/取消 GameTest、生命周期通用 `PENDING`
+  continuation、通用工具/副手与装备策略、任意配方/作物/交易/工作站、广泛战斗，以及真实二次
+  启动、独立专用服和多 Bot soak 等验证。
 - `/botplayer skill inspect <name>` 是权限等级 `2` 的只读诊断，只查看 run，不启动技能。
 - P5 GameTest 通过 `P5GameTestSupport` 显式传入固定 Bot 名字，以便在同一持久测试世界
   复用 roster 身份与 playerdata；统一 cleanup 只卸载活动 Bot，不删除 roster/profile。
