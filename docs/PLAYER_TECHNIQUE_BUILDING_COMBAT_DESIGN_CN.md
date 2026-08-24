@@ -728,6 +728,12 @@ permanent/temporary demand，比较每个 item 的 source `availableCount`；整
 lease/material/A7/A8/A9、placement candidate、站位/朝向/点击、Technique/Skill/Action，因而仍不是 site readiness、
 reservation 或施工许可。
 
+`P5D-A11` 只把 A10 的一个 exact package target manifest 与相同 `ConstructionSiteBinding` 的 complete raw
+`ConstructionSiteSurvey` 逐 cell/offset 配对。它保留 `UNKNOWN|EMPTY|OCCUPIED` 和原 observed tick，不派生或输出
+package-local assessment/readiness/freshness/permit；同 Blueprint 的另一个合法 partition 即使复用 ordinal，或
+site/anchor/plan 漂移，也会拒绝。它不接 A6/A7/A8/A9、material reservation、placement candidate、站位/朝向/点击、
+Technique/Skill/Action，因而仍不是施工许可。
+
 `P5D-A6` 现只为 construction area 增加一项更窄的 owner-thread 空间 lease：同一 exact site binding 的
 32-block bounded bounds 保守映射为至多 8 个 TTL `WORK_AREA` tile，防止相交施工区并发；它不证明材料可用或
 已预留，也不覆盖临时结构区，且没有任何 placement/Technique/Skill 接线。因此它不是本节的 material reservation
@@ -1203,14 +1209,16 @@ full state，仍不证明 `useOn` 或 contextual placement。A7 只在同一 ser
 当作零库存，也不读任何容器、不移动/预留材料或接 placement。A8 另只由 exact package/key/A4 evidence 重导
 `(itemId, materialClass)` demand，不将 A7 availability 分配给 package。A9 只把这一 package demand 和同 evidence 的
 A7 snapshot 作 item-total projection；A10 只把 binding 中真实 package cell 映射到它已经派生的 candidate coordinate，
-二者都不让材料/坐标变成 readiness、allocation、reservation 或 permit。它们均不接 NBT、真实 survey/accepted site、
+二者都不让材料/坐标变成 readiness、allocation、reservation 或 permit。A11 又只把 A10 package target 与同 binding 的
+raw survey pairing，不把局部 evidence 变为 assessment/readiness/freshness/permit。它们均不接 NBT、真实 survey/accepted site、
 保护/加载检查、materials/lease、ownership/human confirmation、modules/`PostPlacementSemantic`、真实施工图、Technique
 或真实世界放置。
 以下仍是后续 PT4-A 目标：
 
 后续扩展（其中 `building/site/` 已有 A2 binding、A3 caller-evidence assessment 与 A10 package target manifest，
 `building/material/` 已有 A4 explicit declaration、A4-R1 default-state candidate check、A7 narrow own-inventory
-snapshot、A8 exact work-package demand 与 A9 item-total projection，尚缺可信 world/contextual-registry placeability
+snapshot、A8 exact work-package demand 与 A9 item-total projection；`building/site/` 的 A11 另只作 complete raw survey
+pairing，尚缺可信 world/contextual-registry placeability
 sampler、真实 survey/lease、container/warehouse/source allocation/material reservation 与施工 readiness）：
 
 ```text

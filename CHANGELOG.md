@@ -7,6 +7,13 @@
 
 ### 新增
 
+- 新增 ADR-0047 的 P5D-A11 pure Java 工作包站点调查证据投影：只把一个 A10 exact package target manifest
+  与同一 exact binding 的 complete raw survey 按 package canonical cell/offset 配对；UNKNOWN/EMPTY/OCCUPIED 和
+  observed tick 原样保留，不派生或输出 package-local assessment、freshness、ready、permit 或 progress。绝不按裸 ordinal 重分包，
+  同 Blueprint 的 alternative partition 或任意 binding drift 都拒绝。它不接 A6/A7/A8/A9、materials/reservation、
+  placement candidate、Action/Technique/Skill 或 world write。JUnit 源覆盖 65/256、mixed raw state、alternative
+  partition、binding drift、forged/reordered pair、immutable 与 purity/private constructor；Java 21 CI 仍待，
+  P5D/P5 总退出门未关闭；
 - 新增 ADR-0046 的 P5D-A10 pure Java 工作包候选站点目标投影：只在一个 exact candidate binding 内，从其真实
   package key/cell 经 binding 的 package-key+offset fence 重导 canonical candidate coordinate manifest；绝不按
   裸 ordinal 重分包，同 Blueprint 的另类合法 partition 也只使用 binding 已冻结的 cell list。它不读/缩减 survey、

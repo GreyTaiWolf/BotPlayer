@@ -49,7 +49,7 @@ P2 已加入生命周期、移动、交互和库存 GameTest；P3 加入有限�
 GameTest（各 1 项）。P5 总退出门和 P6 总退出门仍未关闭；真实客户端、专用服和多 bot soak
 不由此替代。Build #362 是当前 P5A 修复/受限工具-主手-副手 native-menu GameTest 源、P5C lifecycle Contract/固定副手盾牌持有、P6 会话协调器、本地
 ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget、P6-B0 server-owned
-physical-attempt handshake、P6-B1 mock payload-path GameTest 源与 P5D-A0/A1/A2/A3/A4/A4-R1/A5/A6/A7/A8/A9/A10 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item/default-state registry/loaded-world survey/spatial-lease/own-inventory-material observation/work-package-material demand/item-total projection/package-site target manifest 数据增量提交之前的自动化基线；这些提交仍须各自通过 Java 21 CI。涉及
+physical-attempt handshake、P6-B1 mock payload-path GameTest 源与 P5D-A0/A1/A2/A3/A4/A4-R1/A5/A6/A7/A8/A9/A10/A11 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item/default-state registry/loaded-world survey/spatial-lease/own-inventory-material observation/work-package-material demand/item-total projection/package-site target manifest/package-survey raw evidence pairing 数据增量提交之前的自动化基线；这些提交仍须各自通过 Java 21 CI。涉及
 Minecraft 行为的提交必须运行：
 
 ```bash
@@ -81,7 +81,7 @@ src/main/java/io/github/greytaiwolf/botplayer/
   technique/                     短生命周期玩家 Technique；当前一个 lifecycle coordinator + 有限自卫单次近战及固定副手盾牌 route
   building/blueprint/            P5D-A0 有界纯 Java Blueprint、计划方块需求与内容 hash；不接 Minecraft/Action/Technique/world
   building/construction/         P5D-A1 有界纯 Java work-package exact-cover/DAG 数据合同；不接 site/material/Technique/Action/world
-  building/site/                 P5D-A2 candidate anchor/derived-bounds/work-plan binding，A3 caller-supplied exact target evidence 的 fail-closed assessment；A5 `minecraft/` 只在 server thread 将 binding 的已加载 canonical target state 转为 immutable survey；A6 只复用现有 TTL reservation 将 exact bounds 映射为最多 8 个 conservative spatial tile lease；A10 只将 binding 中真实 work package 的 canonical cell 映射为 exact candidate coordinate manifest；不创建材料/临时区 reservation、许可、placement/Technique/Action
+  building/site/                 P5D-A2 candidate anchor/derived-bounds/work-plan binding，A3 caller-supplied exact target evidence 的 fail-closed assessment；A5 `minecraft/` 只在 server thread 将 binding 的已加载 canonical target state 转为 immutable survey；A6 只复用现有 TTL reservation 将 exact bounds 映射为最多 8 个 conservative spatial tile lease；A10 只将 binding 中真实 work package 的 canonical cell 映射为 exact candidate coordinate manifest；A11 只将这个 manifest 与同 binding 的完整 raw survey 逐 cell 配对；不创建材料/临时区 reservation、许可、placement/Technique/Action
   building/material/             P5D-A4 pure full-state explicit item declaration 与 declared quantity；不猜 blockId→itemId，不读 inventory/world，也不表示 reservation/placement/许可；其 `minecraft/` A4-R1 adapter 只在 server thread 核验 explicit item 的 non-air BlockItem default-state candidate；A7 只在 server thread 对活动精确 Bot body 的 empty native InventoryMenu 按 default fingerprint 读取 main/hotbar 瞬时 availability/shortage，不读 world 或容器内容，也不预留、移动或放置材料；A8 只从 exact work plan 的真实 package 与 A4 evidence 重导 `(itemId, materialClass)` demand；A9 只将一个 A8 demand 与同 evidence 的 A7 snapshot 作 item-total projection，不把任一观察变为 allocation/reservation/permit
   worldmodel/                    scoped revision、短期事实与确定性活动推断
   gametest/                      P2–P6 NeoForge GameTest
