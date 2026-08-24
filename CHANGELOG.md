@@ -7,6 +7,14 @@
 
 ### 新增
 
+- 新增 ADR-0043 的 P5D-A7 server-thread own-inventory 材料可用性观察：先通过 A4-R1，再要求活动精确
+  Bot body、empty exact native `InventoryMenu`、`stillValid` 与 46-slot shape，仅以 default-stack
+  item/damage/components fingerprint 统计 main/hotbar `0..35`。相同 item 的 permanent/temporary quantity 必须先
+  聚合，结果严格区分 `AVAILABLE`、`SHORTAGE` 与不伪造零库存/finding 的 `UNAVAILABLE_MENU`、
+  `UNAVAILABLE_REGISTRY`；它不读 world 或容器内容、不移动/扣除/预留材料，也不接 site/placement/Technique/Action/Skill。
+  纯 Java 与 direct GameTest 源覆盖 canonical shortage、完整 menu-state 无 mutation、装备/组件/cursor 与通过
+  `openMenu` 打开的 native `ChestMenu` 排除、registry 拒绝和 valid declaration 的 off-thread fence；Java 21 CI、
+  NeoForge GameTest 与 Minecraft 实机验证仍待，P5D/P5 总退出门未关闭；
 - 新增 ADR-0042 的 P5D-A4-R1 server-thread native registry 声明检查：只接受现有完整
   `BlueprintPlaceableItemEvidence` 的显式 item，逐项要求 registry 中的 non-air `BlockItem` 的 default 完整
   state 与 target fingerprint 严格相等；missing/non-block/air、registry alias、partial 或非默认 state 均 fail-closed。

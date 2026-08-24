@@ -703,6 +703,13 @@ fingerprint 精确相等；missing/non-block/partial/non-default state 都拒绝
 可用、已预留或能在真实 interaction/context 中产出该状态；因此不是本节的 `BillOfMaterials` availability、材料背包、
 reservation 或施工许可。
 
+`P5D-A7` 只补一个更窄的 own-inventory observation：在 authoritative server thread，先复用 A4-R1，再要求
+runtime handle 仍精确绑定传入 Bot body、active exact native `InventoryMenu`、46-slot shape 和 empty cursor；随后仅按
+default-stack fingerprint 读取 main/hotbar `0..35`。相同 explicit item 的 permanent/temporary quantity 先聚合，输出
+当前 tick 的 `AVAILABLE|SHORTAGE|UNAVAILABLE_MENU|UNAVAILABLE_REGISTRY`；unknown menu/registry 绝不伪造为零库存。
+它不读取 chest/ender chest/世界容器，不移动、扣除或预留材料，也不接 site、placement、Technique、Skill 或 Action；因而
+仍不是本节的 `BillOfMaterials` availability、reservation 或施工许可。
+
 `P5D-A6` 现只为 construction area 增加一项更窄的 owner-thread 空间 lease：同一 exact site binding 的
 32-block bounded bounds 保守映射为至多 8 个 TTL `WORK_AREA` tile，防止相交施工区并发；它不证明材料可用或
 已预留，也不覆盖临时结构区，且没有任何 placement/Technique/Skill 接线。因此它不是本节的 material reservation
@@ -1172,15 +1179,16 @@ cell/offset/span、重复坐标与 content hash；A1 只把同一 immutable Blue
 dimension+anchor 与从真实 Blueprint cell 派生的 bounds/known target；A3 的
 `ACCEPTED_CANDIDATE` 只表示 supplied evidence 的结构兼容；A4 只要求 full target state 的 explicit item
 declaration 并导出 declared quantity。A4 records 仍只给出结构性输入，**不**读取 Minecraft、把 blockId 自动映射为
-背包物品或接 inventory availability；另有 A4-R1 server-thread registry/default-state candidate check，只核对
-现有 explicit `BlockItem` 与其 default full state，仍不证明 `useOn` 或 contextual placement。两者均不接 NBT、
-真实 survey/accepted site、保护/加载检查、materials/lease、ownership/human confirmation、modules/
-`PostPlacementSemantic`、真实施工图、Technique 或真实世界放置。
+背包物品；另有 A4-R1 server-thread registry/default-state candidate check，只核对现有 explicit `BlockItem` 与其 default
+full state，仍不证明 `useOn` 或 contextual placement。A7 只在同一 server thread 对活动精确 Bot body 的 empty native
+`InventoryMenu` 统计默认 stack 的 main/hotbar 瞬时 aggregate availability/shortage；它不把 unknown menu/registry
+当作零库存，也不读任何容器、不移动/预留材料或接 placement。它们均不接 NBT、真实 survey/accepted site、保护/加载检查、
+materials/lease、ownership/human confirmation、modules/`PostPlacementSemantic`、真实施工图、Technique 或真实世界放置。
 以下仍是后续 PT4-A 目标：
 
 后续扩展（其中 `building/site/` 已有 A2 binding 和 A3 caller-evidence assessment DTO，`building/material/`
-已有 A4 explicit declaration 与 A4-R1 default-state candidate check，尚缺可信 world/contextual-registry placeability
-sampler、真实 survey/lease/availability）：
+已有 A4 explicit declaration、A4-R1 default-state candidate check 与 A7 narrow own-inventory snapshot，尚缺可信
+world/contextual-registry placeability sampler、真实 survey/lease、container/warehouse/material reservation 与施工 availability）：
 
 ```text
 building/blueprint/*
