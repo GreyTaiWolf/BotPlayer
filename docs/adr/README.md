@@ -60,6 +60,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0039](0039-construction-site-spatial-lease-adapter.md) | 施工站点空间租约适配器 | Accepted | P5D-A6 只将 exact binding 的 bounds 映射为最多 8 个 owner-thread `WORK_AREA` TTL tile lease；不预留材料/临时区，也不接 Action/Technique/Skill/world 或 P5D 完成 |
 | [ADR-0040](0040-strict-consumable-commit-boundary.md) | 严格消耗品的原版提交边界与精确终态优先级 | Accepted | `HEAD` 围栏所有 active strict `UseItem`，completion/`ENTERED` 只限 natural；两个点均拒绝 action deadline/maxTicks 当 tick 的物理消费。新增回归仍待 Java 21/NeoForge CI 与实机验证 |
 | [ADR-0041](0041-r1-physical-attempt-transport-bridge.md) | R1 物理尝试的有界传输桥接 | Accepted | P6-B1 已将 v3 atomic offer/prepare ACK/start grant 接入 R1 production bridge：认证 ACK 后 exact settle，grant 前不得 proposal/provider start，exact TTL/terminal/logout/rebind/death/retirement/shutdown close；仍待 Java 21 CI、GameTest、真实客户端/独立服 E2E，不构成通用 bridge、billing/usage 或 P6 完成 |
+| [ADR-0042](0042-server-thread-blueprint-default-block-item-validator.md) | 服务端线程蓝图默认方块物品声明验证器 | Accepted | P5D-A4-R1 只核验现有完整 declaration 的显式 item 是否为 non-air `BlockItem` 且 default full state 精确相等；不证明 `useOn`/contextual placement、inventory/reservation 或 P5D 完成，当前仍待 Java 21 CI/GameTest/实机验证 |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
@@ -163,6 +164,11 @@ replace policy 都产生 fail-closed finding。`ACCEPTED_CANDIDATE` 只表示 su
 ADR-0036 只在 immutable Blueprint 上增加 full `BlockStateFingerprint` 到显式 caller-supplied item ID 的
 exact-cover declaration，并按 itemId/material class 导出 bounded declared quantity。它不按同名 block/item 或
 properties 缺失猜 mapping，不查询 registry，也不代表 inventory availability、reservation、placement 或施工许可。
+
+ADR-0042 保持 ADR-0036 的纯 DTO 不变，只在 server thread 对已 complete declaration 的每个显式 item 做一次
+native registry/default-state candidate equality 检查：item 必须是 non-air `BlockItem`，其 block default 的 full
+serialized fingerprint 必须与目标相等。它不调用 `useOn`、不读 world、不证明 contextual placement、inventory、
+reservation 或 construction permit。
 
 ADR-0037 在 P6 定义 server-owned distributed physical-attempt handshake：exact active dispatch 可先
 reserve，再由 exact prepare ACK 一次 settle 并返回 replay-stable grant；identity 同时绑定 server instance、owner、

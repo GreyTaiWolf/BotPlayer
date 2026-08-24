@@ -7,6 +7,11 @@
 
 ### 新增
 
+- 新增 ADR-0042 的 P5D-A4-R1 server-thread native registry 声明检查：只接受现有完整
+  `BlueprintPlaceableItemEvidence` 的显式 item，逐项要求 registry 中的 non-air `BlockItem` 的 default 完整
+  state 与 target fingerprint 严格相等；missing/non-block/air、registry alias、partial 或非默认 state 均 fail-closed。
+  它不猜 blockId→itemId、不调用 `useOn`、不读 world/inventory、不预留材料或接入 placement/Technique/Action/Skill；
+  direct GameTest 源覆盖正例、拒绝和 off-thread fence，仍待 Java 21 CI/NeoForge GameTest。
 - 新增 P5A 受限基础装备的直接 GameTest 源：经 lifecycle `SkillPlan` 分别覆盖请求的
   `EQUIP_BASIC_TOOL`、白名单 `EQUIP_EXACT_MAIN_HAND` 和显式普通
   `EQUIP_REQUESTED_OFFHAND` 都以精确原版 46 槽 `InventoryMenu` 的
