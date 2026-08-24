@@ -716,6 +716,12 @@ fail-closed，需求总数严格等于该 package cell 数。它刻意不把 A7 
 allocation，不读 world/container、也不 reservation、slot lock、移动、放置或接 site/Technique/Skill/Action；因而仍不是
 本节的 `BillOfMaterials` availability、reservation 或施工许可。
 
+`P5D-A9` 只将一个 A8 demand 与同 evidence 的 A7 snapshot 作 item-total projection。它临时合并这个 package 的
+permanent/temporary demand，比较每个 item 的 source `availableCount`；整图 `SHORTAGE` 时单 package 可以在 isolation
+中 observed sufficient，但多个 package 的 sufficient 不能相加、不能并行消费同一 observation。unavailable menu/registry
+仍为空 finding；A9 不分配 class/slot/source、不延长 fence，也不 reservation、移动、放置或接 site/Technique/Skill/Action，
+因而仍不是本节的 `BillOfMaterials` availability、reservation 或施工许可。
+
 `P5D-A6` 现只为 construction area 增加一项更窄的 owner-thread 空间 lease：同一 exact site binding 的
 32-block bounded bounds 保守映射为至多 8 个 TTL `WORK_AREA` tile，防止相交施工区并发；它不证明材料可用或
 已预留，也不覆盖临时结构区，且没有任何 placement/Technique/Skill 接线。因此它不是本节的 material reservation
@@ -1195,9 +1201,9 @@ full state，仍不证明 `useOn` 或 contextual placement。A7 只在同一 ser
 以下仍是后续 PT4-A 目标：
 
 后续扩展（其中 `building/site/` 已有 A2 binding 和 A3 caller-evidence assessment DTO，`building/material/`
-已有 A4 explicit declaration、A4-R1 default-state candidate check、A7 narrow own-inventory snapshot 与 A8 exact
-work-package demand，尚缺可信 world/contextual-registry placeability sampler、真实 survey/lease、container/warehouse/
-material reservation 与施工 availability）：
+已有 A4 explicit declaration、A4-R1 default-state candidate check、A7 narrow own-inventory snapshot、A8 exact
+work-package demand 与 A9 item-total projection，尚缺可信 world/contextual-registry placeability sampler、真实
+survey/lease、container/warehouse/source allocation/material reservation 与施工 readiness）：
 
 ```text
 building/blueprint/*

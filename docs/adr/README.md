@@ -63,6 +63,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0042](0042-server-thread-blueprint-default-block-item-validator.md) | 服务端线程蓝图默认方块物品声明验证器 | Accepted | P5D-A4-R1 只核验现有完整 declaration 的显式 item 是否为 non-air `BlockItem` 且 default full state 精确相等；不证明 `useOn`/contextual placement、inventory/reservation 或 P5D 完成，当前仍待 Java 21 CI/GameTest/实机验证 |
 | [ADR-0043](0043-server-thread-construction-material-availability-observation.md) | 服务端线程施工材料可用性观察 | Accepted | P5D-A7 只在活动精确 Bot body 的 empty native `InventoryMenu` 以 default fingerprint 读取 main/hotbar 瞬时 aggregate availability/shortage；unavailable 不等于零库存，不读 world 或容器内容、不预留/移动/放置材料，也不是 P5D 完成，当前仍待 Java 21 CI/GameTest/实机验证 |
 | [ADR-0044](0044-bounded-construction-work-package-material-demand.md) | 有界施工工作包显式材料需求 | Accepted | P5D-A8 只从 exact plan 的真实 package 与 A4 evidence 重导 `(itemId, materialClass)` demand；拒绝 blueprint/key/requirement drift，不把 A7 availability 变为 allocation/reservation/permit，也不是 P5D 完成，当前仍待 Java 21 CI |
+| [ADR-0045](0045-work-package-material-availability-projection.md) | 工作包材料可用性只读投影 | Accepted | P5D-A9 只将一个 A8 demand 与同 evidence 的 A7 snapshot 作 item-total projection；单 package sufficient 不能当 allocation/reservation/permit，也不是 P5D 完成，当前仍待 Java 21 CI |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
@@ -181,6 +182,12 @@ ADR-0044 只从 complete work plan 中真实存在的 exact package、其完整 
 重导该 package 的 canonical `(itemId, materialClass)` demand；它拒绝 blueprint/key/requirement drift，保留
 permanent/temporary 类别，也不将 A7 item-level availability 升格为 allocation、reservation 或 permit。它不读取
 Minecraft/world/container，不接 placement、Technique、Skill、Action 或 P5D 完成。
+
+ADR-0045 只将一个 A8 exact package demand 与同 evidence 的 A7 source snapshot 作 item-total projection；它把该
+package 的 class-level requirements 仅为 comparison 合并成一项 item finding。整图 shortage 时一个 package 可在
+isolation 中 sufficient，但多个 sufficient projection 不能相加或并行，也不会产生 class/slot/source allocation、
+reservation 或 permit。unavailable source 不伪造零库存 finding；它不读 Minecraft/world/container，也不接 placement、
+Technique、Skill、Action 或 P5D 完成。
 
 ADR-0037 在 P6 定义 server-owned distributed physical-attempt handshake：exact active dispatch 可先
 reserve，再由 exact prepare ACK 一次 settle 并返回 replay-stable grant；identity 同时绑定 server instance、owner、

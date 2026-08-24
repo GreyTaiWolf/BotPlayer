@@ -7,6 +7,12 @@
 
 ### 新增
 
+- 新增 ADR-0045 的 P5D-A9 pure Java 工作包材料可用性只读投影：只将一个 A8 exact package demand 与同 evidence
+  的 A7 source snapshot 按 item total 比较；整图 `SHORTAGE` 时单 package 可在 isolation 中 observed sufficient，
+  但多个 sufficient projection 绝不相加或并行消费同一 observed count。unavailable menu/registry 保持空 finding，
+  不分配 permanent/temporary class、slot/source，不延长 menu fence，不 reservation、移动、放置或接 site/Technique/
+  Action/Skill。JUnit 源覆盖 class aggregation、isolated sufficient、shortage、unavailable、drift、65/256 partition
+  与 purity/private constructor；Java 21 CI 仍待，P5D/P5 总退出门未关闭；
 - 新增 ADR-0044 的 P5D-A8 pure Java 工作包显式材料需求 Contract：只从 complete `ConstructionWorkPlan` 中真实
   package 的完整 key 与 `equals` 的 A4 explicit evidence 重导 canonical `(itemId, materialClass)` requirements，
   total 必须恰等于该 package cell 数；public constructor 也会拒绝 blueprint/key/requirement drift 或 forged aggregate。
