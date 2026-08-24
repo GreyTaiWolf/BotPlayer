@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Consumer;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.entity.EquipmentSlot;
@@ -25,6 +26,7 @@ import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.enchantment.Enchantments;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -240,12 +242,9 @@ public final class P5BasicEquipmentAcceptanceGameTests {
                     cleanup,
                     "Shield rejection plan did not reach a terminal state",
                     view -> {
-                        P2GameTestSupport.require(
-                                view.state() == SkillRunState.FAILED
-                                        && view.failureCode().orElse(null)
-                                                == SkillFailureCode.WORLD_CHANGED,
-                                "Shield source did not fail closed in the ordinary offhand handler: "
-                                        + view);
+                        requireFailedWorldChanged(
+                                view,
+                                "Shield source did not fail closed in the ordinary offhand handler");
                         P2GameTestSupport.require(
                                 bot.player().getInventory().getItem(12)
                                                 .is(Items.SHIELD)
@@ -253,11 +252,135 @@ public final class P5BasicEquipmentAcceptanceGameTests {
                                         && bot.player().getOffhandItem().getCount() == 2,
                                 "Rejected shield source changed the ordinary offhand inventory layout");
                         requireSafeInventoryEndpoint(bot, 3);
+                        requireNoEquipmentTransaction(bot);
                         P2GameTestSupport.require(
                                 count(bot, Items.SHIELD) == 1
                                         && count(bot, Items.DIRT) == 2
                                         && count(bot, Items.STONE) == 1,
                                 "Rejected shield source violated item conservation");
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = REJECTION_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void bindingRestrictedOffhandTargetCannotBeReplaced(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        P5GameTestSupport.IsolatedFixture fixture =
+                P5GameTestSupport.isolatedFixture(
+                        helper, "basic_equipment_bound_target");
+        TestBot bot = fixture.spawn("boff");
+        P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
+        try {
+            prepareEmptyInventory(bot, 6);
+            bot.player().getInventory().setItem(6, new ItemStack(Items.STONE));
+            bot.player().getInventory().setItem(
+                    12, new ItemStack(Items.TORCH, 4));
+            ItemStack boundOffhand = withBindingCurse(
+                    helper, new ItemStack(Items.DIRT, 3));
+            ItemStack expectedBoundOffhand = boundOffhand.copy();
+            bot.player().setItemSlot(EquipmentSlot.OFFHAND, boundOffhand);
+            refreshInventoryMenu(bot);
+
+            SkillRunSubmission submission = submitSingleNode(
+                    bot,
+                    P5ABuiltinSkillIds.EQUIP_REQUESTED_OFFHAND,
+                    Map.of("source.slot", 12));
+            requireAccepted(
+                    submission,
+                    "Binding-restricted offhand replacement plan was rejected before its handler ran");
+
+            awaitTerminalRun(
+                    helper,
+                    bot,
+                    submission.runId().orElseThrow(),
+                    cleanup,
+                    "Binding-restricted offhand replacement plan did not reach a terminal state",
+                    view -> {
+                        requireFailedWorldChanged(
+                                view,
+                                "Binding-restricted offhand target was not failed closed");
+                        P2GameTestSupport.require(
+                                bot.player().getInventory().getItem(12)
+                                                .is(Items.TORCH)
+                                        && bot.player().getInventory().getItem(12)
+                                                .getCount() == 4
+                                        && ItemStack.matches(
+                                                expectedBoundOffhand,
+                                                bot.player().getOffhandItem()),
+                                "Binding-restricted offhand target changed before an action was admitted");
+                        requireSafeInventoryEndpoint(bot, 6);
+                        requireNoEquipmentTransaction(bot);
+                        P2GameTestSupport.require(
+                                count(bot, Items.TORCH) == 4
+                                        && count(bot, Items.DIRT) == 3
+                                        && count(bot, Items.STONE) == 1,
+                                "Binding-restricted offhand rejection violated item conservation");
+                    });
+        } catch (RuntimeException | AssertionError exception) {
+            cleanup.run();
+            throw exception;
+        }
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = REJECTION_BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
+    public static void bindingRestrictedToolCannotEnterSelectedHotbarSlot(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        P5GameTestSupport.IsolatedFixture fixture =
+                P5GameTestSupport.isolatedFixture(
+                        helper, "basic_equipment_bound_tool");
+        TestBot bot = fixture.spawn("btool");
+        P2GameTestSupport.Cleanup cleanup = fixture.cleanup();
+        try {
+            prepareEmptyInventory(bot, 4);
+            bot.player().getInventory().setItem(4, new ItemStack(Items.STONE));
+            ItemStack boundPickaxe = withBindingCurse(
+                    helper, new ItemStack(Items.IRON_PICKAXE));
+            ItemStack expectedBoundPickaxe = boundPickaxe.copy();
+            bot.player().getInventory().setItem(9, boundPickaxe);
+            refreshInventoryMenu(bot);
+
+            SkillRunSubmission submission = submitSingleNode(
+                    bot,
+                    P5ABuiltinSkillIds.EQUIP_BASIC_TOOL,
+                    Map.of("tool.kind", "pickaxe"));
+            requireAccepted(
+                    submission,
+                    "Binding-restricted tool plan was rejected before its handler ran");
+
+            awaitTerminalRun(
+                    helper,
+                    bot,
+                    submission.runId().orElseThrow(),
+                    cleanup,
+                    "Binding-restricted tool plan did not reach a terminal state",
+                    view -> {
+                        requireFailedWorldChanged(
+                                view,
+                                "Binding-restricted tool was not failed closed");
+                        P2GameTestSupport.require(
+                                bot.player().getInventory().getItem(4)
+                                                .is(Items.STONE)
+                                        && ItemStack.matches(
+                                                expectedBoundPickaxe,
+                                                bot.player().getInventory().getItem(9)),
+                                "Binding-restricted tool changed before an action was admitted");
+                        requireSafeInventoryEndpoint(bot, 4);
+                        requireNoEquipmentTransaction(bot);
+                        P2GameTestSupport.require(
+                                count(bot, Items.IRON_PICKAXE) == 1
+                                        && count(bot, Items.STONE) == 1,
+                                "Binding-restricted tool rejection violated item conservation");
                     });
         } catch (RuntimeException | AssertionError exception) {
             cleanup.run();
@@ -334,6 +457,15 @@ public final class P5BasicEquipmentAcceptanceGameTests {
                 subject + " did not succeed with its one-node native-menu run: " + view);
     }
 
+    private static void requireFailedWorldChanged(
+            SkillRunView view, String subject) {
+        P2GameTestSupport.require(
+                view.state() == SkillRunState.FAILED
+                        && view.failureCode().orElse(null)
+                                == SkillFailureCode.WORLD_CHANGED,
+                subject + ": " + view);
+    }
+
     private static void requireSafeInventoryEndpoint(TestBot bot, int selectedSlot) {
         InventoryMenu menu = bot.player().inventoryMenu;
         P2GameTestSupport.require(
@@ -375,6 +507,36 @@ public final class P5BasicEquipmentAcceptanceGameTests {
         P2GameTestSupport.require(
                 completedWorldMenuTransaction && !usedLegacySwapRoute,
                 "Equipment handler did not complete only through the native world-menu transaction route");
+    }
+
+    private static void requireNoEquipmentTransaction(TestBot bot) {
+        UUID botId = bot.player().getUUID();
+        long generation = bot.player().runtimeHandle().generation();
+        boolean submittedInventoryAction = bot.manager()
+                .actionTransitionHistory(512)
+                .stream()
+                .anyMatch(transition -> transition.botId().equals(botId)
+                        && transition.botGeneration() == generation
+                        && (transition.kind()
+                                        == ActionKind.WORLD_MENU_TRANSACTION
+                                || transition.kind()
+                                        == ActionKind.INVENTORY_MENU_SWAP
+                                || transition.kind()
+                                        == ActionKind.SWAP_INVENTORY_HOTBAR));
+        P2GameTestSupport.require(
+                !submittedInventoryAction,
+                "Rejected equipment request recorded an inventory action transition");
+    }
+
+    private static ItemStack withBindingCurse(
+            GameTestHelper helper, ItemStack stack) {
+        stack.enchant(
+                helper.getLevel()
+                        .registryAccess()
+                        .lookupOrThrow(Registries.ENCHANTMENT)
+                        .getOrThrow(Enchantments.BINDING_CURSE),
+                1);
+        return stack;
     }
 
     private static int count(TestBot bot, Item item) {
