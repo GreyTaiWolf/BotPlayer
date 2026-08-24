@@ -64,6 +64,7 @@ ADR 用于记录会长期影响代码、数据、兼容性、安全或许可证�
 | [ADR-0043](0043-server-thread-construction-material-availability-observation.md) | 服务端线程施工材料可用性观察 | Accepted | P5D-A7 只在活动精确 Bot body 的 empty native `InventoryMenu` 以 default fingerprint 读取 main/hotbar 瞬时 aggregate availability/shortage；unavailable 不等于零库存，不读 world 或容器内容、不预留/移动/放置材料，也不是 P5D 完成，当前仍待 Java 21 CI/GameTest/实机验证 |
 | [ADR-0044](0044-bounded-construction-work-package-material-demand.md) | 有界施工工作包显式材料需求 | Accepted | P5D-A8 只从 exact plan 的真实 package 与 A4 evidence 重导 `(itemId, materialClass)` demand；拒绝 blueprint/key/requirement drift，不把 A7 availability 变为 allocation/reservation/permit，也不是 P5D 完成，当前仍待 Java 21 CI |
 | [ADR-0045](0045-work-package-material-availability-projection.md) | 工作包材料可用性只读投影 | Accepted | P5D-A9 只将一个 A8 demand 与同 evidence 的 A7 snapshot 作 item-total projection；单 package sufficient 不能当 allocation/reservation/permit，也不是 P5D 完成，当前仍待 Java 21 CI |
+| [ADR-0046](0046-bounded-work-package-candidate-site-target-projection.md) | 有界工作包候选站点目标投影 | Accepted | P5D-A10 只将 binding 内真实 package 的 exact cells 投影为 candidate coordinate manifest；不重分包、不含 survey/lease/material/placement/permit，也不是 P5D 完成，当前仍待 Java 21 CI |
 
 “待 Pn”表示决策已经接受，但对应功能尚未实现。ADR-0012 只取代 ADR-0004 中“AI 与
 secret 必须只在服务端”的部署决定；客户端不拥有世界权威、ADR-0010 禁止当前阶段接入
@@ -188,6 +189,11 @@ package 的 class-level requirements 仅为 comparison 合并成一项 item find
 isolation 中 sufficient，但多个 sufficient projection 不能相加或并行，也不会产生 class/slot/source allocation、
 reservation 或 permit。unavailable source 不伪造零库存 finding；它不读 Minecraft/world/container，也不接 placement、
 Technique、Skill、Action 或 P5D 完成。
+
+ADR-0046 只从 candidate site binding 自己完整 plan 的真实 package 逐 cell，经 package-key+offset fence 重导 immutable
+candidate coordinate manifest；同 Blueprint 的另一合法 partition 即使重复 ordinal 也不会改变 binding 的 package。
+它不读取或缩小 survey/assessment，不接 lease/material/A7/A8/A9、placement candidate、Action、Technique、Skill 或
+P5D 完成。
 
 ADR-0037 在 P6 定义 server-owned distributed physical-attempt handshake：exact active dispatch 可先
 reserve，再由 exact prepare ACK 一次 settle 并返回 replay-stable grant；identity 同时绑定 server instance、owner、

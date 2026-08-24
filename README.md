@@ -8,7 +8,7 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 > **当前状态：P2、P3 与 P4 自动化退出门已通过；Build #362 已验证受限 P5 纵切与
 > P6-R1 的先前自动化基线。其后的 P5A 修复与受限工具/精确主手/普通副手 native-menu
 > GameTest 源、单 `TechniqueLifecycleCoordinator` Contract 与
-> P5C-S1 固定副手盾牌持有、P6 会话协调器、客户端安全 terminal-observation/Error-cleanup/间接重入收口、ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget 与 P6-B0 handshake / P6-B1 R1 physical-attempt production bridge 及其 mock payload-path GameTest 源、受限 Technique→Action permit Contract 与 P5D-A0/A1/A2/A3/A4/A4-R1/A5/A6/A7/A8/A9 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item/default-state registry/loaded-world survey/spatial-lease/own-inventory-material observation/work-package-material demand/item-total projection 数据 Contract
+> P5C-S1 固定副手盾牌持有、P6 会话协调器、客户端安全 terminal-observation/Error-cleanup/间接重入收口、ledger-first proposal review、P6-A0/A1a/A1b token-reservation/physical-retry budget 与 P6-B0 handshake / P6-B1 R1 physical-attempt production bridge 及其 mock payload-path GameTest 源、受限 Technique→Action permit Contract 与 P5D-A0/A1/A2/A3/A4/A4-R1/A5/A6/A7/A8/A9/A10 有界蓝图/施工工作包/candidate-site/survey-assessment/placeable-item/default-state registry/loaded-world survey/spatial-lease/own-inventory-material observation/work-package-material demand/item-total projection/package-site target manifest 数据 Contract
 > 提交仍待各自 Java 21 CI；仍不是
 > 正式版本，P5/P6 总退出门均未关闭。**
 >
@@ -58,6 +58,10 @@ Minecraft 1.21.1 + NeoForge，后续版本在 1.21.1 架构稳定后再迁移。
 > package 仍可在 isolation 中 observed sufficient，多个 package 的 sufficient 绝不能相加或并行消费同一 observation。
 > unavailable source 仍为空 findings；A9 不分配 class/slot/source、不延长 menu fence、不 reservation、移动、放置或接入
 > Technique/Skill/Action，因此也不是 readiness proof 或 construction permit。
+> P5D-A10 只将 candidate site binding 中的真实 work package 逐 cell 重导为其 exact candidate coordinate manifest；
+> 即使同一 Blueprint 的另一个合法 partition 使用同一 ordinal，也只使用 binding 已冻结的 package cell。它不读取/缩减 survey
+> 或 assessment、不接 lease/material/placement candidate/站位/点击参数、Action/Technique/Skill 或世界动作，因此不是
+> site-ready 或 construction permit。
 > P6-R1 是默认关闭的固定本地只读审阅往返，只有真实 owner 本地 `reviewOnly.enabled=true`
 > 时才会尝试发起固定 Provider HTTPS；回传只形成安全摘要并丢弃，绝不进入 Skill、Action 或
 > 世界动作。通用 DeepSeek/chat、通用 client-sponsored bridge 与 AI→世界执行尚未实现；R1

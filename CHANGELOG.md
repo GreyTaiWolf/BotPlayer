@@ -7,6 +7,12 @@
 
 ### 新增
 
+- 新增 ADR-0046 的 P5D-A10 pure Java 工作包候选站点目标投影：只在一个 exact candidate binding 内，从其真实
+  package key/cell 经 binding 的 package-key+offset fence 重导 canonical candidate coordinate manifest；绝不按
+  裸 ordinal 重分包，同 Blueprint 的另类合法 partition 也只使用 binding 已冻结的 cell list。它不读/缩减 survey、
+  assessment 或 lease，不接 A7/A8/A9 材料、站位/朝向/点击/placement candidate、Action/Technique/Skill 或 world
+  write。JUnit 源覆盖 65/256、alternative partition、identity drift、immutable 与 purity/private constructor；
+  Java 21 CI 仍待，P5D/P5 总退出门未关闭；
 - 新增 ADR-0045 的 P5D-A9 pure Java 工作包材料可用性只读投影：只将一个 A8 exact package demand 与同 evidence
   的 A7 source snapshot 按 item total 比较；整图 `SHORTAGE` 时单 package 可在 isolation 中 observed sufficient，
   但多个 sufficient projection 绝不相加或并行消费同一 observed count。unavailable menu/registry 保持空 finding，
