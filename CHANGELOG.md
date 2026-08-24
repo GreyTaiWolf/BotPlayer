@@ -7,6 +7,13 @@
 
 ### 新增
 
+- 新增 ADR-0044 的 P5D-A8 pure Java 工作包显式材料需求 Contract：只从 complete `ConstructionWorkPlan` 中真实
+  package 的完整 key 与 `equals` 的 A4 explicit evidence 重导 canonical `(itemId, materialClass)` requirements，
+  total 必须恰等于该 package cell 数；public constructor 也会拒绝 blueprint/key/requirement drift 或 forged aggregate。
+  permanent/temporary 同 item 保持分离，绝不把 A7 availability 变为 package allocation、reservation 或 permit；不读
+  Minecraft/world/container、不 slot lock、不移动/放置材料，也不接 site/Technique/Action/Skill。JUnit 源覆盖
+  canonical/immutable、class separation、65/256-cell 分包、drift、forged requirement 和 DTO purity；Java 21 CI
+  仍待，P5D/P5 总退出门未关闭；
 - 新增 ADR-0043 的 P5D-A7 server-thread own-inventory 材料可用性观察：先通过 A4-R1，再要求活动精确
   Bot body、empty exact native `InventoryMenu`、`stillValid` 与 46-slot shape，仅以 default-stack
   item/damage/components fingerprint 统计 main/hotbar `0..35`。相同 item 的 permanent/temporary quantity 必须先

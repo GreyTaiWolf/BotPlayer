@@ -710,6 +710,12 @@ default-stack fingerprint 读取 main/hotbar `0..35`。相同 explicit item 的 
 它不读取 chest/ender chest/世界容器，不移动、扣除或预留材料，也不接 site、placement、Technique、Skill 或 Action；因而
 仍不是本节的 `BillOfMaterials` availability、reservation 或施工许可。
 
+`P5D-A8` 只把 complete `ConstructionWorkPlan` 的一个真实 package、其完整 key 和同一 Blueprint 的 A4 explicit
+evidence 重导成该 package 的 canonical `(itemId, materialClass)` demand；package/evidence/requirements drift 一律
+fail-closed，需求总数严格等于该 package cell 数。它刻意不把 A7 的 item-level availability 拆回 permanent/temporary
+allocation，不读 world/container、也不 reservation、slot lock、移动、放置或接 site/Technique/Skill/Action；因而仍不是
+本节的 `BillOfMaterials` availability、reservation 或施工许可。
+
 `P5D-A6` 现只为 construction area 增加一项更窄的 owner-thread 空间 lease：同一 exact site binding 的
 32-block bounded bounds 保守映射为至多 8 个 TTL `WORK_AREA` tile，防止相交施工区并发；它不证明材料可用或
 已预留，也不覆盖临时结构区，且没有任何 placement/Technique/Skill 接线。因此它不是本节的 material reservation
@@ -1182,13 +1188,16 @@ declaration 并导出 declared quantity。A4 records 仍只给出结构性输入
 背包物品；另有 A4-R1 server-thread registry/default-state candidate check，只核对现有 explicit `BlockItem` 与其 default
 full state，仍不证明 `useOn` 或 contextual placement。A7 只在同一 server thread 对活动精确 Bot body 的 empty native
 `InventoryMenu` 统计默认 stack 的 main/hotbar 瞬时 aggregate availability/shortage；它不把 unknown menu/registry
-当作零库存，也不读任何容器、不移动/预留材料或接 placement。它们均不接 NBT、真实 survey/accepted site、保护/加载检查、
-materials/lease、ownership/human confirmation、modules/`PostPlacementSemantic`、真实施工图、Technique 或真实世界放置。
+当作零库存，也不读任何容器、不移动/预留材料或接 placement。A8 另只由 exact package/key/A4 evidence 重导
+`(itemId, materialClass)` demand，不将 A7 availability 分配给 package。它们均不接 NBT、真实 survey/accepted site、
+保护/加载检查、materials/lease、ownership/human confirmation、modules/`PostPlacementSemantic`、真实施工图、Technique
+或真实世界放置。
 以下仍是后续 PT4-A 目标：
 
 后续扩展（其中 `building/site/` 已有 A2 binding 和 A3 caller-evidence assessment DTO，`building/material/`
-已有 A4 explicit declaration、A4-R1 default-state candidate check 与 A7 narrow own-inventory snapshot，尚缺可信
-world/contextual-registry placeability sampler、真实 survey/lease、container/warehouse/material reservation 与施工 availability）：
+已有 A4 explicit declaration、A4-R1 default-state candidate check、A7 narrow own-inventory snapshot 与 A8 exact
+work-package demand，尚缺可信 world/contextual-registry placeability sampler、真实 survey/lease、container/warehouse/
+material reservation 与施工 availability）：
 
 ```text
 building/blueprint/*
