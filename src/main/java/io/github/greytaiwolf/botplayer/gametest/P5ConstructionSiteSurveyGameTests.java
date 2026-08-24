@@ -125,6 +125,59 @@ public final class P5ConstructionSiteSurveyGameTests {
             template = P2GameTestSupport.TEMPLATE,
             batch = BATCH,
             timeoutTicks = TIMEOUT_TICKS)
+    public static void samplesLoadedCompatibleTargetsAsAcceptedCandidateWithoutWriting(
+            GameTestHelper helper) {
+        P2GameTestSupport.prepareEmptyFloor(helper);
+        ServerLevel level = helper.getLevel();
+        BlockPos relativeOrigin = new BlockPos(3, 1, 3);
+        BlockPos relativeStairs = relativeOrigin.east();
+        BlockState stairs = Blocks.OAK_STAIRS.defaultBlockState().setValue(
+                BlockStateProperties.HORIZONTAL_FACING, Direction.WEST);
+        helper.setBlock(relativeOrigin, Blocks.AIR);
+        helper.setBlock(relativeStairs, stairs);
+
+        BlockPos origin = helper.absolutePos(relativeOrigin);
+        BlockPos absoluteStairs = helper.absolutePos(relativeStairs);
+        BlockState airBefore = level.getBlockState(origin);
+        BlockState stairsBefore = level.getBlockState(absoluteStairs);
+        P2GameTestSupport.require(
+                level.isLoaded(origin) && level.isLoaded(absoluteStairs),
+                "Compatible construction-site fixture did not start with loaded targets");
+        ConstructionSiteBinding binding = binding(level, origin, 7L, List.of(
+                cell(new BlueprintOffset(1, 0, 0), OAK_STAIRS_WEST_STATE),
+                cell(new BlueprintOffset(0, 0, 0), STONE_STATE)));
+
+        long beforeTick = level.getServer().getTickCount();
+        ConstructionSiteSurvey survey = MinecraftConstructionSiteSurveySampler.sample(
+                level, binding);
+        long afterTick = level.getServer().getTickCount();
+        ConstructionSiteAssessment assessment = survey.assess();
+
+        P2GameTestSupport.require(
+                survey.observedTick() >= beforeTick && survey.observedTick() <= afterTick,
+                "Compatible survey did not retain the current authoritative server tick");
+        P2GameTestSupport.require(
+                survey.observations().equals(List.of(
+                        ConstructionSiteSurvey.TargetObservation.empty(new BlueprintOffset(0, 0, 0)),
+                        ConstructionSiteSurvey.TargetObservation.occupied(new BlueprintOffset(1, 0, 0),
+                                OAK_STAIRS_WEST_STATE))),
+                "Compatible survey did not retain canonical loaded empty and full-state evidence");
+        P2GameTestSupport.require(
+                assessment.status() == ConstructionSiteAssessment.Status.ACCEPTED_CANDIDATE
+                        && assessment.findings().isEmpty(),
+                "Compatible loaded survey did not derive its data-only accepted candidate: "
+                        + assessment);
+        P2GameTestSupport.require(
+                level.getBlockState(origin).equals(airBefore)
+                        && level.getBlockState(absoluteStairs).equals(stairsBefore),
+                "Read-only compatible construction-site survey changed a GameTest block");
+        helper.succeed();
+    }
+
+    @GameTest(
+            template = P2GameTestSupport.TEMPLATE,
+            batch = BATCH,
+            timeoutTicks = TIMEOUT_TICKS)
     public static void leavesFarUnloadedAndOutOfBuildHeightTargetsUnknown(
             GameTestHelper helper) {
         P2GameTestSupport.prepareEmptyFloor(helper);

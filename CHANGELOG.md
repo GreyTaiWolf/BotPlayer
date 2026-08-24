@@ -53,8 +53,10 @@
   对 exact `ConstructionSiteBinding` 的 canonical Blueprint cells（最多 256）读取当前 tick 的已加载 state；先过
   build-height/`isLoaded` guard，unloaded/out-of-height/codec failure 为 `UNKNOWN`，air 为 `EMPTY`，其他以 registry
   ID + serialized full properties 为 `OCCUPIED` fingerprint。它不加载 chunk/ticket、不写世界、不读 NBT/容器，
-  也不接 lease、材料、placement、Technique、Action、Skill、lifecycle、AI 或红石；snapshot/assessment 不是 site
-  acceptance、许可或施工成功，P5D/P5 总退出门、Java 21 CI 与 Minecraft 实机验证仍待完成；
+  也不接 lease、材料、placement、Technique、Action、Skill、lifecycle、AI 或红石；新增 direct GameTest
+  源覆盖已加载 `EMPTY` 与完整匹配 `OCCUPIED` state 的 data-only `ACCEPTED_CANDIDATE`，并断言没有
+  world write。snapshot/assessment 不是 site acceptance、许可或施工成功，P5D/P5 总退出门、Java 21 CI
+  与 Minecraft 实机验证仍待完成；
 - 新增 ADR-0037 的 P6-B0 server-owned distributed physical-attempt handshake Contract：可信 server owner
   先为 exact dispatch reserve，再仅由 exact prepare ACK settle 并返回 replay-stable start grant；identity 同时
   绑定 server instance、owner、safe dispatch receipt、server attempt ID、nonce、client not-after 与更早的
